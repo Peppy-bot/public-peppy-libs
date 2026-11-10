@@ -61,7 +61,7 @@ use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use arm_scenes::{boxes_of, map_of, on_the_arms};
+use arm_scenes::{JOINTS, boxes_of, map_of, on_the_arms};
 use openarm_v2::Robot;
 
 /// The node whose deployment in the launcher fragment gives the planner's arguments.
@@ -118,7 +118,7 @@ fn main() {
         scenes.urdf
     );
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arms(&scenes.chains, &urdf, &meshes, |kind_arms, _| {
+        on_the_arms::<JOINTS, _>(&scenes.chains, &urdf, &meshes, |kind_arms, _| {
             let [kind_arm] = kind_arms else {
                 panic!("the scenario of the episodes plans the arm they record");
             };
@@ -576,7 +576,7 @@ fn map_of_episode(planner: &Planner, robot: &Robot, episode: &Episode) -> (Voxel
             continue;
         };
         let (arms, openings) = arms_and_openings(&values);
-        model.set_gripper_openings(openings[Side::Left], openings[Side::Right]);
+        model.set_gripper_openings(&openings.into_array());
         let fingers = robot.fingers(&model);
         let bytes = std::fs::read(samples)
             .unwrap_or_else(|e| panic!("the samples {}: {e}", samples.display()));

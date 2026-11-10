@@ -8,6 +8,9 @@ use collision_geometry::chain::Rider;
 use control_core::positive_finite::PositiveFinite;
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
 
+/// The joints from which a chain holds a frame at any pose it reaches: a pose's freedoms.
+const POSE_FREEDOMS: usize = 6;
+
 /// A frame of the arm that a target names.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Frame {
@@ -89,11 +92,25 @@ impl Frame {
     /// (`getAssociatedFixedTransforms`, default_constraint_samplers.cpp:395). For them the
     /// descent aims only at what the goal names, and the search offers the configuration each
     /// descent ends at.
+    ///
+    /// A chain of fewer joints than a pose has freedoms reaches no pose drawn inside a goal
+    /// exactly. A goal of a position alone takes KDL's `position_only_ik`
+    /// (kdl_kinematics_plugin.cpp:344-350). A goal that names an orientation departs from
+    /// MoveIt, whose sampler offers converged ends alone (`callIK` passes no options,
+    /// default_constraint_samplers.cpp:687-689): the descent weighs the orientation low,
+    /// [`Aims::PositionFirst`], or aims at it alone, and the search offers each end. The goal's
+    /// constraints decide on each end, as `IKConstraintSampler::validate` does (:653-660).
     fn search_of<const N: usize>(self, chain: &Chain<N>, named: Aims) -> (Aims, Ends) {
-        if self.solved_by_moveit(chain) {
-            (Aims::Both, Ends::Converged)
-        } else {
-            (named, Ends::Approximate)
+        if !self.solved_by_moveit(chain) {
+            return (named, Ends::Approximate);
+        }
+        if N >= POSE_FREEDOMS {
+            return (Aims::Both, Ends::Converged);
+        }
+        match named {
+            Aims::Position => (Aims::Position, Ends::Converged),
+            Aims::Orientation => (Aims::Orientation, Ends::Approximate),
+            Aims::Both | Aims::PositionFirst => (Aims::PositionFirst, Ends::Approximate),
         }
     }
 
@@ -813,5 +830,36 @@ pub(crate) mod tests {
             departing
         );
         assert_eq!(solved(Frame::Part { segment: 6, offset }), departing);
+    }
+
+    // A chain of five joints solves its tip by the options a moveit_config gives it: the
+    // position alone for a goal of a position, the position first and approximate ends for
+    // a goal of a pose. An inner link departs from MoveIt as on any chain.
+    #[test]
+    fn a_chain_of_five_joints_takes_the_options_of_a_short_chain() {
+        let chain = Chain::<{ so101_description::ARM_DOF }>::from_urdf(
+            &urdf_rs::read_from_string(so101_description::URDF).expect("the URDF parses"),
+            &ChainSpec {
+                base_link: Some(so101_description::BASE_LINK),
+                tip_link: so101_description::TCP_LINK,
+                joints: JointSelection::PathOrder,
+            },
+        )
+        .expect("SO-101's arm");
+        let tip = |named: Aims| Frame::GraspPoint.search_of(&chain, named);
+        assert_eq!(tip(Aims::Position), (Aims::Position, Ends::Converged));
+        assert_eq!(tip(Aims::Both), (Aims::PositionFirst, Ends::Approximate));
+        assert_eq!(
+            tip(Aims::Orientation),
+            (Aims::Orientation, Ends::Approximate)
+        );
+        let inner = Frame::Link {
+            segment: 1,
+            offset: Isometry3::identity(),
+        };
+        assert_eq!(
+            inner.search_of(&chain, Aims::Both),
+            (Aims::Both, Ends::Approximate)
+        );
     }
 }

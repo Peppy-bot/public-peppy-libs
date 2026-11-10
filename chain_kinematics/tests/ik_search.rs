@@ -8,10 +8,10 @@ mod common;
 
 use std::cell::Cell;
 
-use chain_kinematics::nalgebra::Isometry3;
+use chain_kinematics::nalgebra::{Isometry3, UnitQuaternion, Vector3};
 use chain_kinematics::{Aims, Chain, ChainFrame, Draws, Ends, IkSolver, Limit, SEARCH_ITERATIONS};
-use common::openarm;
 use common::properties::{chain_of, named_chain_of, permutations, unreachable_poses};
+use common::{openarm, so101};
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{ChainProperty, TOLERANCE, configs, on_a_drawn_robot, poses};
@@ -225,6 +225,36 @@ fn a_descent_leaves_free_what_it_does_not_aim_at(tc: TestCase) {
         }
     }
     on_a_drawn_robot::<Aiming>(&tc);
+}
+
+// A target at a position SO-101's five joints reach, its orientation turned off the ones
+// they hold there: a descent that aims at the position first ends nearer the position than
+// one that weighs the orientation alike, which spends the position on the turn.
+#[test]
+fn a_position_first_descent_keeps_the_position_that_an_even_one_spends() {
+    let chain = so101();
+    let start = [0.3, -0.4, 0.8, 0.6, 0.2];
+    let reached = chain.world_ee_pose(&start);
+    let turned = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3);
+    let target = Isometry3::from_parts(reached.translation, reached.rotation * turned);
+    let miss = |aims: Aims| {
+        let end = IkSolver::new(&chain, ChainFrame::EndEffector, aims, Ends::Approximate)
+            .search(
+                start,
+                &target,
+                &mut Draws::new(DRAWS),
+                &|_| true,
+                ONE_DESCENT,
+            )
+            .expect("the end of the search's one descent");
+        (chain.world_ee_pose(&end).translation.vector - target.translation.vector).norm()
+    };
+    assert!(
+        miss(Aims::PositionFirst) * 10.0 < miss(Aims::Both),
+        "{} against {}",
+        miss(Aims::PositionFirst),
+        miss(Aims::Both)
+    );
 }
 
 // A descent moves a frame on a segment by the joints on the segment's path: until it steps

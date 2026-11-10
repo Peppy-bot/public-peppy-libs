@@ -99,8 +99,9 @@ caller's `RandomSource`, `Draws` for a SplitMix64 stream that a seed fixes on ev
 each joint of a restart in turn and each joint of a step off a singularity in turn.
 
 Two of KDL's options are the caller's. `Aims` names what a descent brings to the target:
-the position, the orientation or both, `position_only_ik` generalized. `Ends::Approximate`
-offers the callback each descent's end, converged or not, as
+the position, the orientation or both, `position_only_ik` generalized, and `PositionFirst`,
+both with the orientation's rows weighed at 0.01, `orientation_vs_position`.
+`Ends::Approximate` offers the callback each descent's end, converged or not, as
 `return_approximate_solution` does.
 
 ## Walking a line

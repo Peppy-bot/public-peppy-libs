@@ -1,6 +1,7 @@
 {
   "kind": "forward_kinematics",
   "urdf": "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
+  "meshes": "so101_description/src/so101_description/urdf/collision",
   "chains": [
     {
       "name": "arm",

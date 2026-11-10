@@ -185,6 +185,12 @@ def _bar(value: float) -> float:
     return value
 
 
+def _arm_model(placo, urdf_path: str):
+    """The arm's placo model for the solvers, which move it by its kinematics
+    alone: its collision meshes load with no self-collision pairs."""
+    return placo.RobotWrapper(urdf_path, placo.Flags.ignore_collisions)
+
+
 def _set_joints(robot, positions_rad) -> None:
     """Puts the model at these joint radians, in wire order, and updates its
     frames."""
@@ -206,7 +212,7 @@ class Kinematics:
     def __init__(self, urdf_path: str):
         import placo  # pylint: disable=C0415
 
-        self._robot = placo.RobotWrapper(urdf_path)
+        self._robot = _arm_model(placo, urdf_path)
         self._solver = placo.KinematicsSolver(self._robot)
         self._solver.mask_fbase(True)
         self._tip = self._solver.add_frame_task(END_EFFECTOR_FRAME, np.eye(4))
@@ -524,7 +530,7 @@ class ApproachSolver:
         import placo  # pylint: disable=C0415
 
         self._limits = limits_from_urdf(urdf_path)
-        self._robot = placo.RobotWrapper(urdf_path)
+        self._robot = _arm_model(placo, urdf_path)
         _set_joints(self._robot, (0.0,) * len(JOINT_NAMES))
         self.reach_sphere = ReachSphere.of(urdf_path, self._robot)
         self._pan_axis = _PanAxis.of(self._robot)

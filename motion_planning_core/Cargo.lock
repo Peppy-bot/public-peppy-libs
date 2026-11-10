@@ -132,6 +132,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "chacha20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "rand_core",
+]
+
+[[package]]
 name = "chain_kinematics"
 version = "0.1.0"
 dependencies = [
@@ -691,7 +702,9 @@ dependencies = [
  "self_collision_model",
  "serde",
  "serde_json",
+ "so101_description",
  "srs_model",
+ "statrs",
  "thiserror 2.0.21",
  "urdf-rs",
 ]
@@ -712,6 +725,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
+ "rand",
  "simba",
  "typenum",
 ]
@@ -789,6 +803,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -942,6 +957,8 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
+ "chacha20",
+ "getrandom 0.4.3",
  "rand_core",
 ]
 
@@ -1097,10 +1114,12 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 name = "self_collision_model"
 version = "0.1.0"
 dependencies = [
+ "chain_kinematics",
  "collision_geometry",
  "openarm_description",
- "srs_model",
+ "so101_description",
  "thiserror 2.0.21",
+ "urdf-rs",
 ]
 
 [[package]]
@@ -1215,6 +1234,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
+name = "so101_description"
+version = "0.1.0"
+dependencies = [
+ "urdf-rs",
+]
+
+[[package]]
 name = "srs_model"
 version = "0.1.0"
 dependencies = [
@@ -1229,6 +1255,19 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "statrs"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1837f9a1bd13dabbdbb04489c39451482d3cdd35a6e1a0d0f3570dea2b8c8be"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "num-traits",
+ "rand",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "strsim"

@@ -1,0 +1,10 @@
+{
+  "kind": "self_distance",
+  "urdf": "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
+  "meshes": "so101_description/src/so101_description/urdf/collision",
+  "configurations": [
+    {"shoulder_pan":0.0,"shoulder_lift":0.0,"elbow_flex":0.0,"wrist_flex":0.0,"wrist_roll":0.0,"gripper":0.0},
+    {"shoulder_pan":1.91986,"shoulder_lift":1.74533,"elbow_flex":1.69,"wrist_flex":1.65806,"wrist_roll":2.84121,"gripper":1.74533},
+    {"shoulder_pan":-0.5252964729569298,"shoulder_lift":0.775171552572095,"elbow_flex":0.9740555982618662,"wrist_flex":0.8484607213128939,"wrist_roll":2.359851409740048,"gripper":0.7979284735417449}
+  ]
+}

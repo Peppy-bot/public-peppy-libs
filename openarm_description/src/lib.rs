@@ -1,5 +1,5 @@
 //! The OpenArm robot descriptions: the single embedded source of truth for the URDFs
-//! and their collision meshes, so nodes no longer each ship their own copy.
+//! and their collision meshes, which every node reads.
 //!
 //! Two hardware generations are carried, selected by [`HardwareVersion`]:
 //! - [`HardwareVersion::V1`]: OpenArm v1.0 (`openarm_v10`).
@@ -8,8 +8,11 @@
 //! - [`HardwareVersion::urdf`] returns the bundled URDF string (mechanical joint limits,
 //!   as vendored).
 //! - [`HardwareVersion::write_meshes_to`] (feature `meshes`) materializes the embedded
-//!   collision meshes for the file-based self-collision model builder and for any non-Rust
-//!   consumer (the sim) via the `emit_meshes` binary.
+//!   collision meshes for the self-collision model and for any non-Rust consumer (the sim)
+//!   via the `emit_meshes` binary.
+//! - [`HardwareVersion::finger_links`], [`HardwareVersion::finger_shut`],
+//!   [`HardwareVersion::yoked_joints`] and [`HardwareVersion::never_touching_pairs`] hold
+//!   the data of the generation's self-collision model.
 //! - [`HardwareVersion::elbow_singularity_floor_rad`] / [`HardwareVersion::elbow_joint_index`]
 //!   describe the elbow control margin the kinematics consumer applies (see the method docs).
 //! - [`HardwareVersion::joint_limits`] resolves one side's per-joint position limits from the
@@ -23,7 +26,9 @@
 //! - [`Side`] names an arm (`left`, its wire `arm_name` and `gripper_name`), and
 //!   [`ArmPair`] holds one value per arm, read and written by [`Side`]. [`ArmOrder`] is the
 //!   arms a request names, in its order, the order its joint arrays hold them in;
-//!   [`DUAL_DOF`] counts both arms' joints.
+//!   [`ARMS`] counts the arms and [`DUAL_DOF`] both arms' joints. [`places_in_order`],
+//!   [`common_waypoint_count`] and [`no_such_arm`] are its refusals in plain names, for a
+//!   robot of any arms.
 //! - [`HardwareVersion::camera_mounts`] lists where the generation's design carries its
 //!   cameras: each one's name, the URDF link it is fixed to, and its pose in that link's
 //!   frame, the numbers the simulation places its rendered cameras by.
@@ -44,14 +49,17 @@ use std::str::FromStr;
 mod arm_order;
 mod side;
 
-pub use arm_order::ArmOrder;
+pub use arm_order::{ArmOrder, common_waypoint_count, no_such_arm, places_in_order};
 pub use side::{ArmPair, Side, UnknownArmName, UnknownGripperName};
 
 /// Joints per arm (j1..j7) in both generations.
 pub const ARM_DOF: usize = 7;
 
+/// The robot's arms, a left and a right.
+pub const ARMS: usize = 2;
+
 /// Joints across both arms.
-pub const DUAL_DOF: usize = 2 * ARM_DOF;
+pub const DUAL_DOF: usize = ARMS * ARM_DOF;
 
 /// Where a generation's design carries one camera: fixed to `parent_link` of the
 /// bundled URDF, at `position` and `quat_wxyz` in that link's frame. The camera looks
@@ -298,6 +306,36 @@ impl HardwareVersion {
         match self {
             Self::V1 => &[],
             Self::V2 => V2_NEVER_TOUCHING_PAIRS,
+        }
+    }
+
+    /// The most moving joints two bodies of one arm, or the torso and a body of an arm,
+    /// lie apart and a collision model still leaves unchecked: the shoulder's and the
+    /// wrist's clusters of joints orbit each other through their whole range while the
+    /// link between them blocks contact.
+    pub fn yoked_joints(self) -> usize {
+        match self {
+            Self::V1 | Self::V2 => 2,
+        }
+    }
+
+    /// The finger links of one side's gripper, both on joints of their own off the hand:
+    /// v1's off the last arm link, v2's off its `ee_base_link`.
+    pub fn finger_links(self, side: Side) -> [&'static str; 2] {
+        match (self, side) {
+            (Self::V1, Side::Left) => ["openarm_left_left_finger", "openarm_left_right_finger"],
+            (Self::V1, Side::Right) => ["openarm_right_left_finger", "openarm_right_right_finger"],
+            (Self::V2, Side::Left) => ["openarm_left_ee_link1", "openarm_left_ee_link2"],
+            (Self::V2, Side::Right) => ["openarm_right_ee_link1", "openarm_right_ee_link2"],
+        }
+    }
+
+    /// The position of each finger's joint at which the finger is shut: the lower limit
+    /// of v1's sliding fingers and of v2's left hand, and the upper limit of v2's right
+    /// hand, whose joints mirror the left's by their limits.
+    pub fn finger_shut(self) -> f64 {
+        match self {
+            Self::V1 | Self::V2 => 0.0,
         }
     }
 }

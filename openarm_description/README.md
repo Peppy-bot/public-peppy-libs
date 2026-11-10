@@ -11,13 +11,17 @@ the `kinematics` feature, `HardwareVersion::arm_model(side)` builds one side's a
 
 - `HardwareVersion::urdf()` returns the bundled URDF string.
 - `HardwareVersion::write_meshes_to(dir)` (feature `meshes`) materializes the collision
-  meshes for the file-based `self_collision_model` builder.
+  meshes, which `self_collision_model::openarm` builds the generation's model from.
 - `HardwareVersion::torso_body()` / `torso_regions()` name the torso link and the
   axis-aligned regions, `[min, max]` in meters in the URDF root frame, that decompose
   its concave mesh into convex pieces for a collision model.
 - `HardwareVersion::never_touching_pairs()` names the pairs of bodies the joint limits
   keep apart, which a collision model leaves out: on v2, each upper arm (`link3`)
   against the torso and against its own arm's base.
+- `HardwareVersion::finger_links(side)` / `finger_shut()` name the finger links of one
+  side's gripper and the position of their joint at which they are shut, and
+  `yoked_joints()` the most moving joints two bodies of one arm lie apart and stay
+  blocked from contact by the link between them, for a collision model.
 - `HardwareVersion::elbow_singularity_floor_rad()` / `elbow_joint_index()` describe the
   elbow control margin (see below), and `joint_limits(side)` gives one side's joint
   limits with that margin applied.

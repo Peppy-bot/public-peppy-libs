@@ -14,6 +14,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/collision_detection/collision_common.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
@@ -289,13 +290,23 @@ nlohmann::json measured(const Probed& probed, double length) {
 // MoveIt's constraints of a pose `goal` of the link `tip_link` in the frame of `model`:
 // its position within the radius `position_tolerance` and each component of the rotation
 // vector from its target orientation within `orientation_tolerance`
-// (constructGoalConstraints, ROTATION_VECTOR, moveit2 2.15.2 utils.cpp:220-226).
+// (constructGoalConstraints, ROTATION_VECTOR, moveit2 2.15.2 utils.cpp:220-226); a goal
+// that names no orientation, its position alone.
 moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
                                                const moveit::core::RobotModel& model,
                                                const std::string& tip_link) {
+  const auto position = numbers(goal.at("position"));
+  if (!goal.contains("orientation")) {
+    geometry_msgs::msg::PointStamped point;
+    point.header.frame_id = model.getModelFrame();
+    point.point.x = position.at(0);
+    point.point.y = position.at(1);
+    point.point.z = position.at(2);
+    return kinematic_constraints::constructGoalConstraints(
+        tip_link, point, goal.at("position_tolerance").get<double>());
+  }
   geometry_msgs::msg::PoseStamped pose;
   pose.header.frame_id = model.getModelFrame();
-  const auto position = numbers(goal.at("position"));
   const auto orientation = numbers(goal.at("orientation"));
   pose.pose.position.x = position.at(0);
   pose.pose.position.y = position.at(1);

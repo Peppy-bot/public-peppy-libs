@@ -33,8 +33,8 @@ or messaging dependencies.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
-[`self_collision_model`](../self_collision_model) builds the self-collision model of
-OpenArm on this crate.
+[`self_collision_model`](../self_collision_model) builds the self-collision model of a
+robot of serial chains on this crate, OpenArm's and SO-101's among them.
 
 ## Quick start
 

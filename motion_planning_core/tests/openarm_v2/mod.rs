@@ -8,12 +8,12 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{BodyGeometry, ChainGeometry, Padding, Rider};
 use motion_planning_core::{PosedChain, RobotMask};
 use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side};
-use self_collision_model::SelfCollisionModel;
+use self_collision_model::OpenArmModel;
 
 pub struct Robot {
     pub arms: ArmPair<ChainGeometry<ARM_DOF>>,
     pub body: BodyGeometry,
-    pub self_model: SelfCollisionModel,
+    pub self_model: OpenArmModel,
 }
 
 impl Robot {
@@ -45,10 +45,10 @@ impl Robot {
     }
 
     /// The fingers of both arms, as riders of their links, where `model` hangs them.
-    pub fn fingers(&self, model: &SelfCollisionModel) -> ArmPair<Vec<Rider<'_>>> {
+    pub fn fingers(&self, model: &OpenArmModel) -> ArmPair<Vec<Rider<'_>>> {
         ArmPair::from_fn(|side| {
             model
-                .fingers(side, self.arms[side].carried())
+                .fingers(side.index(), self.arms[side].carried())
                 .expect("each arm's chain carries its own fingers")
         })
     }

@@ -59,6 +59,9 @@ random_numbers::RandomNumberGenerator::RandomNumberGenerator()
 namespace ros_reference {
 namespace {
 
+// The joints from which a chain holds a frame at any pose it reaches: a pose's freedoms.
+constexpr std::size_t pose_freedoms = 6;
+
 // OctoMap's key of the voxel at the origin of each axis.
 constexpr int tree_max_val = 32768;
 // The acceleration bound of each joint of the arm, in rad/s^2, for the pipeline's time
@@ -136,8 +139,12 @@ void load_kdl(const moveit::core::RobotModelPtr& model,
   options.automatically_declare_parameters_from_overrides(true);
   std::vector<rclcpp::Parameter> solvers;
   for (const auto& name : solver_groups) {
-    solvers.emplace_back("robot_description_kinematics." + name + ".kinematics_solver",
+    const std::string kinematics = "robot_description_kinematics." + name;
+    solvers.emplace_back(kinematics + ".kinematics_solver",
                          "kdl_kinematics_plugin/KDLKinematicsPlugin");
+    if (model->getJointModelGroup(name)->getActiveJointModels().size() < pose_freedoms) {
+      solvers.emplace_back(kinematics + ".position_only_ik", true);
+    }
   }
   options.parameter_overrides(solvers);
   auto node = std::make_shared<rclcpp::Node>("arm_planning_kinematics", options);

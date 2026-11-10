@@ -865,11 +865,14 @@ def test_a_position_past_the_reach_sphere_within_the_bar_of_a_grasp_point_is_app
 
 def urdf_with(tmp_path, old, new):
     """A copy of the model's URDF, in `tmp_path`, with `old` replaced by
-    `new`."""
-    text = Path(KINEMATICS_URDF_PATH).read_text()
+    `new`, beside a link to its collision meshes, which the copy names by
+    paths relative to it."""
+    urdf = Path(KINEMATICS_URDF_PATH)
+    text = urdf.read_text()
     assert old in text
     path = tmp_path / "so101.urdf"
     path.write_text(text.replace(old, new))
+    (tmp_path / "collision").symlink_to(urdf.parent / "collision")
     return str(path)
 
 

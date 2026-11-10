@@ -2,7 +2,9 @@
 //! configuration of a chain, it gives the global transform of each link that the chain
 //! moves.
 
-use crate::{Kind, LinkPose, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{
+    Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
+};
 use serde::Deserialize;
 
 /// The `kind` of a forward kinematics scenario and of its reference output, which refuses
@@ -20,6 +22,9 @@ struct Scenario {
     kind: ThisKind,
     /// The path of the robot's URDF, relative to the repository root.
     urdf: String,
+    /// The directory of the collision meshes, where the URDF names them by paths relative
+    /// to itself, which MoveIt's robot model cannot read from a text alone.
+    meshes: Option<String>,
     chains: Vec<Chain>,
 }
 
@@ -93,8 +98,12 @@ impl Cases {
         let Scenario {
             kind: ThisKind::ForwardKinematics,
             urdf,
+            meshes,
             chains,
         } = read_scenario(&name);
+        if let Some(meshes) = meshes {
+            read_mesh_directory(&name, &meshes);
+        }
         let Reference {
             kind: ThisKind::ForwardKinematics,
             chains: outputs,

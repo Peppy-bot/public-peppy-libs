@@ -2,7 +2,7 @@
 name = "openarm_description"
 version = "0.1.0"
 edition = "2024"
-description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the torso regions that decompose its mesh into convex pieces, the constants and joint limits describing their control margins, selected by HardwareVersion, and Side and ArmPair naming each arm. Pure data by default; behind the `kinematics` feature, each arm's srs_model model."
+description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the torso regions that decompose its mesh into convex pieces, the data of each generation's self-collision model (its fingers, yoked joints and never-touching pairs), the constants and joint limits describing their control margins, selected by HardwareVersion, and Side and ArmPair naming each arm. Pure data by default; behind the `kinematics` feature, each arm's srs_model model."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
 # whatever sits above this repository, which is what lets a consumer pull the

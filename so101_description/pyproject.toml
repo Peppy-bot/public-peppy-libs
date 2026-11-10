@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "so101_description"
 version = "0.1.0"
-description = "The SO-101's identity for its peppy nodes: joint and motor names, wire-unit conversions, limb-name vocabulary, named postures, setpoint parsing shaped by the STS3215's constraints, the embedded URDF with its limits, kinematics, and pose transforms, and the approach solver of its workspace answer (ApproachSolver): the least distance the grasp point comes to a position, and joints that bring it there with the gripper's approach axis along a direction. openarm_description's sibling for the lerobot SO-ARM family."
+description = "The SO-101's identity for its peppy nodes: joint and motor names, wire-unit conversions, limb-name vocabulary, named postures, setpoint parsing shaped by the STS3215's constraints, the embedded URDF with its limits and the collision meshes of its links, the wrist camera module included, kinematics, and pose transforms, and the approach solver of its workspace answer (ApproachSolver): the least distance the grasp point comes to a position, and joints that bring it there with the gripper's approach axis along a direction. openarm_description's sibling for the lerobot SO-ARM family."
 requires-python = ">=3.12,<3.14"
 dependencies = ["control_core_py", "numpy>=1.26"]
 

@@ -41,7 +41,7 @@ use motion_planning_core::{
 };
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{DistanceField, VoxelMap};
-use openarm_description::{ARM_DOF, HardwareVersion, Side};
+use openarm_description::{ARM_DOF, ARMS, HardwareVersion, Side};
 use ros_reference::planning_scene::{
     Cases, Measured, MoveItAttached, MoveItObject, MoveItShape, Operation, Path,
 };
@@ -85,7 +85,7 @@ fn joint_names(arm: &ChainGeometry<JOINTS>) -> BTreeSet<&str> {
 /// fingers close.
 fn robot_of(cases: &Cases) -> Robot {
     let mut robot = Robot::new(cases.meshes.to_str().expect("the mesh directory is UTF-8"));
-    robot.self_model.set_gripper_openings(0.0, 0.0);
+    robot.self_model.set_gripper_openings(&[0.0; ARMS]);
     robot
 }
 
@@ -493,7 +493,7 @@ fn with_the_left_arm<R>(
     let moving = moving_links(robot, &fingers);
     let mut placed = robot.self_model.clone();
     let parts: Vec<RobotPart> = placed
-        .world_pieces(&left, &right)
+        .world_pieces(&[left, right])
         .expect("finite joint positions")
         .into_iter()
         .filter(|(link, _)| !moving.contains(*link))

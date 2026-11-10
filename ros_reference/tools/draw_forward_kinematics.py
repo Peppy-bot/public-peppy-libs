@@ -28,13 +28,17 @@ def openarm_arm(side):
     return (side, openarm_joints(side), f"openarm_{side}_tcp")
 
 
+# Each robot: its URDF, the directory of its collision meshes where the URDF names them by
+# paths relative to itself, and its chains.
 ROBOTS = {
     "forward_kinematics_openarm_v2": (
         "openarm_description/assets/openarm_v20.urdf",
+        {},
         [openarm_arm("left"), openarm_arm("right")],
     ),
     "forward_kinematics_so101": (
         "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
+        {"meshes": "so101_description/src/so101_description/urdf/collision"},
         [
             (
                 "arm",
@@ -46,11 +50,12 @@ ROBOTS = {
 }
 
 
-def scenario(rng, urdf, chains, drawn):
+def scenario(rng, urdf, meshes, chains, drawn):
     parsed = robot(urdf)
     return {
         "kind": "forward_kinematics",
         "urdf": urdf,
+        **meshes,
         "chains": [
             {
                 "name": name,
@@ -67,8 +72,8 @@ def scenario(rng, urdf, chains, drawn):
 
 def main():
     drawn = options(__doc__, DRAWN_CONFIGURATIONS, CONFIGURATIONS_DRAWN).parse_args().drawn
-    for name, (urdf, chains) in ROBOTS.items():
-        write(name, scenario(generator(name), urdf, chains, drawn))
+    for name, (urdf, meshes, chains) in ROBOTS.items():
+        write(name, scenario(generator(name), urdf, meshes, chains, drawn))
 
 
 if __name__ == "__main__":

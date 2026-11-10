@@ -3,6 +3,8 @@
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
+use crate::ARMS;
+
 /// An arm side of the bimanual robot, selecting the `openarm_left_*` or
 /// `openarm_right_*` chain in the bundled URDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +21,15 @@ pub enum Side {
 impl Side {
     /// Both sides, left then right: the order of every per-arm table on the
     /// wire, and the order [`ArmPair::from_fn`] builds a pair in.
-    pub const BOTH: [Side; 2] = [Side::Left, Side::Right];
+    pub const BOTH: [Side; ARMS] = [Side::Left, Side::Right];
+
+    /// The side's place in [`Side::BOTH`]: 0 for the left, 1 for the right.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+        }
+    }
 
     /// The arm across: the right side for the left, and the left for the right.
     pub fn other(self) -> Self {
@@ -123,6 +133,11 @@ pub struct ArmPair<T> {
 impl<T> ArmPair<T> {
     pub const fn new(left: T, right: T) -> Self {
         Self { left, right }
+    }
+
+    /// The values, in [`Side::BOTH`] order, each at its side's [`Side::index`].
+    pub fn into_array(self) -> [T; ARMS] {
+        [self.left, self.right]
     }
 
     /// The values, in [`Side::BOTH`] order.
@@ -269,6 +284,16 @@ mod tests {
         let json = |side: Side| serde_json::to_string(&side).unwrap();
         assert_eq!(json(Side::Left), r#""left""#);
         assert_eq!(json(Side::Right), r#""right""#);
+    }
+
+    // Each side's value stands at the side's place in BOTH, the place `index` gives.
+    #[test]
+    fn each_sides_value_stands_at_its_index() {
+        let pair = ArmPair::new("left", "right");
+        for side in Side::BOTH {
+            assert_eq!(Side::BOTH[side.index()], side);
+            assert_eq!(pair.into_array()[side.index()], pair[side]);
+        }
     }
 
     #[test]

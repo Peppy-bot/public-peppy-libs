@@ -4,13 +4,22 @@
 //! ```sh
 //! cargo run --release --example visualize -- \
 //!     --urdf tests/fixtures/openarm_v10.urdf --meshes ../openarm_description/assets/meshes \
-//!     --left-base openarm_left_link0 --right-base openarm_right_link0 \
+//!     --left-base openarm_left_link0 --left-tip openarm_left_link7 \
+//!     --right-base openarm_right_link0 --right-tip openarm_right_link7 \
+//!     --yoked-joints 2 \
+//!     --finger openarm_left_left_finger,0 --finger openarm_left_right_finger,0 \
+//!     --finger openarm_right_left_finger,0 --finger openarm_right_right_finger,0 \
 //!     --left 0,0,1.2,0.4,0,0,0 --right 0,0,-1.2,0.4,0,0,0 \
 //!     --gripper 0.0 --wireframes -o scene.html
 //! ```
 //!
+//! Each `--finger <link>,<shut>` names a finger the chains' links carry and the
+//! position of its joint at which it is shut; the model refuses a URDF whose
+//! fingers the arguments leave out, naming the link. `--yoked-joints` is the most
+//! moving joints two bodies of one arm lie apart and still go unchecked.
+//!
 //! `--gripper <f>` (or per side `--left-gripper` / `--right-gripper`) sets the
-//! gripper opening as a fraction in `[0, 1]` (0 = closed, 1 = fully open, the
+//! gripper opening as a fraction in `[0, 1]` (0 = shut, 1 = fully open, the
 //! default). The finger hulls, and their `--wireframes` source meshes, are placed
 //! at that opening, so the scene shows the true finger positions rather than the
 //! full swept envelope.
@@ -28,11 +37,11 @@
 //! thresholds.
 use std::collections::HashSet;
 
+use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use collision_geometry::urdf_collision::UrdfCollisions;
-use openarm_description::HardwareVersion;
+use openarm_description::{ARM_DOF, HardwareVersion};
 use self_collision_model::nalgebra::{Point3, Vector3};
-use self_collision_model::{PairSpec, Placed, SelfCollisionModel};
-use srs_model::{ARM_DOF, Arm, JointVec};
+use self_collision_model::{Finger, PairSpec, Placed, SelfCollisionModel};
 
 /// The generation whose torso regions the scene fits the torso in, when the URDF holds
 /// its torso body.
@@ -48,13 +57,22 @@ fn main() {
     }
 }
 
+/// One arm's joints.
+type Q = [f64; ARM_DOF];
+
 struct Args {
     urdf: String,
     meshes: String,
     left_base: String,
+    left_tip: String,
     right_base: String,
-    left: JointVec,
-    right: JointVec,
+    right_tip: String,
+    yoked_joints: Option<usize>,
+    /// Each finger the arms carry, by its link, with its joint position at which it
+    /// is shut.
+    fingers: Vec<(String, f64)>,
+    left: Q,
+    right: Q,
     /// Gripper opening per side as a fraction in `[0, 1]` (0 = closed, 1 = open).
     left_gripper: f64,
     right_gripper: f64,
@@ -70,7 +88,11 @@ fn parse_args() -> Result<Args, String> {
         urdf: String::new(),
         meshes: String::new(),
         left_base: String::new(),
+        left_tip: String::new(),
         right_base: String::new(),
+        right_tip: String::new(),
+        yoked_joints: None,
+        fingers: Vec::new(),
         left: [0.0; ARM_DOF],
         right: [0.0; ARM_DOF],
         left_gripper: 1.0,
@@ -97,7 +119,23 @@ fn parse_args() -> Result<Args, String> {
             "--urdf" => args.urdf = value()?,
             "--meshes" | "-m" => args.meshes = value()?,
             "--left-base" => args.left_base = value()?,
+            "--left-tip" => args.left_tip = value()?,
             "--right-base" => args.right_base = value()?,
+            "--right-tip" => args.right_tip = value()?,
+            "--yoked-joints" => {
+                args.yoked_joints = Some(value()?.parse().map_err(|e| format!("{e}"))?)
+            }
+            "--finger" | "-f" => {
+                let v = value()?;
+                let (link, shut) = v
+                    .split_once(',')
+                    .ok_or(format!("--finger wants 'link,shut', got '{v}'"))?;
+                let shut: f64 = shut
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("bad shut position '{shut}': {e}"))?;
+                args.fingers.push((link.trim().to_string(), shut));
+            }
             "--left" | "-l" => args.left = parse_joints(&value()?)?,
             "--right" | "-r" => args.right = parse_joints(&value()?)?,
             "--gripper" | "-g" => {
@@ -124,16 +162,34 @@ fn parse_args() -> Result<Args, String> {
     if args.urdf.is_empty()
         || args.meshes.is_empty()
         || args.left_base.is_empty()
+        || args.left_tip.is_empty()
         || args.right_base.is_empty()
+        || args.right_tip.is_empty()
+        || args.yoked_joints.is_none()
     {
         return Err(
-            "required: --urdf <file> --meshes <dir> --left-base <link> --right-base <link>".into(),
+            "required: --urdf <file> --meshes <dir> --left-base <link> --left-tip <link> \
+             --right-base <link> --right-tip <link> --yoked-joints <n>"
+                .into(),
         );
     }
     Ok(args)
 }
 
-fn parse_joints(s: &str) -> Result<JointVec, String> {
+/// The arms' chains: each from its base to its tip, left then right.
+fn chains(args: &Args) -> [ChainSpec<'_>; 2] {
+    [
+        (&args.left_base, &args.left_tip),
+        (&args.right_base, &args.right_tip),
+    ]
+    .map(|(base, tip)| ChainSpec {
+        base_link: Some(base.as_str()),
+        tip_link: tip.as_str(),
+        joints: JointSelection::PathOrder,
+    })
+}
+
+fn parse_joints(s: &str) -> Result<Q, String> {
     let vals: Vec<f64> = s
         .split(',')
         .map(|p| {
@@ -152,13 +208,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // d_stop/d_safe (the --d-stop / --d-safe args), independent of any band.
     // Supply the tight torso proxy we ship whenever this is the OpenArm robot,
     // so the scene shows the real fit; any other URDF falls through to auto-fit.
-    let mut builder = SelfCollisionModel::builder_from_file(
-        &args.urdf,
-        &args.meshes,
-        &args.left_base,
-        &args.right_base,
-    )?
-    .exclude(&args.exclude);
+    let urdf = std::fs::read_to_string(&args.urdf)
+        .map_err(|e| format!("read urdf '{}': {e}", args.urdf))?;
+    let fingers: Vec<Finger> = args
+        .fingers
+        .iter()
+        .map(|(link, shut)| Finger {
+            link: link.as_str(),
+            shut: *shut,
+        })
+        .collect();
+    let yoked = args
+        .yoked_joints
+        .expect("parse_args requires --yoked-joints");
+    let mut builder =
+        SelfCollisionModel::<ARM_DOF, 2>::builder(&urdf, &args.meshes, chains(&args), yoked)
+            .fingers(&fingers)
+            .exclude(&args.exclude);
     if UrdfCollisions::from_file(&args.urdf)?
         .collision_link_names()
         .iter()
@@ -169,9 +235,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = builder.build()?;
     // Place the fingers at the requested opening; every query below then sees the
     // fingers where they actually are, not their full swept envelope.
-    model.set_gripper_openings(args.left_gripper, args.right_gripper);
+    model.set_gripper_openings(&[args.left_gripper, args.right_gripper]);
 
-    let proximity = model.min_distance(&args.left, &args.right)?;
+    let q = [args.left, args.right];
+    let proximity = model.min_distance(&q)?;
     let (distance, witness) = (
         proximity.distance,
         [point_json(&proximity.on_a), point_json(&proximity.on_b)],
@@ -179,7 +246,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (link_a, link_b) = (proximity.link_a.to_string(), proximity.link_b.to_string());
 
     let bodies: Vec<serde_json::Value> = model
-        .world_pieces(&args.left, &args.right)?
+        .world_pieces(&q)?
         .into_iter()
         .flat_map(|(name, pieces)| {
             let side = if name.contains("_left_") {
@@ -228,10 +295,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// hulls rather than a swept envelope.
 fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
     let urdf = UrdfCollisions::from_file(&args.urdf).map_err(|e| e.to_string())?;
-    let chain_links: Vec<String> = [&args.left_base, &args.right_base]
+    let robot = urdf_rs::read_file(&args.urdf).map_err(|e| e.to_string())?;
+    let arms: Vec<Chain<ARM_DOF>> = chains(args)
         .iter()
-        .flat_map(|base| {
-            let arm = Arm::from_urdf_file(&args.urdf, base).expect("arm");
+        .map(|spec| Chain::<ARM_DOF>::from_urdf(&robot, spec).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let chain_links: Vec<String> = arms
+        .iter()
+        .flat_map(|arm| {
             let posed = arm.at(&[0.0; ARM_DOF]);
             (0..ARM_DOF)
                 .map(|i| posed.link_name(i).to_string())
@@ -254,11 +325,10 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
             .map_err(|e| e.to_string())?;
         out.push(wire_json(decimate(&surfaces.concat())));
     }
-    for (base, q, opening) in [
-        (&args.left_base, &args.left, args.left_gripper),
-        (&args.right_base, &args.right, args.right_gripper),
+    for (arm, q, opening) in [
+        (&arms[0], &args.left, args.left_gripper),
+        (&arms[1], &args.right, args.right_gripper),
     ] {
-        let arm = Arm::from_urdf_file(&args.urdf, base).map_err(|e| e.to_string())?;
         let posed = arm.at(q);
         for i in 0..ARM_DOF {
             let name = posed.link_name(i);
@@ -270,7 +340,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                 .map(|v| pose * v)
                 .collect();
             // Fixed children ride with the link; movable children are the
-            // gripper fingers, drawn at the requested opening.
+            // gripper fingers, drawn at the requested opening, each opening from
+            // its named shut position toward its joint's other limit, as the
+            // model places its hull.
             let mut fingers: Vec<(String, f64, f64)> = Vec::new();
             for child in urdf.children_of(name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
@@ -287,27 +359,18 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                             .map(|v| pose * v),
                     );
                 } else {
-                    fingers.push((child, joint.lower_limit, joint.upper_limit));
-                }
-            }
-            // Orient the finger travel the way the model does (the extreme with
-            // the larger between-finger separation is open; a mirrored gripper
-            // flips the URDF limit order), so the wireframe fingers land on the
-            // same pose as the placed hulls. The model build already rejected
-            // any link whose movable children are not a two-finger pair.
-            if let [fa, fb] = fingers.as_mut_slice() {
-                let centroid = |child: &str, q: f64| -> Result<Point3<f64>, String> {
-                    let vs = urdf
-                        .child_surfaces_in_parent(child, q, &args.meshes)?
-                        .concat();
-                    let sum = vs.iter().fold(Vector3::zeros(), |a, p| a + p.coords);
-                    Ok(Point3::from(sum / vs.len().max(1) as f64))
-                };
-                let sep_lower = (centroid(&fa.0, fa.1)? - centroid(&fb.0, fb.1)?).norm();
-                let sep_upper = (centroid(&fa.0, fa.2)? - centroid(&fb.0, fb.2)?).norm();
-                if sep_lower > sep_upper {
-                    std::mem::swap(&mut fa.1, &mut fa.2);
-                    std::mem::swap(&mut fb.1, &mut fb.2);
+                    let shut = args
+                        .fingers
+                        .iter()
+                        .find(|(link, _)| *link == child)
+                        .map(|(_, shut)| *shut)
+                        .ok_or(format!("finger '{child}' needs a --finger {child},<shut>"))?;
+                    let open = if shut == joint.lower_limit {
+                        joint.upper_limit
+                    } else {
+                        joint.lower_limit
+                    };
+                    fingers.push((child, shut, open));
                 }
             }
             for (child, closed, open) in &fingers {

@@ -1,6 +1,7 @@
 """What the scripts that write the scenarios of the ROS reference harness share: the
 paths, the generator of each scenario's draws, the --drawn option, a parsed URDF, the
-joints, the grasp link and the chain of an arm of OpenArm v2, the joint limits of a URDF,
+joints, the grasp link and the chain of an arm of OpenArm v2, the URDF, the meshes and the
+arm's joints of SO-101, the joint limits of a URDF,
 the configurations of a chain, the origin of a URDF element, the bounds of a link's
 collision elements, a rotation drawn uniformly, a shape of a collision object as
 motion_planning writes it, a closed box mesh and an L-shaped one, the pose of a link at
@@ -56,6 +57,12 @@ def robot(urdf):
 
 def openarm_joints(side):
     return [f"openarm_{side}_joint{i}" for i in range(1, 8)]
+
+
+# SO-101's URDF, the directory of its collision meshes, and its arm's joints, base to wrist.
+SO101_URDF = "so101_description/src/so101_description/urdf/so101_kinematics.urdf"
+SO101_MESHES = "so101_description/src/so101_description/urdf/collision"
+SO101_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
 
 def grasp_link(side):

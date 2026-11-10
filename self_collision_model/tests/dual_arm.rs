@@ -6,43 +6,51 @@
 //! rest clearance as a regression guard (update its constant on an intended re-fit).
 
 use self_collision_model::nalgebra::Point3;
-use self_collision_model::{Placed, SelfCollisionModel};
-use srs_model::JointVec;
+use self_collision_model::{Builder, Joints, OpenArmModel, Placed};
 
 #[path = "fixtures/openarm.rs"]
 mod openarm;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-/// In-limit home: the elbow's one-sided lower limit is 0.05.
-const HOME: JointVec = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+const ARM_DOF: usize = 7;
 
-/// The fixture model under the tight torso regions we actually ship; the
-/// auto-fit torso hull bulges across the chest and clips the grippers at rest,
+/// One arm's joints.
+type Q = [f64; ARM_DOF];
+
+/// In-limit home: the elbow's one-sided lower limit is 0.05.
+const HOME: Q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+
+/// Both arms at [`HOME`].
+const BOTH_HOME: Joints<ARM_DOF, 2> = [HOME, HOME];
+
+/// The fixture builder for `urdf` under the tight torso regions we actually ship;
+/// the auto-fit torso hull bulges across the chest and clips the grippers at rest,
 /// so the integration scenarios run against the supplied decomposition instead.
-fn model() -> SelfCollisionModel {
-    SelfCollisionModel::builder_from_file(
-        &format!("{FIXTURES}/openarm_v10.urdf"),
-        openarm::MESHES,
-        "openarm_left_link0",
-        "openarm_right_link0",
-    )
-    .expect("read fixture urdf")
-    .regions(
+fn builder(urdf: &str) -> Builder<'_, ARM_DOF, 2> {
+    openarm::builder(urdf).regions(
         openarm::VERSION.torso_body(),
         openarm::VERSION.torso_regions(),
     )
-    .build()
-    .expect("fixture model")
+}
+
+/// The fixture URDF.
+fn fixture_urdf() -> String {
+    std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("read fixture urdf")
+}
+
+/// The fixture model.
+fn model() -> OpenArmModel {
+    builder(&fixture_urdf()).build().expect("fixture model")
 }
 
 /// Both arms elbow-bent, j3 wrapping the wrists toward the centerline.
-fn wrists_inward(t: f64) -> (JointVec, JointVec) {
-    let mut ql: JointVec = [0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0];
+fn wrists_inward(t: f64) -> Joints<ARM_DOF, 2> {
+    let mut ql: Q = [0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0];
     let mut qr = ql;
     ql[2] = t;
     qr[2] = -t;
-    (ql, qr)
+    [ql, qr]
 }
 
 #[test]
@@ -51,8 +59,9 @@ fn wrists_converging_monotonically_reach_collision() {
     let mut prev = f64::INFINITY;
     let mut last = (String::new(), String::new(), 0.0);
     for i in 0..=12 {
-        let (ql, qr) = wrists_inward(i as f64 * 0.1);
-        let p = m.min_distance(&ql, &qr).expect("query");
+        let p = m
+            .min_distance(&wrists_inward(i as f64 * 0.1))
+            .expect("query");
         assert!(
             p.distance <= prev + 1e-3,
             "approach not monotone: {:+.4} after {prev:+.4}",
@@ -83,11 +92,11 @@ fn closing_the_gripper_recovers_clearance() {
     // reported clearance grows and the arms can come closer before the governor
     // stops them. Same pose, only the opening changes.
     let mut m = model();
-    let (ql, qr) = wrists_inward(0.9);
+    let q = wrists_inward(0.9);
 
-    m.set_gripper_openings(1.0, 1.0); // fully open: widest finger envelope
+    m.set_gripper_openings(&[1.0, 1.0]); // fully open: widest finger envelope
     let (open, open_a, open_b) = {
-        let p = m.min_distance(&ql, &qr).expect("query");
+        let p = m.min_distance(&q).expect("query");
         (p.distance, p.link_a.to_string(), p.link_b.to_string())
     };
     assert!(
@@ -95,8 +104,8 @@ fn closing_the_gripper_recovers_clearance() {
         "setup: a finger should be the nearest body when open, got {open_a} vs {open_b}"
     );
 
-    m.set_gripper_openings(0.0, 0.0); // fully closed: fingers retract
-    let closed = m.min_distance(&ql, &qr).expect("query").distance;
+    m.set_gripper_openings(&[0.0, 0.0]); // fully closed: fingers retract
+    let closed = m.min_distance(&q).expect("query").distance;
 
     assert!(
         closed > open + 1e-4,
@@ -104,8 +113,8 @@ fn closing_the_gripper_recovers_clearance() {
     );
 
     // Out-of-range openings clamp to the travel: same placement as the extremes.
-    m.set_gripper_openings(-0.5, -0.5);
-    let clamped = m.min_distance(&ql, &qr).expect("query").distance;
+    m.set_gripper_openings(&[-0.5, -0.5]);
+    let clamped = m.min_distance(&q).expect("query").distance;
     assert!(
         (clamped - closed).abs() < 1e-12,
         "an out-of-range opening should clamp to the nearest extreme"
@@ -118,50 +127,40 @@ fn mirrored_limit_fingers_place_identically() {
     // range ([-x, 0] instead of [0, x]) rather than the axis sign, so on that
     // side the LOWER limit is the open end. Rewrite the fixture's right fingers
     // in that style (limits negated, axes flipped: the identical physical
-    // motion) and pin that live placement matches the original at every
-    // opening: the model must read the open end off the meshes, not off the
-    // URDF limit order, or "fully open" parks the mirrored side's fingers
-    // closed.
-    let urdf = std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture");
-    let rewrites = [
-        (
-            "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
-            "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
-        ),
-        (
-            "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
-            "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
-        ),
-    ];
-    let mirrored = rewrites.iter().fold(urdf.clone(), |acc, (from, to)| {
-        assert!(
-            acc.contains(from),
-            "fixture drifted from the rewrite anchor"
-        );
-        acc.replacen(from, to, 1)
-    });
-
-    let build = |urdf: &str| {
-        SelfCollisionModel::builder(
-            urdf,
-            openarm::MESHES,
-            "openarm_left_link0",
-            "openarm_right_link0",
-        )
-        .regions(
-            openarm::VERSION.torso_body(),
-            openarm::VERSION.torso_regions(),
-        )
-        .build()
-        .expect("model")
+    // motion), both of them and then one alone, and pin that live placement
+    // matches the original at every opening: each finger opens from the shut
+    // position its builder names toward its joint's other limit, whatever the
+    // URDF limit order, so "fully open" never parks a mirrored finger closed.
+    let urdf = fixture_urdf();
+    let right_right = (
+        "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
+        "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
+    );
+    let right_left = (
+        "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
+        "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
+    );
+    let rewritten = |rewrites: &[(&str, &str)]| {
+        rewrites.iter().fold(urdf.clone(), |acc, (from, to)| {
+            assert!(
+                acc.contains(from),
+                "fixture drifted from the rewrite anchor"
+            );
+            acc.replacen(from, to, 1)
+        })
     };
+    let mirrored = rewritten(&[right_right, right_left]);
+    let mixed = rewritten(&[right_left]);
+
+    let build = |urdf: &str| builder(urdf).build().expect("model");
     let mut original = build(&urdf);
     let mut flipped = build(&mirrored);
+    let mut one_flipped = build(&mixed);
 
     // Separation of the two right-finger body centroids in world frame.
-    let separation = |m: &mut SelfCollisionModel, fraction: f64| -> f64 {
-        m.set_gripper_openings(fraction, fraction);
-        let pieces = m.world_pieces(&HOME, &HOME).expect("pieces");
+    let separation = |m: &mut OpenArmModel, fraction: f64| -> f64 {
+        m.set_gripper_openings(&[fraction, fraction]);
+        let pieces = m.world_pieces(&BOTH_HOME).expect("pieces");
         let centroid = |name: &str| {
             let (_, ps) = pieces
                 .iter()
@@ -180,11 +179,16 @@ fn mirrored_limit_fingers_place_identically() {
 
     for fraction in [0.0, 0.5, 1.0] {
         let a = separation(&mut original, fraction);
-        let b = separation(&mut flipped, fraction);
-        assert!(
-            (a - b).abs() < 1e-9,
-            "mirrored-limit placement diverged at fraction {fraction}: {a:.5} vs {b:.5}"
-        );
+        for (name, m) in [
+            ("mirrored", &mut flipped),
+            ("one mirrored", &mut one_flipped),
+        ] {
+            let b = separation(m, fraction);
+            assert!(
+                (a - b).abs() < 1e-9,
+                "{name} placement diverged at fraction {fraction}: {a:.5} vs {b:.5}"
+            );
+        }
     }
     assert!(
         separation(&mut flipped, 1.0) > separation(&mut flipped, 0.0) + 0.05,
@@ -193,47 +197,12 @@ fn mirrored_limit_fingers_place_identically() {
 }
 
 #[test]
-fn mixed_flip_finger_limits_fail_the_build() {
-    // Rewrite only ONE right finger to the mirrored [-x, 0] limit style (its
-    // sibling keeps [0, x]): each finger's own motion is physically unchanged,
-    // but the pair's limit ranges now disagree on a closed-to-open direction, so
-    // the tip separation is equal at both limit extremes and any orientation
-    // would be picked by floating-point noise. The build must refuse loudly
-    // rather than guess and silently place "open" as closed on one finger.
-    let urdf = std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture");
-    let from = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>";
-    let to = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>";
-    assert!(
-        urdf.contains(from),
-        "fixture drifted from the rewrite anchor"
-    );
-    let mixed = urdf.replacen(from, to, 1);
-    let err = SelfCollisionModel::builder(
-        &mixed,
-        openarm::MESHES,
-        "openarm_left_link0",
-        "openarm_right_link0",
-    )
-    .regions(
-        openarm::VERSION.torso_body(),
-        openarm::VERSION.torso_regions(),
-    )
-    .build()
-    .err()
-    .expect("a mixed-flip gripper must fail the build");
-    assert!(
-        err.to_string().contains("ambiguous"),
-        "expected the ambiguous-orientation error, got: {err}"
-    );
-}
-
-#[test]
 fn folding_the_arms_inward_drives_a_collision() {
     let mut m = model();
     // Mirrored j2 folds both arms toward the centerline, into the torso.
-    let ql: JointVec = [0.0, 0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
-    let qr: JointVec = [0.0, -0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
-    let p = m.min_distance(&ql, &qr).expect("query");
+    let ql: Q = [0.0, 0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
+    let qr: Q = [0.0, -0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
+    let p = m.min_distance(&[ql, qr]).expect("query");
     assert!(
         p.distance < 0.0,
         "folded arms should interpenetrate, got {:+.4}",
@@ -259,7 +228,7 @@ fn rest_pose_clearance_is_stable() {
     const REST_CLEARANCE_M: f64 = 0.0333;
     const TOLERANCE_M: f64 = 0.001;
     let mut m = model();
-    let p = m.min_distance(&HOME, &HOME).expect("query");
+    let p = m.min_distance(&BOTH_HOME).expect("query");
     assert!(
         (p.distance - REST_CLEARANCE_M).abs() < TOLERANCE_M,
         "rest clearance {:+.5} drifted from {REST_CLEARANCE_M} (tol {TOLERANCE_M})",
@@ -278,16 +247,17 @@ fn queries_are_order_independent_near_the_torso_regions() {
     // Support is an exact scan; pin the true clearance and that repeating the
     // query after a full model sweep cannot change the answer.
     let mut m = model();
-    let ql: JointVec = [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0];
-    let qr: JointVec = [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0];
-    let first = m.min_distance(&ql, &qr).expect("query").distance;
+    let q = [
+        [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0],
+        [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0],
+    ];
+    let first = m.min_distance(&q).expect("query").distance;
     assert!(
         first > 0.02,
         "near-home converging pose must read clear (~+0.024 true), got {first:+.5}"
     );
-    let (deep_l, deep_r) = wrists_inward(1.2);
-    m.min_distance(&deep_l, &deep_r).expect("query");
-    let again = m.min_distance(&ql, &qr).expect("query").distance;
+    m.min_distance(&wrists_inward(1.2)).expect("query");
+    let again = m.min_distance(&q).expect("query").distance;
     assert!(
         (first - again).abs() < 1e-12,
         "query order changed the answer: {first:+.5} then {again:+.5}"
@@ -305,10 +275,10 @@ fn separating_sweep_increases_clearance() {
     for i in 0..=12 {
         let t = i as f64 * 0.1;
         let p = m
-            .min_distance(
-                &[0.0, -t, 0.0, 0.4, 0.0, 0.0, 0.0],
-                &[0.0, t, 0.0, 0.4, 0.0, 0.0, 0.0],
-            )
+            .min_distance(&[
+                [0.0, -t, 0.0, 0.4, 0.0, 0.0, 0.0],
+                [0.0, t, 0.0, 0.4, 0.0, 0.0, 0.0],
+            ])
             .expect("query");
         assert!(
             p.distance > 0.0,
@@ -329,8 +299,7 @@ fn witnesses_are_finite_and_span_the_gap_when_clear() {
     let mut m = model();
     // A clearly separated pose: the witnesses lie on the surfaces and their gap
     // equals the (positive) reported distance.
-    let (ql, qr) = wrists_inward(0.3);
-    let p = m.min_distance(&ql, &qr).expect("query");
+    let p = m.min_distance(&wrists_inward(0.3)).expect("query");
     assert!(
         p.distance > 0.0,
         "pose should be clear, got {:+.4}",
@@ -352,11 +321,10 @@ fn witnesses_are_finite_and_span_the_gap_when_clear() {
 #[test]
 fn in_collision_threshold_semantics() {
     let mut m = model();
-    let rest = m.min_distance(&HOME, &HOME).expect("query").distance;
-    assert!(m.in_collision(&HOME, &HOME, rest + 0.005).expect("query"));
-    assert!(!m.in_collision(&HOME, &HOME, rest - 0.005).expect("query"));
-    let (ql, qr) = wrists_inward(1.2);
-    assert!(m.in_collision(&ql, &qr, 0.0).expect("query"));
+    let rest = m.min_distance(&BOTH_HOME).expect("query").distance;
+    assert!(m.in_collision(&BOTH_HOME, rest + 0.005).expect("query"));
+    assert!(!m.in_collision(&BOTH_HOME, rest - 0.005).expect("query"));
+    assert!(m.in_collision(&wrists_inward(1.2), 0.0).expect("query"));
 }
 
 #[test]
@@ -364,10 +332,10 @@ fn non_finite_configurations_are_rejected() {
     let mut m = model();
     let mut bad = HOME;
     bad[3] = f64::NAN;
-    assert!(m.min_distance(&bad, &HOME).is_err());
-    assert!(m.min_distance(&HOME, &bad).is_err());
+    assert!(m.min_distance(&[bad, HOME]).is_err());
+    assert!(m.min_distance(&[HOME, bad]).is_err());
     bad[3] = f64::INFINITY;
-    assert!(m.in_collision(&HOME, &bad, 0.0).is_err());
+    assert!(m.in_collision(&[HOME, bad], 0.0).is_err());
 }
 
 /// A conservative lower bound on the distance from `p` to a placed piece's
@@ -400,7 +368,7 @@ fn old_box_phantom_volumes_are_outside_the_torso_pieces() {
         (Point3::new(0.05, 0.05, 0.022), 0.003),
     ];
     let mut m = model();
-    let pieces = m.world_pieces(&HOME, &HOME).expect("pieces");
+    let pieces = m.world_pieces(&BOTH_HOME).expect("pieces");
     let torso: &Vec<Placed> = &pieces
         .iter()
         .find(|(name, _)| *name == openarm::VERSION.torso_body())
@@ -432,7 +400,7 @@ fn fit_cost_report() {
     let build = build_start.elapsed();
 
     let mut rows: Vec<(String, usize, usize, f64)> = m
-        .world_pieces(&HOME, &HOME)
+        .world_pieces(&BOTH_HOME)
         .expect("pieces")
         .into_iter()
         .map(|(name, ps)| {
@@ -461,24 +429,24 @@ fn fit_cost_report() {
     // HOME first, at the openings the model defaults to, so the clearance
     // printed here is the same quantity `rest_pose_clearance_is_stable` pins and
     // can be read straight into its constant.
-    let rest_clearance = m.min_distance(&HOME, &HOME).expect("query").distance;
+    let rest_clearance = m.min_distance(&BOTH_HOME).expect("query").distance;
     let rest = std::time::Instant::now();
     for _ in 0..ITERATIONS {
-        acc += m.min_distance(&HOME, &HOME).expect("query").distance;
+        acc += m.min_distance(&BOTH_HOME).expect("query").distance;
     }
     let per_rest = rest.elapsed().as_secs_f64() / ITERATIONS as f64;
 
     // An in-band pose with the jaws closed, the regime the governor actually
     // queries in. This overrides the openings, so it runs last.
-    let (ql, qr) = (
+    let q = [
         [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
         [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
-    );
-    m.set_gripper_openings(0.0, 0.0);
-    let d = m.min_distance(&ql, &qr).expect("query").distance;
+    ];
+    m.set_gripper_openings(&[0.0, 0.0]);
+    let d = m.min_distance(&q).expect("query").distance;
     let start = std::time::Instant::now();
     for _ in 0..ITERATIONS {
-        acc += m.min_distance(&ql, &qr).expect("query").distance;
+        acc += m.min_distance(&q).expect("query").distance;
     }
     let per_query = start.elapsed().as_secs_f64() / ITERATIONS as f64;
     assert!(acc.is_finite());
@@ -496,13 +464,13 @@ fn fit_cost_report() {
 #[test]
 fn query_stays_inside_the_control_tick() {
     let mut m = model();
-    let configs: Vec<(JointVec, JointVec)> =
+    let configs: Vec<Joints<ARM_DOF, 2>> =
         (0..200).map(|i| wrists_inward(i as f64 * 0.005)).collect();
 
     let start = std::time::Instant::now();
     let mut acc = 0.0;
-    for (ql, qr) in &configs {
-        acc += m.min_distance(ql, qr).expect("query").distance;
+    for q in &configs {
+        acc += m.min_distance(q).expect("query").distance;
     }
     let per_query = start.elapsed().as_secs_f64() / configs.len() as f64;
     assert!(acc.is_finite());

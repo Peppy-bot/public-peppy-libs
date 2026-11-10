@@ -1,8 +1,8 @@
 //! The scenes of the ROS reference harness's arm planning scenarios as this crate plans
 //! them: the arms, the parts their links carry, the robot around them that their plans do
-//! not move, with OpenArm v2's self model where a scenario plans both arms, each scene's
-//! map, its planning scene of objects and of the objects the robot's grasp links hold,
-//! with its allowed pairs, and its plan. The example `plan_arm_scenes` and the parity
+//! not move, OpenArm v2 or SO-101, with its self model where a scenario plans every chain
+//! of the robot, each scene's map, its planning scene of objects and of the objects the
+//! robot's grasp links hold, with its allowed pairs, and its plan. The example `plan_arm_scenes` and the parity
 //! test share them, so the paths, the checked pairs and the probe spacing each scenario
 //! carries are the ones the test plans. The planning scene parity test shares the reading
 //! of a harness object as an entry of apply_collision_objects, and the Cartesian paths
@@ -28,14 +28,15 @@ use motion_planning_core::{
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
-use openarm_description::{ARM_DOF, ArmOrder, ArmPair, DUAL_DOF, HardwareVersion, Side};
+use openarm_description::{ARM_DOF, ARMS, DUAL_DOF, HardwareVersion, Side};
 use ros_reference::arm_planning::{
     ArmChain, Held, HeldOrientation, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes,
     Termination, VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
-use self_collision_model::{CollisionError, Proximity, SelfCollisionModel};
+use self_collision_model::{CollisionError, Joints, Proximity, SelfCollisionModel};
 
+/// The joints of an arm of OpenArm v2, which the scenarios that name no other robot plan.
 pub const JOINTS: usize = ARM_DOF;
 /// The fewest scenes of a drawn set whose statistics a parity test compares: where the
 /// normal approximation of the arm planning test's intervals holds.
@@ -45,24 +46,35 @@ pub const MIN_SCENES: usize = 30;
 const LAUNCH_GOAL_SAMPLES: usize = 10;
 /// The share of a voxel a link point moves at most between two probes of a path.
 const PROBE_SHARE_OF_VOXEL: f64 = 0.1;
-/// The frame of OpenArm's URDF root, in which the scenes' boxes stand.
+/// The name of the frame of a scene's map, in which its boxes stand.
 const ROOT_FRAME: &str = "world";
 /// The range of the scan that fills a scene's map, from the root: beyond every voxel of
 /// the map.
 const MAX_RANGE_M: f64 = 10.0;
-/// Where an arm of no chain of a scenario stands: at its zero configuration, as MoveIt's
-/// default state holds it.
-const AT_ZERO: ArmPair<[f64; JOINTS]> = ArmPair {
-    left: [0.0; JOINTS],
-    right: [0.0; JOINTS],
-};
-/// The opening of the self model's grippers: closed, where OpenArm v2's finger joints
+/// The opening of OpenArm v2's grippers in its self model: closed, where its finger joints
 /// stand at 0, as MoveIt's default state holds them.
 const FINGERS_CLOSED: f64 = 0.0;
 
+/// What runs at the joints of a scenario's arms, `N` an arm's and `D` those of them all.
+pub trait AtItsJoints {
+    type Output;
+    fn run<const N: usize, const D: usize>(self) -> Self::Output;
+}
+
+/// `at` at the joints of the arms of `chains`.
+pub fn at_its_joints<A: AtItsJoints>(chains: &[ArmChain], at: A) -> A::Output {
+    match chains[0].joints.len() {
+        JOINTS => at.run::<JOINTS, DUAL_DOF>(),
+        so101_description::ARM_DOF => {
+            at.run::<{ so101_description::ARM_DOF }, { so101_description::ARM_DOF }>()
+        }
+        count => panic!("a scenario plans arms of 7 or 5 joints, and this one names {count}"),
+    }
+}
+
 /// The collision pieces of the arm of `chain`, from the URDF text `urdf`, whose meshes
 /// lie in `meshes`.
-pub fn geometry(chain: &ArmChain, urdf: &str, meshes: &Path) -> ChainGeometry<JOINTS> {
+pub fn geometry<const N: usize>(chain: &ArmChain, urdf: &str, meshes: &Path) -> ChainGeometry<N> {
     let joints: Vec<&str> = chain.joints.iter().map(String::as_str).collect();
     ChainGeometry::from_urdf(
         urdf,
@@ -80,18 +92,18 @@ pub fn geometry(chain: &ArmChain, urdf: &str, meshes: &Path) -> ChainGeometry<JO
 /// `meshes`, in their order: each arm by its chain's name, with the parts its links carry,
 /// its gripper's fingers closed, as MoveIt's default state holds them; and the robot around
 /// them.
-pub fn on_the_arms<R>(
+pub fn on_the_arms<const N: usize, R>(
     chains: &[ArmChain],
     urdf: &str,
     meshes: &Path,
-    with: impl FnOnce(&[Arm<JOINTS>], &mut Standing) -> R,
+    with: impl FnOnce(&[Arm<N>], &mut Standing) -> R,
 ) -> R {
-    let geometries: Vec<ChainGeometry<JOINTS>> = chains
+    let geometries: Vec<ChainGeometry<N>> = chains
         .iter()
         .map(|chain| geometry(chain, urdf, meshes))
         .collect();
     let riders: Vec<Vec<Rider>> = geometries.iter().map(parts).collect();
-    let arms: Vec<Arm<JOINTS>> = chains
+    let arms: Vec<Arm<N>> = chains
         .iter()
         .zip(&geometries)
         .zip(&riders)
@@ -106,103 +118,98 @@ pub fn on_the_arms<R>(
 }
 
 /// Each arm's goal sampler, of the arms `arms`.
-pub fn samplers(arms: &[Arm<JOINTS>]) -> Vec<IkGoalSampler<JOINTS>> {
+pub fn samplers<const N: usize>(arms: &[Arm<N>]) -> Vec<IkGoalSampler<N>> {
     arms.iter()
         .map(|arm| IkGoalSampler::new(arm.geometry().chain().clone()))
         .collect()
 }
 
-/// The robot around the scenario's arms, which their plans do not move: OpenArm v2's self
-/// model, whose bodies off the arms stand as the parts of the robot a plan meets, an arm
-/// of no chain at its zero configuration; where the scenario plans both arms, the self
-/// model of their plans; and the URDF, whose chain to the grasp link of an arm of no chain
-/// places the objects that link holds.
-pub struct Standing {
-    model: SelfCollisionModel,
-    own_body: Option<OwnBody>,
-    order: ArmOrder,
-    urdf: String,
-    meshes: String,
+/// The robot around the scenario's arms, which their plans do not move: OpenArm v2 or
+/// SO-101, whichever robot's chains the scenario's chains are.
+pub enum Standing {
+    OpenArm(Box<StandingRobot<JOINTS, ARMS>>),
+    So101(Box<StandingRobot<{ so101_description::ARM_DOF }, 1>>),
 }
 
 impl Standing {
-    /// The robot around the arms of `chains`, each one of OpenArm v2's arms from its base
-    /// link to its grasp link, by its name.
-    fn new(urdf: &str, meshes: &Path, chains: &[ArmChain]) -> Self {
+    /// The robot around the arms of `chains`, from the URDF text `urdf` whose meshes lie in
+    /// `meshes`.
+    pub fn new(urdf: &str, meshes: &Path, chains: &[ArmChain]) -> Self {
+        let meshes = meshes.to_str().expect("a UTF-8 mesh directory");
         let version = HardwareVersion::V2;
-        let names: Vec<&str> = chains.iter().map(|chain| chain.name.as_str()).collect();
-        let order = ArmOrder::parse(&names)
-            .unwrap_or_else(|refusal| panic!("the scenario's chains: {refusal}"));
-        for (chain, side) in chains.iter().zip(order.sides()) {
-            assert_eq!(
-                [chain.base_link.as_str(), chain.tip_link.as_str()],
-                [version.base_link(*side), version.tcp_link(*side)],
-                "the chain {} runs from its arm's base link to its grasp link",
-                chain.name
+        let openarm_ends = Side::BOTH.map(|side| [version.base_link(side), version.tcp_link(side)]);
+        if let Some(planned) = planned_chains(chains, &openarm_ends) {
+            assert!(
+                urdf == version.urdf(),
+                "the scenario of OpenArm v2's chains names OpenArm v2's URDF"
             );
+            let model = self_collision_model::openarm(version, meshes)
+                .expect("the self model of OpenArm v2");
+            return Self::OpenArm(Box::new(StandingRobot::new(
+                model,
+                openarm_ends,
+                planned,
+                FINGERS_CLOSED,
+                urdf,
+                meshes,
+            )));
         }
-        let meshes = meshes.to_str().expect("a UTF-8 mesh directory").to_string();
-        let model =
-            self_collision_model::openarm(version, &meshes).expect("the self model of OpenArm v2");
-        let own_body = (chains.len() > 1).then(|| OwnBody::new(&model, &order));
-        Self {
+        let so101_ends = [[so101_description::BASE_LINK, so101_description::TCP_LINK]];
+        let planned = planned_chains(chains, &so101_ends).unwrap_or_else(|| {
+            panic!(
+                "the scenario's chains are chains of OpenArm v2 or of SO-101, each from its \
+                 base link to its grasp link"
+            )
+        });
+        assert!(
+            urdf == so101_description::URDF,
+            "the scenario of SO-101's chain names SO-101's URDF"
+        );
+        let model = self_collision_model::so101(meshes).expect("the self model of SO-101");
+        Self::So101(Box::new(StandingRobot::new(
             model,
-            own_body,
-            order,
-            urdf: urdf.to_string(),
+            so101_ends,
+            planned,
+            // The jaw where its joint stands at 0, as MoveIt's default state holds it.
+            so101_description::jaw_opening(0.0),
+            urdf,
             meshes,
+        )))
+    }
+
+    /// The pairs of the robot's own links the scenario's plans check.
+    pub fn checked_pairs(&self) -> Vec<[String; 2]> {
+        match self {
+            Self::OpenArm(robot) => robot.checked_pairs(),
+            Self::So101(robot) => robot.checked_pairs(),
         }
     }
 
-    /// The pairs of the robot's own links the scenario's plans check: the self model's
-    /// where it plans both arms, none where it plans one arm, which this crate plans
-    /// without the self model.
-    pub fn checked_pairs(&self) -> Vec<[String; 2]> {
-        self.own_body
-            .as_ref()
-            .map_or_else(Vec::new, OwnBody::checked_pairs)
-    }
-
-    /// The least distance between the robot's own bodies, of the pairs the self model of a
-    /// plan of both arms checks, the arms at `state`, which holds their joints in their
+    /// The least distance between the robot's own bodies, of the pairs a plan of every
+    /// chain of the robot checks, the arms at `state`, which holds their joints in their
     /// order.
     pub fn self_clearance(&self, state: &[f64]) -> f64 {
-        self.own_body
-            .as_ref()
-            .expect("the scenario plans both arms")
-            .clearance(state, Moving::All)
+        match self {
+            Self::OpenArm(robot) => robot.self_clearance(state),
+            Self::So101(robot) => robot.self_clearance(state),
+        }
     }
 
     /// The pose of `link`, the grasp link of an arm of no chain of the scenario, at that
     /// arm's zero configuration.
     fn idle_grasp_pose(&self, link: &str) -> Isometry3<f64> {
-        assert!(
-            Side::BOTH.into_iter().any(|side| {
-                !self.order.sides().contains(&side) && HardwareVersion::V2.tcp_link(side) == link
-            }),
-            "{link} is the grasp link of an arm of no chain of the scenario"
-        );
-        ChainGeometry::<JOINTS>::from_urdf(
-            &self.urdf,
-            &self.meshes,
-            &ChainSpec {
-                base_link: None,
-                tip_link: link,
-                joints: JointSelection::PathOrder,
-            },
-        )
-        .expect("the arm's chain")
-        .chain()
-        .world_ee_pose(&AT_ZERO.left)
+        match self {
+            Self::OpenArm(robot) => robot.idle_grasp_pose(link),
+            Self::So101(robot) => robot.idle_grasp_pose(link),
+        }
     }
 
     /// What a plan of `arms` from `start`, which holds their joints in their order, meets
-    /// of the robot: the pieces of its bodies that the arms do not move, an arm of no chain
-    /// at its zero configuration, each body but the arms' links and the parts they carry;
-    /// and the self model of the plan where the scenario plans both arms.
-    pub fn around<'s, const D: usize>(
+    /// of the robot: the pieces of its bodies that the arms do not move; and the self model
+    /// of the plan where the scenario plans every chain of the robot.
+    pub fn around<'s, const N: usize, const D: usize>(
         &'s mut self,
-        arms: &[Arm<JOINTS>],
+        arms: &[Arm<N>],
         start: &[f64; D],
     ) -> (Vec<RobotPart<'s>>, Option<&'s dyn SelfModel<D>>) {
         let moving: BTreeSet<&str> = arms
@@ -216,10 +223,138 @@ impl Standing {
                     .chain(geometry.carried().iter().map(|part| part.rider().name))
             })
             .collect();
-        let at = self.order.placed(start, &AT_ZERO);
+        match self {
+            Self::OpenArm(robot) => robot.around(&moving, start),
+            Self::So101(robot) => robot.around(&moving, start),
+        }
+    }
+}
+
+/// The chain of the robot whose base and tip links `ends` holds, in its self model's
+/// order, of each of `chains`, in their order; none where a chain is no chain of the robot.
+fn planned_chains<const K: usize>(
+    chains: &[ArmChain],
+    ends: &[[&str; 2]; K],
+) -> Option<Vec<usize>> {
+    chains
+        .iter()
+        .map(|chain| {
+            ends.iter()
+                .position(|[base, tip]| chain.base_link == *base && chain.tip_link == *tip)
+        })
+        .collect()
+}
+
+/// Every chain of a robot of `K` chains of `N` joints at its zero configuration, but those
+/// of `planned`, the chain of each arm of a scenario in its order, at their joints of
+/// `state`, which holds the arms' joints in turn.
+fn placed<const N: usize, const K: usize>(planned: &[usize], state: &[f64]) -> Joints<N, K> {
+    std::array::from_fn(|chain| {
+        planned
+            .iter()
+            .position(|of| *of == chain)
+            .map_or([0.0; N], |k| {
+                state[k * N..(k + 1) * N]
+                    .try_into()
+                    .expect("a state holds the joints of each arm")
+            })
+    })
+}
+
+/// A robot of `K` chains of `N` joints around the scenario's arms: its self model, whose
+/// bodies off the arms stand as the parts of the robot a plan meets, a chain of no arm at
+/// its zero configuration; where the scenario plans every chain, the self model of its
+/// plans; and the URDF, whose chain to the grasp link of a chain of no arm places the
+/// objects that link holds.
+pub struct StandingRobot<const N: usize, const K: usize> {
+    model: SelfCollisionModel<N, K>,
+    /// The base and grasp links of each chain, in the self model's order.
+    ends: [[&'static str; 2]; K],
+    /// The chain of each arm of the scenario, in its order.
+    planned: Vec<usize>,
+    own_body: Option<OwnBody<N, K>>,
+    urdf: String,
+    meshes: String,
+}
+
+impl<const N: usize, const K: usize> StandingRobot<N, K> {
+    /// The robot of `model`, whose chains run between the links of `ends`, around the arms
+    /// on its chains `planned`, its fingers at the opening `fingers`.
+    fn new(
+        model: SelfCollisionModel<N, K>,
+        ends: [[&'static str; 2]; K],
+        planned: Vec<usize>,
+        fingers: f64,
+        urdf: &str,
+        meshes: &str,
+    ) -> Self {
+        let own_body = (planned.len() == K).then(|| OwnBody::new(&model, &planned, fingers));
+        Self {
+            model,
+            ends,
+            planned,
+            own_body,
+            urdf: urdf.to_string(),
+            meshes: meshes.to_string(),
+        }
+    }
+
+    /// The pairs of the robot's own links the scenario's plans check: the self model's
+    /// where it plans every chain, none where it plans some, which this crate plans
+    /// without the self model.
+    fn checked_pairs(&self) -> Vec<[String; 2]> {
+        self.own_body
+            .as_ref()
+            .map_or_else(Vec::new, OwnBody::checked_pairs)
+    }
+
+    /// The least distance between the robot's own bodies, of the pairs the self model of a
+    /// plan of every chain checks, the arms at `state`, which holds their joints in their
+    /// order.
+    fn self_clearance(&self, state: &[f64]) -> f64 {
+        self.own_body
+            .as_ref()
+            .expect("the scenario plans every chain of the robot")
+            .clearance(state, Moving::All)
+    }
+
+    /// The pose of `link`, the grasp link of a chain of no arm of the scenario, at that
+    /// chain's zero configuration.
+    fn idle_grasp_pose(&self, link: &str) -> Isometry3<f64> {
+        assert!(
+            self.ends
+                .iter()
+                .enumerate()
+                .any(|(chain, [_, tip])| !self.planned.contains(&chain) && *tip == link),
+            "{link} is the grasp link of a chain of no arm of the scenario"
+        );
+        ChainGeometry::<N>::from_urdf(
+            &self.urdf,
+            &self.meshes,
+            &ChainSpec {
+                base_link: None,
+                tip_link: link,
+                joints: JointSelection::PathOrder,
+            },
+        )
+        .expect("the chain to the grasp link")
+        .chain()
+        .world_ee_pose(&[0.0; N])
+    }
+
+    /// What a plan from `start`, which holds the joints of its arms in their order, meets of
+    /// the robot: the pieces of its bodies that the arms do not move, a chain of no arm at
+    /// its zero configuration, each body but `moving`, the arms' links and the parts they
+    /// carry; and the self model of the plan where the scenario plans every chain.
+    fn around<'s, const D: usize>(
+        &'s mut self,
+        moving: &BTreeSet<&str>,
+        start: &[f64; D],
+    ) -> (Vec<RobotPart<'s>>, Option<&'s dyn SelfModel<D>>) {
+        let at = placed::<N, K>(&self.planned, start);
         let parts = self
             .model
-            .world_pieces(&at.left, &at.right)
+            .world_pieces(&at)
             .expect("finite joint positions")
             .into_iter()
             .filter(|(link, _)| !moving.contains(link))
@@ -237,22 +372,28 @@ impl Standing {
     }
 }
 
-/// OpenArm v2's self model as a plan of the arms of an order meets it: its checked pairs,
-/// each arm of the order at its joints of the state asked about, an arm of none at its
-/// zero configuration, and the grippers' fingers closed, as MoveIt's default state holds
-/// them.
-struct OwnBody {
-    model: Mutex<SelfCollisionModel>,
-    order: ArmOrder,
+/// A robot's self model as a plan of every chain of the robot meets it: its checked pairs,
+/// each chain at the joints of its arm of the state asked about, and the fingers at the
+/// opening at which MoveIt's default state holds them.
+struct OwnBody<const N: usize, const K: usize> {
+    model: Mutex<SelfCollisionModel<N, K>>,
+    /// The chain of each arm of the plan, in its order.
+    planned: Vec<usize>,
 }
 
-impl OwnBody {
-    fn new(model: &SelfCollisionModel, order: &ArmOrder) -> Self {
+impl<const N: usize, const K: usize> OwnBody<N, K> {
+    fn new(model: &SelfCollisionModel<N, K>, planned: &[usize], fingers: f64) -> Self {
+        const {
+            assert!(
+                K <= 2,
+                "a turn of one arm reads the last arm's pairs, and the first's of two"
+            )
+        };
         let mut model = model.clone();
-        model.set_gripper_openings(FINGERS_CLOSED, FINGERS_CLOSED);
+        model.set_gripper_openings(&[fingers; K]);
         Self {
             model: Mutex::new(model),
-            order: order.clone(),
+            planned: planned.to_vec(),
         }
     }
 
@@ -266,24 +407,26 @@ impl OwnBody {
             .collect()
     }
 
-    /// Runs `read` on the nearest checked pair that `moving` judges, the arms of the order
-    /// at the state `q`: an arm the order holds last reads its pairs with the other arm,
-    /// and one before it its pairs without it.
+    /// Runs `read` on the nearest checked pair that `moving` judges, the arms of the plan
+    /// at the state `q`: the arm the plan holds last reads its pairs with every chain, and
+    /// the first of two its pairs without the other.
     fn nearest<T>(
         &self,
         q: &[f64],
         moving: Moving,
         read: impl FnOnce(Result<Proximity<'_>, CollisionError>) -> T,
     ) -> T {
-        let at = self.order.placed(q, &AT_ZERO);
-        let sides = self.order.sides();
+        let at = placed::<N, K>(&self.planned, q);
+        let last = self.planned.len() - 1;
         let mut model = self.model.lock().expect("the self model");
         read(match moving {
-            Moving::All => model.min_distance(&at.left, &at.right),
-            Moving::Arm(k) if k + 1 == sides.len() => {
-                model.min_distance_of_arm(sides[k], &at.left, &at.right)
-            }
-            Moving::Arm(k) => model.min_distance_of_arm_alone(sides[k], &at.left, &at.right),
+            Moving::All => model.min_distance(&at),
+            Moving::Arm(k) if k == last => model.min_distance_of_chain(self.planned[k], &at),
+            Moving::Arm(0) if last == 1 => model.min_distance_of_chain_alone(self.planned[0], &at),
+            Moving::Arm(k) => panic!(
+                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
+                last + 1
+            ),
         })
     }
 
@@ -296,7 +439,7 @@ impl OwnBody {
     }
 }
 
-impl<const D: usize> SelfModel<D> for OwnBody {
+impl<const N: usize, const K: usize, const D: usize> SelfModel<D> for OwnBody<N, K> {
     fn clearance(&self, q: &[f64; D], moving: Moving) -> f64 {
         OwnBody::clearance(self, q, moving)
     }
@@ -314,7 +457,7 @@ impl<const D: usize> SelfModel<D> for OwnBody {
 const LINE_STATES: usize = 101;
 
 /// The least distance between the robot's own bodies, as `standing`'s self model of a plan
-/// of both arms measures it, at [`LINE_STATES`] states evenly spaced along the straight
+/// of every chain measures it, at [`LINE_STATES`] states evenly spaced along the straight
 /// joint line from `start` to `goal`.
 pub fn least_self_clearance_along(standing: &Standing, start: &[f64], goal: &[f64]) -> f64 {
     (0..LINE_STATES)
@@ -331,7 +474,7 @@ pub fn least_self_clearance_along(standing: &Standing, start: &[f64], goal: &[f6
 }
 
 /// The parts the links of `geometry`'s chain carry, as riders.
-fn parts(geometry: &ChainGeometry<JOINTS>) -> Vec<Rider<'_>> {
+fn parts<const N: usize>(geometry: &ChainGeometry<N>) -> Vec<Rider<'_>> {
     geometry.carried().iter().map(CarriedPart::rider).collect()
 }
 
@@ -388,8 +531,8 @@ pub struct SceneParts<'a> {
 /// objects; each object it attaches to a grasp link, at its pose in the link's frame, the
 /// link where `grasp_pose` puts it with the arms at the scene's start; and its allowed
 /// pairs. The tip links of `arms` are `tips`.
-fn planning_scene_of(
-    arms: &[Arm<JOINTS>],
+fn planning_scene_of<const N: usize>(
+    arms: &[Arm<N>],
     tips: &[&str],
     scene: &SceneParts,
     grasp_pose: &dyn Fn(&str) -> Isometry3<f64>,
@@ -503,10 +646,10 @@ pub fn boxes_of(map: &VoxelMap) -> Vec<VoxelBox> {
 /// The joints' L2 distance between two probes of a path at which no point of the links of
 /// `arms`, the scenario's arms in its order, or of their riders moves more than
 /// [`PROBE_SHARE_OF_VOXEL`] of a voxel: the reference probes every path at it.
-pub fn probe_spacing(arms: &[Arm<JOINTS>], scenes: &Scenes) -> f64 {
+pub fn probe_spacing<const N: usize, const D: usize>(arms: &[Arm<N>], scenes: &Scenes) -> f64 {
     let lever = match arms.len() {
-        1 => Arms::<JOINTS, JOINTS>::new(arms.to_vec(), None).lever(),
-        2 => Arms::<JOINTS, DUAL_DOF>::new(arms.to_vec(), None).lever(),
+        1 => Arms::<N, N>::new(arms.to_vec(), None).lever(),
+        2 => Arms::<N, D>::new(arms.to_vec(), None).lever(),
         count => arms_unplanned(count),
     };
     scenes.voxel_size * PROBE_SHARE_OF_VOXEL / lever
@@ -528,25 +671,25 @@ pub fn state<const D: usize>(values: &[f64]) -> [f64; D] {
 pub fn joint_goal(goal: &SceneGoal) -> Option<&[f64]> {
     match goal {
         SceneGoal::Joints(q) => Some(q),
-        SceneGoal::Poses(_) => None,
+        SceneGoal::Poses(_) | SceneGoal::Positions(_) => None,
     }
 }
 
 /// Each arm's goal of `goal`, for the arms of a group of D joints in their order: each
 /// joint within the scenes' goal tolerance of the arm's configuration in it, or its grasp
-/// point within the tolerances of its pose of them.
-fn goals_of<const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
+/// point within the tolerances of its pose or its position of them.
+fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
     match goal {
         SceneGoal::Joints(q) => {
             let goal_state: [f64; D] = state(q);
             let tolerance =
                 PositiveFinite::parse(scenes.goal_tolerance).expect("the scenes' goal tolerance");
-            (0..D / JOINTS)
+            (0..D / N)
                 .map(|k| {
-                    let goal_q = Arms::<JOINTS, D>::slice(&goal_state, k);
+                    let goal_q = Arms::<N, D>::slice(&goal_state, k);
                     Goal::new(
-                        JOINTS,
-                        (0..JOINTS)
+                        N,
+                        (0..N)
                             .map(|joint| JointTarget {
                                 joint,
                                 position: goal_q[joint],
@@ -562,14 +705,14 @@ fn goals_of<const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
                 .collect()
         }
         SceneGoal::Poses(poses) => {
-            assert_eq!(poses.len() * JOINTS, D, "a pose of each arm's grasp point");
+            assert_eq!(poses.len() * N, D, "a pose of each arm's grasp point");
             poses
                 .iter()
                 .map(|pose| {
                     let placed = pose_from_parts(pose.position, pose.orientation)
                         .expect("a pose goal's pose");
                     Goal::new(
-                        JOINTS,
+                        N,
                         Vec::new(),
                         vec![PositionTarget {
                             frame: motion_planning_core::Frame::GraspPoint,
@@ -589,22 +732,46 @@ fn goals_of<const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
                 })
                 .collect()
         }
+        SceneGoal::Positions(positions) => {
+            assert_eq!(
+                positions.len() * N,
+                D,
+                "a position of each arm's grasp point"
+            );
+            positions
+                .iter()
+                .map(|goal| {
+                    Goal::new(
+                        N,
+                        Vec::new(),
+                        vec![PositionTarget {
+                            frame: motion_planning_core::Frame::GraspPoint,
+                            position: goal.position.into(),
+                            tolerance_m: PositiveFinite::parse(goal.position_tolerance)
+                                .expect("a position goal's tolerance"),
+                        }],
+                        Vec::new(),
+                    )
+                    .expect("a valid goal")
+                })
+                .collect()
+        }
     }
 }
 
 /// What a plan holds of `held`, an orientation of a link of the chains `chains` with their
 /// arms `arms`: of the grasp point for a chain's tip link, and of the link of a joint for any
 /// other.
-fn path_orientation<'a>(
+fn path_orientation<'a, const N: usize>(
     held: &'a HeldOrientation,
     chains: &[ArmChain],
-    arms: &[Arm<JOINTS>],
+    arms: &[Arm<N>],
 ) -> PathOrientation<'a> {
     let frame = if held.link_name == chains[held.chain].tip_link {
         motion_planning_core::Frame::GraspPoint
     } else {
-        let posed = arms[held.chain].geometry().chain().at(&[0.0; JOINTS]);
-        let segment = (0..JOINTS)
+        let posed = arms[held.chain].geometry().chain().at(&[0.0; N]);
+        let segment = (0..N)
             .find(|&segment| posed.link_name(segment) == held.link_name)
             .unwrap_or_else(|| panic!("{} is a link of its chain", held.link_name));
         motion_planning_core::Frame::Link {
@@ -652,16 +819,16 @@ pub struct Planned {
 
 /// This crate's answer to `scene` by `arms`, the scenario's arms in its order, as one
 /// group, each drawing its goal configurations by its sampler of `samplers`.
-pub fn plan_scene<O>(
-    arms: &[Arm<JOINTS>],
+pub fn plan_scene<const N: usize, const D: usize, O>(
+    arms: &[Arm<N>],
     standing: &mut Standing,
-    samplers: &[IkGoalSampler<JOINTS>],
+    samplers: &[IkGoalSampler<N>],
     scenes: &Scenes,
     scene: &ReferenceScene<O>,
 ) -> Planned {
     match arms.len() {
-        1 => plan_group::<JOINTS, O>(arms, standing, samplers, scenes, scene),
-        2 => plan_group::<DUAL_DOF, O>(arms, standing, samplers, scenes, scene),
+        1 => plan_group::<N, N, O>(arms, standing, samplers, scenes, scene),
+        2 => plan_group::<N, D, O>(arms, standing, samplers, scenes, scene),
         count => arms_unplanned(count),
     }
 }
@@ -669,15 +836,15 @@ pub fn plan_scene<O>(
 /// `with` run on the group of `arms`, the arms of `chains`, D the joints of them all, and
 /// on the scene they meet from `start`: among the voxels the boxes of `scene` occupy, its
 /// objects and the parts of `standing` the arms do not move, holding the objects it attaches,
-/// with `standing`'s self model where the scenario plans both arms: each arm's parts ride its
-/// links, and the objects its grasp link holds its tip link.
-pub fn in_the_scene<const D: usize, R>(
-    arms: &[Arm<JOINTS>],
+/// with `standing`'s self model where the scenario plans every chain of the robot: each
+/// arm's parts ride its links, and the objects its grasp link holds its tip link.
+pub fn in_the_scene<const N: usize, const D: usize, R>(
+    arms: &[Arm<N>],
     standing: &mut Standing,
     chains: &[ArmChain],
     scene: &SceneParts,
     start: &[f64; D],
-    with: impl FnOnce(&Arms<JOINTS, D>, &Scene<'_>) -> R,
+    with: impl FnOnce(&Arms<N, D>, &Scene<'_>) -> R,
 ) -> R {
     let mut map = map_of(scene.voxel_size, scene.map_half_side, scene.boxes);
     let tips: Vec<&str> = chains.iter().map(|chain| chain.tip_link.as_str()).collect();
@@ -685,7 +852,7 @@ pub fn in_the_scene<const D: usize, R>(
         Some(k) => arms[k]
             .geometry()
             .chain()
-            .world_ee_pose(&Arms::<JOINTS, D>::slice(start, k)),
+            .world_ee_pose(&Arms::<N, D>::slice(start, k)),
         None => standing.idle_grasp_pose(link),
     };
     let planning = planning_scene_of(arms, &tips, scene, &grasp_pose, &mut map);
@@ -702,7 +869,7 @@ pub fn in_the_scene<const D: usize, R>(
                 .collect()
         })
         .collect();
-    let group = Arms::<JOINTS, D>::new(
+    let group = Arms::<N, D>::new(
         arms.iter()
             .zip(&riders)
             .map(|(arm, riders)| {
@@ -734,10 +901,10 @@ pub fn start_fault_name(fault: &StartFault) -> &'static str {
 
 /// This crate's answer to `scene` by the group of `arms`, D the joints of them all, in the
 /// scene `in_the_scene` holds.
-fn plan_group<const D: usize, O>(
-    arms: &[Arm<JOINTS>],
+fn plan_group<const N: usize, const D: usize, O>(
+    arms: &[Arm<N>],
     standing: &mut Standing,
-    samplers: &[IkGoalSampler<JOINTS>],
+    samplers: &[IkGoalSampler<N>],
     scenes: &Scenes,
     scene: &ReferenceScene<O>,
 ) -> Planned {
@@ -757,7 +924,7 @@ fn plan_group<const D: usize, O>(
         &world,
         &start,
         |group, met| {
-            let goals = goals_of::<D>(scenes, &scene.goal);
+            let goals = goals_of::<N, D>(scenes, &scene.goal);
             let orientations: Vec<PathOrientation> = scene
                 .path_orientations
                 .iter()

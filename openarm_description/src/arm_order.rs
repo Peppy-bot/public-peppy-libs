@@ -12,34 +12,10 @@ impl ArmOrder {
     /// of this robot's arm names, none named twice. A refusal names what is
     /// wrong in the words of the field.
     pub fn parse(arm_names: &[&str]) -> Result<Self, String> {
-        if arm_names.is_empty() {
-            return Err(format!(
-                "arms holds no arm: name one or more of {}",
-                robot_arms()
-            ));
-        }
-        let sides = arm_names
-            .iter()
-            .map(|name| {
-                Side::from_arm_name(name).map_err(|_| {
-                    format!(
-                        "arms names \"{name}\", no arm of this robot: its arms are {}",
-                        robot_arms()
-                    )
-                })
-            })
-            .collect::<Result<Vec<Side>, String>>()?;
-        if let Some(twice) = sides
-            .iter()
-            .enumerate()
-            .find_map(|(k, side)| sides[..k].contains(side).then_some(side))
-        {
-            return Err(format!(
-                "arms names \"{}\" twice: name each arm once",
-                twice.arm_name()
-            ));
-        }
-        Ok(Self(sides))
+        let places = places_in_order(arm_names, &Side::BOTH.map(Side::arm_name))?;
+        Ok(Self(
+            places.into_iter().map(|place| Side::BOTH[place]).collect(),
+        ))
     }
 
     /// The arms, in the request's order.
@@ -61,21 +37,13 @@ impl ArmOrder {
     /// When `counts` does not hold one count for each arm of this order.
     pub fn waypoint_count(&self, counts: &[usize]) -> Result<usize, String> {
         assert_eq!(counts.len(), self.0.len(), "one count for each arm");
-        let first = self.0[0].arm_name();
-        let count = counts[0];
-        if count == 0 {
-            return Err(format!(
-                "{first} holds no waypoint: a joint path passes through one or more"
-            ));
-        }
-        match self.0.iter().zip(counts).find(|(_, held)| **held != count) {
-            Some((side, held)) => Err(format!(
-                "{} holds {held} waypoints, where {first} holds {count}: every arm passes \
-                 through as many",
-                side.arm_name()
-            )),
-            None => Ok(count),
-        }
+        let named: Vec<(&str, usize)> = self
+            .0
+            .iter()
+            .map(|side| side.arm_name())
+            .zip(counts.iter().copied())
+            .collect();
+        common_waypoint_count(&named)
     }
 
     /// Each arm of this order with its joints in `array`, an array in this
@@ -110,10 +78,75 @@ impl ArmOrder {
     }
 }
 
-/// This robot's arm names, quoted, as a refusal lists them.
-fn robot_arms() -> String {
-    Side::BOTH
-        .map(|side| format!("\"{}\"", side.arm_name()))
+/// The place in `robot_arms` of each arm a request's `arm_names` name, in their order: one
+/// or more of the robot's arm names, none named twice. A refusal names what is wrong in the
+/// words of the field.
+pub fn places_in_order(arm_names: &[&str], robot_arms: &[&str]) -> Result<Vec<usize>, String> {
+    if arm_names.is_empty() {
+        return Err(format!(
+            "arms holds no arm: name one or more of {}",
+            listed(robot_arms)
+        ));
+    }
+    let places = arm_names
+        .iter()
+        .map(|name| {
+            robot_arms
+                .iter()
+                .position(|arm| arm == name)
+                .ok_or_else(|| no_such_arm("arms", name, robot_arms))
+        })
+        .collect::<Result<Vec<usize>, String>>()?;
+    match (0..places.len()).find(|&k| places[..k].contains(&places[k])) {
+        Some(twice) => Err(format!(
+            "arms names \"{}\" twice: name each arm once",
+            arm_names[twice]
+        )),
+        None => Ok(places),
+    }
+}
+
+/// The number of waypoints every arm holds, given each arm's name and count in a request's
+/// order: refused unless the first holds one or more and every other as many.
+///
+/// # Panics
+///
+/// When `counts` holds no arm.
+pub fn common_waypoint_count(counts: &[(&str, usize)]) -> Result<usize, String> {
+    let (first, count) = counts[0];
+    if count == 0 {
+        return Err(format!(
+            "{first} holds no waypoint: a joint path passes through one or more"
+        ));
+    }
+    match counts.iter().find(|(_, held)| *held != count) {
+        Some((arm, held)) => Err(format!(
+            "{arm} holds {held} waypoints, where {first} holds {count}: every arm passes \
+             through as many"
+        )),
+        None => Ok(count),
+    }
+}
+
+/// The refusal of `name`, an arm of `field` that a robot of the arms `robot_arms` does not
+/// have.
+pub fn no_such_arm(field: &str, name: &str, robot_arms: &[&str]) -> String {
+    let (its, are) = match robot_arms {
+        [_] => ("its arm", "is"),
+        _ => ("its arms", "are"),
+    };
+    format!(
+        "{field} names \"{name}\", no arm of this robot: {its} {are} {}",
+        listed(robot_arms)
+    )
+}
+
+/// A robot's arm names, quoted, as a refusal lists them.
+fn listed(robot_arms: &[&str]) -> String {
+    robot_arms
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
         .join(" and ")
 }
 
@@ -133,6 +166,15 @@ mod tests {
 
     fn order(arm_names: &[&str]) -> ArmOrder {
         ArmOrder::parse(arm_names).expect("the arms of this robot, each once")
+    }
+
+    #[test]
+    fn a_robot_of_one_arm_refuses_another_in_the_singular() {
+        assert_eq!(
+            places_in_order(&["elbow"], &["arm"]).unwrap_err(),
+            "arms names \"elbow\", no arm of this robot: its arm is \"arm\""
+        );
+        assert_eq!(places_in_order(&["arm"], &["arm"]).unwrap(), [0]);
     }
 
     /// The array in `order` of the arms at `joints`.
