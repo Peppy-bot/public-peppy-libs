@@ -55,14 +55,17 @@
 //!   whose first state lies on the straight line from the start to its end. Any other run
 //!   is walked by its spare from its first state, so one that leaves a state short of the
 //!   plan's clearance fails there.
-//! - The planner keeps every state of its paths but the start at the plan's clearances:
-//!   its check of a motion fails one whose first state, the start excepted, falls short
-//!   of them, and one from the start that ends before each term keeps them. OMPL's
-//!   simplifier keeps states it checks only as points of a checked motion, such as one
-//!   between two checked states, so a plan answers the simplified path when the path the
-//!   robot runs through it passes its check, and the planned path when only that one
-//!   passes. MoveIt checks the simplified path alone and answers INVALID_MOTION_PLAN
-//!   when it fails.
+//! - The planner's search checks a motion as OMPL's discrete motion check does, and
+//!   MoveIt's planners with it: at the states that divide the motion into stretches of
+//!   `VALID_SEGMENT_FRACTION` of the space's extent at most, by the sum of the joints'
+//!   changes, each keeping the plan's clearances (`sampled`). A plan from a start short
+//!   of them walks each motion as above, one from the start by the start rule (`walk`).
+//!   OMPL's simplifier walks each motion as above (`simplifier_motion`), so each shortcut
+//!   it keeps passes the walk of the plan's answer. The plan then walks the path the robot
+//!   runs through the simplified path, every run and arc of it, and answers it when that
+//!   passes its check, the planned path when only that one passes, and no path when
+//!   neither does. MoveIt checks the simplified path at its checked states alone and
+//!   answers INVALID_MOTION_PLAN when it fails.
 //! - Run from the plan's start, the path keeps the clearance asked of each term as these
 //!   say. Run from up to a tolerance from the start in each joint, as a robot's
 //!   controller allows, it comes nearer anything near its start by at most the sum over
@@ -147,6 +150,14 @@ const MIN_SPARE_M: f64 = 1e-3;
 /// bounding sphere bounds it.
 pub const MAX_STEP_M: f64 = 0.015;
 
+/// The share of the planning space's extent, the sum of its joints' ranges, that two
+/// checked states of a motion lie apart at most while the planner searches: OMPL's default
+/// `longestValidSegmentFraction` (StateSpace.cpp:93, :240), the resolution of its discrete
+/// motion check, which MoveIt's planning context keeps where the planner configuration sets
+/// no `longest_valid_segment_fraction` (model_based_planning_context.cpp:294-317), as the
+/// reference's sets none.
+const VALID_SEGMENT_FRACTION: f64 = 0.01;
+
 /// The shortest step of a motion from a start that falls short of its clearances.
 pub const MIN_DEPARTURE_STEP_M: f64 = 1e-4;
 
@@ -206,6 +217,16 @@ pub enum Refiner {
     /// CHOMP cost that passes the plan's checks when it costs less than the planner's path,
     /// and the planner's path otherwise.
     Chomp,
+}
+
+/// The iteration bound of a plan by `planner` that its deadline ends, from the caller's
+/// `bound`: none for RRT*, which shortens its path until the deadline, as MoveIt ends a
+/// plan on its time alone, and `bound` for every other planner.
+pub fn iteration_bound(planner: Planner, bound: NonZeroU64) -> NonZeroU64 {
+    match planner {
+        Planner::RrtStar => NonZeroU64::MAX,
+        _ => bound,
+    }
 }
 
 /// One plan of the path of the arms of a group, `N` joints each and `D` in all.
@@ -1340,6 +1361,9 @@ pub(crate) struct PathChecks<'a, const N: usize, const D: usize> {
     floor: [f64; TERMS],
     /// The orientations the path holds.
     orientations: PathOrientations<'a, N, D>,
+    /// The farthest apart, by the sum of the joints' changes, that the planner's search
+    /// checks two states of a motion.
+    longest_segment: f64,
 }
 
 impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
@@ -1367,6 +1391,8 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
             clearance,
             floor: std::array::from_fn(|term| floor_of(at_start[term], asked[term], MOVED[term])),
             orientations: PathOrientations::none(),
+            longest_segment: VALID_SEGMENT_FRACTION
+                * arms.limits().iter().map(|l| l.hi - l.lo).sum::<f64>(),
         }
     }
 
@@ -1403,6 +1429,29 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
             Ok(false) => Motion::Valid,
             Err(Break { last_valid, .. }) if !by_rule => Motion::Invalid { last_valid },
             Ok(true) | Err(_) => Motion::Invalid { last_valid: 0.0 },
+        }
+    }
+
+    /// The search's check of the motion from `from` to `to`, as OMPL's discrete motion
+    /// check makes it and MoveIt's planners with it: the states that divide the motion
+    /// into stretches of `longest_segment` at most, by the sum of the joints' changes, and
+    /// `to`, each keeping the plan's clearances, in their order; `from` is taken as
+    /// valid. The motion holds the path orientations as `walk` checks them.
+    fn sampled(&self, from: &[f64; D], to: &[f64; D]) -> Motion {
+        if self.walk_orientations(from, to).is_err() {
+            return Motion::Invalid { last_valid: 0.0 };
+        }
+        let summed: f64 = from.iter().zip(to).map(|(a, b)| (a - b).abs()).sum();
+        let stretches = (summed / self.longest_segment).ceil().max(1.0);
+        let short = (1..=stretches as usize).find(|&j| {
+            let state = toward(from, to, j as f64 / stretches);
+            !self.surroundings.clear(self.arms, &state)
+        });
+        match short {
+            None => Motion::Valid,
+            Some(j) => Motion::Invalid {
+                last_valid: (j - 1) as f64 / stretches,
+            },
         }
     }
 
@@ -1714,7 +1763,20 @@ impl<const N: usize, const D: usize> Checks for PathChecks<'_, N, D> {
     }
 
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
-        Ok(self.walk(from.try_into()?, to.try_into()?))
+        let (from, to) = (from.try_into()?, to.try_into()?);
+        // A plan from a start short of its clearances walks each motion, leaving the start
+        // by the start rule; any other plan checks a motion as MoveIt's planners check it.
+        Ok(if self.start_short.contains(&true) {
+            self.walk(from, to)
+        } else {
+            self.sampled(from, to)
+        })
+    }
+
+    fn simplifier_motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        let (from, to) = (from.try_into()?, to.try_into()?);
+        // Each shortcut the simplifier keeps passes the walk of the plan's answer.
+        Ok(self.walk(from, to))
     }
 }
 
@@ -2058,6 +2120,15 @@ pub(crate) mod tests {
         );
         assert_eq!(without_straight_waypoints::<2>(&[]), Vec::<[f64; 2]>::new());
         assert_eq!(without_straight_waypoints(&[[1.0, 2.0]]), [[1.0, 2.0]]);
+    }
+
+    // RRT* takes no iteration bound from its caller's bound, and every other planner takes
+    // the bound.
+    #[test]
+    fn rrt_star_alone_plans_with_no_iteration_bound() {
+        let bound = NonZeroU64::new(20_000).expect("nonzero");
+        assert_eq!(iteration_bound(Planner::RrtStar, bound), NonZeroU64::MAX);
+        assert_eq!(iteration_bound(Planner::RrtConnect, bound), bound);
     }
 
     const MIN_CLEARANCE_M: f64 = 0.02;
@@ -3217,6 +3288,177 @@ pub(crate) mod tests {
             "the answer does not go around the block: {around:?}"
         );
         assert_eq!(answer(&[]), [[0.0, 0.0], [0.4, 0.0]]);
+    }
+
+    /// A self model of the gantry: its pair stands as far apart as the cube stands along x
+    /// from a wall across x at `at`, `thickness` thick, or `at_origin` plus the cube's
+    /// distance from the origin where that is nearer. It records the x of each
+    /// configuration it reads.
+    struct WallAcrossX {
+        at: f64,
+        thickness: f64,
+        at_origin: f64,
+        read: std::sync::Mutex<Vec<f64>>,
+    }
+
+    impl WallAcrossX {
+        fn new(at: f64, thickness: f64, at_origin: f64) -> Self {
+            Self {
+                at,
+                thickness,
+                at_origin,
+                read: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The x of each configuration read since the last call, in their order.
+        fn taken(&self) -> Vec<f64> {
+            std::mem::take(&mut self.read.lock().expect("an unpoisoned record"))
+        }
+    }
+
+    impl SelfModel<2> for WallAcrossX {
+        fn clearance(&self, q: &[f64; 2], _: Moving, _: f64) -> f64 {
+            self.read.lock().expect("an unpoisoned record").push(q[0]);
+            let from_the_wall = (q[0] - self.at).abs() - self.thickness / 2.0;
+            from_the_wall.min(self.at_origin + q[0].hypot(q[1]))
+        }
+
+        fn nearest_pair(&self, _: &[f64; 2], _: Moving) -> (String, String) {
+            ("link_2".to_string(), "the wall".to_string())
+        }
+    }
+
+    /// What `check` gives of the checks of the gantry from the origin, on a map with no
+    /// voxel, at a clearance of 0, its own body read by `wall`.
+    fn with_the_wall<T>(wall: &WallAcrossX, check: impl FnOnce(&PathChecks<2, 2>) -> T) -> T {
+        let (map, field) = world(VOXEL_M, [-1.2, -1.2, -0.1], [1.2, 1.2, 0.1], &[]);
+        let geometry = gantry();
+        let arms = one_arm(&geometry, Some(wall));
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+            objects: Objects::none(),
+        };
+        check(&PathChecks::new(&arms, &scene, [0.0, 0.0], 0.0))
+    }
+
+    /// The search's check of the gantry's motion from `from` to `to`.
+    fn motion_of(checks: &PathChecks<2, 2>, from: [f64; 2], to: [f64; 2]) -> Motion {
+        checks.motion(&from, &to).expect("states of the gantry")
+    }
+
+    /// The gantry's motion from the origin to 0.5 m along x divides into 13 stretches of the
+    /// search, a hundredth of its extent of 4 m at most: a wall 1 cm thick between its
+    /// seventh and eighth checked states.
+    const THIN_WALL: (f64, f64) = (0.2885, 0.01);
+
+    // The search checks a motion at the states that divide it into stretches of a hundredth
+    // of the space's extent at most, by the sum of the joints' changes, its end among them
+    // and its start left out: on the gantry, whose extent is 4 m, a motion of 0.5 m along x
+    // and one of 0.25 m along each axis check 13 states each, and a motion that stays checks
+    // its end.
+    #[test]
+    fn the_search_checks_a_motion_at_each_hundredth_of_the_extent_by_the_sum_of_the_changes() {
+        let wall = WallAcrossX::new(5.0, 0.0, 1.0);
+        with_the_wall(&wall, |checks| {
+            let checked = |to: [f64; 2]| {
+                wall.taken();
+                assert_eq!(motion_of(checks, [0.0, 0.0], to), Motion::Valid);
+                wall.taken()
+            };
+            let along_x = checked([0.5, 0.0]);
+            let states: Vec<f64> = (1..=13).map(|j| 0.5 * f64::from(j) / 13.0).collect();
+            assert_eq!(along_x.len(), states.len(), "{along_x:?}");
+            assert!(
+                along_x
+                    .iter()
+                    .zip(&states)
+                    .all(|(x, at)| (x - at).abs() < 1e-12),
+                "{along_x:?}"
+            );
+            assert_eq!(checked([0.25, 0.25]).len(), 13);
+            assert_eq!(checked([0.0, 0.0]), [0.0]);
+        });
+    }
+
+    // A wall thinner than a stretch of the search, between two of its checked states, passes
+    // the search's check of the motion, and the walk of the same motion fails it, as the
+    // simplifier's check, which walks it, does.
+    #[test]
+    fn a_wall_between_two_checked_states_passes_the_search_and_fails_the_walk() {
+        let (at, thickness) = THIN_WALL;
+        with_the_wall(&WallAcrossX::new(at, thickness, 1.0), |checks| {
+            let (from, to) = ([0.0, 0.0], [0.5, 0.0]);
+            assert_eq!(motion_of(checks, from, to), Motion::Valid);
+            assert!(
+                matches!(checks.walk(&from, &to), Motion::Invalid { .. }),
+                "the walk passes the wall"
+            );
+            assert!(
+                matches!(
+                    checks.simplifier_motion(&from, &to),
+                    Ok(Motion::Invalid { .. })
+                ),
+                "the simplifier's check passes the wall"
+            );
+        });
+    }
+
+    // A motion that falls short at a checked state of the search keeps the share of it up to
+    // the checked state before: a wall 8 cm thick at 0.3 m along x first meets the seventh of
+    // the 13 states of the gantry's motion to 0.5 m.
+    #[test]
+    fn a_motion_short_at_a_checked_state_keeps_the_share_up_to_the_state_before() {
+        with_the_wall(&WallAcrossX::new(0.3, 0.08, 1.0), |checks| {
+            assert_eq!(
+                motion_of(checks, [0.0, 0.0], [0.5, 0.0]),
+                Motion::Invalid {
+                    last_valid: 6.0 / 13.0
+                }
+            );
+        });
+    }
+
+    // A plan from a start short of its clearances walks each motion: from a start 1 mm from
+    // the robot's own body, inside the plan's clearance of 2 mm, the motion through the thin
+    // wall that the search passes from a start clear of it fails, and the same motion with
+    // no wall on its way passes.
+    #[test]
+    fn a_plan_from_a_start_short_of_its_clearances_walks_each_motion() {
+        let (at, thickness) = THIN_WALL;
+        let short_start = 0.001;
+        with_the_wall(&WallAcrossX::new(at, thickness, short_start), |checks| {
+            assert!(
+                matches!(
+                    motion_of(checks, [0.0, 0.0], [0.5, 0.0]),
+                    Motion::Invalid { .. }
+                ),
+                "the walk passes the wall from a start short of its clearance"
+            );
+        });
+        with_the_wall(&WallAcrossX::new(5.0, 0.0, short_start), |checks| {
+            assert_eq!(motion_of(checks, [0.0, 0.0], [0.5, 0.0]), Motion::Valid);
+        });
+    }
+
+    // A simplified path the search finds through the thin wall fails the walk of the plan's
+    // answer, the planned path through it, by a waypoint before the wall, fails too, and the
+    // plan answers no path.
+    #[test]
+    fn a_plan_whose_planned_and_simplified_paths_fail_their_walk_answers_no_path() {
+        let (at, thickness) = THIN_WALL;
+        let planned: Vec<Vec<f64>> = [[0.0, 0.0], [0.25, 0.0], [0.5, 0.0]]
+            .map(Vec::from)
+            .to_vec();
+        let simplified: Vec<Vec<f64>> = [[0.0, 0.0], [0.5, 0.0]].map(Vec::from).to_vec();
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        with_the_wall(&WallAcrossX::new(at, thickness, 1.0), |checks| {
+            assert_eq!(motion_of(checks, [0.0, 0.0], [0.5, 0.0]), Motion::Valid);
+            let answer = answer_of(checks, &planned, &simplified, deadline, None);
+            assert!(matches!(answer, Err(PlanFailure::NoPath(_))), "{answer:?}");
+        });
     }
 
     /// The fault of the check of the gantry's path from the origin to (0.3, 0) among `block`

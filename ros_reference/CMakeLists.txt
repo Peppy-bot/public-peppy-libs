@@ -6,6 +6,7 @@ project(ros_reference LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+find_package(chomp_motion_planner REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_ros_occupancy_map_monitor REQUIRED)
@@ -16,6 +17,7 @@ find_package(octomap REQUIRED)
 find_package(ompl REQUIRED)
 find_package(random_numbers REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rsl REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(srdfdom REQUIRED)
 find_package(urdf REQUIRED)
@@ -34,9 +36,11 @@ add_executable(ros_reference
   reference_programs/arm_scene.cpp
   reference_programs/arm_planning.cpp
   reference_programs/cartesian_paths.cpp
+  reference_programs/chomp_refinement.cpp
   reference_programs/planning_scene.cpp
 )
 target_link_libraries(ros_reference PRIVATE
+  chomp_motion_planner::chomp_motion_planner
   geometric_shapes::geometric_shapes
   moveit_core::moveit_collision_detection
   moveit_core::moveit_collision_distance_field
@@ -45,6 +49,7 @@ target_link_libraries(ros_reference PRIVATE
   moveit_core::moveit_planning_scene
   moveit_core::moveit_robot_model
   moveit_core::moveit_robot_state
+  moveit_core::moveit_robot_trajectory
   moveit_core::moveit_trajectory_processing
   moveit_ros_occupancy_map_monitor::moveit_ros_occupancy_map_monitor
   moveit_ros_perception::moveit_pointcloud_octomap_updater_core
@@ -55,6 +60,7 @@ target_link_libraries(ros_reference PRIVATE
   ompl::ompl
   random_numbers::random_numbers
   rclcpp::rclcpp
+  rsl::rsl
   ${sensor_msgs_TARGETS}
   srdfdom::srdfdom
   urdf::urdf

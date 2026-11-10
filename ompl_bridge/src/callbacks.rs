@@ -103,11 +103,22 @@ impl<'a> Callbacks<'a> {
         self.guarded(false, || self.checks.state(state))
     }
 
-    /// Whether the motion is valid; when it is not, `last_valid` takes the fraction of
-    /// the way along it to its last valid state.
-    pub(crate) fn motion_valid(&self, from: &[f64], to: &[f64], last_valid: &mut f64) -> bool {
+    /// Whether the motion is valid by the planner's check, or by the simplifier's when
+    /// `simplifying`; when it is not, `last_valid` takes the fraction of the way along it
+    /// to its last valid state.
+    pub(crate) fn motion_valid(
+        &self,
+        from: &[f64],
+        to: &[f64],
+        simplifying: bool,
+        last_valid: &mut f64,
+    ) -> bool {
         let motion = self.guarded(Motion::Invalid { last_valid: 0.0 }, || {
-            let motion = self.checks.motion(from, to)?;
+            let motion = if simplifying {
+                self.checks.simplifier_motion(from, to)?
+            } else {
+                self.checks.motion(from, to)?
+            };
             match motion {
                 Motion::Invalid { last_valid } if !(0.0..=1.0).contains(&last_valid) => Err(
                     format!("a motion's last valid fraction lies in [0, 1], not {last_valid}")

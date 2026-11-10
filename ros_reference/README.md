@@ -19,12 +19,13 @@ change of the reference, which `run.sh --check` proves.
 | `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding, and the collision spheres that CHOMP's collision checker places on each carried link, its bodies grown by each sphere padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
-| `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
+| `planning` | OMPL's geometric planners, in a real vector space measured as MoveIt measures a joint group, the bridge's: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, or of SO-101's arm among collision objects, a group under six joints searching with `position_only_ik`, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of every chain of the robot, both of OpenArm v2's arms or SO-101's arm, checks the pairs of the robot's own links that motion_planning_core's self model checks, which the scenario names: MoveIt's answer to each scene, planned to the goal state itself or to a pose or a position of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the scenario names pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers and the checked pairs of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`, and with `--robot so101` SO-101's scenes, to what `--goal` names) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with the OMPL planner the scenario names, RRTConnect for `rrt_connect` and RRTstar for `rrt_star`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, the path it answers refined by MoveIt's CHOMP where the scenario's refiner is `chomp`, as the CHOMP refinement reference refines one, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, or of SO-101's arm among collision objects, a group under six joints searching with `position_only_ik`, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of every chain of the robot, both of OpenArm v2's arms or SO-101's arm, checks the pairs of the robot's own links that motion_planning_core's self model checks, which the scenario names: MoveIt's answer to each scene, planned to the goal state itself or to a pose or a position of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the scenario names pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries, and of each path rounded by MoveIt's time-optimal path at the scenario's corner tolerance, its turning and its bending, the integrals of its curvature's norm and squared norm over its length, and its duration, timed by MoveIt's time-optimal trajectory at each joint's bounds (`tools/draw_arm_planning.py` writes it, with the answers and the checked pairs of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`, and with `--robot so101` SO-101's scenes, to what `--goal` names) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 | `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 | `orientation_constraints` | MoveIt's kinematic constraint under rotation-vector tolerances about the axes of the target: whether a link at each configuration keeps each target within a box of tolerances inside a contract's `tolerance_rad` and within one around it (`tools/draw_orientation_constraints.py` writes it) | `motion_planning_core/tests/ros_reference_orientation_constraints.rs` |
 | `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with KDL as the inverse kinematics, on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the checked pairs and the step of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
+| `chomp_refinement` | MoveIt's CHOMP optimizer (`chomp::ChompPlanner` of chomp_motion_planner) at the parameters MoveIt's CHOMP plugin loads by default, its initial trajectory the scene's input path (`fillTrajectory`), in a diff of the scene in MoveIt's hybrid collision environment, as the plugin plans, on scenes of an arm of OpenArm v2 among boxes of voxels as an octomap: CHOMP's error code, its path of 101 waypoints where its optimizer ran, and MoveIt's collision check, the robot's links padded by the scenario's clearance, smallest distance to the scene and length along CHOMP's path and along the input path, each straight between its waypoints, and along `motion_planning_core`'s CHOMP refinement of it with its corners rounded as MoveIt's time-optimal trajectory generation rounds them, with each path's turning, bending and duration as arm planning measures them, the input path the one `motion_planning_core`'s RRTConnect plans through the scene, which the scenario carries with our refinement (`tools/draw_chomp_refinement.py` writes it, with the paths and the probe spacing of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_chomp_refinement.rs` |
 
 ## Layout
 
@@ -51,8 +52,8 @@ The script builds the reference image for the architecture of the host, and runs
 reference program on each scenario in it. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. On a host without the base image, the build fetches about
-750 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 354 MB of
-packages) and about 707 MB on arm64 (326 MB, 55.0 MB and 326 MB), and the image takes
+751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB; and 355 MB of
+packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the image takes
 about 3.7 GB of disk on amd64 and 2.6 GB on arm64.
 The reference outputs and their checks run on the developer's machine; the Tests
 workflow runs the parity tests on the committed outputs.
@@ -85,8 +86,8 @@ test, `tests/ros_reference_*.rs` of each crate, on the outputs of the arm64 imag
 the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and fail when a test
 does. The committed reference outputs are those of the amd64 image, and tests compare bits
 on amd64 alone, but for the occupancy test, which rule 4 describes. The planning parity
-test also reads the committed outputs on arm64, and compares each simplification with
-them within its bound.
+test also reads the committed outputs on arm64, and compares each simplification and each
+path of RRT* with them within its bound.
 
 ## Recorded episodes
 
@@ -117,7 +118,18 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    node in the reference program's process, sets the scenario's parameters on it, and
    calls the reference on the program's own thread. It initializes rclcpp with ROS
    logging unconfigured: configuring it creates a log directory in the home directory,
-   and the container runs as the host's user, whom the image may give none.
+   and the container runs as the host's user, whom the image may give none. The CHOMP
+   refinement reference, and the arm planning reference for the refiner `chomp`, call
+   CHOMP's planner directly, each scene on a thread of its own (rule 2): MoveIt's planning
+   pipeline refines no OMPL path by CHOMP in moveit2 2.15.2. With `planning_plugins:
+   [ompl_interface/OMPLPlanner, chomp_interface/CHOMPPlanner]` and
+   `chomp.trajectory_initialization_method: fillTrajectory`, every plan fails with "No
+   input trajectory specified": `ChompPlanner::solve` reads its input path from the
+   response it is given (chomp_planner.cpp:151-157), and `CHOMPPlanningContext::solve`
+   gives it an empty one (chomp_planning_context.cpp:55-58). So the references call
+   `ChompPlanner::solve` with a response that holds the input path, at the parameters of
+   the plugin's `loadParams` (chomp_interface.cpp:55-88), on a diff of the scene in the
+   hybrid collision environment, as the plugin builds it (chomp_plugin.cpp:94-95).
 2. A reference gives the same output on every run: the container has no network and one
    OpenMP thread, every random generator of a reference is seeded from its scenario, and a
    search ends on an iteration bound that the scenario gives. MoveIt's samplers draw from
@@ -131,7 +143,15 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    generator, whose seeds follow the order they are built in. The committed pose scenes
    repeat their bytes in every run measured, each alone and after the others, in six
    processes and under load. KDL's search for each step of a Cartesian path ends on that
-   timeout too.
+   timeout too. CHOMP's stochastic descent draws from the generator rsl gives its thread
+   (chomp_optimizer.cpp:568), which the thread's first call of `rsl::rng` seeds and a
+   later seeded call refuses, so the CHOMP refinement reference, and the arm planning
+   reference for the refiner `chomp`, run CHOMP on each scene on a new thread whose first
+   call seeds it from the scene. CHOMP ends on its iterations or on its time limit, 10 s,
+   a clock: on each committed scene it ends after its first iteration, whose trajectory its
+   check finds clear mesh to mesh (chomp_optimizer.cpp:368-377), within 0.14 s of its
+   start, and answers the trajectory of least cost it walked (chomp_optimizer.cpp:507),
+   there the input path at CHOMP's waypoints.
 3. A comparison that is statistical by nature, a sampling planner's against another's,
    runs over a drawn set, locally: draw the set with the `--drawn` option of the kind's
    script, run `run.sh`, and run the crate's parity test with `cargo test -- --ignored`,
@@ -140,10 +160,12 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `tools/draw_arm_planning.py --episodes <directory> --launcher <fragment>` writes their
    scenes in place of the drawn ones, each the map the motion planner of the launcher
    fragment builds of the episode's depth frames, its measured start, and a goal
-   configuration drawn for its pose goal. The arm planning script's `--objective shortest`
-   plans each scene with RRTstar, and its `--planning-time <seconds>` ends MoveIt's plans
-   on that time alone, their allowed planning time, and motion_planning_core's `any` plans
-   on that time or the iteration bound, whichever comes first, as the robot runs (its
+   configuration drawn for its pose goal. The arm planning script's `--planner rrt_star`
+   plans each scene with RRTstar, its `--refiner chomp` refines each path by CHOMP,
+   MoveIt's and this crate's, and its `--planning-time <seconds>` ends MoveIt's plans
+   on that time alone, their allowed planning time, and motion_planning_core's
+   `rrt_connect` plans on that time or the iteration bound, whichever comes first, as the
+   robot runs (its
    motion planner's launcher fragment bounds a plan by `max_iterations`); a set planned so
    gives other paths on each run, and runs locally, never committed. Its
    `--min-clearance <meters>` plans at that clearance: motion_planning_core's
@@ -194,7 +216,7 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    paths with collisions checked that end within one step of MoveIt's, and refuses a set
    as small as the committed one. The committed cases of such
    a kind compare bit for bit, as every other output does: the arm planning scenario plans
-   `any` on its iterations.
+   `rrt_connect`, refined by `none`, on its iterations.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of an
    output reads back to the bits that the reference computed, so a test compares with the
@@ -294,15 +316,18 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    ends, a turn in place, two lines whole, a line that stands still then a line, two lines of
    which the second ends, a line of the
    last joint's link, and a start in contact, which this crate refuses and whose fraction
-   of MoveIt's, which checks no start, the parity test prints. A large drawn set runs
+   of MoveIt's, which checks no start, the parity test prints; for CHOMP refinement, among
+   boxes of voxels, of the first 40 scenes that `tools/draw_chomp_refinement.py` draws,
+   the first four whose input path turns at a waypoint and the first whose path is
+   straight. A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
-7. Every mode of arm planning that a caller selects, each objective and planner that the
-   contracts expose, the arms it plans, one or both as one group (`--both-arms`), the
-   planning scene it plans in, among collision objects and holding an attached object
+7. Every mode of arm planning that a caller selects, each planner and refiner that the
+   contracts expose, the arms it plans, one or both as one group (`--both-arms`), the planning
+   scene it plans in, among collision objects and holding an attached object
    (`--objects`), and the goal a pose of the grasp point that MoveIt reaches through KDL's
    inverse kinematics (`--poses`), the orientations a path holds, whole, free about an axis, on
    two links and on each of both arms (`--path-orientation`), has its own arm planning

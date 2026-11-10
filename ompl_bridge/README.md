@@ -1,9 +1,10 @@
 # ompl_bridge
 
 OMPL's geometric planners from Rust. A plan runs through a real vector state space with
-bounds, by a planner chosen by name, under the caller's state and motion checks, and
-optionally on the zero set of the caller's constraint; OMPL's path simplifier then
-shortens the path. The crate builds OMPL 2.0.2, the release that the ROS reference
+bounds, measured as MoveIt measures a joint group, by the sum of each dimension's
+absolute change, by a planner chosen by name, under the caller's state and motion
+checks, and optionally on the zero set of the caller's constraint; OMPL's path
+simplifier then shortens the path. The crate builds OMPL 2.0.2, the release that the ROS reference
 image holds, from the source archive of its release tag (see "Building").
 
 - `plan` runs one `Request` and answers a `Plan`: the path when the planner found an
@@ -224,7 +225,8 @@ each limit: a measurement on that host.
 ## The simplified path
 
 OMPL's simplifier shortens the path, smooths it with B-splines, and repairs a smoothed
-state that fails the checks. It reports when its result may still touch an invalid
+state that fails the checks, each motion it checks judged by `Checks::simplifier_motion`,
+which is `Checks::motion` unless the caller gives the simplifier its own. It reports when its result may still touch an invalid
 state. `Simplification::path` is its result when OMPL reports it valid and it is at most
 as long as the planned path, and the planned path otherwise. The simplifier counts its
 questions whether to stop toward the request's simplification bound, and stops at the
@@ -248,7 +250,8 @@ tolerance of the constraint. `CONSTRAINED_SPACING` is OMPL's default spacing.
 ## The caller's functions
 
 `Checks::state` judges a state and `Checks::motion` the straight motion between two
-states, its end included: OMPL takes the motion's start as valid. When a motion is
+states, its end included: OMPL takes the motion's start as valid. `Checks::simplifier_motion`
+judges a motion the simplifier checks, by `Checks::motion` unless the caller says otherwise. When a motion is
 invalid it answers the fraction of the way along it to its last valid state. A plan calls
 both on the thread that calls `plan`, and, when it makes several attempts, on the thread
 of each, and shares them with the threads on which PRM and PRM* search their roadmap, so
@@ -286,15 +289,17 @@ harness, which a C++ program plans in the reference image with the image's OMPL 
 built, seeded and bounded as this crate builds, seeds and bounds a plan, with the same
 stop rule and the same rounds of roadmap growth, through checks of the same arithmetic.
 Every plan finds an exact path exactly where the C++ program's does, and every plan of a
-planner other than PRM gives the C++ program's ending, and its path and the path's
-length within 1e-12, against the outputs of each image, and its simplification within
-1e-12 of the committed outputs of the amd64 image on every architecture; on x86-64, it
-gives the path, the length and the simplification of the committed outputs bit for bit.
-The arm64 image's simplifier branches on the last bits of its fused paths, and 6 of its
-21 simplifications differ from the amd64 ones beyond 1e-12, while this crate built for
-aarch64 gave the committed bits of every simplification on a Jetson. The scenario holds a
-plan of each planner that finds a path and one that finds none. PRM's path is the first
-that its search finds, so the test compares whether it found one alone.
+planner other than PRM gives the C++ program's ending, and its path and the path's length
+within 1e-12, against the outputs of each image, or for RRT* of the committed outputs of
+the amd64 image on every architecture, and its simplification within 1e-12 of the
+committed outputs on every architecture; on x86-64, it gives the path, the length and the
+simplification of the committed outputs bit for bit. The arm64 image's RRT* gives one plan
+a path of 24 states against the amd64 image's 28, and its simplifier branches on the last
+bits of its fused paths, and 19 of its 21 simplifications differ from the amd64 ones
+beyond 1e-12, while this crate built for aarch64 gave the committed bits of every path and
+simplification on a Jetson. The scenario holds a plan of each planner that finds a path
+and one that finds none. PRM's path is the first that its search finds, so the test
+compares whether it found one alone.
 
 ## Building
 

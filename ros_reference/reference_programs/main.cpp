@@ -17,6 +17,7 @@
 #include "arm_planning.hpp"
 #include "cartesian_paths.hpp"
 #include "chain_collision.hpp"
+#include "chomp_refinement.hpp"
 #include "forward_kinematics.hpp"
 #include "occupancy.hpp"
 #include "orientation_constraints.hpp"
@@ -34,6 +35,7 @@ const std::map<std::string, Reference> references = {
     {"arm_planning", ros_reference::arm_planning},
     {"cartesian_paths", ros_reference::cartesian_paths},
     {"chain_collision", ros_reference::chain_collision},
+    {"chomp_refinement", ros_reference::chomp_refinement},
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"occupancy", ros_reference::occupancy},
     {"orientation_constraints", ros_reference::orientation_constraints},

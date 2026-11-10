@@ -1,6 +1,6 @@
 //! Parity with MoveIt's planning pipeline on the arm planning scenarios of the ROS
 //! reference harness, of one arm and of both, at one attempt, the grippers' fingers
-//! carried by the arms in both, each plan with the planner of the scenario's objective,
+//! carried by the arms in both, each plan with the planner the scenario names,
 //! and a plan of every chain of the robot, both of OpenArm v2's arms or SO-101's arm,
 //! checking the pairs of the robot's own links that this crate's self model checks in
 //! both. The committed scenarios plan at a clearance of 0: this crate
@@ -641,10 +641,11 @@ fn on_its_side<const N: usize>(case: &Case) {
         scenes.len()
     );
     println!(
-        "{}: {} scenes, objective {:?}, ended by {:?}, time limit {} s, clearance {} m",
+        "{}: {} scenes, planner {:?}, refiner {:?}, ended by {:?}, time limit {} s, clearance {} m",
         case.name,
         scenes.len(),
-        case.scenes.objective,
+        case.scenes.planner,
+        case.scenes.refiner,
         case.scenes.termination,
         case.scenes.time_limit,
         case.scenes.min_clearance
@@ -823,7 +824,7 @@ fn keeps_the_clearances(path: &Probed, min_clearance: f64) -> bool {
 // A probe of MoveIt's in collision measures a clearance of -1. The committed scenes, one of
 // each outcome, are too few for the intervals: each test runs on its scenario's drawn set,
 // locally, as the harness README's rule 3 says, and the pull request states its tally at its
-// head, for each objective, termination and clearance it ran.
+// head, for each planner, termination and clearance it ran.
 #[test]
 #[ignore = "statistics of a drawn set among boxes, run locally as the harness README's rule 3 says"]
 fn among_boxes_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {

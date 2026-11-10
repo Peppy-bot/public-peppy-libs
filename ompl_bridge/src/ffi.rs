@@ -90,7 +90,13 @@ pub(crate) mod bridge {
     extern "Rust" {
         type Callbacks<'a>;
         fn state_valid(self: &Callbacks, state: &[f64]) -> bool;
-        fn motion_valid(self: &Callbacks, from: &[f64], to: &[f64], last_valid: &mut f64) -> bool;
+        fn motion_valid(
+            self: &Callbacks,
+            from: &[f64],
+            to: &[f64],
+            simplifying: bool,
+            last_valid: &mut f64,
+        ) -> bool;
         fn constraint_function(self: &Callbacks, state: &[f64], out: &mut [f64]);
         fn constraint_jacobian(self: &Callbacks, state: &[f64], out: &mut [f64]);
         fn sample_goal(self: &Callbacks, attempt: u32, goal: &mut [f64]) -> GoalSample;

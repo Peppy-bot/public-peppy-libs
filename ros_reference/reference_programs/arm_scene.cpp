@@ -1,20 +1,33 @@
 #include "arm_scene.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <stdexcept>
+#include <thread>
+#include <utility>
 
 #include <Eigen/Geometry>
+#include <chomp_motion_planner/chomp_parameters.hpp>
+#include <chomp_motion_planner/chomp_planner.hpp>
 #include <geometric_shapes/shapes.h>
+#include <moveit/collision_detection/collision_common.hpp>
+#include <moveit/collision_distance_field/collision_detector_allocator_hybrid.hpp>
+#include <moveit/kinematic_constraints/utils.hpp>
 #include <moveit/kinematics_plugin_loader/kinematics_plugin_loader.hpp>
+#include <moveit/planning_interface/planning_request.hpp>
+#include <moveit/planning_interface/planning_response.hpp>
+#include <moveit/robot_state/conversions.hpp>
 #include <moveit_msgs/msg/attached_collision_object.hpp>
 #include <octomap/OcTree.h>
 #include <random_numbers/random_numbers.h>
 #include <rclcpp/rclcpp.hpp>
+#include <rsl/random.hpp>
 
 #include "planning_scene.hpp"
 
@@ -80,6 +93,79 @@ bool moves_with_group(const moveit::core::LinkModel* link,
     joint = parent == nullptr ? nullptr : parent->getParentJointModel();
   }
   return false;
+}
+
+// The vector of `values`.
+Eigen::VectorXd vector_of(const std::vector<double>& values) {
+  return Eigen::Map<const Eigen::VectorXd>(values.data(),
+                                           static_cast<Eigen::Index>(values.size()));
+}
+
+// The share of its tolerance that `target` reaches at `state`.
+double share_of_tolerance(const HeldTarget& target, const moveit::core::RobotState& state) {
+  const Eigen::Quaterniond actual(state.getGlobalLinkTransform(target.link).linear());
+  if (!target.free_axis) {
+    return target.orientation.angularDistance(actual) / target.tolerance;
+  }
+  const Eigen::Vector3d wanted = target.orientation * *target.free_axis;
+  const Eigen::Vector3d held = actual * *target.free_axis;
+  return std::atan2(wanted.cross(held).norm(), wanted.dot(held)) / target.tolerance;
+}
+
+// The parameters that MoveIt's CHOMP plugin loads from a node that sets none of them
+// (moveit2 2.15.2 chomp_interface.cpp:55-88), with the input path as CHOMP's initial
+// trajectory, `fillTrajectory`, which the plugin loads from
+// chomp.trajectory_initialization_method.
+chomp::ChompParameters plugin_parameters() {
+  chomp::ChompParameters parameters;
+  parameters.planning_time_limit_ = 10.0;
+  parameters.max_iterations_ = 200;
+  parameters.max_iterations_after_collision_free_ = 5;
+  parameters.smoothness_cost_weight_ = 0.1;
+  parameters.obstacle_cost_weight_ = 1.0;
+  parameters.learning_rate_ = 0.01;
+  parameters.smoothness_cost_velocity_ = 0.0;
+  parameters.smoothness_cost_acceleration_ = 1.0;
+  parameters.smoothness_cost_jerk_ = 0.0;
+  parameters.ridge_factor_ = 0.0;
+  parameters.use_pseudo_inverse_ = false;
+  parameters.pseudo_inverse_ridge_factor_ = 1e-4;
+  parameters.joint_update_limit_ = 0.1;
+  parameters.min_clearance_ = 0.2;
+  parameters.collision_threshold_ = 0.07;
+  parameters.use_stochastic_descent_ = true;
+  parameters.enable_failure_recovery_ = false;
+  parameters.max_recovery_attempts_ = 5;
+  if (!parameters.setTrajectoryInitializationMethod("fillTrajectory")) {
+    throw std::runtime_error("CHOMP refuses the initial trajectory fillTrajectory");
+  }
+  return parameters;
+}
+
+// CHOMP's answer to `request` in `scene`, refining `input`, on a thread of its own whose
+// random generator it seeds from `seed`: rsl gives each thread a generator of its own, which
+// the thread's first call of rsl::rng seeds and a later seeded call refuses, and CHOMP's
+// stochastic descent draws from it (chomp_optimizer.cpp:568).
+planning_interface::MotionPlanDetailedResponse chomp_answer(
+    const planning_scene::PlanningSceneConstPtr& scene,
+    const planning_interface::MotionPlanRequest& request,
+    const robot_trajectory::RobotTrajectoryPtr& input, std::uint32_t seed) {
+  planning_interface::MotionPlanDetailedResponse response;
+  response.trajectory.push_back(input);
+  std::exception_ptr error;
+  std::thread([&] {
+    try {
+      rsl::rng(std::seed_seq{seed});
+      const chomp::ChompPlanner planner;
+      planner.solve(scene, request, plugin_parameters(), response);
+    } catch (...) {
+      error = std::current_exception();
+    }
+  }).join();
+  if (error) {
+    std::rethrow_exception(error);
+  }
+  return response;
 }
 
 }  // namespace
@@ -261,6 +347,216 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
     acm.setEntry(pair.at(0).get<std::string>(), pair.at(1).get<std::string>(), true);
   }
   return scene;
+}
+
+std::vector<Eigen::VectorXd> points_of(const nlohmann::json& waypoints) {
+  std::vector<Eigen::VectorXd> points;
+  for (const auto& waypoint : waypoints) {
+    points.push_back(vector_of(numbers(waypoint)));
+  }
+  return points;
+}
+
+std::vector<Eigen::VectorXd> points_of(const robot_trajectory::RobotTrajectory& trajectory,
+                                       const moveit::core::JointModelGroup& arm) {
+  std::vector<Eigen::VectorXd> points;
+  for (std::size_t i = 0; i < trajectory.getWayPointCount(); ++i) {
+    std::vector<double> q;
+    trajectory.getWayPoint(i).copyJointGroupPositions(&arm, q);
+    points.push_back(vector_of(q));
+  }
+  return points;
+}
+
+ChompRefined chomp_refined(const planning_scene::PlanningScene& scene,
+                           const robot_trajectory::RobotTrajectoryPtr& input, std::uint32_t seed) {
+  const auto& arm = *scene.getRobotModel()->getJointModelGroup(group);
+  // The scene CHOMP's plugin plans in: a diff of the scene, its collision environment the
+  // hybrid one (chomp_plugin.cpp:94-95).
+  const auto hybrid = scene.diff();
+  hybrid->allocateCollisionDetector(
+      collision_detection::CollisionDetectorAllocatorHybrid::create());
+  // CHOMP takes a goal of joints alone (chomp_planner.cpp:97-103): the path's last waypoint,
+  // each joint within 0 of it.
+  planning_interface::MotionPlanRequest request;
+  request.group_name = group;
+  moveit::core::robotStateToRobotStateMsg(scene.getCurrentState(), request.start_state);
+  request.goal_constraints.push_back(
+      kinematic_constraints::constructGoalConstraints(input->getLastWayPoint(), &arm, 0.0, 0.0));
+  const auto response = chomp_answer(hybrid, request, input, seed);
+  ChompRefined refined{response.error_code.val, std::nullopt};
+  // Where CHOMP's optimizer ran, its trajectory takes the input's place in the response,
+  // whether it succeeds or not (chomp_planner.cpp:257-273).
+  if (response.trajectory.size() == 1 && response.trajectory.front() != input) {
+    refined.path = points_of(*response.trajectory.front(), arm);
+  }
+  return refined;
+}
+
+Probing probing_of(const nlohmann::json& scenario, const ChainGroup& chains,
+                   const moveit::core::RobotModel& model) {
+  Probing probing;
+  for (const auto& chain : chains.chains) {
+    probing.tip_links.push_back(chain.tip_link);
+  }
+  probing.spacing = scenario.at("probe_spacing").get<double>();
+  probing.corner_tolerance = scenario.at("corner_tolerance").get<double>();
+  const auto& joints = model.getJointModelGroup(group)->getActiveJointModelNames();
+  probing.max_velocity.resize(static_cast<Eigen::Index>(joints.size()));
+  probing.max_acceleration.resize(static_cast<Eigen::Index>(joints.size()));
+  for (std::size_t j = 0; j < joints.size(); ++j) {
+    const auto& bounds = model.getVariableBounds(joints[j]);
+    probing.max_velocity[static_cast<Eigen::Index>(j)] = bounds.max_velocity_;
+    probing.max_acceleration[static_cast<Eigen::Index>(j)] = bounds.max_acceleration_;
+  }
+  return probing;
+}
+
+Probed probe_of(const planning_scene::PlanningScene& scene, const Probing& probing) {
+  Probed probed{probing.self};
+  probed.held_targets = probing.held;
+  for (const auto& tip_link : probing.tip_links) {
+    std::vector<const moveit::core::AttachedBody*> held;
+    const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
+    scene.getCurrentState().getAttachedBodies(held, tip);
+    if (!held.empty()) {
+      probed.holding.insert(tip);
+    }
+  }
+  return probed;
+}
+
+void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState& state,
+           const moveit::core::JointModelGroup& arm, const Eigen::VectorXd& q, Probed& probed) {
+  state.setJointGroupPositions(&arm, q);
+  state.update();
+  for (const auto& target : probed.held_targets) {
+    probed.share_of_tolerance =
+        std::max(probed.share_of_tolerance, share_of_tolerance(target, state));
+  }
+  if (scene.isStateColliding(state, group)) {
+    ++probed.collisions;
+  }
+  // FCL's distance to an octomap a body touches is no measure: the planning scene's dense
+  // probe read -2.3e190 of one. MoveIt reads -1 for a body in contact otherwise, so -1
+  // stands for every distance below it.
+  probed.clearance =
+      std::min(probed.clearance, std::max(scene.distanceToCollisionUnpadded(state), -1.0));
+  if (!probed.holding.empty()) {
+    collision_detection::DistanceRequest request;
+    request.active_components_only = &probed.holding;
+    request.acm = &scene.getAllowedCollisionMatrix();
+    collision_detection::DistanceResult result;
+    scene.getCollisionEnvUnpadded()->distanceRobot(request, result, state);
+    probed.held = std::min(probed.held, std::max(result.minimum_distance.distance, -1.0));
+  }
+  // The unpadded environment: the scene pads the robot's links against the world alone,
+  // and its self check reads them unpadded (pad_self_collisions false). -1 stands for
+  // every distance below it, as for the world.
+  if (probed.self) {
+    const double self = scene.getCollisionEnvUnpadded()->distanceSelf(
+        state, scene.getAllowedCollisionMatrix());
+    probed.self_clearance = std::min(probed.self_clearance, std::max(self, -1.0));
+  }
+}
+
+std::size_t steps_of(double length, double spacing) {
+  return static_cast<std::size_t>(std::max(std::ceil(length / spacing), 1.0));
+}
+
+namespace {
+
+// The path through `points`, straight between them, probed as `probing` asks.
+Probed probe_polyline(const planning_scene::PlanningScene& scene,
+                      moveit::core::RobotState& state, const moveit::core::JointModelGroup& arm,
+                      const std::vector<Eigen::VectorXd>& points, const Probing& probing) {
+  Probed probed = probe_of(scene, probing);
+  probe(scene, state, arm, points.front(), probed);
+  for (std::size_t i = 1; i < points.size(); ++i) {
+    const std::size_t steps = steps_of((points[i] - points[i - 1]).norm(), probing.spacing);
+    for (std::size_t k = 1; k <= steps; ++k) {
+      const double t = static_cast<double>(k) / static_cast<double>(steps);
+      probe(scene, state, arm, points[i - 1] + (points[i] - points[i - 1]) * t, probed);
+    }
+  }
+  return probed;
+}
+
+// The length of the path through `points`, straight between them, in the joints' L2 norm.
+double polyline_length(const std::vector<Eigen::VectorXd>& points) {
+  double length = 0.0;
+  for (std::size_t i = 1; i < points.size(); ++i) {
+    length += (points[i] - points[i - 1]).norm();
+  }
+  return length;
+}
+
+}  // namespace
+
+trajectory_processing::Path rounded_path(const std::vector<Eigen::VectorXd>& points,
+                                         double corner_tolerance) {
+  auto path = trajectory_processing::Path::create(points, corner_tolerance);
+  if (!path) {
+    throw std::runtime_error("MoveIt's time-optimal path does not round a path");
+  }
+  return std::move(*path);
+}
+
+nlohmann::json measured(const Probed& probed, double length,
+                        const trajectory_processing::Path& rounded, const Probing& probing) {
+  const double rounded_length = rounded.getLength();
+  const std::size_t steps = steps_of(rounded_length, probing.spacing);
+  const double step = rounded_length / static_cast<double>(steps);
+  double turning = 0.0;
+  double bending = 0.0;
+  for (std::size_t k = 0; k < steps; ++k) {
+    const double curvature =
+        rounded.getCurvature((static_cast<double>(k) + 0.5) * step).norm();
+    turning += curvature * step;
+    bending += curvature * curvature * step;
+  }
+  const auto timed = trajectory_processing::Trajectory::create(rounded, probing.max_velocity,
+                                                               probing.max_acceleration);
+  return {{"collisions", probed.collisions},
+          {"clearance", probed.clearance},
+          {"held_clearance",
+           probed.holding.empty() ? nlohmann::json(nullptr) : nlohmann::json(probed.held)},
+          {"self_clearance",
+           probed.self ? nlohmann::json(probed.self_clearance) : nlohmann::json(nullptr)},
+          {"share_of_tolerance", probed.held_targets.empty()
+                                     ? nlohmann::json(nullptr)
+                                     : nlohmann::json(probed.share_of_tolerance)},
+          {"length", length},
+          {"turning", turning},
+          {"bending", bending},
+          {"duration", timed ? nlohmann::json(timed->getDuration()) : nlohmann::json(nullptr)}};
+}
+
+nlohmann::json polyline_measured(const planning_scene::PlanningScene& scene,
+                                 moveit::core::RobotState& state,
+                                 const moveit::core::JointModelGroup& arm,
+                                 const std::vector<Eigen::VectorXd>& points,
+                                 const Probing& probing) {
+  return measured(probe_polyline(scene, state, arm, points, probing), polyline_length(points),
+                  rounded_path(points, probing.corner_tolerance), probing);
+}
+
+// MoveIt's probe of motion_planning_core's path `waypoints`, rounded by MoveIt's
+// time-optimal path at the probing's corner tolerance and probed along it as `probing` asks.
+nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
+                           const moveit::core::RobotModelPtr& model,
+                           const nlohmann::json& waypoints, const Probing& probing) {
+  const auto& arm = *model->getJointModelGroup(group);
+  const auto path = rounded_path(points_of(waypoints), probing.corner_tolerance);
+  moveit::core::RobotState state(scene.getCurrentState());
+  Probed probed = probe_of(scene, probing);
+  const double length = path.getLength();
+  const std::size_t steps = steps_of(length, probing.spacing);
+  for (std::size_t k = 0; k <= steps; ++k) {
+    const double at = length * static_cast<double>(k) / static_cast<double>(steps);
+    probe(scene, state, arm, path.getConfig(at), probed);
+  }
+  return measured(probed, length, path, probing);
 }
 
 }  // namespace ros_reference

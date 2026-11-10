@@ -63,8 +63,8 @@ pub use intake::{DepthCamera, JointHistory, PosedChain, RobotMask, insert_cut_ou
 pub use path_orientation::PathOrientation;
 pub use plan::{
     ArmGoal, CheckFailure, CheckRequest, MAX_STEP_M, MIN_DEPARTURE_STEP_M, PathCheck, PathFault,
-    Place, PlanFailure, PlanRequest, Refiner, Scene, StartFault, check_path, plan_path,
-    sample_goals, start_inside_limits,
+    Place, PlanFailure, PlanRequest, Refiner, Scene, StartFault, check_path, iteration_bound,
+    plan_path, sample_goals, start_inside_limits,
 };
 pub use pose::{orientation_from_parts, pose_from_parts, pose_parts};
 pub use scene::{

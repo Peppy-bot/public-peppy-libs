@@ -1,14 +1,14 @@
-//! Parity with OMPL's planners on every planning scenario of the ROS reference harness.
-//! A plan that its iteration bound ends gives the same path under one seed, for every
-//! planner but PRM, whose path is the first that its search finds; and the evidence that
-//! the plan is OMPL's: each plan of the scenario gives the status, the ending, the path,
-//! its length and its simplification that the C++ program gives with the image's OMPL,
-//! under the same space, checks, parameters, seed and stop rule, bit for bit with the
-//! committed outputs on x86-64; its ending, its path and its length within a bound of the
-//! outputs of every image; and its simplification within that bound of the committed
-//! outputs on every architecture. A plan of PRM finds a path exactly where the C++
-//! program's does. The C++ program plans PRM and PRM* through the bridge's subclass of
-//! each, code for code.
+//! Parity with OMPL's planners on every planning scenario of the ROS reference harness. A
+//! plan that its iteration bound ends gives the same path under one seed, for every planner
+//! but PRM, whose path is the first that its search finds; and the evidence that the plan
+//! is OMPL's: each plan of the scenario gives the status, the ending, the path, its length
+//! and its simplification that the C++ program gives with the image's OMPL, under the same
+//! space, checks, parameters, seed and stop rule, bit for bit with the committed outputs on
+//! x86-64; its ending, its path and its length within a bound of the outputs of every
+//! image, or for RRT* of the committed outputs on every architecture; and its
+//! simplification within that bound of the committed outputs on every architecture. A plan
+//! of PRM finds a path exactly where the C++ program's does. The C++ program plans PRM and
+//! PRM* through the bridge's subclass of each, code for code.
 
 mod world;
 
@@ -24,8 +24,8 @@ const TIME_LIMIT: Duration = Duration::MAX;
 
 /// The largest difference of a value of a planned path, or of its length, from the
 /// outputs of an image, and of a value of a simplified path from the committed outputs.
-/// The arm64 image's OMPL fuses multiply-adds, and its paths of `planning_boxes` differ
-/// from the amd64 ones by at most 3.3e-16 in a value and 1.8e-15 in a length.
+/// The arm64 image's OMPL fuses multiply-adds, and its paths of `planning_boxes` but one of
+/// RRT*'s differ from the amd64 ones by at most 1.1e-16 in a value and 8.9e-16 in a length.
 const ACROSS_IMAGES: f64 = 1e-12;
 
 /// The bridge's C++ source, which holds the subclass that PRM and PRM* plan through.
@@ -122,6 +122,16 @@ fn within_across_images(ours: &[Vec<f64>], theirs: &[Vec<f64>]) -> bool {
         })
 }
 
+/// The outputs that the path of plan `p` is compared with: for RRT*, `committed`, the
+/// committed outputs' plan; for each other planner, the outputs that `p` was read from.
+fn path_outputs<'a>(p: &'a PlanCase, committed: &'a PlanCase) -> Option<&'a Planned> {
+    if p.planner == Planner::RrtStar.to_string() {
+        committed.planned.as_ref()
+    } else {
+        p.planned.as_ref()
+    }
+}
+
 /// The plan of `p` of `case` through its world.
 fn plan_case(case: &Case, worlds: &[World], p: &PlanCase) -> ompl_bridge::Plan {
     let planner: Planner = p.planner.parse().expect("a planner of OMPL");
@@ -209,20 +219,22 @@ fn assert_planned_bits(what: &str, answer: &ompl_bridge::Plan, planned: &Planned
 }
 
 // Each plan finds an exact path exactly where the C++ program's does. Each plan of a
-// planner other than PRM gives the C++ program's ending, and a path of as many states,
-// each value and the length within ACROSS_IMAGES, against the outputs it reads: the
-// committed outputs, which the amd64 image wrote, or the outputs of the image that
-// `ROS_REFERENCE_OUTPUTS` names, as run.sh names the arm64 image's. Its simplification
-// lies within ACROSS_IMAGES of the committed one on every architecture: the simplifier's
-// random shortcuts branch on the last bits of the path, and 6 of the 21 simplifications
-// of the arm64 image differ from the amd64 ones beyond ACROSS_IMAGES, while this crate
-// built for aarch64 gave every committed simplification bit for bit on a Jetson. On
-// x86-64, each plan gives the path, the length and the simplification of the committed
-// outputs bit for bit: OMPL's own sources, as the crate compiles them, and the test's
-// checks round each product and each sum on its own, as the amd64 image does. A plan of
-// PRM is compared by whether it found a path alone: its path is the first that its search
-// finds. Each scenario holds a plan of each planner that finds a path and one that finds
-// none.
+// planner other than PRM gives the C++ program's ending, and a path of as many states, each
+// value and the length within ACROSS_IMAGES, against the outputs it reads: the committed
+// outputs, which the amd64 image wrote, or the outputs of the image that
+// `ROS_REFERENCE_OUTPUTS` names, as run.sh names the arm64 image's. A plan of RRT* gives
+// its path against the committed outputs on every architecture, and each simplification
+// lies within ACROSS_IMAGES of the committed one on every architecture: the arm64 image's
+// RRT* gives one plan a path of 24 states against the amd64 image's 28, and the
+// simplifier's random shortcuts branch on the last bits of the path, and 19 of the 21
+// simplifications of the arm64 image differ from the amd64 ones beyond ACROSS_IMAGES, while
+// this crate built for aarch64 gave every committed path and simplification bit for bit on
+// a Jetson. On x86-64, each plan gives the path, the length and the simplification of the
+// committed outputs bit for bit: OMPL's own sources, as the crate compiles them, and the
+// test's checks round each product and each sum on its own, as the amd64 image does. A plan
+// of PRM is compared by whether it found a path alone: its path is the first that its
+// search finds. Each scenario holds a plan of each planner that finds a path and one that
+// finds none.
 #[test]
 fn each_plan_gives_ompls_answer() {
     let cases = Case::load_all();
@@ -254,7 +266,7 @@ fn each_plan_gives_ompls_answer() {
                 p.status == PlanStatus::Exact,
                 "{what}: an exact path where the C++ program found one"
             );
-            if let Some(planned) = &p.planned {
+            if let Some(planned) = path_outputs(p, committed) {
                 assert_planned(&what, &answer, planned);
                 #[cfg(target_arch = "x86_64")]
                 assert_planned_bits(&what, &answer, planned);

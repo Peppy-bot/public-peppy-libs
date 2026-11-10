@@ -198,6 +198,13 @@ model that answers none is in contact.
 
 ## A valid motion
 
+The planner's search checks a motion as OMPL's discrete motion check does, and MoveIt's
+planners with it: at the states that divide the motion into stretches of OMPL's default
+share of the space's extent at most, by the sum of the joints' changes, each keeping the
+plan's clearances. The path a plan answers and a path `check_path` checks are walked
+whole, every run and arc, as the rest of this section says, and the last paragraph of
+"The plan and its path" says which path a plan answers.
+
 A motion is walked by conservative advancement. A joint turning by an angle moves a point
 at most that angle times the point's distance from the joint, so how far a step moves any
 point of a link or of a rider, a part or an object it carries, follows from each joint's
@@ -395,6 +402,10 @@ OMPL plans with the request's planner and iteration bound, seeded from the reque
 and the map's stamp, so the same request on the same map gives the same path when the plan
 ends before its deadline, for every planner but PRM and PRM*, with any number of attempts.
 OMPL's simplifier shortens the path.
+OMPL measures the joints' space as MoveIt measures a joint group, by the sum of the
+joints' changes (moveit2 2.15.2 `JointModelGroup::distance`, ompl_bridge's README): the
+length RRT* shortens, and the distance of which each planner's range is a fifth of the
+space's extent.
 
 The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
 the goal sampling makes no further sample, OMPL's planners and simplifier end at
@@ -417,13 +428,15 @@ It then walks every run of its answer, a run that joins two waypoints past one t
 drops, one within `MIN_JOINT_CHANGE_RAD` of the waypoint before it, among them, and fails
 `NoPath` on a run that falls short.
 
-The planner keeps every state of its paths but the start at the plan's clearance: its
-check of a motion fails one whose first state, the start excepted, falls short, and one
-from the start that ends before each term keeps its clearance. OMPL's simplifier keeps
-states it checks only as points of a checked motion, so the plan answers the simplified
-path when the path the robot runs through it passes the checks above, and the planned
-path when only that one passes. MoveIt checks the simplified path alone, and answers
-INVALID_MOTION_PLAN when it fails.
+The search takes the first state of a motion as valid, as OMPL's discrete check does. A
+plan from a start short of its clearances walks each motion as "A valid motion" and "The
+start" say: a motion fails when its first state, the start excepted, falls short, and a
+motion from the start fails when it ends before each term keeps its clearance. OMPL's
+simplifier walks each motion it checks, so each shortcut it keeps passes the walk of the
+plan's answer. The plan answers the simplified path when the path the robot runs through
+it passes the walk above, its rounded corners included, the planned path when only that
+one passes, and no path when neither does. MoveIt checks the simplified path at its checked
+states alone, and answers INVALID_MOTION_PLAN when it fails.
 
 ## CHOMP
 
@@ -479,6 +492,16 @@ the center's offset from the joint, and a prismatic joint's axis. MoveIt's
 `Eigen::Isometry3d`, which adds the joint's position to its axis. CHOMP's field holds no
 link of the robot: MoveIt's optimizer also reads the distances to the robot's links outside
 the group, and between the group's own links.
+
+`tests/ros_reference_chomp_refinement.rs` hands MoveIt's CHOMP and this crate's the same
+input paths, those this crate's RRTConnect plans through the scenes of the
+[`ros_reference`](../ros_reference) harness's `chomp_refinement_openarm_v2` scenario:
+MoveIt's collision check finds every refinement of ours free, and where MoveIt's CHOMP
+answers a path of a committed scene, ours bends no more than it. On the first 200 drawn
+scenes at a clearance of 4 cm, ours bends less than MoveIt's, and runs in less time, on
+each of the 17 whose input path turns. Of the 156 straight input paths, ours bends 47 of
+the 77 that pass within 0.2 m of an obstacle, CHOMP's clearance, where MoveIt's CHOMP
+answers each straight path as it is.
 
 ## Path orientations
 
