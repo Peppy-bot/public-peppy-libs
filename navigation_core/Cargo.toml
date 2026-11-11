@@ -1,0 +1,20 @@
+[package]
+name = "navigation_core"
+version = "0.1.0"
+edition = "2024"
+description = "What a mobile base needs to plan a path around what it sees, ported from Nav2 1.5.2: a cost grid with Nav2's cost values, a base's outline padded as Nav2 pads it, with its inscribed radius, depth frames and laser scans kept in an occupancy_map cleared under the footprint and projected to a grid in a height band with the drops below the floor, a saved trinary map as the static layer takes it, inflation by Nav2's inflation layer, the layers composed as a layered cost map composes them, and Smac 2D's A* to the goal's cell with its smoother. No ROS, hardware or messaging deps."
+
+[workspace]
+
+[dependencies]
+camera_core = { path = "../camera_core" }
+control_core = { path = "../control_core" }
+libstdcxx_heap = { path = "../libstdcxx_heap" }
+occupancy_map = { path = "../occupancy_map" }
+thiserror = "2"
+
+[dev-dependencies]
+hegeltest = { version = "0.51", features = ["static-engine"] }
+
+[profile.dev]
+opt-level = 1
