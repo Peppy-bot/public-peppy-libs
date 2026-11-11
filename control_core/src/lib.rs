@@ -1,10 +1,10 @@
 //! Shared control-loop and runtime primitives: pacing, filtering, rate
 //! limiting, the timing of a motion, the health of a motor, a mobile base's
-//! footprint, the setpoint stream, the service, receive and ask loops, the
-//! fault that ends a node, the model a component is configured for, latched
-//! failure logging, waiting and locking from synchronous code, and the arms a
-//! request names, for robot nodes and the kinematics crates that plan their
-//! moves.
+//! footprint, its body velocity, its limiter and its wheel odometry, the
+//! setpoint stream, the service, receive and ask loops, the fault that ends a
+//! node, the model a component is configured for, latched failure logging,
+//! waiting and locking from synchronous code, and the arms a request names,
+//! for robot nodes and the kinematics crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -14,7 +14,8 @@
 //!   [`ButterworthFilter`](filters::ButterworthFilter),
 //!   [`HampelFilter`](filters::HampelFilter)).
 //! - [`time`]: a configured rate or seconds value as a `Duration` to wait on,
-//!   the ticks a window spans, and waits a cancel ends, async and blocking.
+//!   the ticks a window spans, waits a cancel ends, async and blocking, and
+//!   times on a ROS clock as integer nanoseconds.
 //! - [`minimum_jerk`]: the quintic blend between two values and its peak rate.
 //! - [`path_timing`]: a path through waypoints rounded at each corner
 //!   within a deviation, its time-optimal timing under velocity and
@@ -23,8 +24,19 @@
 //!   of it.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
+//! - [`twist`]: a body velocity in the robot frame, finite by construction.
+//! - [`limiter`]: the limiter of a base's body velocity, as Nav2 1.5.2's
+//!   velocity smoother limits a stream of setpoints in open loop: each axis
+//!   clamped to its velocity range, ramped at its acceleration and
+//!   deceleration limits, the axes scaled together, and brought to rest once
+//!   the setpoints stop.
+//! - [`odometry`]: the wheel odometry of a differential base, the robot frame
+//!   in the odometry frame integrated from the wheel positions as
+//!   ros2_controllers 6.9.0's diff drive controller integrates it.
 //! - [`non_negative_finite`]: a finite float of at least zero, carried as proof it was
 //!   checked.
+//! - [`not_finite`]: the refusal of values of which one or more is not finite,
+//!   each named, as a body velocity and a base's wheel angles refuse them.
 //! - [`footprint`]: a mobile base's footprint, the outline it covers about its
 //!   center.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
@@ -62,9 +74,12 @@ pub mod fault;
 pub mod filters;
 pub mod footprint;
 pub mod latched_log;
+pub mod limiter;
 pub mod minimum_jerk;
 pub mod motor_health;
 pub mod non_negative_finite;
+pub mod not_finite;
+pub mod odometry;
 pub mod pacer;
 pub mod path_timing;
 pub mod positive_finite;
@@ -79,3 +94,4 @@ mod test_support;
 pub mod throttle;
 pub mod time;
 pub mod timing;
+pub mod twist;
