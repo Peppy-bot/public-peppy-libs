@@ -1,11 +1,11 @@
 # ompl_bridge
 
 OMPL's geometric planners from Rust. A plan runs through a real vector state space with
-bounds, measured as MoveIt measures a joint group, by the sum of each dimension's
-absolute change, by a planner chosen by name, under the caller's state and motion
-checks, and optionally on the zero set of the caller's constraint; OMPL's path
-simplifier then shortens the path. The crate builds OMPL 2.0.2, the release that the ROS reference
-image holds, from the source archive of its release tag (see "Building").
+bounds, measured as MoveIt measures a joint group, by the sum of each dimension's absolute
+change, by a planner chosen by name, under the caller's state and motion checks, and
+optionally on the zero set of the caller's constraint; OMPL's path simplifier then
+shortens the path. The crate builds OMPL 2.0.2, the release that the ROS reference image
+holds, from the source archive of its release tag (see "Building").
 
 - `plan` runs one `Request` and answers a `Plan`: the path when the planner found an
   exact one, its simplification when the request asks for it, and what ended the planner
@@ -226,38 +226,40 @@ each limit: a measurement on that host.
 
 OMPL's simplifier shortens the path, smooths it with B-splines, and repairs a smoothed
 state that fails the checks, each motion it checks judged by `Checks::simplifier_motion`,
-which is `Checks::motion` unless the caller gives the simplifier its own. It reports when its result may still touch an invalid
-state. `Simplification::path` is its result when OMPL reports it valid and it is at most
-as long as the planned path, and the planned path otherwise. The simplifier counts its
-questions whether to stop toward the request's simplification bound, and stops at the
-bound once its first pass has ended. A simplification that its time or the caller's stop
-ends before it starts gives the planned path, and `Simplification::ended_by` says
-`TimeLimit` or `Stopped`.
+which is `Checks::motion` unless the caller gives the simplifier its own. It reports when
+its result may still touch an invalid state. `Simplification::path` is its result when
+OMPL reports it valid and it is at most as long as the planned path, and the planned path
+otherwise. The simplifier counts its questions whether to stop toward the request's
+simplification bound, and stops at the bound once its first pass has ended. A
+simplification that its time or the caller's stop ends before it starts gives the planned
+path, and `Simplification::ended_by` says `TimeLimit` or `Stopped`.
 
 ## Constrained plans
 
 A constrained plan projects its states onto the zero set of the `Constraint` by Newton
 steps, as OMPL's projected state space does, within the projection's tolerance. It walks
 each motion along the constraint in steps of half the projection's `spacing`, and judges
-each straight stretch of the walk with `Checks::motion`, the steps the projection leaves in
-one line joined in one motion. A motion whose walk leaves the space's bounds is invalid, as
-OMPL leaves the bounds to the state check this walk replaces. The plan walks its path and its
-simplification out along the constraint the same way, as OMPL's demos of constrained planning
-and MoveIt interpolate a constrained path: consecutive states lie at most `spacing` apart, and each
-state the walk adds between two states of the planner lies within the projection's
-tolerance of the constraint. `CONSTRAINED_SPACING` is OMPL's default spacing.
+each straight stretch of the walk with `Checks::motion`, or `Checks::simplifier_motion`
+while the simplifier checks it, the steps the projection leaves in one line joined in one
+motion. A motion whose walk leaves the space's bounds is invalid, as OMPL leaves the
+bounds to the state check this walk replaces. The plan walks its path and its
+simplification out along the constraint the same way, as OMPL's demos of constrained
+planning and MoveIt interpolate a constrained path: consecutive states lie at most
+`spacing` apart, and each state the walk adds between two states of the planner lies
+within the projection's tolerance of the constraint. `CONSTRAINED_SPACING` is OMPL's
+default spacing.
 
 ## The caller's functions
 
 `Checks::state` judges a state and `Checks::motion` the straight motion between two
-states, its end included: OMPL takes the motion's start as valid. `Checks::simplifier_motion`
-judges a motion the simplifier checks, by `Checks::motion` unless the caller says otherwise. When a motion is
-invalid it answers the fraction of the way along it to its last valid state. A plan calls
-both on the thread that calls `plan`, and, when it makes several attempts, on the thread
-of each, and shares them with the threads on which PRM and PRM* search their roadmap, so
-both traits are `Sync`. `SampledGoals::sampling` and the `GoalSampling::sample` of an
-attempt run on the attempt's thread, so `SampledGoals` is `Sync` and `GoalSampling` is
-`Send`.
+states, its end included: OMPL takes the motion's start as valid.
+`Checks::simplifier_motion` judges a motion the simplifier checks, by `Checks::motion`
+unless the caller says otherwise. When a motion is invalid it answers the fraction of the
+way along it to its last valid state. A plan calls both on the thread that calls `plan`,
+and, when it makes several attempts, on the thread of each, and shares them with the
+threads on which PRM and PRM* search their roadmap, so both traits are `Sync`.
+`SampledGoals::sampling` and the `GoalSampling::sample` of an attempt run on the attempt's
+thread, so `SampledGoals` is `Sync` and `GoalSampling` is `Send`.
 
 Before the planner starts, the start passes the state check and lies on the constraint,
 or the plan answers `PlanError::InvalidStart`. The plan keeps the given goals that pass,

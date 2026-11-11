@@ -635,6 +635,47 @@ fn a_constrained_plan_judges_the_stretches_of_its_walks_by_the_motion_check() {
 // The steps of a walk that the projection leaves in one line join one motion, so a check of
 // a motion walks it whole: with a constraint every state meets, the motion check sees a
 // motion longer than the spacing, and the plan's path keeps to the spacing all the same.
+/// The checks of the sphere's equator, the simplifier's check refusing every motion and
+/// counting the motions it is asked.
+struct EquatorSimplifierRefuses(AtomicUsize);
+
+impl Checks for EquatorSimplifierRefuses {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        EquatorOfMotions.state(state)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        EquatorOfMotions.motion(from, to)
+    }
+
+    fn simplifier_motion(&self, _: &[f64], _: &[f64]) -> Result<Motion, CheckError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Motion::Invalid { last_valid: 0.0 })
+    }
+}
+
+// A constrained plan's simplifier judges each stretch of its walks by the simplifier's
+// check: with that check refusing every motion, RRT's path on the sphere, which the
+// simplifier has motions to try on, stays the planned path, and the simplifier asked the
+// check.
+#[test]
+fn a_constrained_simplifier_judges_its_stretches_by_the_simplifiers_check() {
+    let (space, start, goal) = sphere_ends();
+    let goals = [goal];
+    let checks = EquatorSimplifierRefuses(AtomicUsize::new(0));
+    let request = Request {
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        ..on_the_sphere(Planner::Rrt, &space, &start, &goals, &UnitSphere)
+    };
+    let answer = plan(&request, &checks).expect("a plan");
+    let path = answer.path.expect("a path on the sphere");
+    assert_eq!(answer.simplified.expect("a simplified path").path, path);
+    assert!(
+        checks.0.load(Ordering::SeqCst) > 0,
+        "the simplifier asked the simplifier's check of no motion"
+    );
+}
+
 #[test]
 fn the_steps_of_a_walk_in_one_line_join_one_motion() {
     let space = unit_cube(2);

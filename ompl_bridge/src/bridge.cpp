@@ -97,17 +97,19 @@ class StateCheck : public ob::StateValidityChecker {
 };
 
 // The caller's check of a straight motion between two states of the plan's space, the
-// planner's or, with `simplifying`, the simplifier's, and the counts OMPL keeps of a
-// validator's answers.
+// planner's until the simplifier starts and the simplifier's from then on, and the counts
+// OMPL keeps of a validator's answers.
 class CallerMotion : public ob::MotionValidator {
  public:
   CallerMotion(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
-               std::size_t dimension, bool constrained, bool simplifying)
+               std::size_t dimension, bool constrained)
       : ob::MotionValidator(si),
         dimension_(dimension),
         callbacks_(callbacks),
-        constrained_(constrained),
-        simplifying_(simplifying) {}
+        constrained_(constrained) {}
+
+  // Judges each motion from here on by the caller's simplifier check.
+  void judge_for_the_simplifier() { simplifying_ = true; }
 
  protected:
   bool check(const ob::State* from, const ob::State* to, double& last_valid) const {
@@ -131,16 +133,15 @@ class CallerMotion : public ob::MotionValidator {
  private:
   const Callbacks& callbacks_;
   bool constrained_;
-  bool simplifying_;
+  bool simplifying_ = false;
 };
 
 // The caller's check of the straight motion between two states of a real vector
 // space.
 class MotionCheck : public CallerMotion {
  public:
-  MotionCheck(const ob::SpaceInformationPtr& si, const Callbacks& callbacks, std::size_t dimension,
-              bool simplifying)
-      : CallerMotion(si, callbacks, dimension, false, simplifying) {}
+  MotionCheck(const ob::SpaceInformationPtr& si, const Callbacks& callbacks, std::size_t dimension)
+      : CallerMotion(si, callbacks, dimension, false) {}
 
   bool checkMotion(const ob::State* from, const ob::State* to) const override {
     double last_valid = 0.0;
@@ -177,8 +178,8 @@ constexpr double stretch_tolerance = 1e-9;
 class WalkedMotionCheck : public CallerMotion {
  public:
   WalkedMotionCheck(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
-                    std::size_t dimension, bool simplifying)
-      : CallerMotion(si, callbacks, dimension, true, simplifying) {}
+                    std::size_t dimension)
+      : CallerMotion(si, callbacks, dimension, true) {}
 
   bool checkMotion(const ob::State* from, const ob::State* to) const override {
     std::pair<ob::State*, double> last_valid{nullptr, 0.0};
@@ -708,23 +709,26 @@ og::PathGeometric answered(og::PathGeometric path, bool constrained) {
   return path;
 }
 
-// A request's problem: a setup of its state space, the space's information with the
-// caller's checks, its start, its goals, the given ones that pass the state check and lie
-// on the constraint or the caller's sampled goals, and its planner.
 // The caller's check of a motion of `si`'s space, walked along the constraint when the
-// space is `constrained`: the planner's, or the simplifier's when `simplifying`.
-ob::MotionValidatorPtr motion_check(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
-                                    std::size_t dimension, bool constrained, bool simplifying) {
+// space is `constrained`.
+std::shared_ptr<CallerMotion> motion_check(const ob::SpaceInformationPtr& si,
+                                           const Callbacks& callbacks, std::size_t dimension,
+                                           bool constrained) {
   if (constrained) {
-    return std::make_shared<WalkedMotionCheck>(si, callbacks, dimension, simplifying);
+    return std::make_shared<WalkedMotionCheck>(si, callbacks, dimension);
   }
-  return std::make_shared<MotionCheck>(si, callbacks, dimension, simplifying);
+  return std::make_shared<MotionCheck>(si, callbacks, dimension);
 }
 
+// A request's problem: a setup of its state space, the space's information with the
+// caller's checks, its start, its goals, the given ones that pass the state check and lie
+// on the constraint or the caller's sampled goals, and its planner; and the motion check
+// of the space's information.
 struct Problem {
   og::SimpleSetupPtr setup;
   std::size_t dimension;
   bool constrained;
+  std::shared_ptr<CallerMotion> motion;
 };
 
 // The sampled goals of `problem`; none when its goals were given.
@@ -732,12 +736,6 @@ std::shared_ptr<SampledGoals> sampled_goals_of(const Problem& problem) {
   return std::dynamic_pointer_cast<SampledGoals>(problem.setup->getGoal());
 }
 
-// The problem of attempt `attempt` of `request`, built on the calling thread once its seed
-// generator takes the attempt's seed, so that seed seeds every random number generator of
-// the problem, the planner's, the samplers' and the simplifier's, in the order of the
-// problem's construction; or the status that refuses the request's start, when it fails
-// the state check or lies off the constraint, or its every given goal. Its sampled goals
-// sample until `deadline`.
 // A real vector space measured as MoveIt measures a joint group: the distance between two
 // states is the sum of each dimension's absolute change, and the space's extent the sum of
 // the dimensions' ranges (moveit2 2.15.2 joint_model_group.cpp:455-476).
@@ -764,6 +762,12 @@ class JointGroupSpace : public ob::RealVectorStateSpace {
   }
 };
 
+// The problem of attempt `attempt` of `request`, built on the calling thread once its seed
+// generator takes the attempt's seed, so that seed seeds every random number generator of
+// the problem, the planner's, the samplers' and the simplifier's, in the order of the
+// problem's construction; or the status that refuses the request's start, when it fails
+// the state check or lies off the constraint, or its every given goal. Its sampled goals
+// sample until `deadline`.
 std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& request,
                                                            const Callbacks& callbacks,
                                                            std::uint32_t attempt,
@@ -790,12 +794,12 @@ std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& re
     projected->setDelta(request.constrained_spacing / projected->getLambda());
     space = projected;
     si = std::make_shared<ob::ConstrainedSpaceInformation>(space);
-    si->setMotionValidator(motion_check(si, callbacks, dimension, true, false));
   } else {
     space = real;
     si = std::make_shared<ob::SpaceInformation>(space);
-    si->setMotionValidator(motion_check(si, callbacks, dimension, false, false));
   }
+  const std::shared_ptr<CallerMotion> motion = motion_check(si, callbacks, dimension, constrained);
+  si->setMotionValidator(motion);
   si->setStateValidityChecker(std::make_shared<StateCheck>(si, callbacks, dimension, constrained));
 
   const auto start = state_of(space, request.start.data(), dimension, constrained);
@@ -826,7 +830,7 @@ std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& re
   setup->setGoal(goals);
   setup->setPlanner(planner_of(request.planner, si));
   setup->setup();
-  return Problem{setup, dimension, constrained};
+  return Problem{setup, dimension, constrained, motion};
 }
 
 // What an attempt of a plan found: what its planner answered, what ended it, the path,
@@ -989,16 +993,15 @@ og::PathGeometricPtr hybrid_of(const Problem& problem,
   return hybridization.getHybridPath();
 }
 
-// Writes `planned`, as the plan answers it, into `result`, and, when the request asks for
-// it, its simplification. OMPL's simplifier, judging each motion by the caller's simplifier
-// check, smooths and repairs the path it shortens, and says when the result may touch an
-// invalid state; its result stands when it is valid
-// and at most as long as the path. It starts unless the plan is interrupted, past
-// `deadline` too, as MoveIt's `simplifySolution` starts with whatever time its plan
-// left: an interruption keeps it from starting, and the plan answers that. Its first
-// pass runs to its end whatever the termination condition answers: OMPL bounds that pass
-// by counts of attempts, most of them the path's number of states. Each pass after it
-// ends at the iteration bound, at an interruption or at `deadline`.
+// Writes `planned`, as the plan answers it, into `result`, and, when the request asks for it,
+// its simplification. OMPL's simplifier, judging each motion by the caller's simplifier check,
+// smooths and repairs the path it shortens, and says when the result may touch an invalid
+// state; its result stands when it is valid and at most as long as the path. It starts unless
+// the plan is interrupted, past `deadline` too, as MoveIt's `simplifySolution` starts with
+// whatever time its plan left: an interruption keeps it from starting, and the plan answers
+// that. Its first pass runs to its end whatever the termination condition answers: OMPL bounds
+// that pass by counts of attempts, most of them the path's number of states. Each pass after
+// it ends at the iteration bound, at an interruption or at `deadline`.
 void write_path(PlanResult& result, const Problem& problem, const og::PathGeometric& planned,
                 const PlanRequest& request, const Callbacks& callbacks,
                 Clock::time_point deadline) {
@@ -1012,9 +1015,7 @@ void write_path(PlanResult& result, const Problem& problem, const og::PathGeomet
   if (const std::optional<Ending> interrupted = interruption(callbacks)) {
     result.simplification_ended_by = *interrupted;
   } else {
-    const ob::SpaceInformationPtr& si = problem.setup->getSpaceInformation();
-    si->setMotionValidator(
-        motion_check(si, callbacks, problem.dimension, problem.constrained, true));
+    problem.motion->judge_for_the_simplifier();
     Bounds simplification_bounds(callbacks, request.simplification_iterations, deadline);
     valid = problem.setup->getPathSimplifier()->simplify(simplified,
                                                           simplification_bounds.condition());

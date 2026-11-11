@@ -51,7 +51,7 @@
 //!   keeps the plan's clearance of, or that has risen to it, steps by its spare and keeps
 //!   it, as on any run. A run whose path from the start lies on the straight line from
 //!   the start to the run's end, past waypoints on it such as one a corner's repair adds
-//!   to the first run, is walked by the rule from the start, and so is a planner's motion
+//!   to the first run, is walked by the rule from the start, and so is a walked motion
 //!   whose first state lies on the straight line from the start to its end. Any other run
 //!   is walked by its spare from its first state, so one that leaves a state short of the
 //!   plan's clearance fails there.
@@ -60,8 +60,8 @@
 //!   `VALID_SEGMENT_FRACTION` of the space's extent at most, by the sum of the joints'
 //!   changes, each keeping the plan's clearances (`sampled`). A plan from a start short
 //!   of them walks each motion as above, one from the start by the start rule (`walk`).
-//!   OMPL's simplifier walks each motion as above (`simplifier_motion`), so each shortcut
-//!   it keeps passes the walk of the plan's answer. The plan then walks the path the robot
+//!   OMPL's simplifier walks each motion as above (`simplifier_motion`), and keeps only
+//!   motions that walk passes. The plan then walks the path the robot
 //!   runs through the simplified path, every run and arc of it, and answers it when that
 //!   passes its check, the planned path when only that one passes, and no path when
 //!   neither does. MoveIt checks the simplified path at its checked states alone and
@@ -1404,8 +1404,9 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
         }
     }
 
-    /// The planner's check of the motion from `from` to `to`, which keeps every state
-    /// the planner keeps but the start at the plan's clearances: `from` keeps them unless
+    /// The walk of the motion from `from` to `to`, the check of a plan from a start short
+    /// of its clearances and of the simplifier, which keeps every state but the start at
+    /// the plan's clearances: `from` keeps them unless
     /// it is the start, and the motion keeps them as `walk_run` walks it, a motion by the
     /// start rule ending where each term keeps them. A motion by the start rule that fails
     /// keeps no state.
@@ -1775,7 +1776,7 @@ impl<const N: usize, const D: usize> Checks for PathChecks<'_, N, D> {
 
     fn simplifier_motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
         let (from, to) = (from.try_into()?, to.try_into()?);
-        // Each shortcut the simplifier keeps passes the walk of the plan's answer.
+        // The simplifier keeps only motions this walk passes.
         Ok(self.walk(from, to))
     }
 }
@@ -3428,7 +3429,7 @@ pub(crate) mod tests {
     #[test]
     fn a_plan_from_a_start_short_of_its_clearances_walks_each_motion() {
         let (at, thickness) = THIN_WALL;
-        let short_start = 0.001;
+        let short_start = MIN_SPARE_M;
         with_the_wall(&WallAcrossX::new(at, thickness, short_start), |checks| {
             assert!(
                 matches!(

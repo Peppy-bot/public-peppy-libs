@@ -270,7 +270,7 @@ from the arm that carries it, has a floor of 0 there and never comes nearer than
 motion ends where its step falls under 0.1 mm. A term the start keeps the clearance of
 keeps it as on any run. A run whose path from the start lies on the straight line from the
 start to the run's end, past waypoints on it such as one a corner's repair adds to the
-first run, is walked by the rule from the start, and so is a planner's motion whose first
+first run, is walked by the rule from the start, and so is a walked motion whose first
 state lies on the straight line from the start to its end; any other run is walked by its
 spare from its first state, so one that leaves a state short of the plan's clearance fails
 there.
@@ -428,47 +428,46 @@ It then walks every run of its answer, a run that joins two waypoints past one t
 drops, one within `MIN_JOINT_CHANGE_RAD` of the waypoint before it, among them, and fails
 `NoPath` on a run that falls short.
 
-The search takes the first state of a motion as valid, as OMPL's discrete check does. A
-plan from a start short of its clearances walks each motion as "A valid motion" and "The
-start" say: a motion fails when its first state, the start excepted, falls short, and a
-motion from the start fails when it ends before each term keeps its clearance. OMPL's
-simplifier walks each motion it checks, so each shortcut it keeps passes the walk of the
-plan's answer. The plan answers the simplified path when the path the robot runs through
-it passes the walk above, its rounded corners included, the planned path when only that
-one passes, and no path when neither does. MoveIt checks the simplified path at its checked
-states alone, and answers INVALID_MOTION_PLAN when it fails.
+The search takes the first state of a motion as valid, as OMPL's discrete check does. A plan
+from a start short of its clearances walks each motion as "A valid motion" and "The start"
+say: a motion fails when its first state, the start excepted, falls short, and a motion from
+the start fails when it ends before each term keeps its clearance. OMPL's simplifier walks
+each motion it checks, and keeps only motions that walk passes. The plan answers the
+simplified path when the path the robot runs through it passes the walk above, its rounded
+corners included, the planned path when only that one passes, and no path when neither does.
+MoveIt checks the simplified path at its checked states alone, and answers
+INVALID_MOTION_PLAN when it fails.
 
 ## CHOMP
 
 `src/chomp.rs` is MoveIt 2.15.2's CHOMP optimizer (`chomp_motion_planner`) in Rust, with the
 values of its planner plugin (`chomp_interface.cpp`, `loadParams`), and keeps MoveIt's BSD
 license notice. A binary distributed with this crate in it includes that code, so, as the
-notice's second clause asks, it ships the notice with it. A plan whose `refiner` is `Refiner::Chomp` refines the path its planner
-answers. CHOMP starts from the path the robot runs through it, its corners rounded as
-execute_joint_path rounds them, its 101 points, 3 s at 0.03 s, evenly spaced along it; the
-start and the end stay where they are, and the 99 points between them are free. MoveIt's
-`fillInFromTrajectory` fills CHOMP's points by waypoint index through the trajectory CHOMP
-is given (chomp_trajectory.cpp:188-209): through the trajectory MoveIt's time
-parameterization answers, sampled every 0.1 s, the points lie at even times on the chords
-between the samples. On 100 drawn scenes whose RRTConnect path turns, at a clearance of
-4 cm, CHOMP from MoveIt's fill answers a path that bends more than RRTConnect's on each of
-the 82 it changes, and from the start here one that bends less on 75 of those 82 and that
-the robot runs in less time on 76. A
-trajectory's cost is its squared acceleration, weighed by 0.1, plus, at each free point,
-each collision sphere's potential times its speed. The spheres are those of each link of
-each arm and of each part its links carry, such as a gripper finger
-(`collision_geometry::spheres`), grown by the plan's clearance, as MoveIt grows each
-link's bodies by its padding. A sphere's potential is MoveIt's of its center's distance in
-CHOMP's field less its radius: 0 from a clearance of 0.2 m, quadratic within it and linear
-inside an obstacle. The field holds the map's distances and every obstacle of the plan,
-each voxel its shapes touch occupied (`VoxelMap::occupy_intersecting`): every object that
-stands in the world, as MoveIt's CHOMP holds every object of its world, and every object
-an arm the plan does not move holds, as MoveIt's CHOMP holds the bodies of the links
-outside the group in a second field. Its distances and gradient stop at MoveIt's
-propagation distance, 0.25 m, rounded up to whole voxels as MoveIt's field rounds it, and a
-sphere 0.25 m or more from every obstacle has no potential. The field's cells are the
-map's voxels; MoveIt's field has cells of 2 cm (collision_env_distance_field.hpp:53)
-whatever the size of its octomap's voxels.
+notice's second clause asks, it ships the notice with it. A plan whose `refiner` is
+`Refiner::Chomp` refines the path its planner answers. CHOMP starts from the path the robot
+runs through it, its corners rounded as execute_joint_path rounds them, its 101 points, 3 s
+at 0.03 s, evenly spaced along it; the start and the end stay where they are, and the 99
+points between them are free. MoveIt's `fillInFromTrajectory` fills CHOMP's points by
+waypoint index through the trajectory CHOMP is given (chomp_trajectory.cpp:188-209): through
+the trajectory MoveIt's time parameterization answers, sampled every 0.1 s, the points lie
+at even times on the chords between the samples. On 100 drawn scenes whose RRTConnect path
+turns, at a clearance of 4 cm, CHOMP from MoveIt's fill answers a path that bends more than
+RRTConnect's on each of the 82 it changes, and from the start here one that bends less on 75
+of those 82 and that the robot runs in less time on 76. A trajectory's cost is its squared
+acceleration, weighed by 0.1, plus, at each free point, each collision sphere's potential
+times its speed. The spheres are those of each link of each arm and of each part its links
+carry, such as a gripper finger (`collision_geometry::spheres`), grown by the plan's
+clearance, as MoveIt grows each link's bodies by its padding. A sphere's potential is
+MoveIt's of its center's distance in CHOMP's field less its radius: 0 from a clearance of
+0.2 m, quadratic within it and linear inside an obstacle. The field holds the map's
+distances and every obstacle of the plan, each voxel its shapes touch occupied
+(`VoxelMap::occupy_intersecting`): every object that stands in the world, as MoveIt's CHOMP
+holds every object of its world, and every object an arm the plan does not move holds, as
+MoveIt's CHOMP holds the bodies of the links outside the group in a second field. Its
+distances and gradient stop at MoveIt's propagation distance, 0.25 m, rounded up to whole
+voxels as MoveIt's field rounds it, and a sphere 0.25 m or more from every obstacle has no
+potential. The field's cells are the map's voxels; MoveIt's field has cells of 2 cm
+(collision_env_distance_field.hpp:53) whatever the size of its octomap's voxels.
 
 Each iteration descends as MoveIt's optimizer does: the smoothness increments of every
 free point and the collision increments of one free point drawn from the plan's seed,
