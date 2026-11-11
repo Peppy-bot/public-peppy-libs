@@ -8,7 +8,10 @@ nearest occupied voxel, with its gradient. No hardware or messaging dependencies
 
 - `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
   out, answers each voxel's state, its box and the occupied voxels inside a box,
-  `clear`s, and clears the voxels a collision object's shape intersects or touches.
+  `clear`s, clears the voxels a collision object's shape intersects or touches, gives
+  its voxels seen from above as `Columns` and clears every voxel of a column
+  (`clear_columns`), and gives the map `recentered` over other bounds, each voxel both
+  bounds hold keeping what it held.
 - `RobotCutout` is the robot's body to cut out: its chains placed and the body fixed
   around them, grown by `collision_geometry`, where the robot's URDF root stands in the
   map's frame; a `ShapeCutout` is a collision object's shape to cut out.
@@ -118,6 +121,16 @@ root's pose in the map's frame.
 A `ShapeCutout` is a collision object's shape (`collision_geometry::shapes`) placed in
 the map's frame and grown by a padding by the same rule: a point inside it is the sensor
 seeing the object.
+
+## Columns
+
+`columns` gives the map seen from above: a grid of square columns of the voxel's side, one
+column for each pair of x and y keys the map holds, the first with its corner at the
+lowest x and y the map holds, each from the map's bottom, `bottom_m`, the lowest z the map
+holds, to its top. `clear_columns` clears every voxel of each column it is given, from the
+map's bottom to its top: each takes one miss's log-odds, so it reads free and the next hit
+marks it occupied again. A navigator clears the columns under a mobile base's footprint
+with it (`navigation_core`).
 
 ## Collision objects
 

@@ -245,6 +245,21 @@ pub struct Scan<'a> {
     pub max_range_m: PositiveFinite,
 }
 
+/// A map's voxels seen from above: a grid of `size_x` by `size_y` square
+/// columns of side `side_m`, the first with its corner at `origin`, in meters
+/// in the map's frame. Column `[i, j]` holds every voxel of the map whose key
+/// lies `i` above the map's lowest on x and `j` above it on y, from the map's
+/// bottom to its top.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Columns {
+    pub origin: [f64; 2],
+    pub size_x: u32,
+    pub size_y: u32,
+    pub side_m: f64,
+    /// The height of every column's bottom, the lowest z the map holds.
+    pub bottom_m: f64,
+}
+
 /// What one voxel of the map holds.
 #[derive(Debug, PartialEq)]
 pub enum Voxel {
@@ -270,7 +285,11 @@ pub struct VoxelMap {
 impl VoxelMap {
     /// An empty map in `frame` of voxels of `size` over `bounds`.
     pub fn new(frame: Frame, size: PositiveFinite, bounds: Bounds) -> Result<Self, MapError> {
-        let size = VoxelSize::new(size);
+        Self::empty(frame, VoxelSize::new(size), bounds)
+    }
+
+    /// An empty map in `frame` of voxels of `size` over `bounds`.
+    fn empty(frame: Frame, size: VoxelSize, bounds: Bounds) -> Result<Self, MapError> {
         let in_tree = |corner: [f64; 3]| {
             size.key(corner).ok_or(MapError::OutsideTree {
                 corner,
@@ -296,6 +315,11 @@ impl VoxelMap {
             log_odds: vec![f32::NAN; voxels as usize],
             model: SensorModel::octomap(),
         })
+    }
+
+    /// The frame the map holds its voxels in.
+    pub fn frame(&self) -> &Frame {
+        &self.frame
     }
 
     /// The voxel holding `point`, when the map holds it.
@@ -375,6 +399,64 @@ impl VoxelMap {
     /// Empty the map: every voxel unknown.
     pub fn clear(&mut self) {
         self.log_odds.fill(f32::NAN);
+    }
+
+    /// The map over `bounds`, in this map's frame and of its voxel size: each
+    /// voxel that both maps hold keeps what this map holds of it, and a voxel
+    /// that this map does not hold is unknown.
+    pub fn recentered(&self, bounds: Bounds) -> Result<Self, MapError> {
+        let mut map = Self::empty(self.frame.clone(), self.grid.size, bounds)?;
+        for (index, &value) in self.log_odds.iter().enumerate() {
+            if value.is_nan() {
+                continue;
+            }
+            if let Some(kept) = map.grid.index(self.grid.key_of(index)) {
+                map.log_odds[kept] = value;
+            }
+        }
+        Ok(map)
+    }
+
+    /// The map's voxels seen from above, as columns.
+    pub fn columns(&self) -> Columns {
+        let side_m = self.voxel_size();
+        let count = |axis: usize| {
+            u32::try_from(self.grid.dims[axis]).expect("a map holds fewer voxels an axis than u32")
+        };
+        Columns {
+            origin: [
+                f64::from(self.grid.lo.0[0]) * side_m,
+                f64::from(self.grid.lo.0[1]) * side_m,
+            ],
+            size_x: count(0),
+            size_y: count(1),
+            side_m,
+            bottom_m: f64::from(self.grid.lo.0[2]) * side_m,
+        }
+    }
+
+    /// Clears every voxel of each of `columns`, from the map's bottom to its top: each
+    /// takes one miss's log-odds, so it reads free and the next hit marks it occupied
+    /// again, as Nav2's obstacle layer marks a cell its footprint cleared on the next
+    /// frame that sees it.
+    ///
+    /// # Panics
+    ///
+    /// On a column outside [`VoxelMap::columns`].
+    pub fn clear_columns(&mut self, columns: impl IntoIterator<Item = [u32; 2]>) {
+        let [size_x, size_y, size_z] = self.grid.dims;
+        let miss = self.model.miss;
+        for [x, y] in columns {
+            let (x, y) = (x as usize, y as usize);
+            assert!(
+                x < size_x && y < size_y,
+                "column [{x}, {y}] lies outside the map's {size_x} by {size_y} columns"
+            );
+            let bottom = (x * size_y + y) * size_z;
+            for index in bottom..bottom + size_z {
+                self.log_odds[index] = miss;
+            }
+        }
     }
 
     /// Clears every voxel of the map that `shape` touches, as `touches` finds them: each

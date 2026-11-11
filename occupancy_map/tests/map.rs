@@ -5,7 +5,8 @@
 //! against a brute-force distance inside the map and outside it, a rendered depth frame
 //! of a box, and a collision object clearing the voxels it intersects or touches, those
 //! it covers in part among them, a mesh clearing the voxels each one measured on its own
-//! finds, and cutting what the sensor sees of it, grown by a padding, out of a scan.
+//! finds, and cutting what the sensor sees of it, grown by a padding, out of a scan; and
+//! the map's columns, each voxel's center inside its column, and the clear of a column.
 
 use std::collections::BTreeSet;
 
@@ -19,7 +20,7 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{
-    Bounds, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, RobotCutout, Scan,
+    Bounds, Columns, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, RobotCutout, Scan,
     ShapeCutout, Voxel, VoxelMap, depth_points,
 };
 
@@ -75,6 +76,11 @@ fn map_of(voxel_m: f64) -> VoxelMap {
 /// OctoMap's lower bound of a voxel's log-odds, the log-odds of 0.1192.
 fn lowest() -> f32 {
     (0.1192_f64 / (1.0 - 0.1192)).ln() as f32
+}
+
+/// OctoMap's log-odds of one miss, the log-odds of 0.4.
+fn one_miss() -> f32 {
+    (0.4_f64 / (1.0 - 0.4)).ln() as f32
 }
 
 /// The pose that places nothing anywhere else.
@@ -1256,4 +1262,138 @@ fn a_mesh_clears_the_voxels_each_one_measured_alone_finds(tc: TestCase) {
     let mut map = map();
     map.clear_intersecting(&placed);
     assert_eq!(known(&map), touched_one_by_one(&map, &placed));
+}
+
+/// The column of `columns` that holds the center of voxel `key` of `map`, by the
+/// column's corner and side.
+fn column_of(map: &VoxelMap, columns: Columns, key: Key) -> [u32; 2] {
+    let center = map.center(key);
+    std::array::from_fn(|i| {
+        let offset = (center[i] - columns.origin[i]) / columns.side_m;
+        assert!(offset > 0.0, "voxel {key:?} lies below the columns' corner");
+        offset as u32
+    })
+}
+
+// Every voxel's center lies inside the column of its x and y keys, and the columns
+// cover the map's extent; clearing drawn columns of a drawn scene takes every voxel of
+// them to one miss's log-odds, unknown ones included, and leaves every other voxel as
+// it was.
+#[hegel::test(test_cases = 50)]
+fn clearing_columns_frees_their_voxels_and_no_other(tc: TestCase) {
+    let mut map = map();
+    let sensor = sensor(&tc);
+    let points: Vec<[f32; 3]> = (0..tc.draw(gs::integers::<usize>().min_value(1).max_value(40)))
+        .map(|_| point(&tc, 0.2, 1.4))
+        .collect();
+    insert(&mut map, sensor, &points, &[]);
+    assert_eq!(map.frame(), &frame());
+    let columns = map.columns();
+    let [lowest_key, highest_key] = [[-EDGE_M; 3], [EDGE_M; 3]].map(|corner| {
+        map.key(corner)
+            .expect("the map holds the corners of its bounds")
+    });
+    let keys_on = |axis: usize| (highest_key.0[axis] - lowest_key.0[axis] + 1) as u32;
+    assert_eq!((columns.size_x, columns.size_y), (keys_on(0), keys_on(1)));
+    assert_eq!(columns.side_m, VOXEL_M);
+    assert_eq!(columns.bottom_m, f64::from(lowest_key.0[2]) * VOXEL_M);
+    let cleared: BTreeSet<[u32; 2]> = (0..tc.draw(gs::integers::<usize>().max_value(30)))
+        .map(|_| {
+            [
+                tc.draw(gs::integers::<u32>().max_value(columns.size_x - 1)),
+                tc.draw(gs::integers::<u32>().max_value(columns.size_y - 1)),
+            ]
+        })
+        .collect();
+    let before = voxels(&map);
+    map.clear_columns(cleared.iter().copied());
+    for (key, voxel) in &before {
+        if !cleared.contains(&column_of(&map, columns, *key)) {
+            assert_eq!(
+                &map.voxel(*key),
+                voxel,
+                "voxel {key:?} outside the cleared columns"
+            );
+        }
+    }
+    for &[x, y] in &cleared {
+        let low = map.key([
+            columns.origin[0] + (f64::from(x) + 0.5) * VOXEL_M,
+            columns.origin[1] + (f64::from(y) + 0.5) * VOXEL_M,
+            -EDGE_M,
+        ]);
+        let low = low.expect("a column's bottom voxel lies in the map");
+        assert_eq!(column_of(&map, columns, low), [x, y]);
+        for z in 0..keys_on(2) as i32 {
+            let key = Key([low.0[0], low.0[1], low.0[2] + z]);
+            assert_eq!(
+                map.voxel(key),
+                Voxel::Free(one_miss()),
+                "voxel {key:?} of column [{x}, {y}]"
+            );
+        }
+    }
+}
+
+// A voxel that ten scans hit, its column cleared, reads free, and the next scan that hits
+// it marks it occupied again, as Nav2's obstacle layer marks a cleared cell on the next
+// frame that sees it.
+#[test]
+fn a_cleared_voxel_is_marked_again_by_one_hit() {
+    let mut map = map();
+    let point = [0.52_f32, 0.21, 0.33];
+    for _ in 0..10 {
+        insert(&mut map, identity(), &[point], &[]);
+    }
+    let key = map
+        .key(point.map(f64::from))
+        .expect("the map holds the point");
+    assert!(map.is_occupied(key), "{:?}", map.voxel(key));
+    let column = column_of(&map, map.columns(), key);
+    map.clear_columns([column]);
+    assert_eq!(map.voxel(key), Voxel::Free(one_miss()));
+    insert(&mut map, identity(), &[point], &[]);
+    assert!(map.is_occupied(key), "{:?}", map.voxel(key));
+}
+
+// A column outside the map is no column of it.
+#[test]
+#[should_panic(expected = "lies outside the map's")]
+fn a_column_outside_the_map_is_refused() {
+    let mut map = map();
+    let columns = map.columns();
+    map.clear_columns([[columns.size_x, 0]]);
+}
+
+// A map recentered over bounds moved by a drawn offset keeps what it held of each voxel the
+// new bounds hold, and knows no other voxel.
+#[hegel::test(test_cases = 50)]
+fn a_recentered_map_keeps_the_voxels_its_new_bounds_hold(tc: TestCase) {
+    let mut map = map();
+    let sensor = sensor(&tc);
+    let points: Vec<[f32; 3]> = (0..tc.draw(gs::integers::<usize>().min_value(1).max_value(40)))
+        .map(|_| point(&tc, 0.2, 1.4))
+        .collect();
+    insert(&mut map, sensor, &points, &[]);
+    let offset: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-1.5).max_value(1.5)));
+    let moved = map
+        .recentered(Bounds {
+            min: offset.map(|c| c - EDGE_M),
+            max: offset.map(|c| c + EDGE_M),
+        })
+        .expect("bounds the tree holds");
+    assert_eq!(moved.frame(), map.frame());
+    assert_eq!(moved.voxel_size(), map.voxel_size());
+    let held = |key: Key| moved.key(moved.center(key)) == Some(key);
+    for (key, voxel) in voxels(&map) {
+        if held(key) {
+            assert_eq!(moved.voxel(key), voxel, "{key:?}");
+        } else {
+            assert_eq!(moved.voxel(key), Voxel::Unknown, "{key:?}");
+        }
+    }
+    assert!(
+        moved.known().all(|key| map.voxel(key) != Voxel::Unknown),
+        "the recentered map knows a voxel the map did not"
+    );
 }
