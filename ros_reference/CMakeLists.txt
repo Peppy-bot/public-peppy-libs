@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Boost REQUIRED COMPONENTS serialization thread)
 find_package(Ceres REQUIRED)
 find_package(chomp_motion_planner REQUIRED)
+find_package(diff_drive_controller REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_kinematics REQUIRED)
@@ -18,12 +19,16 @@ find_package(moveit_ros_occupancy_map_monitor REQUIRED)
 find_package(moveit_ros_perception REQUIRED)
 find_package(moveit_ros_planning REQUIRED)
 find_package(nav2_amcl REQUIRED)
+find_package(nav2_collision_monitor REQUIRED)
+find_package(nav2_controller REQUIRED)
 find_package(nav2_core REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_map_server REQUIRED)
+find_package(nav2_regulated_pure_pursuit_controller REQUIRED)
 find_package(nav2_ros_common REQUIRED)
 find_package(nav2_smac_planner REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(nav2_velocity_smoother REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(octomap REQUIRED)
@@ -93,11 +98,18 @@ add_executable(ros_reference
   reference_programs/obstacles.cpp
   reference_programs/obstacle_projection.cpp
   reference_programs/global_costmap.cpp
+  reference_programs/velocity_smoother.cpp
+  reference_programs/pure_pursuit.cpp
+  reference_programs/collision_monitor.cpp
+  reference_programs/diff_drive_odometry.cpp
 )
+# The velocity smoother exports its library and headers as variables, and no target.
+target_include_directories(ros_reference PRIVATE ${nav2_velocity_smoother_INCLUDE_DIRS})
 target_link_libraries(ros_reference PRIVATE
   Boost::serialization
   Boost::thread
   chomp_motion_planner::chomp_motion_planner
+  diff_drive_controller::diff_drive_controller
   geometric_shapes::geometric_shapes
   moveit_core::moveit_collision_detection
   moveit_core::moveit_collision_distance_field
@@ -114,13 +126,19 @@ target_link_libraries(ros_reference PRIVATE
   moveit_ros_perception::moveit_pointcloud_octomap_updater_core
   moveit_ros_planning::moveit_kinematics_plugin_loader
   nav2_amcl::amcl_core
+  nav2_collision_monitor::collision_monitor_core
+  nav2_controller::feasible_path_handler
+  nav2_controller::simple_goal_checker
+  nav2_controller::simple_progress_checker
   nav2_core::nav2_core
   nav2_costmap_2d::layers
   nav2_costmap_2d::nav2_costmap_2d_core
   nav2_map_server::map_io
+  nav2_regulated_pure_pursuit_controller::nav2_regulated_pure_pursuit_controller
   nav2_ros_common::nav2_ros_common
   nav2_smac_planner::nav2_smac_planner_common
   nav2_util::nav2_util_core
+  ${nav2_velocity_smoother_LIBRARIES}
   ${nav_msgs_TARGETS}
   nlohmann_json::nlohmann_json
   ${OCTOMAP_LIBRARIES}

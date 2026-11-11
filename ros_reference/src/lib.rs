@@ -27,6 +27,8 @@ pub mod arm_planning;
 pub mod cartesian_paths;
 pub mod chain_collision;
 pub mod chomp_refinement;
+pub mod collision_monitor;
+pub mod diff_drive_odometry;
 pub mod forward_kinematics;
 pub mod global_costmap;
 pub mod inflation;
@@ -37,9 +39,11 @@ pub mod orientation_constraints;
 pub mod path_timing;
 pub mod planning;
 pub mod planning_scene;
+pub mod pure_pursuit;
 pub mod room_dataset;
 pub mod self_distance;
 pub mod smac_2d;
+pub mod velocity_smoother;
 
 use robot_description::{Arm, RobotDescription};
 use serde::Deserialize;
@@ -69,6 +73,8 @@ enum Kind {
     CartesianPaths,
     ChainCollision,
     ChompRefinement,
+    CollisionMonitor,
+    DiffDriveOdometry,
     ForwardKinematics,
     GlobalCostmap,
     Inflation,
@@ -78,10 +84,12 @@ enum Kind {
     PathTiming,
     Planning,
     PlanningScene,
+    PurePursuit,
     RoomDataset,
     SelfDistance,
     #[serde(rename = "smac_2d")]
     Smac2d,
+    VelocitySmoother,
 }
 
 /// The directory of the harness, which holds `scenarios/` and `reference/`.

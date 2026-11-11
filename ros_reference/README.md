@@ -31,6 +31,10 @@ change of the reference, which `run.sh --check` proves.
 | `inflation` | Nav2's inflation layer: the costs of a grid inflated around its lethal cells for a footprint padded as Costmap2DROS pads it, over the whole grid, the padded footprint, and the inscribed radius it takes from it | `navigation_core/tests/ros_reference_inflation.rs` |
 | `obstacle_projection` | Nav2's obstacle layer: the lethal cells of the points of a depth frame in a height band, from one observation source with clearing off, after it clears the cells under a padded footprint at a base pose, and the points in the grid's frame as it transforms them | `navigation_core/tests/ros_reference_obstacle_projection.rs` |
 | `global_costmap` | A Nav2 global cost map of a static, an obstacle and an inflation layer: the costs after one update at a base pose, with a saved map that map_io reads as a trinary map, the points of a depth frame and a padded footprint the obstacle layer clears under, and the map and the points as the layers read them | `navigation_core/tests/ros_reference_global_costmap.rs` |
+| `velocity_smoother` | Nav2's velocity smoother in open loop with the axes scaled together: the velocity each cycle of its timer publishes, or that it publishes none, for setpoints and cycles at their own times on the node's clock | `control_core/tests/ros_reference_velocity_smoother.rs` |
+| `pure_pursuit` | Nav2's regulated pure pursuit as its controller server runs it with the feasible path handler, the simple goal checker and the simple progress checker: at each step of a base along a plan on a cost grid, the pruned plan, the checkers' verdicts, and the command or the exception that ended the step | `navigation_core/tests/ros_reference_pure_pursuit.rs` |
+| `collision_monitor` | Nav2's collision monitor with the base's footprint in approach mode, a contact at one point, and one point cloud source stamped at its arrival: the action it takes and the velocity it allows for a velocity and the newest cloud, points the stop under test reads as it reads the centers of a cost grid's occupied cells, or a depth frame's points, or for no cloud or a stale one | `navigation_core/tests/ros_reference_collision_monitor.rs` |
+| `diff_drive_odometry` | The odometry of ros2_controllers' diff drive controller: the pose and the velocity after each update from the wheel positions at a fixed period | `control_core/tests/ros_reference_diff_drive_odometry.rs` |
 
 ## Layout
 
@@ -290,14 +294,15 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `glibc.cpu.hwcaps` mask: they change when the image's runs change, and they can change
    with the host's glibc. Each output of the room dataset kind lists among its inputs the
    kind's sources, `reference_programs/room_dataset*.cpp` and `.hpp`,
-   `reference_programs/amcl_map_cspace.cpp` and `.hpp`, `src/room_dataset.rs`,
+   `reference_programs/amcl_map_cspace.cpp` and `.hpp`, the shared reference program it
+   runs, `reference_programs/nav2_node.cpp` and `.hpp`, `src/room_dataset.rs`,
    `src/metrics.rs` and `src/bin/statistics.rs`, so `INPUTS.SHA256SUMS` holds their
    digests, and a change to one fails the routine tests until `run.sh --datasets` writes
-   the outputs again. The kind's sources are its own files: a change to another file that
-   the statistics depend on, such as the build in `CMakeLists.txt`, the image's packages,
-   the container's settings in `run.sh`, `Inputs::dataset` in `scenario.cpp` or the
-   crate's `write_json`, passes the routine tests, and `run.sh --check --datasets` alone
-   checks it.
+   the outputs again. The kind's sources are its own files and the shared reference
+   program it runs: a change to another file that the statistics depend on, such as the
+   build in `CMakeLists.txt`, the image's packages, the container's settings in `run.sh`,
+   `Inputs::dataset` in `scenario.cpp` or the crate's `write_json`, passes the routine
+   tests, and `run.sh --check --datasets` alone checks it.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of an
    output reads back to the bits that the reference computed, so a test compares with the
@@ -430,7 +435,33 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    of each threshold of the trinary map and unknown pixels out of the camera's view, the
    base's padded footprint over the unknown pixels and a wall, and one depth frame of a
    box in the band and a box through its top, the scene's table top above the band met by
-   none of its rays.
+   none of its rays; for the velocity
+   smoother, the setpoints and cycles of `tools/draw_velocity_smoother.py` for a
+   differential base, its linear y of range 0 to 0 with 0 limits, and a holonomic one,
+   cycles before the first setpoint, a start from rest, a turn, a reversal through 0, a
+   setpoint past every limit, a cycle exactly the velocity timeout after the last
+   setpoint, the ramp to rest after it and a setpoint in the deadband, six setpoints drawn
+   on the differential base and twelve at drawn times on the holonomic one; for pure
+   pursuit, the three plans of `tools/draw_pure_pursuit.py`, on a free floor a base turned
+   far off the plan, steps on a straight run, on an arc, on the approach to the goal,
+   within its tolerance and at its heading, and a step after a pause past the movement
+   allowance; on a cluttered grid, inflated blocks beside the plan, unknown cells on it
+   and a lethal wall across it; and with a lookahead scaled by the speed and a minimum
+   distance to obstacles, a base slowing to rest, a base off the grid and a plan that
+   leaves it, with four steps drawn on each plan; for the collision
+   monitor, the cases of `tools/draw_collision_monitor.py`, points the stop reads as
+   occupied cells' centers: no cloud, a stale one and one as old as the timeout, a wall
+   within and beyond reach ahead, points inside the footprint, a turn, a turn in place and
+   a sideways drive at a point or a wall, a short wall of three points, one point ahead and
+   three drawn sets of points; and a depth frame's points from a sensor 1 m over the
+   base's center, each step over the columns of the test's 5 cm voxels that the footprint
+   crosses, in each a floor point before the edge, the floor the frame sees there, and the
+   three lower floor points whose rays cross the floor's plane in the column past it: a
+   floor that drops below the largest step down within reach, beyond it, with a wall past
+   its edge, a shallow step, and a turn towards a drop; for diff drive
+   odometry, the wheel positions of `tools/draw_diff_drive_odometry.py` for wheels of one
+   radius and of two, a straight run, an arc, a spin in place, a turn too slight to leave
+   the straight branch, a run backwards, and four drawn segments on each.
    A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,

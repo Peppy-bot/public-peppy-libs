@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {"action":"do_nothing","allowed":[0.4,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"","velocity":[0.4,0,0]},
+    {"action":"do_nothing","allowed":[0.4,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0.26,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"do_nothing","allowed":[0.4,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"","velocity":[0.4,0,0]},
+    {"action":"do_nothing","allowed":[0.3,0,0.9],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"","velocity":[0.3,0,0.9]}
+  ],
+  "kind": "collision_monitor",
+  "polygon": [
+    [-0.25,-0.1875],
+    [0.25,-0.1875],
+    [0.25,0.1875],
+    [-0.25,0.1875]
+  ]
+}

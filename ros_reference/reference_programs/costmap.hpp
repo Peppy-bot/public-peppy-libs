@@ -1,11 +1,15 @@
 // What the Nav2 references share: a scenario's grid as Nav2's Costmap2D, a scenario's
-// footprint as Nav2's polygon, and each of them as a reference output holds it.
+// footprint as Nav2's polygon, a scenario's pose as Nav2's stamped pose, and each of them
+// as a reference output holds it.
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav2_costmap_2d/costmap_2d.hpp>
 #include <nlohmann/json.hpp>
 
@@ -27,6 +31,15 @@ std::vector<geometry_msgs::msg::Point> footprint_of(const nlohmann::json& points
 // away from the axes.
 std::vector<geometry_msgs::msg::Point> padded_footprint_of(const nlohmann::json& points,
                                                            double padding);
+
+// The pose of `pose`, x and y in meters and a heading in radians, in `frame`, its
+// quaternion made from the heading as nav2_util's orientationAroundZAxis makes it.
+geometry_msgs::msg::PoseStamped pose_stamped_of(const nlohmann::json& pose,
+                                                const std::string& frame);
+
+// The x, y and heading of `pose`, the heading read back from its quaternion, as a
+// reference output holds them.
+nlohmann::json pose_read(const geometry_msgs::msg::Pose& pose);
 
 // The size, resolution and origin of `costmap`, as a reference output holds them.
 nlohmann::json grid_read(const nav2_costmap_2d::Costmap2D& costmap);

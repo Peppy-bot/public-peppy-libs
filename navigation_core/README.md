@@ -328,3 +328,21 @@ amd64 build, so it runs with no ROS on the machine.
   test frees a cell over a voxel its rays cleared, where Nav2's, with its rays' clearing
   off, leaves it unknown; the scenario keeps the saved map's unknown cells out of the
   camera's view, and the test checks that it does. It runs on amd64.
+- `tests/ros_reference_pure_pursuit.rs`: for the same plan, pose, speed and cost grid,
+  the plan pruned by the controller server's path handler, the command equals Nav2's
+  regulated pure pursuit's within 1e-9, and the goal and progress checkers decide as
+  Nav2's.
+- `tests/ros_reference_collision_monitor.rs`: for the same points, read as occupied cells'
+  centers, padded footprint, velocity and clock, the source's readings stamped at their
+  arrival, the stop slows and stops where Nav2's collision monitor in approach mode does,
+  a stale source included; and on each step down within reach where the monitor, reading
+  the depth points, lets the base go on, the stop on the `LiveObstacles` occupied points
+  of the same points drives the base to rest before any of them lies inside its
+  footprint.
+
+## Tests
+
+`cargo test` runs the parity tests above and the properties and cases of each module on
+drawn grids, maps, scenes and plans (`tests/planner.rs`, `tests/inflation.rs`,
+`tests/obstacles.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
+`tests/progress_checker.rs`, `tests/stop.rs`).

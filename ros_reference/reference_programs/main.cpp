@@ -19,6 +19,8 @@
 #include "cartesian_paths.hpp"
 #include "chain_collision.hpp"
 #include "chomp_refinement.hpp"
+#include "collision_monitor.hpp"
+#include "diff_drive_odometry.hpp"
 #include "forward_kinematics.hpp"
 #include "global_costmap.hpp"
 #include "inflation.hpp"
@@ -28,10 +30,12 @@
 #include "path_timing.hpp"
 #include "planning.hpp"
 #include "planning_scene.hpp"
+#include "pure_pursuit.hpp"
 #include "room_dataset.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
 #include "smac_2d.hpp"
+#include "velocity_smoother.hpp"
 
 namespace {
 
@@ -42,6 +46,8 @@ const std::map<std::string, Reference> references = {
     {"cartesian_paths", ros_reference::cartesian_paths},
     {"chain_collision", ros_reference::chain_collision},
     {"chomp_refinement", ros_reference::chomp_refinement},
+    {"collision_monitor", ros_reference::collision_monitor},
+    {"diff_drive_odometry", ros_reference::diff_drive_odometry},
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"global_costmap", ros_reference::global_costmap},
     {"inflation", ros_reference::inflation},
@@ -51,9 +57,11 @@ const std::map<std::string, Reference> references = {
     {"path_timing", ros_reference::path_timing},
     {"planning", ros_reference::planning},
     {"planning_scene", ros_reference::planning_scene},
+    {"pure_pursuit", ros_reference::pure_pursuit},
     {"room_dataset", ros_reference::room_dataset},
     {"self_distance", ros_reference::self_distance},
     {"smac_2d", ros_reference::smac_2d},
+    {"velocity_smoother", ros_reference::velocity_smoother},
 };
 
 }  // namespace

@@ -29,6 +29,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
+#include "private_member.hpp"
 #include "room_dataset_files.hpp"
 #include "scenario.hpp"
 
@@ -43,14 +44,7 @@ using pointcloud_to_laserscan::PointCloudToLaserScanNode;
 
 // pointcloud_to_laserscan takes a cloud only from its subscription, through its private
 // cloudCallback; no public method reaches it. The reference calls it on each cloud itself,
-// on its own thread. The access rules do not apply to the names in an explicit
-// instantiation, so the instantiation of PrivateMember below defines `pointer`, which
-// gives that member.
-template <typename Tag, typename Tag::type member>
-struct PrivateMember {
-  friend typename Tag::type pointer(Tag) { return member; }
-};
-
+// on its own thread, through the tag below and PrivateMember (private_member.hpp).
 struct CloudCallback {
   using type = void (PointCloudToLaserScanNode::*)(sensor_msgs::msg::PointCloud2::ConstSharedPtr);
   friend type pointer(CloudCallback);

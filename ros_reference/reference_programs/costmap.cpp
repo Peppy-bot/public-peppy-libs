@@ -5,6 +5,8 @@
 
 #include <nav2_costmap_2d/cost_values.hpp>
 #include <nav2_costmap_2d/footprint.hpp>
+#include <nav2_util/geometry_utils.hpp>
+#include <tf2/utils.hpp>
 
 #include "scenario.hpp"
 
@@ -66,6 +68,24 @@ std::vector<geometry_msgs::msg::Point> padded_footprint_of(const nlohmann::json&
   auto footprint = footprint_of(points);
   nav2_costmap_2d::padFootprint(footprint, padding);
   return footprint;
+}
+
+geometry_msgs::msg::PoseStamped pose_stamped_of(const nlohmann::json& pose,
+                                                const std::string& frame) {
+  const auto p = pose.get<std::vector<double>>();
+  if (p.size() != 3) {
+    throw std::runtime_error("a pose is not x, y and yaw");
+  }
+  geometry_msgs::msg::PoseStamped stamped;
+  stamped.header.frame_id = frame;
+  stamped.pose.position.x = p[0];
+  stamped.pose.position.y = p[1];
+  stamped.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(p[2]);
+  return stamped;
+}
+
+nlohmann::json pose_read(const geometry_msgs::msg::Pose& pose) {
+  return {pose.position.x, pose.position.y, tf2::getYaw(pose.orientation)};
 }
 
 nlohmann::json grid_read(const nav2_costmap_2d::Costmap2D& costmap) {

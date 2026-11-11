@@ -20,7 +20,6 @@
 #include <nav2_smac_planner/utils.hpp>
 #include <nav2_util/geometry_utils.hpp>
 #include <nav_msgs/msg/path.hpp>
-#include <tf2/utils.hpp>
 
 #include "costmap.hpp"
 #include "scenario.hpp"
@@ -82,23 +81,6 @@ nav2_smac_planner::SmootherParams smoother_parameters(const nlohmann::json& smoo
   params.refinement_num_ = smoother.at("refinement_num").get<int>();
   params.holonomic_ = true;
   return params;
-}
-
-geometry_msgs::msg::PoseStamped pose_stamped(const nlohmann::json& pose) {
-  const auto p = pose.get<std::vector<double>>();
-  if (p.size() != 3) {
-    throw std::runtime_error("a pose is not x, y and yaw");
-  }
-  geometry_msgs::msg::PoseStamped stamped;
-  stamped.header.frame_id = "map";
-  stamped.pose.position.x = p[0];
-  stamped.pose.position.y = p[1];
-  stamped.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(p[2]);
-  return stamped;
-}
-
-nlohmann::json pose_read(const geometry_msgs::msg::Pose& pose) {
-  return {pose.position.x, pose.position.y, tf2::getYaw(pose.orientation)};
 }
 
 // One planner as SmacPlanner2D holds it after configure: its A*, collision checker and
@@ -265,8 +247,8 @@ nlohmann::json smac_2d(const nlohmann::json& scenario, Inputs&) {
 
   auto plans = nlohmann::json::array();
   for (const auto& entry : scenario.at("plans")) {
-    const auto start = pose_stamped(entry.at("start"));
-    const auto goal = pose_stamped(entry.at("goal"));
+    const auto start = pose_stamped_of(entry.at("start"), "map");
+    const auto goal = pose_stamped_of(entry.at("goal"), "map");
     const auto raw_plan = planned(raw, start, goal);
     const auto smoothed_plan = planned(smoothed, start, goal);
     plans.push_back({
