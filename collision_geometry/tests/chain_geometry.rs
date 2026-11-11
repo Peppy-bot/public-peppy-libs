@@ -11,7 +11,9 @@ use collision_geometry::chain::{
 };
 use collision_geometry::gjk::Hull;
 use collision_geometry::hull::exact_hull;
-use collision_geometry::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use collision_geometry::nalgebra::{
+    Isometry3, Point3, Translation3, UnitQuaternion, UnitVector3, Vector3,
+};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -104,6 +106,27 @@ fn sign(tc: &TestCase) -> f64 {
     f64::from(tc.draw(gs::integers::<i8>().min_value(-1).max_value(1)))
 }
 
+/// The unit direction of `terms`, each a direction and a drawn weight, weighed by the
+/// weights taken relative to the largest: the largest term enters at unit length, so a
+/// term whose relative weight leaves the normal range of floats moves each component of
+/// the sum by less than `f64::MIN_POSITIVE`. `None` when every weight is 0.
+fn weighed_direction(terms: &[(UnitVector3<f64>, f64)]) -> Option<Vector3<f64>> {
+    let largest = terms.iter().map(|&(_, weight)| weight).fold(0.0, f64::max);
+    (largest > 0.0).then(|| {
+        terms
+            .iter()
+            .fold(Vector3::zeros(), |sum, (direction, weight)| {
+                sum + direction.into_inner() * (weight / largest)
+            })
+            .normalize()
+    })
+}
+
+/// The [`weighed_direction`] of `terms`, the test case rejected when every weight is 0.
+fn drawn_direction(tc: &TestCase, terms: &[(UnitVector3<f64>, f64)]) -> Vector3<f64> {
+    weighed_direction(terms).unwrap_or_else(|| tc.reject())
+}
+
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
 /// about its center, with a drawn outward unit direction of the surface's normal cone
 /// there, both in the frame of its link: a point `t` meters from the surface point along
@@ -115,21 +138,22 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
     let weight = || tc.draw(gs::floats().min_value(0.0).max_value(1.0));
     let fraction = || tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
     let element = piece.element();
-    let (point, direction) = match element.geometry {
+    let (point, terms) = match element.geometry {
         CollisionGeometry::Mesh { .. } => {
             let hull = piece.hull();
             let (on_face, vertices) = point_on_face(tc, hull, drawn_index(tc, hull.faces()));
-            let direction = hull
+            let terms: Vec<(UnitVector3<f64>, f64)> = hull
                 .faces()
                 .iter()
                 .zip(hull.planes())
                 .filter(|(face, _)| vertices.iter().all(|vertex| face.contains(vertex)))
-                .fold(Vector3::zeros(), |sum, (_, (normal, _))| {
-                    sum + normal * weight()
-                });
-            tc.assume(direction.norm() > 0.0);
+                .map(|(_, (normal, _))| (UnitVector3::new_normalize(*normal), weight()))
+                .collect();
             let center = hull.center();
-            return (center + (on_face - center) * scale, direction.normalize());
+            return (
+                center + (on_face - center) * scale,
+                drawn_direction(tc, &terms),
+            );
         }
         CollisionGeometry::Box { size } => {
             let half_extents = size * (scale / 2.0);
@@ -142,7 +166,16 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
                     sides[i] * half_extents[i]
                 }
             });
-            (point, Vector3::from_fn(|i, _| sides[i] * weight()))
+            let terms = (0..3)
+                .filter(|&i| sides[i] != 0.0)
+                .map(|i| {
+                    (
+                        UnitVector3::new_normalize(Vector3::ith(i, sides[i])),
+                        weight(),
+                    )
+                })
+                .collect();
+            (point, terms)
         }
         CollisionGeometry::Cylinder { radius, length } => {
             let (radius, half_length) = (radius * scale, length * scale / 2.0);
@@ -156,25 +189,25 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             } else {
                 end * half_length
             };
-            let outward = if on_side {
-                radial * weight()
-            } else {
-                Vector3::zeros()
-            };
+            let outward = on_side.then(|| (UnitVector3::new_normalize(radial), weight()));
+            let axial =
+                (end != 0.0).then(|| (UnitVector3::new_normalize(Vector3::z() * end), weight()));
             (
                 radial * across + Vector3::z() * along,
-                outward + Vector3::z() * (end * weight()),
+                outward.into_iter().chain(axial).collect(),
             )
         }
         CollisionGeometry::Sphere { radius } => {
             let direction = tc.draw(unit_vectors());
-            (direction * (radius * scale), direction)
+            (
+                direction * (radius * scale),
+                vec![(UnitVector3::new_normalize(direction), 1.0)],
+            )
         }
     };
-    tc.assume(direction.norm() > 0.0);
     (
         element.origin * Point3::from(point),
-        element.origin.rotation * direction.normalize(),
+        element.origin.rotation * drawn_direction(tc, &terms),
     )
 }
 
@@ -1026,4 +1059,21 @@ fn a_rounded_part_is_refused() {
     let hull = cube_piece(0.05);
     let parts = [("part", std::slice::from_ref(&hull), Isometry3::identity())];
     BodyMask::of(parts, Padding::new(1.0, 0.0).expect("a valid padding"));
+}
+
+/// The weighed direction of one term is the term's direction, however small its weight:
+/// the weights `a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it`
+/// drew on a cap's axis, 5.667004161121765e-162, and on a face normal, 5e-324.
+#[test]
+fn the_weighed_direction_of_one_term_is_its_direction_however_small_its_weight() {
+    let normal = UnitVector3::new_normalize(Vector3::new(-0.930, -0.367, -0.020));
+    for (direction, weight) in [
+        (Vector3::z_axis(), 5.667004161121765e-162),
+        (normal, 5e-324),
+    ] {
+        assert_eq!(
+            weighed_direction(&[(direction, weight)]),
+            Some(direction.into_inner())
+        );
+    }
 }

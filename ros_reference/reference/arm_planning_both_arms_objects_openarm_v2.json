@@ -35,7 +35,7 @@
     },
     {
       "moveit": {"bending":7.210820059246545,"clearance":0.0009898824527483415,"collisions":0,"duration":2.4724668155365235,"held_clearance":0.23836493271242665,"length":7.47576274113448,"self_clearance":0.004647214690410622,"share_of_tolerance":null,"status":1,"turning":1.433046446701479},
-      "ours": {"bending":2.216801042919191,"clearance":0.001511976417831895,"collisions":0,"duration":2.1962343393438646,"held_clearance":0.2203057224386434,"length":7.280157446032994,"self_clearance":0.0027205808170214,"share_of_tolerance":null,"turning":1.0100647725273475}
+      "ours": {"bending":2.216801042919735,"clearance":0.0015119764178316022,"collisions":0,"duration":2.1962343393438863,"held_clearance":0.2203057224386435,"length":7.280157446032998,"self_clearance":0.0027205808170214,"share_of_tolerance":null,"turning":1.010064772527436}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10,"turning":null},

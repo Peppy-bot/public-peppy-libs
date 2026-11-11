@@ -23,7 +23,7 @@
     },
     {
       "moveit": {"bending":32.4435858306792,"clearance":-1,"collisions":20,"duration":3.5149187651386056,"held_clearance":null,"length":6.767020354711343,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":3.7162917982337818},
-      "ours": {"bending":7.681260819129117,"clearance":0.0018389740376795842,"collisions":0,"duration":2.6860477937674934,"held_clearance":null,"length":5.723552942119181,"self_clearance":null,"share_of_tolerance":null,"turning":3.5775669861165205}
+      "ours": {"bending":7.681260819129117,"clearance":0.00183897403767957,"collisions":0,"duration":2.6860477937674934,"held_clearance":null,"length":5.723552942119181,"self_clearance":null,"share_of_tolerance":null,"turning":3.5775669861165205}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},
