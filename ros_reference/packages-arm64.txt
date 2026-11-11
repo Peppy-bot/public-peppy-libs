@@ -854,6 +854,7 @@ ros-lyrical-ament-xmllint 0.20.6-1resolute.20260728.231607
 ros-lyrical-angles 1.16.1-3resolute.20260728.165855
 ros-lyrical-backward-ros 1.0.8-5resolute.20260728.231812
 ros-lyrical-builtin-interfaces 2.4.5-1resolute.20260915.030751
+ros-lyrical-chomp-motion-planner 2.15.2-1resolute.20260918.014917
 ros-lyrical-class-loader 2.9.4-3resolute.20260831.170855
 ros-lyrical-common-interfaces 5.9.3-1resolute.20260915.045906
 ros-lyrical-composition-interfaces 2.4.5-1resolute.20260915.051232

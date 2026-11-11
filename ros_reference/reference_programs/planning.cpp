@@ -357,6 +357,33 @@ struct Answer {
 
 // One plan, built and run as ompl_bridge builds and runs it: the seed first, then the
 // space, its checks, the setup, the start and the goal, and the planner.
+// A real vector space measured as MoveIt measures a joint group: the distance between two
+// states is the sum of each dimension's absolute change, and the space's extent the sum of
+// the dimensions' ranges (moveit2 2.15.2 joint_model_group.cpp:455-476). The
+// bridge's space, code for code.
+class JointGroupSpace : public ob::RealVectorStateSpace {
+ public:
+  using ob::RealVectorStateSpace::RealVectorStateSpace;
+
+  double distance(const ob::State* from, const ob::State* to) const override {
+    const double* a = from->as<StateType>()->values;
+    const double* b = to->as<StateType>()->values;
+    double sum = 0.0;
+    for (unsigned int i = 0; i < getDimension(); ++i) {
+      sum += std::fabs(a[i] - b[i]);
+    }
+    return sum;
+  }
+
+  double getMaximumExtent() const override {
+    double sum = 0.0;
+    for (unsigned int i = 0; i < getDimension(); ++i) {
+      sum += bounds_.high[i] - bounds_.low[i];
+    }
+    return sum;
+  }
+};
+
 Answer plan(const World& world, const std::string& planner, std::uint32_t seed,
             std::uint64_t iterations, std::uint32_t simplification) {
   const auto level = ompl::msg::getLogLevel();
@@ -364,7 +391,7 @@ Answer plan(const World& world, const std::string& planner, std::uint32_t seed,
   ompl::RNG::setSeed(seed);
   ompl::msg::setLogLevel(level);
 
-  auto space = std::make_shared<ob::RealVectorStateSpace>(world.dimension);
+  auto space = std::make_shared<JointGroupSpace>(world.dimension);
   space->setBounds(0.0, 1.0);
   auto si = std::make_shared<ob::SpaceInformation>(space);
   si->setMotionValidator(std::make_shared<MotionCheck>(si, world));

@@ -9,6 +9,7 @@
 
 #include <geometric_shapes/bodies.h>
 #include <geometric_shapes/body_operations.h>
+#include <moveit/collision_distance_field/collision_distance_field_types.hpp>
 #include <moveit/robot_state/robot_state.hpp>
 
 #include "robot.hpp"
@@ -16,6 +17,11 @@
 
 namespace ros_reference {
 namespace {
+
+// The resolution of the distance field of CHOMP's collision checker, its default
+// (moveit2 2.15.2 collision_env_distance_field.hpp:53), at which a link's decomposition
+// finds its internal points; its collision spheres do not depend on it.
+constexpr double distance_field_resolution = 0.02;
 
 // The links with collision geometry whose pose the chain's `joints` decide: each link
 // whose walk up toward the root reaches a joint of `joints` across fixed joints and
@@ -88,6 +94,34 @@ nlohmann::json growth_centers(
     }
   }
   return centers;
+}
+
+// For each padding of `paddings`, in their order, the collision spheres of each of
+// `links`, in their order, in the link's frame: the spheres of CHOMP's collision checker,
+// which decomposes each link's bodies grown by the link's padding
+// (BodyDecomposition, moveit2 2.15.2 collision_env_distance_field.cpp:1064-1066).
+nlohmann::json collision_spheres(const moveit::core::RobotModel& model,
+                                 const std::vector<std::string>& links,
+                                 const nlohmann::json& paddings) {
+  auto by_padding = nlohmann::json::array();
+  for (const auto& padding : paddings) {
+    auto by_link = nlohmann::json::array();
+    for (const auto& link : links) {
+      const auto* link_model = model.getLinkModel(link);
+      const collision_detection::BodyDecomposition decomposition(
+          link_model->getShapes(), link_model->getCollisionOriginTransforms(),
+          distance_field_resolution, padding.get<double>());
+      auto spheres = nlohmann::json::array();
+      for (const auto& sphere : decomposition.getCollisionSpheres()) {
+        const auto& center = sphere.relative_vec_;
+        spheres.push_back({{"center", {center.x(), center.y(), center.z()}},
+                           {"radius", sphere.radius_}});
+      }
+      by_link.push_back(spheres);
+    }
+    by_padding.push_back(by_link);
+  }
+  return by_padding;
 }
 
 }  // namespace
@@ -171,6 +205,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
     chains.push_back({{"name", chain.at("name")},
                       {"links", links},
                       {"bodies", centers},
+                      {"spheres", collision_spheres(*model, links, scenario.at("sphere_paddings"))},
                       {"configurations", configurations}});
   }
   auto paddings = nlohmann::json::array();
@@ -178,7 +213,14 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
     paddings.push_back({{"scale", padding.at("scale").get<double>()},
                         {"offset", padding.at("offset").get<double>()}});
   }
-  return {{"kind", "chain_collision"}, {"paddings", paddings}, {"chains", chains}};
+  auto sphere_paddings = nlohmann::json::array();
+  for (const auto& padding : scenario.at("sphere_paddings")) {
+    sphere_paddings.push_back(padding.get<double>());
+  }
+  return {{"kind", "chain_collision"},
+          {"paddings", paddings},
+          {"sphere_paddings", sphere_paddings},
+          {"chains", chains}};
 }
 
 }  // namespace ros_reference

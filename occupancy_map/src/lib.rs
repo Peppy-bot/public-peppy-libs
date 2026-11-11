@@ -3,19 +3,21 @@
 //! the voxels their rays cross and marking the voxels they hit, with the
 //! robot and the collision objects cut out, the voxels a collision object
 //! intersects cleared, and the distance from any point to the nearest
-//! occupied voxel.
+//! occupied voxel, with its gradient.
 //!
 //! - [`VoxelMap`]: the map in its [`Frame`] over its [`Bounds`], its voxels
 //!   ([`Voxel`], each at a [`Key`]) and their boxes ([`VoxelBox`]), a
 //!   [`Scan`] inserted with the shapes it cuts out ([`Cutout`];
 //!   [`RobotCutout`] is the robot's body as `collision_geometry` places it,
 //!   and a [`ShapeCutout`] a collision object's shape grown by a padding),
-//!   the occupied voxels inside a box, `clear`, and `clear_intersecting`,
+//!   the occupied voxels inside a box, `clear`, `clear_intersecting`,
 //!   which clears the voxels a collision object's shape intersects or
-//!   touches.
+//!   touches, and `occupy_intersecting`, which marks the same voxels
+//!   occupied.
 //! - [`depth_points`]: the points a z16 depth frame reads, from its stream's
 //!   pinhole model.
-//! - [`DistanceField`]: the distances of a map as it stands.
+//! - [`DistanceField`]: the distances of a map as it stands, and their
+//!   gradient capped as a propagation field caps it ([`DistanceGradient`]).
 //!
 //! A voxel is keyed, a ray walked and a log-odds updated by OctoMap 1.10's
 //! arithmetic, and a scan inserted by the rules of MoveIt 2.15.2's point
@@ -37,7 +39,7 @@ mod ray;
 mod sensor_model;
 
 pub use depth::{DepthError, depth_points};
-pub use distance::{DistanceField, NotANumber};
+pub use distance::{DistanceField, DistanceGradient, NotANumber};
 pub use frame::{Frame, FrameError};
 pub use key::Key;
 pub use map::{

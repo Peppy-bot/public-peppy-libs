@@ -1,12 +1,8 @@
 #include "arm_planning.hpp"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -16,7 +12,6 @@
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <moveit/collision_detection/collision_common.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
 #include <moveit/planning_pipeline/planning_pipeline.hpp>
 #include <moveit/planning_scene/planning_scene.hpp>
@@ -37,8 +32,8 @@ constexpr const char* pipeline_namespace = "ompl";
 constexpr int moveit_success = moveit_msgs::msg::MoveItErrorCodes::SUCCESS;
 constexpr int moveit_invalid_motion_plan = moveit_msgs::msg::MoveItErrorCodes::INVALID_MOTION_PLAN;
 
-// The planner configuration of the scenario's objective, by its name and its parameters:
-// RRTConnect for `any` and RRTstar for `shortest`, each at the parameters of MoveIt's
+// The configuration of the scenario's planner, by its name and its parameters: RRTConnect
+// for `rrt_connect` and RRTstar for `rrt_star`, each at the parameters of MoveIt's
 // default planner configurations (moveit2 2.15.2
 // moveit_configs_utils/default_configs/ompl_defaults.yaml, RRTConnect and RRTstar).
 struct PlannerConfig {
@@ -46,7 +41,7 @@ struct PlannerConfig {
   std::vector<rclcpp::Parameter> parameters;
 };
 
-PlannerConfig planner_config(const std::string& objective, const std::string& ns) {
+PlannerConfig planner_config(const std::string& planner, const std::string& ns) {
   const auto config = [&](const std::string& name, const std::string& type,
                           std::vector<std::pair<std::string, rclcpp::ParameterValue>> values) {
     std::vector<rclcpp::Parameter> parameters{{ns + ".planner_configs." + name + ".type", type}};
@@ -55,20 +50,33 @@ PlannerConfig planner_config(const std::string& objective, const std::string& ns
     }
     return PlannerConfig{name, parameters};
   };
-  if (objective == "any") {
+  if (planner == "rrt_connect") {
     return config("RRTConnectkConfigDefault", "geometric::RRTConnect",
                   {{"range", rclcpp::ParameterValue(0.0)}});
   }
-  if (objective == "shortest") {
+  if (planner == "rrt_star") {
     return config("RRTstarkConfigDefault", "geometric::RRTstar",
                   {{"range", rclcpp::ParameterValue(0.0)},
                    {"goal_bias", rclcpp::ParameterValue(0.05)},
                    {"delay_collision_checking", rclcpp::ParameterValue(1)}});
   }
-  throw std::runtime_error("the scenario's objective is any or shortest, and it is " + objective);
+  throw std::runtime_error("the scenario's planner is rrt_connect or rrt_star, and it is " +
+                           planner);
 }
 
-// The pipeline: the OMPL planner of the scenario's objective, ended as its termination
+// Whether MoveIt's CHOMP refines the path the planner answers, as the scenario's refiner
+// says: `chomp`, or `none`.
+bool refined_by_chomp(const std::string& refiner) {
+  if (refiner == "chomp") {
+    return true;
+  }
+  if (refiner != "none") {
+    throw std::runtime_error("the scenario's refiner is none or chomp, and it is " + refiner);
+  }
+  return false;
+}
+
+// The pipeline: the OMPL planner the scenario names, ended as its termination
 // says, by its `iterations` (MoveIt's termination condition Iteration) or by the
 // request's allowed planning time alone (MoveIt's default); MoveIt's default request
 // adapters, a start outside a joint limit by any amount refused; and the response
@@ -110,35 +118,9 @@ std::shared_ptr<planning_pipeline::PlanningPipeline> pipeline(
   return std::make_shared<planning_pipeline::PlanningPipeline>(model, node, ns);
 }
 
-Eigen::VectorXd vector_of(const std::vector<double>& values) {
-  return Eigen::Map<const Eigen::VectorXd>(values.data(),
-                                           static_cast<Eigen::Index>(values.size()));
-}
-
 // Whether `goal` is a pose of each chain's tip link, and no configuration.
 bool is_poses(const nlohmann::json& goal) {
   return !goal.empty() && goal.front().is_object();
-}
-
-// An orientation a path holds, as plan_joint_path states it: the angle of the rotation from
-// `orientation`, or with a free axis the angle of that axis from its direction there, at most
-// `tolerance`.
-struct HeldTarget {
-  const moveit::core::LinkModel* link;
-  Eigen::Quaterniond orientation;
-  std::optional<Eigen::Vector3d> free_axis;
-  double tolerance;
-};
-
-// The share of its tolerance that `target` reaches at `state`.
-double share_of_tolerance(const HeldTarget& target, const moveit::core::RobotState& state) {
-  const Eigen::Quaterniond actual(state.getGlobalLinkTransform(target.link).linear());
-  if (!target.free_axis) {
-    return target.orientation.angularDistance(actual) / target.tolerance;
-  }
-  const Eigen::Vector3d wanted = target.orientation * *target.free_axis;
-  const Eigen::Vector3d held = actual * *target.free_axis;
-  return std::atan2(wanted.cross(held).norm(), wanted.dot(held)) / target.tolerance;
 }
 
 // The orientations the scene `s` holds of the links of `model`.
@@ -164,127 +146,6 @@ std::vector<HeldTarget> held_targets_of(const nlohmann::json& s,
                        axis, held.at("tolerance_rad").get<double>()});
   }
   return targets;
-}
-
-// What the probes of a scenario's paths measure, `spacing` apart in the joints' L2 norm,
-// besides the scene: the objects the chains' tip links `tip_links` hold, with `self` the
-// robot's own bodies, and the orientations `held` the scene holds.
-struct Probing {
-  std::vector<std::string> tip_links;
-  bool self = false;
-  double spacing = 0.0;
-  std::vector<HeldTarget> held;
-};
-
-// MoveIt's collision check and distances at the probes of a joint path: to the scene,
-// from the objects the grasp links `holding` hold, and, with `self`, between the robot's
-// own bodies.
-struct Probed {
-  bool self = false;
-  std::size_t collisions = 0;
-  double clearance = std::numeric_limits<double>::infinity();
-  // The grasp links that hold an object, and the least unpadded distance from what they
-  // hold to the objects and the octomap.
-  std::set<const moveit::core::LinkModel*> holding;
-  double held = std::numeric_limits<double>::infinity();
-  // The least unpadded distance between the robot's own bodies that the scene's matrix
-  // leaves checked, when `self` asks for it.
-  double self_clearance = std::numeric_limits<double>::infinity();
-  // The orientations the path holds, and the largest share of its tolerance any of them
-  // reaches.
-  std::vector<HeldTarget> held_targets;
-  double share_of_tolerance = 0.0;
-};
-
-// The probe of a path in `scene` as `probing` asks: of each tip link that holds an object.
-Probed probe_of(const planning_scene::PlanningScene& scene, const Probing& probing) {
-  Probed probed{probing.self};
-  probed.held_targets = probing.held;
-  for (const auto& tip_link : probing.tip_links) {
-    std::vector<const moveit::core::AttachedBody*> held;
-    const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
-    scene.getCurrentState().getAttachedBodies(held, tip);
-    if (!held.empty()) {
-      probed.holding.insert(tip);
-    }
-  }
-  return probed;
-}
-
-void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState& state,
-           const moveit::core::JointModelGroup& arm, const Eigen::VectorXd& q, Probed& probed) {
-  state.setJointGroupPositions(&arm, q);
-  state.update();
-  for (const auto& target : probed.held_targets) {
-    probed.share_of_tolerance =
-        std::max(probed.share_of_tolerance, share_of_tolerance(target, state));
-  }
-  if (scene.isStateColliding(state, group)) {
-    ++probed.collisions;
-  }
-  // FCL's distance to an octomap a body touches is no measure: the planning scene's dense
-  // probe read -2.3e190 of one. MoveIt reads -1 for a body in contact otherwise, so -1
-  // stands for every distance below it.
-  probed.clearance =
-      std::min(probed.clearance, std::max(scene.distanceToCollisionUnpadded(state), -1.0));
-  if (!probed.holding.empty()) {
-    collision_detection::DistanceRequest request;
-    request.active_components_only = &probed.holding;
-    request.acm = &scene.getAllowedCollisionMatrix();
-    collision_detection::DistanceResult result;
-    scene.getCollisionEnvUnpadded()->distanceRobot(request, result, state);
-    probed.held = std::min(probed.held, std::max(result.minimum_distance.distance, -1.0));
-  }
-  // The unpadded environment: the scene pads the robot's links against the world alone,
-  // and its self check reads them unpadded (pad_self_collisions false). -1 stands for
-  // every distance below it, as for the world.
-  if (probed.self) {
-    const double self = scene.getCollisionEnvUnpadded()->distanceSelf(
-        state, scene.getAllowedCollisionMatrix());
-    probed.self_clearance = std::min(probed.self_clearance, std::max(self, -1.0));
-  }
-}
-
-// The number of probes of a stretch `length` long, each at most `spacing` from the next.
-std::size_t steps_of(double length, double spacing) {
-  return static_cast<std::size_t>(std::max(std::ceil(length / spacing), 1.0));
-}
-
-// MoveIt's trajectory, straight between its points, probed as `probing` asks.
-Probed probe_polyline(const planning_scene::PlanningScene& scene,
-                      moveit::core::RobotState& state, const moveit::core::JointModelGroup& arm,
-                      const std::vector<Eigen::VectorXd>& points, const Probing& probing) {
-  Probed probed = probe_of(scene, probing);
-  probe(scene, state, arm, points.front(), probed);
-  for (std::size_t i = 1; i < points.size(); ++i) {
-    const std::size_t steps = steps_of((points[i] - points[i - 1]).norm(), probing.spacing);
-    for (std::size_t k = 1; k <= steps; ++k) {
-      const double t = static_cast<double>(k) / static_cast<double>(steps);
-      probe(scene, state, arm, points[i - 1] + (points[i] - points[i - 1]) * t, probed);
-    }
-  }
-  return probed;
-}
-
-double polyline_length(const std::vector<Eigen::VectorXd>& points) {
-  double length = 0.0;
-  for (std::size_t i = 1; i < points.size(); ++i) {
-    length += (points[i] - points[i - 1]).norm();
-  }
-  return length;
-}
-
-nlohmann::json measured(const Probed& probed, double length) {
-  return {{"collisions", probed.collisions},
-          {"clearance", probed.clearance},
-          {"held_clearance",
-           probed.holding.empty() ? nlohmann::json(nullptr) : nlohmann::json(probed.held)},
-          {"self_clearance",
-           probed.self ? nlohmann::json(probed.self_clearance) : nlohmann::json(nullptr)},
-          {"share_of_tolerance", probed.held_targets.empty()
-                                     ? nlohmann::json(nullptr)
-                                     : nlohmann::json(probed.share_of_tolerance)},
-          {"length", length}};
 }
 
 // MoveIt's constraints of a pose `goal` of the link `tip_link` in the frame of `model`:
@@ -369,10 +230,11 @@ moveit_msgs::msg::OrientationConstraint path_orientation(const nlohmann::json& h
   return constraint;
 }
 
-// MoveIt's answer to a scene, planned within `time_limit` seconds: its error code, and
-// its path's probe when it planned one.
+// MoveIt's answer to a scene, planned within `time_limit` seconds by the planner
+// `planner_id`, its path refined by CHOMP with `chomp`: the error code of the plan, or of
+// CHOMP where it refines one, and the probe of the path when they planned one.
 nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
-                             const std::string& planner_id,
+                             const std::string& planner_id, bool chomp,
                              const planning_scene::PlanningScenePtr& scene,
                              const moveit::core::RobotModelPtr& model, const nlohmann::json& s,
                              double time_limit, const Probing& probing) {
@@ -418,46 +280,29 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
                             {"held_clearance", nullptr},
                             {"self_clearance", nullptr},
                             {"share_of_tolerance", nullptr},
-                            {"length", nullptr}};
+                            {"length", nullptr},
+                            {"turning", nullptr},
+                            {"bending", nullptr},
+                            {"duration", nullptr}};
   if (!planned || status != moveit_success || !response.trajectory) {
     return answer;
   }
-  std::vector<Eigen::VectorXd> points;
-  for (std::size_t i = 0; i < response.trajectory->getWayPointCount(); ++i) {
-    std::vector<double> q;
-    response.trajectory->getWayPoint(i).copyJointGroupPositions(&arm, q);
-    points.push_back(vector_of(q));
+  const auto probed = [&](const std::vector<Eigen::VectorXd>& points) {
+    moveit::core::RobotState state(start);
+    answer.update(polyline_measured(*scene, state, arm, points, probing));
+    return answer;
+  };
+  if (!chomp) {
+    return probed(points_of(*response.trajectory, arm));
   }
-  moveit::core::RobotState state(start);
-  answer.update(measured(probe_polyline(*scene, state, arm, points, probing),
-                         polyline_length(points)));
-  return answer;
-}
-
-// MoveIt's probe of motion_planning_core's path `waypoints`, rounded by MoveIt's
-// time-optimal path at `corner_tolerance` and probed along it as `probing` asks.
-nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
-                           const moveit::core::RobotModelPtr& model,
-                           const nlohmann::json& waypoints, double corner_tolerance,
-                           const Probing& probing) {
-  const auto& arm = *model->getJointModelGroup(group);
-  std::vector<Eigen::VectorXd> points;
-  for (const auto& w : waypoints) {
-    points.push_back(vector_of(numbers(w)));
+  // CHOMP refines the path the pipeline answers, timed and checked by its response adapters,
+  // and the scene's answer is CHOMP's.
+  const auto refined = chomp_refined(*scene, response.trajectory, seed);
+  answer["status"] = refined.status;
+  if (refined.status != moveit_success) {
+    return answer;
   }
-  const auto path = trajectory_processing::Path::create(points, corner_tolerance);
-  if (!path) {
-    throw std::runtime_error("MoveIt's time-optimal path does not round a path of ours");
-  }
-  moveit::core::RobotState state(scene.getCurrentState());
-  Probed probed = probe_of(scene, probing);
-  const double length = path->getLength();
-  const std::size_t steps = steps_of(length, probing.spacing);
-  for (std::size_t k = 0; k <= steps; ++k) {
-    const double at = length * static_cast<double>(k) / static_cast<double>(steps);
-    probe(scene, state, arm, path->getConfig(at), probed);
-  }
-  return measured(probed, length);
+  return probed(refined.path.value());
 }
 
 }  // namespace
@@ -466,21 +311,17 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
   const ChainGroup chains = chains_of(scenario);
   const auto model = arm_model(scenario, chains, inputs);
   const PlannerConfig config =
-      planner_config(scenario.at("objective").get<std::string>(), pipeline_namespace);
+      planner_config(scenario.at("planner").get<std::string>(), pipeline_namespace);
+  const bool chomp = refined_by_chomp(scenario.at("refiner").get<std::string>());
   auto planner = pipeline(model, scenario, config);
   const auto& checked_pairs = scenario.at("checked_pairs");
-  Probing probing;
-  for (const auto& chain : chains.chains) {
-    probing.tip_links.push_back(chain.tip_link);
-  }
+  Probing probing = probing_of(scenario, chains, *model);
   // The probes measure the robot's own bodies apart where motion_planning_core's self
   // model checks pairs of them.
   probing.self = !checked_pairs.empty();
-  probing.spacing = scenario.at("probe_spacing").get<double>();
   const double voxel_size = scenario.at("voxel_size").get<double>();
   // MoveIt keeps the plans' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
-  const double corner_tolerance = scenario.at("corner_tolerance").get<double>();
   const double time_limit = scenario.at("time_limit").get<double>();
 
   auto answers = nlohmann::json::array();
@@ -498,10 +339,11 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     of_the_scene.held = held_targets_of(s, *model);
     answers.push_back({
         {"moveit",
-         moveit_answer(*planner, config.name, scene, model, s, time_limit, of_the_scene)},
-        {"ours", ours.contains("waypoints") ? ours_probed(*scene, model, ours.at("waypoints"),
-                                                          corner_tolerance, of_the_scene)
-                                            : nlohmann::json(nullptr)},
+         moveit_answer(*planner, config.name, chomp, scene, model, s, time_limit,
+                       of_the_scene)},
+        {"ours", ours.contains("waypoints")
+                     ? ours_probed(*scene, model, ours.at("waypoints"), of_the_scene)
+                     : nlohmann::json(nullptr)},
     });
   }
   return {{"kind", "arm_planning"}, {"scenes", answers}};

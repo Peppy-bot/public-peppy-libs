@@ -168,7 +168,11 @@ impl FromStr for Planner {
     }
 }
 
-/// A real vector state space: one interval per dimension.
+/// A real vector state space: one interval per dimension, measured as MoveIt measures a
+/// joint group. The distance between two states, which a planner's range and an optimizing
+/// planner's path length read, is the sum of each dimension's absolute change, and the
+/// space's extent, of which a planner's range is a fifth, the sum of the dimensions' ranges
+/// (moveit2 2.15.2 joint_model_group.cpp:455-476).
 pub struct Space {
     low: Vec<f64>,
     high: Vec<f64>,
@@ -256,6 +260,13 @@ pub trait Checks: Sync {
     /// constraint and asks this of each straight stretch of the walk, the steps in one
     /// line joined in one motion.
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError>;
+
+    /// The simplifier's check of the straight motion from `from` to `to`, as
+    /// [`motion`](Self::motion) says of the planner's: the planner's check unless the
+    /// caller gives the simplifier its own.
+    fn simplifier_motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        self.motion(from, to)
+    }
 }
 
 /// The caller's constraint: the states whose function is zero. A plan calls it on the

@@ -25,6 +25,7 @@
 pub mod arm_planning;
 pub mod cartesian_paths;
 pub mod chain_collision;
+pub mod chomp_refinement;
 pub mod forward_kinematics;
 pub mod occupancy;
 pub mod orientation_constraints;
@@ -59,6 +60,7 @@ enum Kind {
     ArmPlanning,
     CartesianPaths,
     ChainCollision,
+    ChompRefinement,
     ForwardKinematics,
     Occupancy,
     OrientationConstraints,

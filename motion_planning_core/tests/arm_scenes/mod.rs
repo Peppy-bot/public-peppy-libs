@@ -22,16 +22,16 @@ use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
     ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
-    PlanningScene, PositionTarget, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
-    StartFault, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
+    PlanningScene, PositionTarget, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
+    StartFault, iteration_bound, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use openarm_description::{ARM_DOF, ARMS, DUAL_DOF, HardwareVersion, Side};
 use ros_reference::arm_planning::{
-    ArmChain, Held, HeldOrientation, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes,
-    Termination, VoxelBox,
+    ArmChain, Held, HeldOrientation, Ours, Planner as ReferencePlanner,
+    Refiner as ReferenceRefiner, Scene as ReferenceScene, SceneGoal, Scenes, Termination, VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
 use self_collision_model::{CollisionError, Joints, Proximity, SelfCollisionModel};
@@ -315,7 +315,7 @@ impl<const N: usize, const K: usize> StandingRobot<N, K> {
         self.own_body
             .as_ref()
             .expect("the scenario plans every chain of the robot")
-            .clearance(state, Moving::All)
+            .clearance(state, Moving::All, f64::INFINITY)
     }
 
     /// The pose of `link`, the grasp link of a chain of no arm of the scenario, at that
@@ -430,18 +430,33 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
         })
     }
 
-    /// The least distance of the nearest checked pair that `moving` judges, the arms at
-    /// the state `q`: a state the model cannot measure reads as a collision.
-    fn clearance(&self, q: &[f64], moving: Moving) -> f64 {
-        self.nearest(q, moving, |nearest| {
-            nearest.map_or(f64::NEG_INFINITY, |proximity| proximity.distance)
-        })
+    /// The least distance of the checked pairs that `moving` judges, the arms at the
+    /// state `q`, as a check at `within` meters reads it, each arm reading the pairs
+    /// `nearest` reads for it: a state the model cannot measure reads as a collision.
+    fn clearance(&self, q: &[f64], moving: Moving, within: f64) -> f64 {
+        let at = placed::<N, K>(&self.planned, q);
+        let last = self.planned.len() - 1;
+        let mut model = self.model.lock().expect("the self model");
+        match moving {
+            Moving::All => model.min_distance_within(&at, within),
+            Moving::Arm(k) if k == last => {
+                model.min_distance_of_chain_within(self.planned[k], &at, within)
+            }
+            Moving::Arm(0) if last == 1 => {
+                model.min_distance_of_chain_alone_within(self.planned[0], &at, within)
+            }
+            Moving::Arm(k) => panic!(
+                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
+                last + 1
+            ),
+        }
+        .unwrap_or(f64::NEG_INFINITY)
     }
 }
 
 impl<const N: usize, const K: usize, const D: usize> SelfModel<D> for OwnBody<N, K> {
-    fn clearance(&self, q: &[f64; D], moving: Moving) -> f64 {
-        OwnBody::clearance(self, q, moving)
+    fn clearance(&self, q: &[f64; D], moving: Moving, within: f64) -> f64 {
+        OwnBody::clearance(self, q, moving, within)
     }
 
     fn nearest_pair(&self, q: &[f64; D], moving: Moving) -> (String, String) {
@@ -792,21 +807,30 @@ fn path_orientation<'a, const N: usize>(
     }
 }
 
-/// The planner of `objective`: RRTConnect for `any`, as the motion planner node plans it,
-/// and RRTstar for `shortest`.
-fn planner_of(objective: Objective) -> Planner {
-    match objective {
-        Objective::Any => Planner::RrtConnect,
-        Objective::Shortest => Planner::RrtStar,
+/// This crate's planner of the scenario's `planner`: RRTConnect for `rrt_connect`, as the
+/// motion planner node plans it, and RRTstar for `rrt_star`.
+fn planner_of(planner: ReferencePlanner) -> Planner {
+    match planner {
+        ReferencePlanner::RrtConnect => Planner::RrtConnect,
+        ReferencePlanner::RrtStar => Planner::RrtStar,
     }
 }
 
-/// The iteration bound of this crate's plans of `scenes`, as their termination says.
+/// This crate's refiner of the scenario's `refiner`: none for `none`, and CHOMP for `chomp`.
+fn refiner_of(refiner: ReferenceRefiner) -> Option<Refiner> {
+    match refiner {
+        ReferenceRefiner::None => None,
+        ReferenceRefiner::Chomp => Some(Refiner::Chomp),
+    }
+}
+
+/// The iteration bound of this crate's plans of `scenes`, as their termination says: the
+/// scenes' iterations, or for a plan the time ends, the bound its planner takes from them.
 fn max_iterations(scenes: &Scenes) -> NonZeroU64 {
     let bound = NonZeroU64::new(scenes.iterations).expect("nonzero");
-    match (scenes.termination, scenes.objective) {
-        (Termination::Iterations, _) | (Termination::Time, Objective::Any) => bound,
-        (Termination::Time, Objective::Shortest) => NonZeroU64::MAX,
+    match scenes.termination {
+        Termination::Iterations => bound,
+        Termination::Time => iteration_bound(planner_of(scenes.planner), bound),
     }
 }
 
@@ -944,7 +968,8 @@ fn plan_group<const N: usize, const D: usize, O>(
                         .collect(),
                     path_orientations: &orientations,
                     goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
-                    planner: planner_of(scenes.objective),
+                    planner: planner_of(scenes.planner),
+                    refiner: refiner_of(scenes.refiner),
                     deadline,
                     max_iterations: max_iterations(scenes),
                     attempts: NonZeroU32::MIN,

@@ -22,8 +22,10 @@
 //!   [`IkGoalSampler`] by `chain_kinematics`' inverse kinematics, MoveIt's KDL, for any
 //!   chain.
 //! - [`plan_path`]: plans a [`PlanRequest`] on a [`Scene`], each arm to its [`ArmGoal`],
-//!   holding each [`PathOrientation`] at every state, and checks the rounded path the robot
-//!   runs; [`check_path`] checks a caller's path, a [`CheckRequest`], with the same checks.
+//!   holding each [`PathOrientation`] at every state, refines the planner's path with
+//!   MoveIt's CHOMP when the request's [`Refiner`] says so, and checks the rounded path the
+//!   robot runs; [`check_path`] checks a caller's path, a [`CheckRequest`], with the same
+//!   checks.
 //! - [`cartesian_path`]: a frame of one arm along straight lines through the poses of a
 //!   [`CartesianRequest`], as MoveIt's `computeCartesianPath` follows them, as much of them
 //!   as is valid, and the [`CartesianPath`]'s fraction covered.
@@ -36,6 +38,7 @@
 mod arm;
 mod arms;
 mod cartesian;
+mod chomp;
 mod clearance;
 mod goal;
 mod intake;
@@ -60,8 +63,8 @@ pub use intake::{DepthCamera, JointHistory, PosedChain, RobotMask, insert_cut_ou
 pub use path_orientation::PathOrientation;
 pub use plan::{
     ArmGoal, CheckFailure, CheckRequest, MAX_STEP_M, MIN_DEPARTURE_STEP_M, PathCheck, PathFault,
-    Place, PlanFailure, PlanRequest, Scene, StartFault, check_path, plan_path, sample_goals,
-    start_inside_limits,
+    Place, PlanFailure, PlanRequest, Refiner, Scene, StartFault, check_path, iteration_bound,
+    plan_path, sample_goals, start_inside_limits,
 };
 pub use pose::{orientation_from_parts, pose_from_parts, pose_parts};
 pub use scene::{

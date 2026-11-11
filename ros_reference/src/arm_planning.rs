@@ -2,11 +2,12 @@
 //! collision objects, each with a start, a goal and a seed, and motion_planning_core's
 //! answer to each, which its example `plan_arm_scenes` gives
 //! `tools/draw_arm_planning.py`. The reference is MoveIt's planning pipeline, with the
-//! OMPL planner of the scenario's objective, its default request adapters and the
+//! OMPL planner the scenario names, its default request adapters and the
 //! response adapters AddTimeOptimalParameterization and ValidateSolution, planning each
 //! scene's arms as one group with the voxels as an octomap, among its collision objects
 //! and holding its attached objects, to the goal state itself, seeded from the scene and
-//! ended as the scenario's termination says, and MoveIt's collision check and distances
+//! ended as the scenario's termination says, the path refined by MoveIt's CHOMP where the
+//! scenario's refiner is `chomp`, and MoveIt's collision check and distances
 //! probing each planned path: MoveIt's own, and motion_planning_core's with its corners
 //! rounded as MoveIt's time-optimal trajectory generation rounds them. Both check every
 //! link that moves with the arms' joints, the grippers' fingers among them, closed, as
@@ -22,7 +23,7 @@ use std::path::PathBuf;
 /// The `kind` of an arm planning scenario and of its reference output, which refuses
 /// every other kind.
 #[derive(Debug, Deserialize)]
-enum ThisKind {
+pub(crate) enum ThisKind {
     #[serde(rename = "arm_planning")]
     ArmPlanning,
 }
@@ -33,7 +34,7 @@ enum ThisKind {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenes {
-    kind: ThisKind,
+    pub(crate) kind: ThisKind,
     /// The path of the robot's URDF, relative to the repository root.
     pub urdf: String,
     /// The directory of the collision meshes, which the URDF names by their file names,
@@ -60,7 +61,8 @@ pub struct Scenes {
     /// The tolerance of each joint of motion_planning_core's goal, above and below its
     /// target, above 0 as a goal's tolerance is. MoveIt plans to the goal state itself.
     pub goal_tolerance: f64,
-    pub objective: Objective,
+    pub planner: Planner,
+    pub refiner: Refiner,
     pub termination: Termination,
     /// The time limit of each plan, motion_planning_core's and MoveIt's, in seconds: the
     /// request's allowed planning time.
@@ -74,16 +76,25 @@ pub struct Scenes {
     pub scenes: Vec<Scene>,
 }
 
-/// What each plan optimizes, and the OMPL planner that plans for it: `any`, as
-/// plan_joint_path's `objective` names it and the motion planner node plans it, and
-/// `shortest`, a mode the harness measures.
+/// The OMPL planner of each plan, as plan_joint_path's `planner` names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Objective {
-    /// The first valid path found: RRTConnect.
-    Any,
-    /// The path's joint-space length, shortened until the plan's time ends: RRTstar.
-    Shortest,
+pub enum Planner {
+    /// RRTConnect: the first valid path found.
+    RrtConnect,
+    /// RRTstar: the path's joint-space length, shortened until the plan's time ends.
+    RrtStar,
+}
+
+/// What refines the path the planner answers, as plan_joint_path's `refiner` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refiner {
+    /// Nothing: the planner's path.
+    None,
+    /// CHOMP: MoveIt's CHOMP at the parameters of its plugin, its initial trajectory the path
+    /// MoveIt's pipeline answers, and motion_planning_core's CHOMP refinement.
+    Chomp,
 }
 
 /// What ends each plan, motion_planning_core's and MoveIt's.
@@ -94,14 +105,15 @@ pub enum Termination {
     /// `time_limit` far beyond them, so a plan repeats under its seed.
     Iterations,
     /// The scenario's `time_limit`, as a robot's plan ends: MoveIt's by the time alone,
-    /// its default termination, and motion_planning_core's by `iterations` for `any`, as
-    /// the motion planner node bounds it, and by no iteration count for `shortest`.
+    /// its default termination, and motion_planning_core's by `iterations` for
+    /// `rrt_connect`, as the motion planner node bounds it, and by no iteration count for
+    /// `rrt_star`.
     Time,
 }
 
 /// An arm the plans move: the chain from `base_link` to `tip_link`, whose joints are
 /// `joints` in their order, by `name`, the arm's name as plan_joint_path names it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArmChain {
     pub name: String,
@@ -245,7 +257,10 @@ pub enum Ours {
     Failure { failure: String },
 }
 
-/// MoveIt's collision check and distance along a path, probed at the scenario's spacing.
+/// MoveIt's collision check and distance along a path, probed at the scenario's spacing, and
+/// the measures of the path rounded by MoveIt's time-optimal path at the scenario's corner
+/// tolerance: MoveIt's own path straight between its waypoints rounded so, and ours as the
+/// probe runs along it.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probed {
@@ -273,6 +288,16 @@ pub struct Probed {
     pub share_of_tolerance: Option<f64>,
     /// The path's length in the joints' L2 norm.
     pub length: f64,
+    /// The integral of the norm of the rounded path's curvature over its length (rad), summed
+    /// at the midpoints of equal steps at most the scenario's probe spacing long.
+    pub turning: f64,
+    /// The integral of the squared norm of the rounded path's curvature over its length
+    /// (1/rad), summed as `turning` is.
+    pub bending: f64,
+    /// The time (s) MoveIt's time-optimal trajectory takes along the rounded path at each
+    /// joint's velocity and acceleration bounds of the robot model; null where it times none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub duration: Option<f64>,
 }
 
 /// MoveIt's answer to a scene as the reference writes it: its error code, and the probe
@@ -293,6 +318,12 @@ struct MoveItRead {
     share_of_tolerance: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
     length: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    turning: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    bending: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    duration: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,20 +480,29 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
         self_clearance,
         share_of_tolerance,
         length,
+        turning,
+        bending,
+        duration,
     } = read;
-    let probed = match (collisions, clearance, length) {
-        (Some(collisions), Some(clearance), Some(length)) => Some(Probed {
-            collisions,
-            clearance,
-            held_clearance,
-            self_clearance,
-            share_of_tolerance,
-            length,
-        }),
-        (None, None, None)
+    let probed = match (collisions, clearance, length, turning, bending) {
+        (Some(collisions), Some(clearance), Some(length), Some(turning), Some(bending)) => {
+            Some(Probed {
+                collisions,
+                clearance,
+                held_clearance,
+                self_clearance,
+                share_of_tolerance,
+                length,
+                turning,
+                bending,
+                duration,
+            })
+        }
+        (None, None, None, None, None)
             if held_clearance.is_none()
                 && self_clearance.is_none()
-                && share_of_tolerance.is_none() =>
+                && share_of_tolerance.is_none()
+                && duration.is_none() =>
         {
             None
         }
@@ -482,19 +522,20 @@ mod tests {
 
     /// A scenario of one scene, our answer to it `ours`.
     fn scenes(ours: &str) -> Scenes {
-        serde_json::from_str(&scenario("arm_planning", "any", "iterations", ours)).expect("parses")
+        serde_json::from_str(&scenario("arm_planning", "rrt_connect", "iterations", ours))
+            .expect("parses")
     }
 
-    /// The text of a scenario of the kind `kind`, its plans for `objective` ended by
-    /// `termination`, and of one scene, our answer to it `ours`.
-    fn scenario(kind: &str, objective: &str, termination: &str, ours: &str) -> String {
+    /// The text of a scenario of the kind `kind`, its plans by `planner`, refined by no
+    /// refiner, ended by `termination`, and of one scene, our answer to it `ours`.
+    fn scenario(kind: &str, planner: &str, termination: &str, ours: &str) -> String {
         format!(
             r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes",
                 "chains": [{{"name": "arm", "base_link": "base", "tip_link": "tip",
                              "joints": ["j"]}}],
                 "checked_pairs": [], "voxel_size": 0.04,
                 "map_half_side": 1.6, "min_clearance": 0.0, "corner_tolerance": 0.1,
-                "goal_tolerance": 0.01, "objective": "{objective}",
+                "goal_tolerance": 0.01, "planner": "{planner}", "refiner": "none",
                 "termination": "{termination}", "time_limit": 5.0, "iterations": 10,
                 "probe_spacing": 0.01,
                 "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
@@ -508,7 +549,8 @@ mod tests {
     const FAILURE: &str = r#"{"failure": "no_path"}"#;
     const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null,
                              "self_clearance": null, "share_of_tolerance": null,
-                             "length": 1.0}"#;
+                             "length": 1.0, "turning": 0.5, "bending": 0.25,
+                             "duration": 2.0}"#;
 
     /// The output of one scene: MoveIt's `status` and the fields of its probe, and the
     /// probe of ours.
@@ -522,10 +564,12 @@ mod tests {
 
     const MOVEIT_PROBED: &str = r#""collisions": 0, "clearance": 0.03125,
                                    "held_clearance": null, "self_clearance": null,
-                                   "share_of_tolerance": null, "length": 1.0"#;
+                                   "share_of_tolerance": null, "length": 1.0,
+                                   "turning": 0.5, "bending": 0.25, "duration": 2.0"#;
     const MOVEIT_NONE: &str = r#""collisions": null, "clearance": null,
                                  "held_clearance": null, "self_clearance": null,
-                                 "share_of_tolerance": null, "length": null"#;
+                                 "share_of_tolerance": null, "length": null,
+                                 "turning": null, "bending": null, "duration": null"#;
 
     fn paired(ours: &str, status: i32, moveit_probe: &str, ours_probe: &str) -> Case {
         pair(
@@ -539,28 +583,45 @@ mod tests {
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
-        let of_kind =
-            |kind| serde_json::from_str::<Scenes>(&scenario(kind, "any", "iterations", PATH));
+        let of_kind = |kind| {
+            serde_json::from_str::<Scenes>(&scenario(kind, "rrt_connect", "iterations", PATH))
+        };
         assert!(of_kind("planning").is_err());
         assert!(of_kind("arm_planning").is_ok());
     }
 
     #[test]
-    fn a_scenario_names_its_objective_and_its_termination() {
-        let planned = |objective, termination| {
-            serde_json::from_str::<Scenes>(&scenario("arm_planning", objective, termination, PATH))
-                .map(|s| (s.objective, s.termination))
+    fn a_scenario_names_its_planner_and_its_termination() {
+        let planned = |planner, termination| {
+            serde_json::from_str::<Scenes>(&scenario("arm_planning", planner, termination, PATH))
+                .map(|s| (s.planner, s.termination))
         };
         assert_eq!(
-            planned("any", "iterations").ok(),
-            Some((Objective::Any, Termination::Iterations))
+            planned("rrt_connect", "iterations").ok(),
+            Some((Planner::RrtConnect, Termination::Iterations))
         );
         assert_eq!(
-            planned("shortest", "time").ok(),
-            Some((Objective::Shortest, Termination::Time))
+            planned("rrt_star", "time").ok(),
+            Some((Planner::RrtStar, Termination::Time))
         );
-        assert!(planned("fastest", "time").is_err());
-        assert!(planned("any", "deadline").is_err());
+        assert!(planned("prm", "time").is_err());
+        assert!(planned("rrt_connect", "deadline").is_err());
+    }
+
+    #[test]
+    fn a_scenario_names_its_refiner() {
+        let refined = |refiner: &str| {
+            serde_json::from_str::<Scenes>(
+                &scenario("arm_planning", "rrt_connect", "iterations", PATH).replace(
+                    r#""refiner": "none""#,
+                    &format!(r#""refiner": "{refiner}""#),
+                ),
+            )
+            .map(|s| s.refiner)
+        };
+        assert_eq!(refined("none").ok(), Some(Refiner::None));
+        assert_eq!(refined("chomp").ok(), Some(Refiner::Chomp));
+        assert!(refined("stomp").is_err());
     }
 
     // A probe holds a self distance exactly where the scenario checks pairs of the robot's
@@ -570,7 +631,7 @@ mod tests {
     fn a_self_distance_pairs_exactly_where_the_scenario_checks_pairs() {
         let pairs = |checked: &str, self_clearance: &str| {
             let scenes: Scenes = serde_json::from_str(
-                &scenario("arm_planning", "any", "iterations", PATH).replace(
+                &scenario("arm_planning", "rrt_connect", "iterations", PATH).replace(
                     r#""checked_pairs": []"#,
                     &format!(r#""checked_pairs": {checked}"#),
                 ),
@@ -657,6 +718,21 @@ mod tests {
     #[should_panic(expected = "MoveIt's probe exactly where MoveIt succeeds")]
     fn a_failure_of_moveit_with_a_probe_does_not_pair() {
         paired(PATH, -1, MOVEIT_PROBED, PROBED);
+    }
+
+    #[test]
+    fn moveits_probe_of_a_path_it_times_none_pairs_with_no_duration() {
+        let untimed = MOVEIT_PROBED.replace(r#""duration": 2.0"#, r#""duration": null"#);
+        let case = paired(PATH, MOVEIT_SUCCESS, &untimed, PROBED);
+        let probed = case.cases[0].moveit.probed.expect("MoveIt's probe");
+        assert_eq!((probed.turning, probed.duration), (0.5, None));
+    }
+
+    #[test]
+    #[should_panic(expected = "MoveIt's probe whole or not at all")]
+    fn a_probe_of_moveit_with_no_bending_does_not_pair() {
+        let partial = MOVEIT_PROBED.replace(r#""bending": 0.25"#, r#""bending": null"#);
+        paired(PATH, MOVEIT_SUCCESS, &partial, PROBED);
     }
 
     #[test]

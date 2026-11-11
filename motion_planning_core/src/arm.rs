@@ -17,8 +17,9 @@ use nalgebra::{Isometry3, Point3};
 /// joints move is a link or a rider of an arm of the plan.
 pub trait SelfModel<const N: usize>: Sync {
     /// The least distance at `q` between the pairs the model checks that `moving`
-    /// judges, in meters.
-    fn clearance(&self, q: &[f64; N], moving: Moving) -> f64;
+    /// judges, in meters, as a check at `within` meters reads it: exact where it lies
+    /// under `within`, and a lower bound at or above `within` elsewhere.
+    fn clearance(&self, q: &[f64; N], moving: Moving, within: f64) -> f64;
     /// The names of the two links of the nearest of those pairs at `q`.
     fn nearest_pair(&self, q: &[f64; N], moving: Moving) -> (String, String);
 }
@@ -167,6 +168,11 @@ impl<'a, const N: usize> Arm<'a, N> {
         self.geometry
     }
 
+    /// The bodies the arm's links carry.
+    pub(crate) fn riders(&self) -> &'a [Rider<'a>] {
+        self.riders
+    }
+
     /// For each joint, the farthest any point of a link or of a rider moves per unit the
     /// joint moves: per radian for a revolute joint, per meter for a prismatic one.
     pub fn reach(&self) -> &[f64; N] {
@@ -213,7 +219,7 @@ pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Iso
 /// part's pieces, or the object's shape.
 fn rider_bodies<'a>(rider: &Rider<'a>, pose: Isometry3<f64>) -> impl Iterator<Item = Body<'a>> {
     let (pieces, shape) = match rider.body {
-        RiderBody::Pieces(pieces) => (pieces, None),
+        RiderBody::Part(part) => (part.pieces(), None),
         RiderBody::Shape(shape) => (&[][..], Some(shape)),
     };
     pieces

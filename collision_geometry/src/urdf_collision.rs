@@ -53,7 +53,17 @@ impl Collision {
     /// faces of the `CYLINDER_SIDES`-sided prism about it, and a sphere the faces of a
     /// hull of `SPHERE_POINTS` points about it, so the surface holds the shape.
     pub fn surface(&self, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {
-        let local = match &self.geometry {
+        Ok(self
+            .local_surface(meshes_dir)?
+            .into_iter()
+            .map(|v| self.origin * v)
+            .collect())
+    }
+
+    /// The element's surface in its own frame, before its origin places it, as
+    /// [`Collision::surface`] gives it.
+    pub(crate) fn local_surface(&self, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {
+        Ok(match &self.geometry {
             CollisionGeometry::Mesh { basename, scale } => {
                 crate::stl::load_stl(&format!("{meshes_dir}/{basename}"))?
                     .into_iter()
@@ -67,8 +77,7 @@ impl Collision {
             CollisionGeometry::Sphere { radius } => {
                 UNIT_SPHERE_SURFACE.iter().map(|v| v * *radius).collect()
             }
-        };
-        Ok(local.into_iter().map(|v| self.origin * v).collect())
+        })
     }
 }
 

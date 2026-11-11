@@ -1,7 +1,8 @@
 //! Plans of OpenArm v2's left arm around boxes of voxels: the rounded path of every
-//! returned path keeps its clearance under a dense check and passes the check of a
-//! caller's path, the same request on the same map gives the same path, of one attempt
-//! or several, a stop ends a plan, and a goal or a world that admits no path says why.
+//! returned path, refined by CHOMP or not, keeps its clearance under a dense check and
+//! passes the check of a caller's path, the same request on the same map gives the same
+//! path, of one attempt or several, a stop ends a plan, and a goal or a world that admits
+//! no path says why.
 //! Checks of a caller's path: where each fault lies and the waypoints before it. Plans
 //! and checks among the objects of a planning scene: an object is avoided until it is
 //! removed, an object the hand holds is carried around an obstacle, the fingers and the
@@ -28,8 +29,8 @@ use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal,
     GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest,
     Objects, OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
-    PlanningScene, PositionTarget, Reading, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
-    Surroundings, check_path, plan_path, pose_parts, term_clearances,
+    PlanningScene, PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields,
+    StartFault, Surroundings, check_path, plan_path, pose_parts, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
@@ -98,6 +99,7 @@ fn request<'a>(
         path_orientations: &[],
         goal_samples: NonZeroUsize::new(8).expect("nonzero"),
         planner,
+        refiner: None,
         deadline: an_hour_from_now(),
         max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
         attempts: NonZeroU32::MIN,
@@ -447,8 +449,8 @@ fn a_plan_its_iterations_end_gives_no_path() {
     assert_eq!(
         failure,
         PlanFailure::NoPath(
-            "RRTConnect found no path within 1 iterations or by its deadline, keeping the \
-             plan's clearance, 0.0210 m from the map and the objects"
+            "RRTConnect found no path within 1 iterations, keeping the plan's clearance, \
+             0.0210 m from the map and the objects"
                 .to_string()
         )
     );
@@ -570,8 +572,8 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     assert_eq!(
         plan_path(&arms, &scene, &limited),
         Err(PlanFailure::NoPath(
-            "RRTConnect found no path within 20000 iterations or by its deadline, keeping the \
-             plan's clearance, 0.0210 m from the map and the objects"
+            "RRTConnect found no path by its deadline, keeping the plan's clearance, 0.0210 m \
+             from the map and the objects"
                 .to_string()
         ))
     );
@@ -894,12 +896,16 @@ fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
     );
 }
 
+/// The iteration bound of a drawn world's plan by RRTstar, which plans until its bound ends
+/// it, where each other planner here returns at its first path.
+const RRT_STAR_ITERATIONS: NonZeroU64 = NonZeroU64::new(500).expect("500 is above 0");
+
 // On drawn worlds of boxes in front of the arm, clear of it at the start and at the
-// goal, every path a planner returns has a rounded path that keeps the clearance under
-// a dense check and passes the check of a caller's path, and every plan that returns
-// none says the goal is unreachable or that it found no path. A world whose plan returns
-// none is discarded, so Hegel's FilterTooMuch health check fails a run in which few plans
-// return a path.
+// goal, every path a planner returns, refined by CHOMP or not, has a rounded path that
+// keeps the clearance under a dense check and passes the check of a caller's path, and
+// every plan that returns none says the goal is unreachable or that it found no path. A
+// world whose plan returns none is discarded, so Hegel's FilterTooMuch health check fails
+// a run in which few plans return a path.
 #[hegel::test(test_cases = 40)]
 fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) {
     use hegel::generators as gs;
@@ -930,12 +936,23 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
     let planner = tc.draw(gs::sampled_from(&[
         Planner::RrtConnect,
         Planner::Rrt,
+        Planner::RrtStar,
         Planner::BiTrrt,
     ]));
+    let refiner = tc.draw(gs::sampled_from(&[None, Some(Refiner::Chomp)]));
     // A world whose boxes stand on the arm at the start or at the goal tests nothing
     // here.
     tc.assume(surroundings.clear(&arms, &LOW) && surroundings.clear(&arms, &HIGH));
-    match plan_path(&arms, &scene, &request(planner, LOW, &goal, &sampler)) {
+    let bounded = request(planner, LOW, &goal, &sampler);
+    let request = PlanRequest {
+        refiner,
+        max_iterations: match planner {
+            Planner::RrtStar => RRT_STAR_ITERATIONS,
+            _ => bounded.max_iterations,
+        },
+        ..bounded
+    };
+    match plan_path(&arms, &scene, &request) {
         Ok(waypoints) => {
             assert_dense_clear(&arms, &map, &field, &waypoints);
             assert_eq!(
@@ -944,7 +961,7 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
             );
         }
         Err(PlanFailure::Unreachable(_) | PlanFailure::NoPath(_)) => tc.assume(false),
-        Err(other) => panic!("{planner}: {other}"),
+        Err(other) => panic!("{planner}, refined by {refiner:?}: {other}"),
     }
 }
 
@@ -955,7 +972,7 @@ struct HandAndBall {
 }
 
 impl motion_planning_core::SelfModel<JOINTS> for HandAndBall {
-    fn clearance(&self, q: &[f64; JOINTS], _: Moving) -> f64 {
+    fn clearance(&self, q: &[f64; JOINTS], _: Moving, _: f64) -> f64 {
         (hand(q) - self.center).norm() - self.radius
     }
 
@@ -977,7 +994,7 @@ fn a_path_keeps_its_clearance_from_the_self_model() {
     let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
     use motion_planning_core::SelfModel;
     assert!(
-        model.clearance(&mid, Moving::All) < MIN_CLEARANCE_M,
+        model.clearance(&mid, Moving::All, f64::INFINITY) < MIN_CLEARANCE_M,
         "the ball stands off the straight way"
     );
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
@@ -999,9 +1016,9 @@ fn a_path_keeps_its_clearance_from_the_self_model() {
     for probe in probes(&path, spacing) {
         let q: [f64; JOINTS] = probe.as_slice().try_into().expect("a configuration");
         assert!(
-            model.clearance(&q, Moving::All) >= MIN_CLEARANCE_M,
+            model.clearance(&q, Moving::All, f64::INFINITY) >= MIN_CLEARANCE_M,
             "the hand comes within {} of the ball",
-            model.clearance(&q, Moving::All)
+            model.clearance(&q, Moving::All, f64::INFINITY)
         );
     }
 }
@@ -1201,7 +1218,10 @@ fn from_a_start_near_the_slab_and_its_own_body_both_clearances_rise() {
     use motion_planning_core::SelfModel;
     let bare = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
     let from_map = |q: &[f64; JOINTS]| distance_to_map(&bare, &map, q);
-    let (map_start, own_start) = (from_map(&start), model.clearance(&start, Moving::All));
+    let (map_start, own_start) = (
+        from_map(&start),
+        model.clearance(&start, Moving::All, f64::INFINITY),
+    );
     assert!(
         own_start < MIN_CLEARANCE_M,
         "the hand starts {own_start} from the ball"
@@ -1224,7 +1244,7 @@ fn from_a_start_near_the_slab_and_its_own_body_both_clearances_rise() {
     let spacing = PositiveFinite::parse(DEPARTURE_PROBE_M / arms.lever()).expect("positive");
     let kept = probes(&path, spacing).into_iter().any(|probe| {
         let q: [f64; JOINTS] = probe.as_slice().try_into().expect("a configuration");
-        let (on_map, own) = (from_map(&q), model.clearance(&q, Moving::All));
+        let (on_map, own) = (from_map(&q), model.clearance(&q, Moving::All, f64::INFINITY));
         assert!(
             on_map >= departed(map_start) && own >= departed(own_start),
             "at {q:?} the map lies {on_map} away and the ball {own}, from {map_start} and {own_start}"
@@ -1268,7 +1288,7 @@ struct ApartNearTheStart {
 }
 
 impl motion_planning_core::SelfModel<JOINTS> for ApartNearTheStart {
-    fn clearance(&self, q: &[f64; JOINTS], _: Moving) -> f64 {
+    fn clearance(&self, q: &[f64; JOINTS], _: Moving, _: f64) -> f64 {
         let moved = (q[0] - LOW[0]).abs() * self.per_rad;
         let Stands { apart, dip, past } = self.stands;
         if moved < 0.1105 {
@@ -1618,7 +1638,7 @@ struct StopsTheAttempts<'a> {
 }
 
 impl motion_planning_core::SelfModel<JOINTS> for StopsTheAttempts<'_> {
-    fn clearance(&self, q: &[f64; JOINTS], _: Moving) -> f64 {
+    fn clearance(&self, q: &[f64; JOINTS], _: Moving, _: f64) -> f64 {
         if std::thread::current().id() != self.made_on {
             self.stop.store(true, Ordering::Relaxed);
         }
@@ -1814,7 +1834,7 @@ fn a_check_answers_the_waypoints_before_the_first_fault() {
 struct AskedAtMostTenThousand(AtomicUsize);
 
 impl motion_planning_core::SelfModel<JOINTS> for AskedAtMostTenThousand {
-    fn clearance(&self, _: &[f64; JOINTS], _: Moving) -> f64 {
+    fn clearance(&self, _: &[f64; JOINTS], _: Moving, _: f64) -> f64 {
         let asked = self.0.fetch_add(1, Ordering::Relaxed);
         assert!(asked < 10_000, "asked about more than 10 000 states");
         1.0

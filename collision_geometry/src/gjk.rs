@@ -339,6 +339,15 @@ pub(crate) fn distance_to_triangle(point: &Point3<f64>, corners: [Point3<f64>; 3
     closest_triangle(a, b, c).closest.norm()
 }
 
+/// How far apart the projections of two convex bodies on `toward_b`, a direction from
+/// `a` toward `b`, lie, their rounding radii taken off: a lower bound on their
+/// [`distance`] for every direction, from one support point of each body.
+pub fn separation_along(a: &impl Support, b: &impl Support, toward_b: &Unit<Vector3<f64>>) -> f64 {
+    (b.core_support(&-toward_b.into_inner()) - a.core_support(toward_b)).dot(toward_b)
+        - a.radius()
+        - b.radius()
+}
+
 /// Signed surface distance between two convex bodies and the closest points.
 /// Runs GJK on the cores, then subtracts the radii and pushes the witnesses out
 /// to the rounded surfaces along the separating direction.
@@ -957,6 +966,28 @@ mod tests {
         let a = box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.1);
         let b = box_hull(pt(2.0, 0.0, 0.0), 0.5, 0.15);
         assert!((distance(&a, &b).distance - (1.0 - 0.25)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_separation_along_a_direction_bounds_the_distance_from_below() {
+        // Rounded faces 0.75 apart along x: the separation along x is the distance, and
+        // along a direction turned from x toward y it is the gap between the corner of
+        // one box and the corner of the other, the radii taken off.
+        let a = box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.1);
+        let b = box_hull(pt(2.0, 0.0, 0.0), 0.5, 0.15);
+        let exact = distance(&a, &b).distance;
+        assert!((separation_along(&a, &b, &Vector3::x_axis()) - exact).abs() < 1e-12);
+        let turned = Unit::new_normalize(Vector3::new(1.0, 0.5, 0.0));
+        let bound = separation_along(&a, &b, &turned);
+        assert!((bound - (0.2_f64.sqrt() - 0.25)).abs() < 1e-12, "{bound}");
+        assert!(bound < exact);
+        // Cores that overlap by 0.3 along x: the separation along x is the depth, under
+        // 0, and along the turned direction it lies under the depth.
+        let a = box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.0);
+        let b = box_hull(pt(0.7, 0.0, 0.0), 0.5, 0.0);
+        let depth = distance(&a, &b).distance;
+        assert!((separation_along(&a, &b, &Vector3::x_axis()) - depth).abs() < 1e-6);
+        assert!(separation_along(&a, &b, &turned) < depth);
     }
 
     #[test]

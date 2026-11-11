@@ -12,7 +12,9 @@
 //! carries ([`CarriedPart`]), placed with the joints between them at 0, which a
 //! [`Rider`] places on the link that carries it; a rider is also a shape of a collision
 //! object attached to a link. Placed at a configuration, each piece gives its hull and
-//! its bounding sphere in the frame of the URDF root.
+//! its bounding sphere in the frame of the URDF root. Each piece, and each piece of a
+//! carried part, also holds the body its element's collision spheres are placed on
+//! ([`SphereSource`]), as MoveIt's CHOMP places them.
 //!
 //! A [`Mask`] grows every collision element by a [`Padding`]: the element scaled about
 //! its center, a mesh from its piece and a primitive as itself, and every point within
@@ -35,6 +37,7 @@ use crate::fit::{fit_fixed_link, fit_pieces};
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
 use crate::shapes::{Shape, distance_outside_box, distance_outside_cylinder};
+use crate::spheres::SphereSource;
 use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
 
 /// How far the outer reach of a grown piece reaches past the element's outer ball grown
@@ -72,6 +75,11 @@ impl LinkGeometry {
     pub fn segment(&self) -> usize {
         self.segment
     }
+
+    /// This link's frame in the frame of its segment's link.
+    pub fn offset(&self) -> &Isometry3<f64> {
+        &self.offset
+    }
 }
 
 /// A convex piece of a link, in the link's frame, and the `<collision>` element it is
@@ -80,6 +88,7 @@ impl LinkGeometry {
 pub struct Piece {
     hull: Hull,
     element: Collision,
+    sphere_source: SphereSource,
 }
 
 impl Piece {
@@ -89,6 +98,11 @@ impl Piece {
 
     pub fn element(&self) -> &Collision {
         &self.element
+    }
+
+    /// The body the element's collision spheres are placed on.
+    pub fn sphere_source(&self) -> &SphereSource {
+        &self.sphere_source
     }
 }
 
@@ -105,11 +119,12 @@ pub struct Rider<'a> {
     pub body: RiderBody<'a>,
 }
 
-/// What a [`Rider`] is made of: a part's convex pieces, one per `<collision>` element,
-/// or one shape of a collision object.
+/// What a [`Rider`] is made of: a part of the robot, with its convex pieces, one per
+/// `<collision>` element, and the bodies of their collision spheres; or one shape of a
+/// collision object.
 #[derive(Debug, Clone, Copy)]
 pub enum RiderBody<'a> {
-    Pieces(&'a [Hull]),
+    Part(&'a CarriedPart),
     Shape(&'a Shape),
 }
 
@@ -123,16 +138,28 @@ pub struct CarriedPart {
     segment: usize,
     offset: Isometry3<f64>,
     pieces: Vec<Hull>,
+    sphere_sources: Vec<SphereSource>,
 }
 
 impl CarriedPart {
+    /// The part's convex pieces, one per `<collision>` element, in its own frame.
+    pub fn pieces(&self) -> &[Hull] {
+        &self.pieces
+    }
+
+    /// The bodies the collision spheres of the part's pieces are placed on, in the part's
+    /// own frame.
+    pub fn sphere_sources(&self) -> &[SphereSource] {
+        &self.sphere_sources
+    }
+
     /// The part as a rider of the link that carries it.
     pub fn rider(&self) -> Rider<'_> {
         Rider {
             name: &self.link,
             segment: self.segment,
             offset: self.offset,
-            body: RiderBody::Pieces(&self.pieces),
+            body: RiderBody::Part(self),
         }
     }
 }
@@ -172,11 +199,14 @@ impl<const N: usize> ChainGeometry<N> {
                 });
             } else if let Some((segment, offset)) = carrier_of_part(&collisions, &segments, &name)?
             {
-                carried.push(CarriedPart {
-                    pieces: pieces_of(&collisions, &name, meshes_dir)?
+                let (pieces, sphere_sources): (Vec<Hull>, Vec<SphereSource>) =
+                    pieces_of(&collisions, &name, meshes_dir)?
                         .into_iter()
-                        .map(|piece| piece.hull)
-                        .collect(),
+                        .map(|piece| (piece.hull, piece.sphere_source))
+                        .unzip();
+                carried.push(CarriedPart {
+                    pieces,
+                    sphere_sources,
                     link: name,
                     segment,
                     offset,
@@ -949,11 +979,13 @@ fn pieces_of(
         .collisions_of(link)
         .into_iter()
         .map(|element| {
-            let surface = element.surface(meshes_dir)?;
+            let local = element.local_surface(meshes_dir)?;
+            let surface: Vec<Point3<f64>> = local.iter().map(|v| element.origin * v).collect();
             let [hull] = <[Hull; 1]>::try_from(fit_pieces(link, &[surface], None)?)
                 .expect("a fit without clip regions gives one piece per surface");
             Ok(Piece {
                 hull,
+                sphere_source: SphereSource::of(element, &local),
                 element: element.clone(),
             })
         })

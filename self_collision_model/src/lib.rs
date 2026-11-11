@@ -26,6 +26,10 @@
 //!   one chain's bodies ride, for a planner that moves that chain alone, and
 //!   [`SelfCollisionModel::min_distance_of_chain_alone`] over those of them no other
 //!   chain's bodies ride.
+//! - [`SelfCollisionModel::min_distance_within`] and its forms of one chain give each
+//!   of those distances as a check at a clearance reads it, exact under the
+//!   clearance and a lower bound past it, measuring the pairs near the clearance
+//!   alone.
 //! - [`SelfCollisionModel::fingers`] gives the fingers a chain carries
 //!   (`ChainGeometry::carried`) where they hang at its opening, as
 //!   [`Rider`](collision_geometry::chain::Rider)s of its links, for a planner's check of

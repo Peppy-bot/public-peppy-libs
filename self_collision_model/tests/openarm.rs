@@ -6,7 +6,9 @@ use std::sync::LazyLock;
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use collision_geometry::chain::ChainGeometry;
 use openarm_description::{ArmPair, HardwareVersion, Side, home};
-use self_collision_model::{FingerError, PairSpec, SelfCollisionModel, openarm, openarm_fingers};
+use self_collision_model::{
+    CollisionError, FingerError, PairSpec, SelfCollisionModel, openarm, openarm_fingers,
+};
 
 /// The directory of `version`'s collision meshes, written once per test binary.
 fn meshes_dir(version: HardwareVersion) -> &'static str {
@@ -325,6 +327,26 @@ fn an_arms_distance_counts_the_pairs_it_rides() {
 // of: on postures of both arms folded inward, its pair holds a body of that arm and none
 // of the other's, and it equals the arm's own distance where that one's pair holds no
 // body of the other arm, and lies at or past it elsewhere; on some posture a pair of the
+/// Postures of the left arm and the right, both folded inward.
+const FOLDED_INWARD: [([f64; 7], [f64; 7]); 4] = [
+    (
+        [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
+        [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
+    ),
+    (
+        [0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0],
+        [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0],
+    ),
+    (
+        [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
+        [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
+    ),
+    (
+        [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+        [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+    ),
+];
+
 // two arms is the arm's nearest.
 #[test]
 fn an_arms_distance_alone_sets_the_other_arm_aside() {
@@ -337,26 +359,8 @@ fn an_arms_distance_alone_sets_the_other_arm_aside() {
         };
         link.starts_with(&format!("openarm_{name}_")) && link != version.base_link(side)
     };
-    let postures: [([f64; 7], [f64; 7]); 4] = [
-        (
-            [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
-            [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
-        ),
-        (
-            [0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0],
-            [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0],
-        ),
-        (
-            [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
-            [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
-        ),
-        (
-            [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
-            [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
-        ),
-    ];
     let mut crossing = 0;
-    for (left, right) in postures {
+    for (left, right) in FOLDED_INWARD {
         for side in Side::BOTH {
             let own = model
                 .min_distance_of_chain(side.index(), &[left, right])
@@ -384,6 +388,73 @@ fn an_arms_distance_alone_sets_the_other_arm_aside() {
         crossing > 0,
         "no posture whose arm's nearest pair is of the two arms"
     );
+}
+
+/// Checks `bounded`, which reads at a bound the distance `exact`: the distance itself with
+/// no bound and at bounds past it, and at or above the bound and no larger than the
+/// distance at the distance and at bounds under it. The count of reads under the distance.
+fn reads_under_the_distance(exact: f64, mut bounded: impl FnMut(f64) -> f64) -> usize {
+    for within in [f64::INFINITY, exact + 0.05, exact + 1e-6] {
+        assert_eq!(bounded(within), exact, "within {within}");
+    }
+    [exact, exact - 1e-6, exact - 0.05, -1.0]
+        .into_iter()
+        .filter(|&within| {
+            let read = bounded(within);
+            assert!(
+                within <= read && read <= exact,
+                "within {within}: {read} against {exact}"
+            );
+            read < exact
+        })
+        .count()
+}
+
+// A distance read at a bound is the distance itself where that lies under the bound, and
+// elsewhere at or above the bound and no larger than the distance: of every pair, of an
+// arm's pairs and of an arm's pairs alone, on the postures of both arms folded inward. On
+// some posture a read past its bound is a lower bound under the distance.
+#[test]
+fn a_distance_read_at_a_bound_is_exact_under_it_and_a_lower_bound_past_it() {
+    let version = HardwareVersion::V2;
+    let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
+    let mut under_the_distance = 0;
+    for (left, right) in FOLDED_INWARD {
+        let q = [left, right];
+        let every_pair = model.min_distance(&q).expect("a distance").distance;
+        under_the_distance += reads_under_the_distance(every_pair, |within| {
+            model.min_distance_within(&q, within).expect("a distance")
+        });
+        for chain in Side::BOTH.map(Side::index) {
+            let of_arm = model
+                .min_distance_of_chain(chain, &q)
+                .expect("a distance")
+                .distance;
+            under_the_distance += reads_under_the_distance(of_arm, |within| {
+                model
+                    .min_distance_of_chain_within(chain, &q, within)
+                    .expect("a distance")
+            });
+            let alone = model
+                .min_distance_of_chain_alone(chain, &q)
+                .expect("a distance")
+                .distance;
+            under_the_distance += reads_under_the_distance(alone, |within| {
+                model
+                    .min_distance_of_chain_alone_within(chain, &q, within)
+                    .expect("a distance")
+            });
+        }
+    }
+    assert!(
+        under_the_distance > 0,
+        "no read past its bound that lies under the distance"
+    );
+    let (left, right) = FOLDED_INWARD[0];
+    assert!(matches!(
+        model.min_distance_within(&[left, right], f64::NAN),
+        Err(CollisionError::NonFinite)
+    ));
 }
 
 /// The least distance the pairs v2 leaves out keep within the joint limits on the grid

@@ -61,7 +61,16 @@ pub fn distance(a: &[f64], b: &[f64]) -> f64 {
         .sqrt()
 }
 
-/// The length of a path, state to state.
+/// The length of a path, state to state, as the bridge's space measures it: the sum of each
+/// state's distance from the one before it, the sum of each dimension's absolute change,
+/// added in OMPL's order.
 pub fn length(path: &[Vec<f64>]) -> f64 {
-    path.windows(2).map(|w| distance(&w[0], &w[1])).sum()
+    path.windows(2)
+        .map(|w| {
+            w[0].iter()
+                .zip(&w[1])
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f64>()
+        })
+        .sum()
 }

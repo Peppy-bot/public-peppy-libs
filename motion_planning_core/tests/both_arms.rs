@@ -134,7 +134,7 @@ impl PiecesApart<'_> {
 
 impl SelfModel<4> for PiecesApart<'_> {
     /// Each pair holds a body of both arms, so a turn of the left arm judges none.
-    fn clearance(&self, q: &[f64; 4], moving: Moving) -> f64 {
+    fn clearance(&self, q: &[f64; 4], moving: Moving, _: f64) -> f64 {
         if !moving.judges(0, 1) {
             return f64::INFINITY;
         }
@@ -245,6 +245,7 @@ fn plan_in(
             path_orientations: &[],
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
+            refiner: None,
             deadline: an_hour_from_now(),
             max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
             attempts: NonZeroU32::MIN,
@@ -289,7 +290,7 @@ fn arms_that_cannot_swap_at_once_pass_each_other_apart() {
     let model = facing.model();
     let arms = facing.arms(&model);
     assert!(
-        model.clearance(&[0.0, 0.0, 0.0, 0.0], Moving::All) < 0.0,
+        model.clearance(&[0.0, 0.0, 0.0, 0.0], Moving::All, f64::INFINITY) < 0.0,
         "the arms pointing at each other overlap"
     );
     let samplers = [
@@ -319,7 +320,7 @@ fn arms_that_cannot_swap_at_once_pass_each_other_apart() {
         "the path ends at {last:?}"
     );
     for q in probes(&arms, &waypoints) {
-        let apart = model.clearance(&q, Moving::All);
+        let apart = model.clearance(&q, Moving::All, f64::INFINITY);
         assert!(
             apart >= MIN_CLEARANCE_M,
             "the arms come {apart} m apart at {q:?}"
@@ -377,8 +378,10 @@ fn a_goal_sample_draws_each_arm_against_the_arms_drawn_before_it() {
         Drawn::new(vec![[0.0, 0.0]]),
         Drawn::new(vec![[0.0, 0.0], [1.0, 0.0]]),
     );
-    assert!(model.clearance(&[0.0, 0.0, UP[2], UP[3]], Moving::All) >= MIN_CLEARANCE_M);
-    assert!(model.clearance(&[0.0, 0.0, 0.0, 0.0], Moving::All) < MIN_CLEARANCE_M);
+    assert!(
+        model.clearance(&[0.0, 0.0, UP[2], UP[3]], Moving::All, f64::INFINITY) >= MIN_CLEARANCE_M
+    );
+    assert!(model.clearance(&[0.0, 0.0, 0.0, 0.0], Moving::All, f64::INFINITY) < MIN_CLEARANCE_M);
     let waypoints = plan(
         &arms,
         UP,
@@ -448,8 +451,8 @@ fn every_answered_path_of_two_arms_keeps_them_apart(tc: TestCase) {
     let model = facing.model();
     let arms = facing.arms(&model);
     let (start, end) = (drawn_state(&tc, &arms), drawn_state(&tc, &arms));
-    tc.assume(model.clearance(&start, Moving::All) >= MIN_CLEARANCE_M + 0.01);
-    tc.assume(model.clearance(&end, Moving::All) >= MIN_CLEARANCE_M + 0.01);
+    tc.assume(model.clearance(&start, Moving::All, f64::INFINITY) >= MIN_CLEARANCE_M + 0.01);
+    tc.assume(model.clearance(&end, Moving::All, f64::INFINITY) >= MIN_CLEARANCE_M + 0.01);
     let goal = at([0.0, 0.0]);
     let (left, right) = (
         Drawn::new(vec![Arms::<2, 4>::slice(&end, 0)]),
@@ -472,7 +475,7 @@ fn every_answered_path_of_two_arms_keeps_them_apart(tc: TestCase) {
         return;
     };
     for q in probes(&arms, &waypoints) {
-        let apart = model.clearance(&q, Moving::All);
+        let apart = model.clearance(&q, Moving::All, f64::INFINITY);
         assert!(
             apart >= MIN_CLEARANCE_M,
             "the arms come {apart} m apart at {q:?}"
@@ -487,14 +490,14 @@ fn nearer_than_the_clearance(model: &PiecesApart) -> [f64; 4] {
     let (mut apart, mut near) = (1.0, 0.0);
     for _ in 0..60 {
         let middle = (apart + near) / 2.0;
-        if model.clearance(&swung(middle), Moving::All) > MIN_CLEARANCE_M / 2.0 {
+        if model.clearance(&swung(middle), Moving::All, f64::INFINITY) > MIN_CLEARANCE_M / 2.0 {
             apart = middle;
         } else {
             near = middle;
         }
     }
     let start = swung(apart);
-    let at_start = model.clearance(&start, Moving::All);
+    let at_start = model.clearance(&start, Moving::All, f64::INFINITY);
     assert!(
         0.0 < at_start && at_start < MIN_CLEARANCE_M,
         "the arms start {at_start} m apart"
@@ -514,7 +517,7 @@ fn a_goal_sample_judges_a_pair_of_the_arms_on_the_later_arms_turn() {
     let start = nearer_than_the_clearance(&model);
     let (stays, away) = ([start[0], start[1]], [1.0, 0.0]);
     let end = [stays[0], stays[1], away[0], away[1]];
-    assert!(model.clearance(&end, Moving::All) >= MIN_CLEARANCE_M);
+    assert!(model.clearance(&end, Moving::All, f64::INFINITY) >= MIN_CLEARANCE_M);
     let (left_goal, right_goal) = (at(stays), at(away));
     let (left, right) = (Drawn::new(vec![stays]), Drawn::new(vec![away]));
     let waypoints = plan(
@@ -545,7 +548,7 @@ fn arms_that_start_nearer_than_the_clearance_depart_by_the_start_rule() {
     let model = facing.model();
     let arms = facing.arms(&model);
     let start = nearer_than_the_clearance(&model);
-    let at_start = model.clearance(&start, Moving::All);
+    let at_start = model.clearance(&start, Moving::All, f64::INFINITY);
     let goal = at([0.0, 0.0]);
     let (left, right) = (Drawn::new(vec![[-1.0, 0.0]]), Drawn::new(vec![[-1.0, 0.0]]));
     let waypoints = plan(
@@ -564,7 +567,7 @@ fn arms_that_start_nearer_than_the_clearance_depart_by_the_start_rule() {
     )
     .expect("a path that departs and goes around");
     for q in probes(&arms, &waypoints) {
-        let apart = model.clearance(&q, Moving::All);
+        let apart = model.clearance(&q, Moving::All, f64::INFINITY);
         assert!(
             apart > at_start / 2.0,
             "the arms come {apart} m apart at {q:?}, from {at_start} m"

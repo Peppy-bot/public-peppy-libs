@@ -149,10 +149,10 @@ fn frame_of(joints: &Joints) -> Vec<u8> {
             let posed = OPENARM_V2.arms[side].chain().at(&arm(joints, side));
             riders[side].iter().map(move |finger| {
                 let hand = posed.link_pose_world(finger.segment);
-                let RiderBody::Pieces(pieces) = finger.body else {
+                let RiderBody::Part(part) = finger.body else {
                     panic!("a finger is a part of the robot");
                 };
-                (finger.name, pieces, hand * finger.offset)
+                (finger.name, part.pieces(), hand * finger.offset)
             })
         }),
         none,

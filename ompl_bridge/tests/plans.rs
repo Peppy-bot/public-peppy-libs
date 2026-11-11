@@ -367,6 +367,45 @@ fn simplification_shortens_a_path_that_turns_where_it_need_not() {
     );
 }
 
+/// The wall's checks, the simplifier's check refusing every motion.
+struct SimplifierRefuses<'a>(&'a World);
+
+impl Checks for SimplifierRefuses<'_> {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        self.0.state(state)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        self.0.motion(from, to)
+    }
+
+    fn simplifier_motion(&self, _: &[f64], _: &[f64]) -> Result<Motion, CheckError> {
+        Ok(Motion::Invalid { last_valid: 0.0 })
+    }
+}
+
+// The simplifier judges each motion it checks by the simplifier's check: RRT's path through
+// the 2-D wall under seed 1, which the simplifier shortens under the planner's check, stays
+// the planned path when the simplifier's check refuses every motion.
+#[test]
+fn the_simplifier_judges_its_motions_by_the_simplifiers_check() {
+    let ends = WallEnds::new(2);
+    let world = wall(2);
+    let request = Request {
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        ..ends.request(Planner::Rrt, 1)
+    };
+    let refused = plan(&request, &SimplifierRefuses(&world)).expect("a plan");
+    let path = refused.path.expect("a path");
+    assert_eq!(refused.simplified.expect("a simplified path").path, path);
+    let shortened = plan(&request, &world)
+        .expect("a plan")
+        .simplified
+        .expect("a simplified path")
+        .path;
+    assert!(length(&shortened) < length(&path));
+}
+
 /// The unit sphere about the origin: the states whose norm is 1.
 struct UnitSphere;
 
@@ -443,9 +482,23 @@ impl Constraint for Anywhere {
     }
 }
 
+/// The longest motion asked of the checks, by the Euclidean distance and by the sum of each
+/// dimension's absolute change.
+#[derive(Default, Clone, Copy)]
+struct Longest {
+    euclidean: f64,
+    summed: f64,
+}
+
 /// Checks that pass every state and motion and record the longest motion asked of them.
 #[derive(Default)]
-struct LongestMotion(Mutex<f64>);
+struct LongestMotion(Mutex<Longest>);
+
+impl LongestMotion {
+    fn longest(&self) -> Longest {
+        *self.0.lock().expect("no check panics")
+    }
+}
 
 impl Checks for LongestMotion {
     fn state(&self, _: &[f64]) -> Result<bool, CheckError> {
@@ -453,10 +506,37 @@ impl Checks for LongestMotion {
     }
 
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        let summed = from.iter().zip(to).map(|(a, b)| (a - b).abs()).sum();
         let mut longest = self.0.lock().expect("no check panics");
-        *longest = longest.max(distance(from, to));
+        *longest = Longest {
+            euclidean: longest.euclidean.max(distance(from, to)),
+            summed: longest.summed.max(summed),
+        };
         Ok(Motion::Valid)
     }
+}
+
+// A planner's range is a fifth of the space's extent, by the space's distance: in the unit
+// square, whose extent is the sum of its sides, 2, RRT steps at most 0.4 in the sum of the
+// dimensions' changes, and a step off the diagonal runs past a fifth of the square's
+// diagonal, 0.2 * sqrt(2), the range of a space measured by the Euclidean distance.
+#[test]
+fn a_planners_range_is_a_fifth_of_the_extent_by_the_spaces_distance() {
+    let space = Space::new(&[(0.0, 1.0); 2]).expect("the unit square");
+    let checks = LongestMotion::default();
+    let goals = [vec![1.0, 1.0]];
+    plan(
+        &request(Planner::Rrt, &space, &[0.0, 0.0], &goals, 1),
+        &checks,
+    )
+    .expect("a plan");
+    let longest = checks.longest();
+    assert!(longest.summed <= 0.4 + 1e-12, "{}", longest.summed);
+    assert!(
+        longest.euclidean > 0.2 * 2.0_f64.sqrt(),
+        "{}",
+        longest.euclidean
+    );
 }
 
 /// The space, the start and the goal of the plans on the sphere: from one pole to the
@@ -555,6 +635,47 @@ fn a_constrained_plan_judges_the_stretches_of_its_walks_by_the_motion_check() {
 // The steps of a walk that the projection leaves in one line join one motion, so a check of
 // a motion walks it whole: with a constraint every state meets, the motion check sees a
 // motion longer than the spacing, and the plan's path keeps to the spacing all the same.
+/// The checks of the sphere's equator, the simplifier's check refusing every motion and
+/// counting the motions it is asked.
+struct EquatorSimplifierRefuses(AtomicUsize);
+
+impl Checks for EquatorSimplifierRefuses {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        EquatorOfMotions.state(state)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        EquatorOfMotions.motion(from, to)
+    }
+
+    fn simplifier_motion(&self, _: &[f64], _: &[f64]) -> Result<Motion, CheckError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Motion::Invalid { last_valid: 0.0 })
+    }
+}
+
+// A constrained plan's simplifier judges each stretch of its walks by the simplifier's
+// check: with that check refusing every motion, RRT's path on the sphere, which the
+// simplifier has motions to try on, stays the planned path, and the simplifier asked the
+// check.
+#[test]
+fn a_constrained_simplifier_judges_its_stretches_by_the_simplifiers_check() {
+    let (space, start, goal) = sphere_ends();
+    let goals = [goal];
+    let checks = EquatorSimplifierRefuses(AtomicUsize::new(0));
+    let request = Request {
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        ..on_the_sphere(Planner::Rrt, &space, &start, &goals, &UnitSphere)
+    };
+    let answer = plan(&request, &checks).expect("a plan");
+    let path = answer.path.expect("a path on the sphere");
+    assert_eq!(answer.simplified.expect("a simplified path").path, path);
+    assert!(
+        checks.0.load(Ordering::SeqCst) > 0,
+        "the simplifier asked the simplifier's check of no motion"
+    );
+}
+
 #[test]
 fn the_steps_of_a_walk_in_one_line_join_one_motion() {
     let space = unit_cube(2);
@@ -567,7 +688,7 @@ fn the_steps_of_a_walk_in_one_line_join_one_motion() {
     )
     .expect("a plan");
     let path = answer.path.expect("a path through an empty space");
-    let longest = *checks.0.lock().expect("no check panics");
+    let longest = checks.longest().euclidean;
     assert!(
         longest > CONSTRAINED_SPACING,
         "the longest motion asked is {longest}"
@@ -1906,15 +2027,15 @@ fn several_attempts_repeat_and_keep_the_shortest_path() {
     }
 }
 
-// Four attempts of RRTConnect from seed 4 join into their hybrid: the joined path is
+// Four attempts of RRTConnect from seed 1 join into their hybrid: the joined path is
 // shorter than the path of attempt 0, which plans from the same seed, and holds a state
 // of that path between its ends, so it joins part of it with another attempt's.
 #[test]
 fn several_attempts_join_into_their_hybrid() {
-    let first = wall_plan(Planner::RrtConnect, 2, 4)
+    let first = wall_plan(Planner::RrtConnect, 2, 1)
         .path
         .expect("one attempt finds a path");
-    let joined = wall_attempts(Planner::RrtConnect, 2, 4, ATTEMPTS)
+    let joined = wall_attempts(Planner::RrtConnect, 2, 1, ATTEMPTS)
         .path
         .expect("several attempts find a path");
     assert!(
@@ -1974,7 +2095,7 @@ impl Checks for OneWay {
 }
 
 // With a check that passes a motion one way and refuses it the other, eight attempts of
-// RRTConnect from seed 1 plan on threads of their own, and the plan's thread joins their
+// RRTConnect from seed 4 plan on threads of their own, and the plan's thread joins their
 // paths: the hybrid holds a motion whose other way passed when it joined two paths, and
 // its check in the path's order refuses it. The plan keeps the shortest path whose every
 // motion passes in its order.
@@ -1988,7 +2109,7 @@ fn a_hybrid_that_fails_the_checks_in_its_order_is_not_kept() {
     let ends = WallEnds::new(2);
     let eight = Request {
         attempts: NonZeroU32::new(8).expect("nonzero"),
-        ..ends.request(Planner::RrtConnect, 1)
+        ..ends.request(Planner::RrtConnect, 4)
     };
     let path = plan(&eight, &world)
         .expect("a plan")
