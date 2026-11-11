@@ -28,7 +28,10 @@ pub mod cartesian_paths;
 pub mod chain_collision;
 pub mod chomp_refinement;
 pub mod forward_kinematics;
+pub mod global_costmap;
+pub mod inflation;
 pub mod metrics;
+pub mod obstacle_projection;
 pub mod occupancy;
 pub mod orientation_constraints;
 pub mod path_timing;
@@ -36,6 +39,7 @@ pub mod planning;
 pub mod planning_scene;
 pub mod room_dataset;
 pub mod self_distance;
+pub mod smac_2d;
 
 use robot_description::{Arm, RobotDescription};
 use serde::Deserialize;
@@ -66,6 +70,9 @@ enum Kind {
     ChainCollision,
     ChompRefinement,
     ForwardKinematics,
+    GlobalCostmap,
+    Inflation,
+    ObstacleProjection,
     Occupancy,
     OrientationConstraints,
     PathTiming,
@@ -73,6 +80,8 @@ enum Kind {
     PlanningScene,
     RoomDataset,
     SelfDistance,
+    #[serde(rename = "smac_2d")]
+    Smac2d,
 }
 
 /// The directory of the harness, which holds `scenarios/` and `reference/`.
@@ -550,6 +559,39 @@ pub struct LinkPose {
     pub rotation: [f64; 9],
 }
 
+/// A cost grid as a scenario of a Nav2 kind gives it: its size in cells, the side of a
+/// cell in meters, and the corner of its first cell.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grid {
+    pub size_x: u32,
+    pub size_y: u32,
+    pub resolution: f64,
+    pub origin: [f64; 2],
+}
+
+/// Where a sensor stands in a scenario's frame: its position, and its orientation as a unit
+/// quaternion [x, y, z, w].
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorTransform {
+    pub position: [f64; 3],
+    pub orientation: [f64; 4],
+}
+
+/// `value`, a number a reference holds in single precision, which its output carries as
+/// the double that holds it, as that single precision number. Panics on a double no single
+/// precision number holds: an output that carries such a number is not the reference's.
+fn read_single(value: f64) -> f32 {
+    let single = value as f32;
+    assert_eq!(
+        f64::from(single).to_bits(),
+        value.to_bits(),
+        "{value} is no single precision number"
+    );
+    single
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +678,15 @@ mod tests {
             let read = read_number(decimal).unwrap_or_else(|e| panic!("{decimal}: {e}"));
             assert_eq!(read.to_bits(), bits, "{decimal}");
         }
+    }
+
+    // A double that holds a single precision number reads back to it; any other double
+    // is refused.
+    #[test]
+    fn a_single_precision_number_reads_back_from_the_double_that_holds_it() {
+        assert_eq!(read_single(f64::from(0.1_f32)), 0.1_f32);
+        assert_eq!(read_single(-2.5), -2.5_f32);
+        assert!(std::panic::catch_unwind(|| read_single(0.1)).is_err());
     }
 
     #[test]

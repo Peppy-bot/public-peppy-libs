@@ -20,6 +20,9 @@
 #include "chain_collision.hpp"
 #include "chomp_refinement.hpp"
 #include "forward_kinematics.hpp"
+#include "global_costmap.hpp"
+#include "inflation.hpp"
+#include "obstacle_projection.hpp"
 #include "occupancy.hpp"
 #include "orientation_constraints.hpp"
 #include "path_timing.hpp"
@@ -28,6 +31,7 @@
 #include "room_dataset.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
+#include "smac_2d.hpp"
 
 namespace {
 
@@ -39,6 +43,9 @@ const std::map<std::string, Reference> references = {
     {"chain_collision", ros_reference::chain_collision},
     {"chomp_refinement", ros_reference::chomp_refinement},
     {"forward_kinematics", ros_reference::forward_kinematics},
+    {"global_costmap", ros_reference::global_costmap},
+    {"inflation", ros_reference::inflation},
+    {"obstacle_projection", ros_reference::obstacle_projection},
     {"occupancy", ros_reference::occupancy},
     {"orientation_constraints", ros_reference::orientation_constraints},
     {"path_timing", ros_reference::path_timing},
@@ -46,6 +53,7 @@ const std::map<std::string, Reference> references = {
     {"planning_scene", ros_reference::planning_scene},
     {"room_dataset", ros_reference::room_dataset},
     {"self_distance", ros_reference::self_distance},
+    {"smac_2d", ros_reference::smac_2d},
 };
 
 }  // namespace

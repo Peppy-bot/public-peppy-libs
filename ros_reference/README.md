@@ -27,6 +27,10 @@ change of the reference, which `run.sh --check` proves.
 | `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with MoveIt's KDL as the inverse kinematics, its search ended by passes (rule 2), on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the step and the search budget of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
 | `chomp_refinement` | MoveIt's CHOMP optimizer (`chomp::ChompPlanner` of chomp_motion_planner) at the parameters MoveIt's CHOMP plugin loads by default, its initial trajectory the scene's input path (`fillTrajectory`), in a diff of the scene in MoveIt's hybrid collision environment, as the plugin plans, on scenes of an arm of OpenArm v2 among boxes of voxels as an octomap: CHOMP's error code, its path of 101 waypoints where its optimizer ran, and MoveIt's collision check, the robot's links padded by the scenario's clearance, smallest distance to the scene and length along CHOMP's path and along the input path, each straight between its waypoints, and along `motion_planning_core`'s CHOMP refinement of it with its corners rounded as MoveIt's time-optimal trajectory generation rounds them, with each path's turning, bending and duration as arm planning measures them, the input path the one `motion_planning_core`'s RRTConnect plans through the scene, which the scenario carries with our refinement (`tools/draw_chomp_refinement.py` writes it, with the paths and the probe spacing of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_chomp_refinement.rs` |
 | `room_dataset` | slam_toolbox, which maps a room in synchronous mode and localizes in the saved map, and Nav2's AMCL, which localizes globally in it, on the 2-D scans that pointcloud_to_laserscan projects from the depth frames of a TUM RGB-D sequence, with odometry made from its ground truth and seeded noise: the statistics of each seed's run, scored by `ros_reference::metrics`. A local-only kind | `ros_reference/tests/ros_reference_room_dataset.rs`, which checks the numbers of `reports/ROBOTCTRL-60.md` |
+| `smac_2d` | Nav2's Smac 2D planner: on a cost grid, the path of each start and goal by `SmacPlanner2D::createPlan`'s steps at a goal tolerance of 0, with its smoother off and smoothed at an iteration bound, or the failure it throws | `navigation_core/tests/ros_reference_smac_2d.rs` |
+| `inflation` | Nav2's inflation layer: the costs of a grid inflated around its lethal cells for a footprint padded as Costmap2DROS pads it, over the whole grid, the padded footprint, and the inscribed radius it takes from it | `navigation_core/tests/ros_reference_inflation.rs` |
+| `obstacle_projection` | Nav2's obstacle layer: the lethal cells of the points of a depth frame in a height band, from one observation source with clearing off, after it clears the cells under a padded footprint at a base pose, and the points in the grid's frame as it transforms them | `navigation_core/tests/ros_reference_obstacle_projection.rs` |
+| `global_costmap` | A Nav2 global cost map of a static, an obstacle and an inflation layer: the costs after one update at a base pose, with a saved map that map_io reads as a trinary map, the points of a depth frame and a padded footprint the obstacle layer clears under, and the map and the points as the layers read them | `navigation_core/tests/ros_reference_global_costmap.rs` |
 
 ## Layout
 
@@ -401,7 +405,33 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    straight; for room datasets, pioneer_slam and pioneer_360, the TUM sequences of a
    Pioneer whose drives hold loops, which map, and pioneer_slam2 and pioneer_slam3, which
    share pioneer_slam's motion capture frame and localize in the map of its first seed,
-   each over ten seeds. A large drawn set runs
+   each over ten seeds;
+   for Smac 2D, four grids of `tools/draw_smac_2d.py`, each planned at a goal
+   tolerance of 0, a free floor where every step onto a cell costs the same, a cluttered
+   grid of inflated blocks and unknown patches crossed with unknown cells passable, one
+   with them impassable, and a free floor of two short walls with no cost multiplier, each
+   with eight starts and goals: on the free floor, four drawn on free cells, a goal on a
+   cell's corner, one along a row, one along a diagonal and one in the start's cell; on
+   the cluttered grid, four drawn on passable cells, a goal past an unknown patch, a goal
+   a wall closes off, a goal inside a block and a start inside one; on the third grid,
+   seven drawn on known passable cells and a goal a wall closes off; and on the fourth, a
+   start and a goal on the grid points of each wall's axis of symmetry, both ways round,
+   so the order of equal costs in Smac's heap picks the way round, and four goals on grid
+   points a knight's move or more off a row or a diagonal from their starts; for
+   inflation, the eight grids of `tools/draw_inflation.py` over three footprints, padded
+   by 1 cm, by 2 cm with a vertex on an axis, and not at all, and parameter sets, one grid
+   with no lethal cell and the others with lethal cells alone, in a block and on two
+   edges, unknown patches, one beside the block, and cells of costs between; for obstacle
+   projection, depth frames of 24 by 14 pixels from three camera poses of the scene of
+   `tools/draw_obstacle_projection.py`, a floor, a box in the height band, a box through
+   its top, a slab below it and a table top above it, with the base turned over the box
+   through the top, which its padded footprint clears; for the global cost map, the room
+   of `tools/draw_global_costmap.py`, its walls and a pillar, with gray pixels either side
+   of each threshold of the trinary map and unknown pixels out of the camera's view, the
+   base's padded footprint over the unknown pixels and a wall, and one depth frame of a
+   box in the band and a box through its top, the scene's table top above the band met by
+   none of its rays.
+   A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
    `uv run ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run

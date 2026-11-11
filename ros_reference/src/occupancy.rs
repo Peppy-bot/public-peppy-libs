@@ -2,7 +2,7 @@
 //! of a scenario into MoveIt's occupancy map, with a sphere cut out as the robot's own
 //! body, and the map gives the log-odds of every voxel it then holds.
 
-use crate::{Kind, read_reference, read_scenario, scenario_names};
+use crate::{Kind, SensorTransform, read_reference, read_scenario, scenario_names};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
@@ -34,15 +34,6 @@ struct Scenario {
 pub struct Sphere {
     pub center: [f64; 3],
     pub radius: f64,
-}
-
-/// Where a sensor stands in the map frame: its position, and its orientation as a unit
-/// quaternion [x, y, z, w].
-#[derive(Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SensorTransform {
-    pub position: [f64; 3],
-    pub orientation: [f64; 4],
 }
 
 #[derive(Deserialize)]

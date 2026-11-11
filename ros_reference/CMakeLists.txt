@@ -18,7 +18,13 @@ find_package(moveit_ros_occupancy_map_monitor REQUIRED)
 find_package(moveit_ros_perception REQUIRED)
 find_package(moveit_ros_planning REQUIRED)
 find_package(nav2_amcl REQUIRED)
+find_package(nav2_core REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_map_server REQUIRED)
+find_package(nav2_ros_common REQUIRED)
+find_package(nav2_smac_planner REQUIRED)
+find_package(nav2_util REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(octomap REQUIRED)
 find_package(ompl REQUIRED)
@@ -34,7 +40,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(slam_toolbox REQUIRED)
 find_package(srdfdom REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 find_package(urdf REQUIRED)
 
 # moveit_planners_ompl 2.15.2 installs its headers under include/moveit_planners, and its
@@ -77,6 +86,13 @@ add_executable(ros_reference
   reference_programs/room_dataset.cpp
   reference_programs/room_dataset_files.cpp
   reference_programs/room_dataset_runs.cpp
+  reference_programs/costmap.cpp
+  reference_programs/nav2_node.cpp
+  reference_programs/smac_2d.cpp
+  reference_programs/inflation.cpp
+  reference_programs/obstacles.cpp
+  reference_programs/obstacle_projection.cpp
+  reference_programs/global_costmap.cpp
 )
 target_link_libraries(ros_reference PRIVATE
   Boost::serialization
@@ -98,7 +114,14 @@ target_link_libraries(ros_reference PRIVATE
   moveit_ros_perception::moveit_pointcloud_octomap_updater_core
   moveit_ros_planning::moveit_kinematics_plugin_loader
   nav2_amcl::amcl_core
+  nav2_core::nav2_core
+  nav2_costmap_2d::layers
+  nav2_costmap_2d::nav2_costmap_2d_core
   nav2_map_server::map_io
+  nav2_ros_common::nav2_ros_common
+  nav2_smac_planner::nav2_smac_planner_common
+  nav2_util::nav2_util_core
+  ${nav_msgs_TARGETS}
   nlohmann_json::nlohmann_json
   ${OCTOMAP_LIBRARIES}
   ompl::ompl
@@ -113,7 +136,10 @@ target_link_libraries(ros_reference PRIVATE
   Ceres::ceres
   srdfdom::srdfdom
   ${std_srvs_TARGETS}
+  tf2::tf2
   tf2_geometry_msgs::tf2_geometry_msgs
+  tf2_ros::tf2_ros
+  tf2_sensor_msgs::tf2_sensor_msgs
   urdf::urdf
 )
 # The planning reference walks a motion with the arithmetic of the Rust world that its

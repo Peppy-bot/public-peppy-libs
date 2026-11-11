@@ -4,6 +4,7 @@
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
+pub mod clouds;
 pub mod finite;
 pub mod footprints;
 pub mod layers;

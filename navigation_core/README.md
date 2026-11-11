@@ -172,3 +172,31 @@ Nav2's, so a radius equal to the inscribed radius inflates.
 the saved grid's costs when a map is loaded, else every cell unknown, then the obstacle
 layer's, where a layer's unknown cell changes nothing, any other cost replaces an unknown
 cell and else the higher cost wins, then the inflation, when the grid takes one.
+
+## Agreement with Nav2
+
+Each parity test reads the scenarios of its kind of the
+[ROS reference harness](../ros_reference) and the committed outputs of Nav2 1.5.2's
+amd64 build, so it runs with no ROS on the machine.
+
+- `tests/ros_reference_smac_2d.rs`: on the same cost grid, footprint, start, goal and
+  parameters, a goal tolerance of 0, the A* path is Smac 2D's with its smoother off, cell
+  for cell, its poses Smac's bit for bit, and the smoothed path at the same iteration
+  bound lies within 1e-9 m of Smac's. It runs on amd64.
+- `tests/ros_reference_inflation.rs`: for the same costs, footprint, padding and
+  parameters, the padded footprint and its inscribed radius are Nav2's, and the inflated
+  grid of a radius at least that inscribed radius is that of Nav2's inflation layer, bit
+  for bit; a radius below it is refused, in exactly the scenarios where Nav2 warns and
+  inflates. It runs on amd64.
+- `tests/ros_reference_obstacle_projection.rs`: for one depth frame's points, the lethal
+  cells are those of Nav2's obstacle layer with its rays' clearing off and its footprint
+  clearing on, the padded footprint at the same base pose, with voxels of the grid's
+  cells, the band's ends on voxel boundaries, and each of Nav2's points 0.1 mm or more
+  from a cell's edge and the band's ends.
+- `tests/ros_reference_global_costmap.rs`: for the same saved map, points, footprint,
+  padding, base pose and parameters, the cost grid is that of a Nav2 global cost map of a
+  static, an obstacle and an inflation layer, bit for bit, the cells under the footprint
+  cleared over the saved map's unknown cells and its walls kept. The obstacle layer under
+  test frees a cell over a voxel its rays cleared, where Nav2's, with its rays' clearing
+  off, leaves it unknown; the scenario keeps the saved map's unknown cells out of the
+  camera's view, and the test checks that it does. It runs on amd64.
