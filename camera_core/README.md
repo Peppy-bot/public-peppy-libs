@@ -1,8 +1,9 @@
 # camera_core
 
 What the camera nodes and the crates that read them share, free of peppy types:
-`occupancy_map` reads their depth frames, and `workspace_core` sees a perception
-camera through their pinhole model. Each node maps these onto its own generated
+`occupancy_map` reads their depth frames, `workspace_core` sees a perception
+camera through their pinhole model, and `navigation_core` reads the scans of a 2-D lidar
+and the poses of a base. Each node maps these onto its own generated
 contract members.
 
 | Module | What it holds |
@@ -12,7 +13,8 @@ contract members.
 | `v4l2` | The V4L2 control ids and exposure values the UVC cameras drive, from `<linux/v4l2-controls.h>`. |
 | `geometry` | The checks a pinhole model, a depth range, a depth unit and a pose pass before a consumer computes with them, the `z` depth model, and the refusal a color camera gives for its depth members. |
 | `pinhole` | `Pinhole`: a stream's pinhole model, parsed once from its camera_geometry:v1 `Intrinsics` with its lens (none, `plumb_bob` or `inverse_plumb_bob`), or a rendered camera's from its vertical field of view, giving back the intrinsics a camera node answers: the ray of a pixel, the pixel that shows a point, none past where the lens turns back, and the point of a depth reading. `DepthModel`: what a depth sample measures, `z` or `range`, parsed from its camera_geometry:v1 name, and the reading of a point. |
-| `pose` | `Pose`: where one frame sits in another, a position and a unit quaternion as camera_geometry:v1 carries a transform, applied, composed and inverted in tf2's arithmetic. |
+| `pose` | `Pose`: where one frame sits in another, a position and a unit quaternion as camera_geometry:v1 carries a transform, applied, composed and inverted in tf2's arithmetic, its orientation given back as tf2's `getRotation` gives it, and interpolated toward another pose as tf2 interpolates an origin and slerps a quaternion. `PlanarPose`: where one frame sits in another on the floor plane, a position and a heading, applied to a point. `quaternion_of_yaw` and `yaw_of_quaternion` make a heading's quaternion as tf2's `setRPY` makes it and read a quaternion's heading as tf2's `getYaw` reads it. |
+| `laser_scan` | `LaserScan`: a 2-D lidar's scan as lidar_2d:v1 carries it, its fields checked and its ranges read once, each a distance or one of the contract's marks (0 for a ray not measured, a range at the scan's maximum or above it, 10000 among them, for a ray that met nothing, as laser_geometry reads the maximum), and each ray's hit, at the ray's angle and time (before the timestamp for a sensor that sweeps clockwise), placed by the sensor's pose at the ray's time, interpolated between its poses at the first and the last ray as laser_geometry interpolates them (`placed_hits`). |
 | `relay` | The pieces of a simulated camera's relay: the camera a relay is in its copy, the timestamp check of a relayed frame, why a forwarded call has no answer, and the bounds and messages of the relay. |
 
 Every name check is exact. A node that takes another spelling (a different
