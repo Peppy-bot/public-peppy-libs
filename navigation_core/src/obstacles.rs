@@ -36,6 +36,20 @@
 //!   (`Scan::readings`), so a point beyond the range in 3-D and within it in
 //!   the plane clears to the range here where Nav2 marks its cell.
 //!
+//! A return inside the base's unpadded outline is the robot's own body, judged
+//! in the base's frame at the return's own time, where the sensor's pose on
+//! the base places it (a depth frame's point, or a laser scan's hit in the
+//! sensor's frame at its ray's time): its ray clears free space up to it, and
+//! it marks nothing, so the body enters neither the map nor a source's newest
+//! frame, however the base moves while a lidar sweeps. Here the live obstacles
+//! depart from the obstacle layer, which marks the body's returns as any other
+//! and frees them by its clearing under the padded footprint at one pose
+//! (`ObstacleLayer::updateCosts`), which leaves a body return lethal where the
+//! footprint's raster leaves its cell out; and with each hit placed at its
+//! ray's time, a body hit that a lidar measured late in the sweep of a moving
+//! base lies past the footprint at the sweep's first ray, where the clearing
+//! runs.
+//!
 //! After each frame, the voxels of every column under the padded footprint,
 //! placed at the base's pose at the frame's time (at a laser scan's first
 //! ray), take one miss's log-odds, as the obstacle layer writes `FREE_SPACE`
@@ -44,8 +58,7 @@
 //! cells under a footprint, and none of them is a drop: the base stands on
 //! floor there. A voxel the base stood on reads free, and the next frame that
 //! sees an obstacle there marks it again, as the obstacle layer marks a
-//! cleared cell; what the sensors see of the robot itself within the
-//! footprint marks nothing.
+//! cleared cell.
 //!
 //! A drop is a column whose floor lies more than `max_step_down_m` down, the
 //! step's plane, which each frame's rays find through the floor's plane. Each
@@ -104,11 +117,37 @@
 //! [`ObstacleHeights::parse`] takes the voxel's side with the heights
 //! ([`ObstacleHeightsParams`]), and [`LiveObstacles::new`] makes its voxel map
 //! of that side.
-//! [`LiveObstacles::recentered`] moves the map and the drops over other
-//! bounds, keeping what it knows of the columns both hold, for a grid that
-//! moves with the base.
+//! [`LiveObstacles::recentered`] moves the map, the drops and each source's
+//! newest frame over other bounds, keeping what it knows of the columns both
+//! hold, for a grid that moves with the base.
+//!
+//! Each frame comes from a source, sources 0 to one fewer than the count
+//! [`LiveObstacles::new`] takes, the indexes the stop
+//! ([`Stop`](crate::stop::Stop)) names them by, reading the count from the
+//! live obstacles it decides with. For each source the live obstacles keep
+//! the columns its newest frame marked, as the frame marked them before the
+//! clearing under the footprint: the column of each return of the frame but
+//! the robot's own body whose voxel's center lies in the band, the returns the
+//! map marks; and each column the frame's rays show a drop in, but for one
+//! whose center lies inside the unpadded outline at the frame's base pose,
+//! floor the base stands on. [`LiveObstacles::occupied_seen_from`] gives the
+//! points the stop reads: the centers of a cost grid's lethal cells and of
+//! those columns. Nav2's collision monitor reads each source's newest points
+//! (`CollisionMonitor::process`, collision_monitor_node.cpp:454;
+//! `PointCloud::getSourceData`, src/pointcloud.cpp:107-117), and the obstacle
+//! layer's clearing under the footprint sets the cost map's cells alone
+//! (obstacle_layer.cpp:620-621), so an obstacle in a column the padded
+//! footprint stands in, outside the unpadded outline, is a point the stop
+//! reads, as it is one the monitor reads. A return inside the unpadded outline
+//! is a point the monitor reads and the stop does not, a real obstacle there
+//! among them, as the stop's module gives it. [`LiveObstacles::clear`] empties
+//! the map and forgets the drops, as base_navigation:v1's clear_grid empties
+//! the grid, and keeps each source's newest frame until the source's next
+//! frame replaces it, as the monitor reads its sources' newest points from
+//! their topics, which a clear of the cost map leaves as they are.
 
 use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroUsize;
 use std::ops::RangeInclusive;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
@@ -119,6 +158,7 @@ use occupancy_map::{Bounds, Frame, MapError, Reading, Scan, VoxelMap};
 use crate::footprint::PaddedFootprint;
 use crate::grid::{Cell, CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, UNKNOWN};
 use crate::raster::polygon_cells;
+use crate::stop::UnknownSource;
 
 /// How far a height may lie from a whole number of voxels, in voxels: the
 /// rounding of a height of meters over the voxel's side.
@@ -359,9 +399,20 @@ pub struct PlacementNotFinite {
     pub grid_from_map: PlanarPose,
 }
 
+/// The poses in a grid's frame by which the stop's points are read: where the
+/// voxel map is placed, and where the base stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridPoses {
+    /// The voxel map's pose in the grid's frame.
+    pub grid_from_map: PlanarPose,
+    /// The base's pose in the grid's frame.
+    pub base: PlanarPose,
+}
+
 /// The live obstacles of a mobile base: its voxel map, the heights that judge
 /// its voxels and its rays, its padded footprint, the grid of the map's
-/// columns, and the columns of that grid that are drops.
+/// columns, the columns of that grid that are drops, and the columns each
+/// source's newest frame marked.
 #[derive(Debug, Clone)]
 pub struct LiveObstacles {
     map: VoxelMap,
@@ -369,18 +420,25 @@ pub struct LiveObstacles {
     footprint: PaddedFootprint,
     columns: GridGeometry,
     drops: BTreeSet<Cell>,
+    /// For each source, in order, the columns its newest frame marked an
+    /// obstacle or a drop in, less what lies inside the unpadded outline;
+    /// none before its first frame.
+    newest_frames: Vec<BTreeSet<Cell>>,
 }
 
 impl LiveObstacles {
     /// The live obstacles of an empty map in `frame`, a frame fixed to the
     /// floor, its z up from the floor, over `bounds`, of the voxels `heights`
-    /// judge, for a base of `padded_footprint`, with no drop. Bounds of more
-    /// columns on an axis than a cost grid's axis holds are refused.
+    /// judge, for a base of `padded_footprint` whose `sources` sources give
+    /// its frames, sources 0 to `sources - 1`, with no drop and no frame.
+    /// Bounds of more columns on an axis than a cost grid's axis holds, or
+    /// whose columns reach past single precision's range, are refused.
     pub fn new(
         frame: Frame,
         bounds: Bounds,
         heights: ObstacleHeights,
         padded_footprint: PaddedFootprint,
+        sources: NonZeroUsize,
     ) -> Result<Self, LiveObstaclesError> {
         let map = VoxelMap::new(frame, heights.voxel_m, bounds)?;
         Ok(Self {
@@ -389,29 +447,33 @@ impl LiveObstacles {
             heights,
             footprint: padded_footprint,
             drops: BTreeSet::new(),
+            newest_frames: vec![BTreeSet::new(); sources.get()],
         })
     }
 
     /// The live obstacles over `bounds`, in the map's frame: each voxel and
     /// each column the old bounds and the new hold keeps what the map knew of
-    /// it and whether it is a drop, and every other voxel is unknown and every
-    /// other column no drop, as a grid that moves with the base keeps the
-    /// obstacles around it. Bounds of more columns on an axis than a cost
-    /// grid's axis holds are refused.
+    /// it, whether it is a drop and whether a source's newest frame marked it,
+    /// and every other voxel is unknown and every other column no drop and
+    /// unmarked, as a grid that moves with the base keeps the obstacles around
+    /// it. Bounds of more columns on an axis than a cost grid's axis holds, or
+    /// whose columns reach past single precision's range, are refused.
     pub fn recentered(&self, bounds: Bounds) -> Result<Self, LiveObstaclesError> {
         let map = self.map.recentered(bounds)?;
         let columns = columns_of(&map)?;
-        let drops = self
-            .drops
-            .iter()
-            .filter_map(|&cell| columns.cell_of(self.columns.center_of(cell)))
-            .collect();
+        let kept = |cells: &BTreeSet<Cell>| -> BTreeSet<Cell> {
+            cells
+                .iter()
+                .filter_map(|&cell| columns.cell_of(self.columns.center_of(cell)))
+                .collect()
+        };
         Ok(Self {
+            drops: kept(&self.drops),
+            newest_frames: self.newest_frames.iter().map(kept).collect(),
             columns,
             map,
             heights: self.heights,
             footprint: self.footprint.clone(),
-            drops,
         })
     }
 
@@ -421,54 +483,131 @@ impl LiveObstacles {
         self.columns
     }
 
-    /// Inserts the points of a depth frame, in the sensor's frame, the base at
-    /// `base` in the map's frame and the sensor at `sensor_on_base` in the
-    /// base's frame at the frame's time, a point farther than `max_range_m`
-    /// clearing to it as occupancy_map clears one; then clears the columns
-    /// under the footprint at `base`.
+    /// The padded footprint of the base, which the stop projects.
+    pub(crate) fn padded_footprint(&self) -> &PaddedFootprint {
+        &self.footprint
+    }
+
+    /// How many sources give the frames, sources 0 to one fewer.
+    pub(crate) fn sources(&self) -> usize {
+        self.newest_frames.len()
+    }
+
+    /// Inserts the points of a depth frame of `source`, in the sensor's
+    /// frame, the base at `base` in the map's frame and the sensor at
+    /// `sensor_on_base` in the base's frame at the frame's time, a point
+    /// farther than `max_range_m` clearing to it as occupancy_map clears one,
+    /// and a point inside the unpadded outline where `sensor_on_base` places
+    /// it, the robot's own body, clearing its ray and marking nothing; keeps
+    /// the columns the frame marked as the source's newest; then clears the
+    /// columns under the footprint at `base`. A source the live obstacles do
+    /// not read is refused, and nothing changes.
     pub fn insert_depth_frame(
         &mut self,
+        source: usize,
         points: &[[f32; 3]],
         base: PlanarPose,
         sensor_on_base: Pose,
         max_range_m: PositiveFinite,
-    ) {
+    ) -> Result<(), UnknownSource> {
+        self.known_source(source)?;
         let sensor = base.to_pose().compose(&sensor_on_base);
-        self.insert(points, sensor, max_range_m);
+        let on_base: Vec<[f64; 2]> = points
+            .iter()
+            .map(|point| on_the_floor(sensor_on_base.apply(point.map(f64::from))))
+            .collect();
+        self.insert(source, points, &on_base, sensor, base, max_range_m);
         self.clear_footprint(base);
+        Ok(())
     }
 
-    /// Inserts the hits of a laser scan, the base at `base`'s poses in the
-    /// map's frame at the times of the scan's first and last rays and the
-    /// sensor at `sensor_on_base` in the base's frame, each hit placed at its
-    /// ray's time and traced from the sensor's origin at the first ray; then
-    /// clears the columns under the footprint at the base's pose at the first
-    /// ray, the scan's time.
+    /// Inserts the hits of a laser scan of `source`, the base at `base`'s
+    /// poses in the map's frame at the times of the scan's first and last
+    /// rays and the sensor at `sensor_on_base` in the base's frame, each hit
+    /// placed at its ray's time and traced from the sensor's origin at the
+    /// first ray, and a hit inside the unpadded outline where
+    /// `sensor_on_base` places it at its ray's time, the robot's own body,
+    /// clearing its ray and marking nothing; keeps the columns the scan
+    /// marked as the source's newest; then clears the columns under the
+    /// footprint at the base's pose at the first ray, the scan's time. A
+    /// source the live obstacles do not read is refused, and nothing
+    /// changes.
     pub fn insert_laser_scan(
         &mut self,
+        source: usize,
         scan: &LaserScan,
         base: Sweep<PlanarPose>,
         sensor_on_base: Pose,
         max_range_m: PositiveFinite,
-    ) {
+    ) -> Result<(), UnknownSource> {
+        self.known_source(source)?;
         let sensor = Sweep {
             first_ray: base.first_ray.to_pose().compose(&sensor_on_base),
             last_ray: base.last_ray.to_pose().compose(&sensor_on_base),
         };
         let to_first_ray = sensor.first_ray.inverse();
-        let points: Vec<[f32; 3]> = scan
+        let (points, on_base): (Vec<[f32; 3]>, Vec<[f64; 2]>) = scan
             .placed_hits(&sensor)
             .into_iter()
-            .map(|hit| to_first_ray.apply(hit.placed).map(|c| c as f32))
-            .collect();
-        self.insert(&points, sensor.first_ray, max_range_m);
+            .map(|hit| {
+                (
+                    to_first_ray.apply(hit.placed).map(|c| c as f32),
+                    on_the_floor(sensor_on_base.apply(hit.in_sensor)),
+                )
+            })
+            .unzip();
+        self.insert(
+            source,
+            &points,
+            &on_base,
+            sensor.first_ray,
+            base.first_ray,
+            max_range_m,
+        );
         self.clear_footprint(base.first_ray);
+        Ok(())
     }
 
-    /// Forgets everything the sensors saw: every voxel unknown, and no drop.
+    /// Empties the map and forgets the drops, as base_navigation:v1's
+    /// clear_grid empties the grid, so the map projects to a grid with no
+    /// obstacle. Each source's newest frame, whose obstacles and drops are the
+    /// stop's points beside the grid, stays until the source's next frame
+    /// replaces it.
     pub fn clear(&mut self) {
         self.map.clear();
         self.drops.clear();
+    }
+
+    /// The points the stop reads, in the frame of the base at `poses.base` in
+    /// the frame of `grid`, the map placed in that frame at
+    /// `poses.grid_from_map`: the centers of the grid's lethal cells, and the
+    /// centers of the columns each source's newest frame marked, as the module
+    /// gives them.
+    pub fn occupied_seen_from(&self, grid: &CostGrid, poses: GridPoses) -> Vec<[f64; 2]> {
+        let GridPoses {
+            grid_from_map,
+            base,
+        } = poses;
+        let marked: BTreeSet<Cell> = self.newest_frames.iter().flatten().copied().collect();
+        let newest = marked
+            .into_iter()
+            .map(|column| base.apply_inverse(grid_from_map.apply(self.columns.center_of(column))));
+        grid.lethal_centers_seen_from(base)
+            .into_iter()
+            .chain(newest)
+            .collect()
+    }
+
+    /// Nothing when the live obstacles read `source`, else its refusal.
+    pub(crate) fn known_source(&self, source: usize) -> Result<(), UnknownSource> {
+        let sources = self.newest_frames.len();
+        if source >= sources {
+            return Err(UnknownSource {
+                index: source,
+                sources,
+            });
+        }
+        Ok(())
     }
 
     /// The obstacle layer over a grid of `geometry`, the map placed in the
@@ -525,25 +664,92 @@ impl LiveObstacles {
         cells_overlapping(geometry, square).ok_or(PlacementNotFinite { grid_from_map })
     }
 
-    /// Inserts `points` as a scan in the map's own frame with no cutout, the
-    /// one scan occupancy_map's insert takes without a refusal.
-    fn insert(&mut self, points: &[[f32; 3]], sensor: Pose, max_range_m: PositiveFinite) {
+    /// Inserts `points` of `source`'s frame as a scan in the map's own frame,
+    /// the one scan occupancy_map's insert takes without a refusal, each point
+    /// of the robot's own body clearing its ray and marking nothing
+    /// ([`LiveObstacles::split_off_the_body`]); marks the drops the frame's
+    /// rays show; and keeps as the source's newest frame the columns its
+    /// other returns marked and each drop whose column's center, seen from
+    /// the base at `base`, lies outside the unpadded outline.
+    fn insert(
+        &mut self,
+        source: usize,
+        points: &[[f32; 3]],
+        points_on_base: &[[f64; 2]],
+        sensor: Pose,
+        base: PlanarPose,
+        max_range_m: PositiveFinite,
+    ) {
+        let (body, seen_points) = self.split_off_the_body(points, points_on_base);
         let frame = self.map.frame().clone();
-        let scan = Scan {
+        let seen = Scan {
             frame: &frame,
             sensor,
-            points,
+            points: &seen_points,
             max_range_m,
         };
         self.map
-            .insert(&scan, &[])
-            .expect("a scan in the map's own frame with no cutout inserts");
-        self.mark_drops(&scan);
+            .insert_clearing(&seen, &body)
+            .expect("a scan in the map's own frame inserts");
+        let drops = self.drops_shown(&Scan { points, ..seen });
+        let off_the_base_drops: Vec<Cell> = drops
+            .iter()
+            .copied()
+            .filter(|&column| {
+                !self
+                    .footprint
+                    .outline_holds(base.apply_inverse(self.columns.center_of(column)))
+            })
+            .collect();
+        self.newest_frames[source] = self
+            .obstacle_columns(&seen)
+            .into_iter()
+            .chain(off_the_base_drops)
+            .collect();
+        self.drops.extend(drops);
     }
 
-    /// Marks a drop in each column the votes of `scan`'s readings show one in
+    /// `points` split into the robot's own body, each point whose place in
+    /// the base's frame at its own time, `points_on_base` in the order of the
+    /// points, lies inside the unpadded outline, and the points the sensor
+    /// sees of everything else, each in its order.
+    fn split_off_the_body(
+        &self,
+        points: &[[f32; 3]],
+        points_on_base: &[[f64; 2]],
+    ) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+        assert_eq!(
+            points.len(),
+            points_on_base.len(),
+            "each point of a frame has its place on the base"
+        );
+        let (body, seen): (Vec<_>, Vec<_>) = points
+            .iter()
+            .zip(points_on_base)
+            .partition(|&(_, &on_base)| self.footprint.outline_holds(on_base));
+        let points_of = |pairs: Vec<(&[f32; 3], &[f64; 2])>| -> Vec<[f32; 3]> {
+            pairs.into_iter().map(|(&point, _)| point).collect()
+        };
+        (points_of(body), points_of(seen))
+    }
+
+    /// The columns that hold a return of `scan` whose voxel's center lies in
+    /// the band.
+    fn obstacle_columns(&self, scan: &Scan) -> BTreeSet<Cell> {
+        scan.readings()
+            .filter_map(|reading| match reading {
+                Reading::Return(point) => self.map.key(point),
+                Reading::NoReturn(_) => None,
+            })
+            .map(|key| self.map.center(key))
+            .filter(|&[_, _, z]| self.heights.is_obstacle(z))
+            .filter_map(|[x, y, _]| self.columns.cell_of([x, y]))
+            .collect()
+    }
+
+    /// The columns the votes of `scan`'s readings show a drop in
     /// ([`FloorVotes`]).
-    fn mark_drops(&mut self, scan: &Scan) {
+    fn drops_shown(&self, scan: &Scan) -> BTreeSet<Cell> {
         let origin = scan.sensor.origin();
         let step_z = self.heights.step_plane_z();
         let mut votes: HashMap<Cell, FloorVotes> = HashMap::new();
@@ -558,12 +764,11 @@ impl LiveObstacles {
                 votes.entry(cell).or_default().count(read);
             }
         }
-        self.drops.extend(
-            votes
-                .into_iter()
-                .filter(|(_, votes)| votes.show_a_drop())
-                .map(|(cell, _)| cell),
-        );
+        votes
+            .into_iter()
+            .filter(|(_, votes)| votes.show_a_drop())
+            .map(|(cell, _)| cell)
+            .collect()
     }
 
     /// Clears every voxel of the columns under the footprint at `base`, and
@@ -579,6 +784,11 @@ impl LiveObstacles {
         self.map
             .clear_columns(cells.into_iter().map(|cell| [cell.x(), cell.y()]));
     }
+}
+
+/// `point` on the floor's plane: its x and y.
+fn on_the_floor([x, y, _]: [f64; 3]) -> [f64; 2] {
+    [x, y]
 }
 
 /// Where a return stands at or above the step's plane, on x and y: a surface
@@ -800,15 +1010,18 @@ mod tests {
     /// The live obstacles of one occupied voxel, in the band, over the
     /// column from (0, 0) to (0.05, 0.05), seen from straight above.
     fn one_occupied_voxel() -> LiveObstacles {
-        let mut live = LiveObstacles::new(odom(), bounds(), heights(), square()).unwrap();
+        let mut live =
+            LiveObstacles::new(odom(), bounds(), heights(), square(), NonZeroUsize::MIN).unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
         let sensor_on_base = Pose::new([5.025, 0.025, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
         live.insert_depth_frame(
+            0,
             &[[0.0, 0.0, -0.7]],
             away,
             sensor_on_base,
             PositiveFinite::parse(5.0).unwrap(),
-        );
+        )
+        .unwrap();
         live
     }
 
@@ -935,9 +1148,63 @@ mod tests {
         .unwrap();
         let standing = [[-2.0, 2.0], [0.0, 0.0], [2.0, 2.0], [0.0, 4.0]];
         assert_eq!(cells_overlapping(&finest, standing), Some(Vec::new()));
-        let empty = LiveObstacles::new(odom(), bounds(), heights(), square()).unwrap();
+        let empty =
+            LiveObstacles::new(odom(), bounds(), heights(), square(), NonZeroUsize::MIN).unwrap();
         let layer = empty.project(far, geometry).unwrap();
         assert!(layer.grid().costs().iter().all(|&cost| cost == UNKNOWN));
+    }
+
+    // The stop's points of the newest frame are its columns' centers placed in the grid's
+    // frame and seen from the base: the column of the one occupied voxel, centered at
+    // (0.025, 0.025) in the map's frame, placed a quarter turn about (1, 0) and seen from a
+    // base at (0.975, 0) heading along x, stands at (0, 0.025). Recentered live obstacles
+    // keep it; a frame of a source the live obstacles do not read is refused and changes
+    // nothing.
+    #[test]
+    fn the_newest_frame_columns_are_placed_and_kept() {
+        let mut live = one_occupied_voxel();
+        let free = CostGrid::filled(live.columns(), FREE);
+        let grid_from_map = PlanarPose::new(1.0, 0.0, std::f64::consts::FRAC_PI_2).unwrap();
+        let base = PlanarPose::new(0.975, 0.0, 0.0).unwrap();
+        let poses = GridPoses {
+            grid_from_map,
+            base,
+        };
+        let seen = |live: &LiveObstacles| live.occupied_seen_from(&free, poses);
+        let at_the_column = |points: &[[f64; 2]]| matches!(points, [[x, y]] if x.abs() < 1e-12 && (y - 0.025).abs() < 1e-12);
+        let points = seen(&live);
+        assert!(at_the_column(&points), "{points:?}");
+        let moved = live
+            .recentered(Bounds {
+                min: [0.0, -1.0, -0.5],
+                max: [2.0, 1.0, 1.0],
+            })
+            .unwrap();
+        assert!(at_the_column(&seen(&moved)), "{:?}", seen(&moved));
+        let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
+        let elsewhere = Pose::new([5.5, 0.5, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let refused = live
+            .insert_depth_frame(
+                1,
+                &[[0.0, 0.0, -0.7]],
+                away,
+                elsewhere,
+                PositiveFinite::parse(5.0).unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            UnknownSource {
+                index: 1,
+                sources: 1
+            }
+        );
+        assert_eq!(seen(&live), points);
+        let lethal = |live: &LiveObstacles| {
+            let layer = live.project(PlanarPose::IDENTITY, live.columns()).unwrap();
+            layer.grid().costs().to_vec()
+        };
+        assert_eq!(lethal(&live), lethal(&one_occupied_voxel()));
     }
 
     // A grid whose last cells end inside a column's square marks the one cell
@@ -1160,7 +1427,8 @@ mod tests {
             );
         }
         let whole = heights();
-        let live = LiveObstacles::new(odom(), bounds(), whole, square()).unwrap();
+        let live =
+            LiveObstacles::new(odom(), bounds(), whole, square(), NonZeroUsize::MIN).unwrap();
         assert_eq!(live.columns().resolution_m(), 0.05);
         assert_eq!(live.columns().origin(), [-1.0, -1.0]);
         let moved = live
@@ -1200,8 +1468,11 @@ mod tests {
                 "{refused:?}"
             );
         };
-        too_many(LiveObstacles::new(odom(), long, heights, square()).unwrap_err());
-        let live = LiveObstacles::new(odom(), bounds(), heights, square()).unwrap();
+        too_many(
+            LiveObstacles::new(odom(), long, heights, square(), NonZeroUsize::MIN).unwrap_err(),
+        );
+        let live =
+            LiveObstacles::new(odom(), bounds(), heights, square(), NonZeroUsize::MIN).unwrap();
         too_many(live.recentered(long).unwrap_err());
     }
 

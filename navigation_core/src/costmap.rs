@@ -62,6 +62,7 @@ pub fn compose(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
 
     use camera_core::pose::{PlanarPose, Pose};
     use control_core::non_negative_finite::NonNegativeFinite;
@@ -110,16 +111,24 @@ mod tests {
             voxel_m: tenth(),
         })
         .unwrap();
-        let mut live =
-            LiveObstacles::new(Frame::parse("map").unwrap(), bounds, heights, footprint).unwrap();
+        let mut live = LiveObstacles::new(
+            Frame::parse("map").unwrap(),
+            bounds,
+            heights,
+            footprint,
+            NonZeroUsize::MIN,
+        )
+        .unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
         let sensor_on_base = Pose::new([5.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
         live.insert_depth_frame(
+            0,
             &[[0.2, 0.0, -0.7]],
             away,
             sensor_on_base,
             PositiveFinite::parse(5.0).unwrap(),
-        );
+        )
+        .unwrap();
         let geometry = saved.grid().geometry();
         let obstacles = live
             .project(PlanarPose::IDENTITY, geometry)

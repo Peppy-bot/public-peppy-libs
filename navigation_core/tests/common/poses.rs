@@ -12,3 +12,15 @@ pub fn planar(x: f64, y: f64, yaw: f64) -> PlanarPose {
 pub fn on_base(base: PlanarPose, sensor: &Pose) -> Pose {
     base.to_pose().inverse().compose(sensor)
 }
+
+/// `pose` moved for `dt_s` at `velocity`, linear x, linear y and angular z in the base's
+/// frame, as Nav2's collision monitor's `projectState` moves a pose.
+pub fn moved(pose: PlanarPose, velocity: [f64; 3], dt_s: f64) -> PlanarPose {
+    let [vx, vy, wz] = velocity;
+    let (sin, cos) = pose.yaw().sin_cos();
+    planar(
+        pose.x() + (vx * cos - vy * sin) * dt_s,
+        pose.y() + (vx * sin + vy * cos) * dt_s,
+        pose.yaw() + wz * dt_s,
+    )
+}

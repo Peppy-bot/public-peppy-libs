@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use camera_core::pose::PlanarPose;
 use common::finite::multiplier;
@@ -377,6 +377,7 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
         bounds([-1.0, -1.0], [1.0, 1.0]),
         heights,
         small_footprint(),
+        NonZeroUsize::MIN,
     )
     .expect("a map");
     let cells = |tc: &TestCase, low: i32, high: i32| {

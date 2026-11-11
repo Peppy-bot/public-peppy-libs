@@ -11,7 +11,9 @@
 //!
 //! A [`PlanarPose`] is where one frame sits in another on the floor plane: a
 //! position and a heading, the pose of a mobile base and of the frames it
-//! drives in.
+//! drives in, seen from another planar frame with its heading read as Nav2's
+//! controller reads a plan's pose in its base's frame, through tf2's lookup,
+//! KDL's rotation and tf2's `getYaw`, in [-pi, pi].
 
 use std::fmt;
 
@@ -312,6 +314,165 @@ impl PlanarPose {
             self.y + sin * point[0] + cos * point[1],
         ]
     }
+
+    /// A point of the frame the pose places a frame in, in the placed frame:
+    /// moved back by the position, then turned back by the heading, as
+    /// [`PlanarPose::apply`] undone.
+    pub fn apply_inverse(&self, point: [f64; 2]) -> [f64; 2] {
+        let (sin, cos) = self.yaw.sin_cos();
+        let dx = point[0] - self.x;
+        let dy = point[1] - self.y;
+        [cos * dx + sin * dy, -sin * dx + cos * dy]
+    }
+
+    /// This pose in the frame that `frame` places: its position turned back
+    /// by `frame`'s heading about `frame`'s position
+    /// ([`PlanarPose::apply_inverse`]), and its heading as Nav2's controller
+    /// reads a plan's pose in its base's frame, through tf2's lookup of the
+    /// base's frame, KDL's rotation of the pose's quaternion by it and tf2's
+    /// `getYaw`, in [-pi, pi]. A pose so far from `frame` that its position
+    /// there is not finite makes no pose.
+    pub fn seen_from(self, frame: PlanarPose) -> Result<PlanarPose, PlanarPoseError> {
+        let [x, y] = frame.apply_inverse([self.x, self.y]);
+        PlanarPose::new(x, y, heading_seen_from(self.yaw, frame.yaw))
+    }
+}
+
+/// The identity quaternion [x, y, z, w].
+const IDENTITY_QUATERNION: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// The trace above which KDL's `GetQuaternion` takes a rotation's quaternion
+/// from its trace (orocos_kdl 1.5.2 src/frames.cpp:207-208).
+const KDL_TRACE_EPSILON: f64 = 1e-12;
+
+/// The heading `yaw` reads as from a frame of heading `frame_yaw`, as Nav2's
+/// controller reads a plan's pose in its base's frame: nav2_util's
+/// `transformPathInTargetFrame` looks up the base's frame from the plan's and
+/// turns each pose by it with `tf2::doTransform` (nav2_util
+/// src/path_utils.cpp:108-128, nav2_regulated_pure_pursuit_controller
+/// src/regulated_pure_pursuit_controller.cpp:175-177), and the controller
+/// reads the heading with `tf2::getYaw` (:227). Each step runs in its
+/// library's arithmetic, each quaternion tf2's `setRPY(0, 0, yaw)`:
+///
+/// - tf2 looks up a base's frame that hangs from the plan's frame as the base
+///   quaternion times the identity, inverted, times the identity, where the
+///   plan's frame is the root of the tree and tf2's walk ends `FullPath`
+///   (tf2 src/buffer_core.cpp:495, 547-556, 575-583;
+///   include/tf2/LinearMath/Quaternion.hpp:282-285, 429-433). Where the
+///   plan's frame has a parent, as odom under map in Nav2's usual tree, the
+///   walk ends `SourceParentOfTarget` at the plan's frame and leaves out the
+///   last product by the identity (buffer_core.cpp:456-458, 567-573). That
+///   product changes only the signs of the lookup's zero components, and the
+///   two lookups give one heading for each of the 2,300 bases and goals of
+///   the test `a_plan_frame_with_a_parent_reads_the_heading_of_one_at_the_root`:
+///   20 bases, every eighth of a half turn and 2, -2 and 1 rad, each with the
+///   goals within 3 doubles of a half turn either way and every fiftieth of a
+///   half turn;
+/// - `doTransform` multiplies KDL's rotation matrices of that quaternion and
+///   of the pose's, and reads the product back as a quaternion
+///   (tf2_geometry_msgs include/tf2_geometry_msgs/tf2_geometry_msgs.hpp:72-81,
+///   408-427; orocos_kdl 1.5.2 src/frames.cpp:173-235);
+/// - `getYaw` reads its heading.
+///
+/// The rounding of these steps, not the difference of the headings, decides
+/// the sign of a half turn.
+fn heading_seen_from(yaw: f64, frame_yaw: f64) -> f64 {
+    let frame_to_top = tf2_product(quaternion_of_yaw(frame_yaw), IDENTITY_QUATERNION);
+    let lookup = tf2_product(tf2_inverse(frame_to_top), IDENTITY_QUATERNION);
+    heading_turned_by(lookup, yaw)
+}
+
+/// The heading `yaw` reads once `doTransform` turns it by tf2's `lookup`
+/// quaternion through KDL's rotation matrices, as `getYaw` reads it.
+fn heading_turned_by(lookup: [f64; 4], yaw: f64) -> f64 {
+    let turned = kdl_product(kdl_rotation(lookup), kdl_rotation(quaternion_of_yaw(yaw)));
+    yaw_of_quaternion(kdl_quaternion(turned))
+}
+
+/// tf2's product of two quaternions [x, y, z, w] (tf2
+/// include/tf2/LinearMath/Quaternion.hpp:429-433).
+fn tf2_product([ax, ay, az, aw]: [f64; 4], [bx, by, bz, bw]: [f64; 4]) -> [f64; 4] {
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by + ay * bw + az * bx - ax * bz,
+        aw * bz + az * bw + ax * by - ay * bx,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
+/// tf2's inverse of a quaternion [x, y, z, w] (tf2
+/// include/tf2/LinearMath/Quaternion.hpp:282-285).
+fn tf2_inverse([x, y, z, w]: [f64; 4]) -> [f64; 4] {
+    [-x, -y, -z, w]
+}
+
+/// KDL's rotation matrix of a quaternion [x, y, z, w], row by row
+/// (`Rotation::Quaternion`, orocos_kdl 1.5.2 src/frames.cpp:190-197).
+fn kdl_rotation([x, y, z, w]: [f64; 4]) -> [f64; 9] {
+    let (x2, y2, z2, w2) = (x * x, y * y, z * z, w * w);
+    [
+        w2 + x2 - y2 - z2,
+        2.0 * x * y - 2.0 * w * z,
+        2.0 * x * z + 2.0 * w * y,
+        2.0 * x * y + 2.0 * w * z,
+        w2 - x2 + y2 - z2,
+        2.0 * y * z - 2.0 * w * x,
+        2.0 * x * z - 2.0 * w * y,
+        2.0 * y * z + 2.0 * w * x,
+        w2 - x2 - y2 + z2,
+    ]
+}
+
+/// KDL's product of two rotation matrices, row by row (orocos_kdl 1.5.2
+/// src/frames.cpp:173-187).
+fn kdl_product(lhs: [f64; 9], rhs: [f64; 9]) -> [f64; 9] {
+    std::array::from_fn(|index| {
+        let (row, column) = (index / 3 * 3, index % 3);
+        lhs[row] * rhs[column] + lhs[row + 1] * rhs[column + 3] + lhs[row + 2] * rhs[column + 6]
+    })
+}
+
+/// KDL's `Rotation::GetQuaternion` of a turn about +Z, [x, y, z, w]
+/// (orocos_kdl 1.5.2 src/frames.cpp:204-235). Below its trace epsilon KDL
+/// picks the branch of the largest diagonal entry; for a turn about +Z the
+/// third entry is 1 to rounding and the first two are the turn's cosine, at
+/// most about -0.5 there, so the third entry's branch runs and KDL's other
+/// two are left out.
+fn kdl_quaternion(m: [f64; 9]) -> [f64; 4] {
+    let trace = m[0] + m[4] + m[8];
+    if trace > KDL_TRACE_EPSILON {
+        let s = 0.5 / (trace + 1.0).sqrt();
+        return [
+            (m[7] - m[5]) * s,
+            (m[2] - m[6]) * s,
+            (m[3] - m[1]) * s,
+            0.25 / s,
+        ];
+    }
+    let first_largest = m[0] > m[4] && m[0] > m[8];
+    let second_largest = m[4] > m[8];
+    debug_assert!(
+        !first_largest && !second_largest,
+        "a turn about +Z whose third diagonal entry is not the largest: {m:?}"
+    );
+    let s = 2.0 * (1.0 + m[8] - m[0] - m[4]).sqrt();
+    [
+        (m[2] + m[6]) / s,
+        (m[5] + m[7]) / s,
+        0.25 * s,
+        (m[3] - m[1]) / s,
+    ]
+}
+
+/// `angle` brought into (-pi, pi], as the angles library's `normalize_angle`
+/// brings it (angles/angles.h).
+pub fn normalize_angle(angle: f64) -> f64 {
+    let result = (angle + std::f64::consts::PI) % std::f64::consts::TAU;
+    if result <= 0.0 {
+        result + std::f64::consts::PI
+    } else {
+        result - std::f64::consts::PI
+    }
 }
 
 #[cfg(test)]
@@ -557,6 +718,100 @@ mod tests {
             "{x} {y}"
         );
         assert_eq!(PlanarPose::IDENTITY.apply([0.3, -0.7]), [0.3, -0.7]);
+    }
+
+    // A point and a pose seen from the frame that places them come back to
+    // where the frame took them from; a pose whose position seen from a frame
+    // passes the largest double makes no pose, naming that position.
+    #[test]
+    fn a_pose_seen_from_a_frame_undoes_the_frame() {
+        let far = planar(1e308, 0.0, 0.0).seen_from(planar(-1e308, 0.0, 0.0));
+        assert!(
+            matches!(far, Err(PlanarPoseError { x, .. }) if x == f64::INFINITY),
+            "{far:?}"
+        );
+        let frame = planar(1.0, -2.0, 2.5);
+        let [x, y] = frame.apply([0.3, 0.4]);
+        let [back_x, back_y] = frame.apply_inverse([x, y]);
+        assert!(
+            (back_x - 0.3).abs() < 1e-12 && (back_y - 0.4).abs() < 1e-12,
+            "{back_x} {back_y}"
+        );
+        let seen = planar(x, y, 3.0).seen_from(frame).unwrap();
+        assert!(
+            (seen.x() - 0.3).abs() < 1e-12 && (seen.y() - 0.4).abs() < 1e-12,
+            "{seen:?}"
+        );
+        assert!((seen.yaw() - 0.5).abs() < 1e-15, "{seen:?}");
+        let behind = planar(x, y, -3.0).seen_from(frame).unwrap();
+        assert!(
+            (behind.yaw() - (2.0 * std::f64::consts::PI - 5.5)).abs() < 1e-15,
+            "{behind:?}"
+        );
+    }
+
+    // A heading seen from another is the one Nav2's controller reads through
+    // tf2 and KDL, whose rounding decides the sign of a half turn: a goal at
+    // -pi seen from a base at 0 reads -pi, one at pi reads pi, and one at the
+    // double above pi reads -pi; seen from a base at 2, a goal at 2 - pi reads
+    // -pi and one at the double below it pi. Off a half turn it is the
+    // difference wrapped into [-pi, pi], to rounding.
+    #[test]
+    fn a_heading_seen_from_another_is_the_one_tf2_and_kdl_give() {
+        use std::f64::consts::PI;
+        let seen = |goal: f64, base: f64| {
+            let at = |yaw: f64| planar(0.0, 0.0, yaw);
+            at(goal).seen_from(at(base)).unwrap().yaw()
+        };
+        assert_eq!(seen(-PI, 0.0), -PI);
+        assert_eq!(seen(PI, 0.0), PI);
+        assert_eq!(seen(0.0, PI), -PI);
+        assert_eq!(seen(PI.next_up(), 0.0), -PI);
+        assert_eq!(seen(2.0 - PI, 2.0), -PI);
+        assert_eq!(seen((2.0 - PI).next_down(), 2.0), PI);
+        let wrapped = seen(3.0, -0.5);
+        assert!((wrapped - (3.5 - 2.0 * PI)).abs() < 1e-15, "{wrapped}");
+    }
+
+    // tf2's lookup for a plan's frame that has a parent leaves out the last
+    // product by the identity, and gives the heading of the lookup for a plan's
+    // frame at the root: for goals a half turn from a base, within 3 doubles,
+    // and for goals around the circle, from bases around the circle.
+    #[test]
+    fn a_plan_frame_with_a_parent_reads_the_heading_of_one_at_the_root() {
+        use std::f64::consts::PI;
+        let with_a_parent = |yaw: f64, frame_yaw: f64| {
+            let frame_to_parent = tf2_product(quaternion_of_yaw(frame_yaw), IDENTITY_QUATERNION);
+            heading_turned_by(tf2_inverse(frame_to_parent), yaw)
+        };
+        let within_3_doubles = |value: f64| {
+            let lowest = (0..3).fold(value, |below, _| below.next_down());
+            std::iter::successors(Some(lowest), |above| Some(above.next_up())).take(7)
+        };
+        let bases = (-8..=8)
+            .map(|k| f64::from(k) * PI / 8.0)
+            .chain([2.0, -2.0, 1.0]);
+        for base in bases {
+            let goals = within_3_doubles(base + PI)
+                .chain(within_3_doubles(base - PI))
+                .chain((-50..=50).map(|k| f64::from(k) * PI / 50.0));
+            for goal in goals {
+                assert_eq!(
+                    with_a_parent(goal, base),
+                    heading_seen_from(goal, base),
+                    "goal {goal}, base {base}"
+                );
+            }
+        }
+    }
+
+    // An angle comes into (-pi, pi], pi itself staying.
+    #[test]
+    fn an_angle_normalizes_into_the_half_open_circle() {
+        use std::f64::consts::PI;
+        assert_eq!(normalize_angle(PI), PI);
+        assert_eq!(normalize_angle(-PI), PI);
+        assert!((normalize_angle(3.0 * PI / 2.0) + PI / 2.0).abs() < 1e-15);
     }
 
     #[test]

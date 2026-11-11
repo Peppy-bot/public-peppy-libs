@@ -109,6 +109,19 @@ impl Inflation {
         })
     }
 
+    /// How fast the cost falls beyond the inscribed radius, per meter.
+    pub fn cost_scaling_factor(&self) -> NonNegativeFinite {
+        self.params.cost_scaling_factor
+    }
+
+    /// The padded footprint the inflation was made for: a cell within the
+    /// inflation radius of its nearest obstacle whose distance to it, rounded
+    /// to a hundredth of a cell as the cost table reads it, lies within the
+    /// footprint's inscribed radius is at least [`INSCRIBED`].
+    pub fn footprint(&self) -> &PaddedFootprint {
+        &self.footprint
+    }
+
     /// Inflates `grid` around its lethal cells.
     pub fn inflate(&self, grid: &mut CostGrid) -> Result<(), InflationError> {
         let geometry = grid.geometry();

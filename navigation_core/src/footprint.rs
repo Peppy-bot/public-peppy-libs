@@ -11,10 +11,12 @@
 //! publishes (nav2_bringup params/nav2_params.yaml:524), the padded one
 //! (src/costmap_2d_ros.cpp:629).
 //!
-//! A padded footprint's inscribed radius is the one Nav2 takes from it
-//! (src/footprint.cpp `calculateMinAndMaxDistances`, with `distance` and
-//! `distanceToLine` of src/costmap_math.cpp), and
-//! [`PaddedFootprint::placed_at`] is `transformFootprint`.
+//! A padded footprint's inscribed and circumscribed radii are those Nav2
+//! takes from it (src/footprint.cpp `calculateMinAndMaxDistances`, with
+//! `distance` and `distanceToLine` of src/costmap_math.cpp), and
+//! [`PaddedFootprint::placed_at`] is `transformFootprint`. It keeps the
+//! outline it pads, the robot's own body, whose returns the live obstacles
+//! keep out of the map and of the points the stop reads.
 //!
 //! The cost under the footprint at a pose is
 //! `FootprintCollisionChecker::footprintCostAtPose`
@@ -26,8 +28,8 @@
 //! when the highest cost so far equals [`LETHAL`], so an unknown cell on an
 //! earlier edge makes the highest cost unknown and a lethal cell on a later
 //! edge then reads as unknown; here a lethal cell under the outline always
-//! reads as lethal, for the smoother and [`PaddedFootprint::collides_at`]
-//! alike.
+//! reads as lethal, for the smoother, the controller's arc check and
+//! [`PaddedFootprint::collides_at`] alike.
 //!
 //! [`PaddedFootprint::collides_at`] checks one pose of base_navigation:v1's
 //! sweep, under which a turn and a straight drive fail "when its sweep meets
@@ -50,12 +52,15 @@ use crate::pose::point_distance;
 use crate::raster::raytrace_line;
 
 /// A footprint padded as Nav2 pads it, which only [`PaddedFootprint::new`]
-/// gives: its points, counterclockwise about the base's center, and the least
-/// distance from the center to a vertex or an edge.
+/// gives: its points, counterclockwise about the base's center, the least
+/// and greatest distance from the center to a vertex or an edge, and the
+/// outline it pads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaddedFootprint {
     points: Vec<[f64; 2]>,
+    outline: Footprint,
     inscribed_radius_m: f64,
+    circumscribed_radius_m: f64,
 }
 
 /// Why a padding makes no footprint of an outline.
@@ -103,9 +108,12 @@ impl PaddedFootprint {
                 outline,
             },
         })?;
+        let (inscribed_radius_m, circumscribed_radius_m) = min_and_max_distances(&points);
         Ok(Self {
-            inscribed_radius_m: inscribed_radius(&points),
             points,
+            outline: footprint.clone(),
+            inscribed_radius_m,
+            circumscribed_radius_m,
         })
     }
 
@@ -116,6 +124,11 @@ impl PaddedFootprint {
     /// The least distance from the center to a vertex or an edge.
     pub fn inscribed_radius_m(&self) -> f64 {
         self.inscribed_radius_m
+    }
+
+    /// The greatest distance from the center to a vertex or an edge.
+    pub fn circumscribed_radius_m(&self) -> f64 {
+        self.circumscribed_radius_m
     }
 
     /// The footprint's vertices with the base's center at `pose`, in the
@@ -150,26 +163,56 @@ impl PaddedFootprint {
     /// free. The base's center lies inside its outline, so a center off the
     /// grid puts a vertex off it.
     ///
-    /// The check reads the cells under the outline alone, so a sweep finds
-    /// every lethal cell its footprint passes over only while no point of the
+    /// The check reads the cells under the outline's edges alone, a raster one
+    /// cell thick, so a sweep checked at poses a step apart is sure to find
+    /// every lethal cell its footprint passes over only if no point of the
     /// outline moves farther than the grid's cell from one checked pose to the
     /// next: a longer step carries an edge past a lethal cell that then lies
-    /// inside the outline, under no edge, at both poses. A step that moves the
+    /// inside the outline, under no edge, at both poses. A sweep that keeps
+    /// that bound can still pass a lethal cell: the raster moves by whole cells
+    /// as its edges cross the lattice, so at a step of under a cell, on a
+    /// straight drive as on a turn, it can step over a lethal cell of one cell,
+    /// which then lies under no edge at either pose. A step that moves the
     /// base's center a length along an arc of curvature kappa, turning toward
     /// +y, moves a point of the outline at (x, y) in the base's frame about
     /// sqrt((1 - kappa y)^2 + (kappa x)^2) times that length, kappa times its
-    /// distance from the arc's center, to first order in the step's turn: 1 +
-    /// kappa |y| for a point beside the center on the arc's outer side. So a
-    /// sweep keeps the center's step at most one cell over the largest of that
-    /// factor on the outline's vertices, a cell on a straight drive. Nav2's arc
-    /// check steps the center a cell along a drive, whatever its curvature, and
-    /// the farthest vertex a cell along a turn in place
-    /// (nav2_regulated_pure_pursuit_controller src/collision_checker.cpp:72-85),
-    /// so on a curved drive its outer points move more than a cell a step,
-    /// and it can miss a lethal cell there.
+    /// distance from the arc's center, to first order in the step's turn:
+    /// 1 + kappa |y| for a point beside the center on the arc's outer side.
+    /// Nav2 checks a sweep at poses alike: its arc check steps the center a
+    /// cell along a drive, whatever its curvature, and the farthest vertex a
+    /// cell along a turn in place (nav2_regulated_pure_pursuit_controller
+    /// src/collision_checker.cpp:72-85), which the controller's arc check
+    /// ports, and its spin and its drive on a heading check the poses a cycle
+    /// of their frequency apart (nav2_behaviors plugins/spin.cpp:156-177,
+    /// include/nav2_behaviors/plugins/drive_on_heading.hpp:212-235).
     pub fn collides_at(&self, grid: &CostGrid, pose: PlanarPose) -> bool {
         self.cost_at(grid, pose) == f64::from(LETHAL)
     }
+
+    /// Whether `point`, in the base's frame, lies inside the outline the
+    /// footprint pads, by [`is_point_inside_polygon`].
+    pub(crate) fn outline_holds(&self, point: [f64; 2]) -> bool {
+        is_point_inside_polygon(point[0], point[1], self.outline.points())
+    }
+}
+
+/// nav2_util's `isPointInsidePolygon` (include/nav2_util/geometry_utils.hpp):
+/// whether a ray from (`px`, `py`) along +X crosses the polygon's edges an
+/// odd number of times.
+pub(crate) fn is_point_inside_polygon(px: f64, py: f64, polygon: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut i = polygon.len() - 1;
+    for j in 0..polygon.len() {
+        let (a, b) = (polygon[i], polygon[j]);
+        if (py <= a[1]) == (py > b[1]) {
+            let x_inter = a[0] + (py - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+            if x_inter > px {
+                inside = !inside;
+            }
+        }
+        i = j;
+    }
+    inside
 }
 
 /// costmap_math.hpp's `sign0`: -1, 0 or 1 by the sign of `x`.
@@ -183,15 +226,18 @@ fn sign0(x: f64) -> f64 {
     }
 }
 
-/// The least distance from the center that `calculateMinAndMaxDistances`
-/// takes: over each vertex and the edge from it to the next, the last edge
-/// closing the polygon.
-fn inscribed_radius(points: &[[f64; 2]]) -> f64 {
+/// `calculateMinAndMaxDistances`: over each vertex and the edge from it to
+/// the next, the last edge closing the polygon, the least and the greatest
+/// distance from the center.
+fn min_and_max_distances(points: &[[f64; 2]]) -> (f64, f64) {
     let edges = points.iter().zip(points.iter().cycle().skip(1));
-    edges.fold(f64::MAX, |min_dist, (a, b)| {
+    edges.fold((f64::MAX, 0.0), |(min_dist, max_dist), (a, b)| {
         let vertex_dist = point_distance([0.0, 0.0], *a);
         let edge_dist = distance_to_line(0.0, 0.0, a[0], a[1], b[0], b[1]);
-        min_dist.min(vertex_dist.min(edge_dist))
+        (
+            min_dist.min(vertex_dist.min(edge_dist)),
+            max_dist.max(vertex_dist.max(edge_dist)),
+        )
     })
 }
 
@@ -416,10 +462,43 @@ mod tests {
         );
     }
 
-    // The inscribed radius is the nearest edge.
+    fn square() -> Vec<[f64; 2]> {
+        vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+    }
+
+    // A point inside the square is inside, one beyond an edge is not, and
+    // on the edges the ray rule takes the left and upper edges in.
     #[test]
-    fn the_inscribed_radius_is_the_nearest_edge() {
-        assert!((unpadded(&RECTANGLE).inscribed_radius_m() - 0.2).abs() < 1e-15);
+    fn a_point_is_inside_by_the_ray_rule() {
+        let square = square();
+        assert!(is_point_inside_polygon(0.0, 0.0, &square));
+        assert!(!is_point_inside_polygon(1.5, 0.0, &square));
+        assert!(!is_point_inside_polygon(0.0, 1.5, &square));
+        assert!(is_point_inside_polygon(-1.0, 0.0, &square));
+        assert!(!is_point_inside_polygon(1.0, 0.0, &square));
+        assert!(is_point_inside_polygon(0.0, 1.0, &square));
+        assert!(!is_point_inside_polygon(0.0, -1.0, &square));
+    }
+
+    // The outline a padding pads holds a point in the base's frame by its own
+    // edge and not the padding: a point a millimeter inside the front edge is
+    // held, one in the padding is not, nor one past both beside the base.
+    #[test]
+    fn the_outline_holds_a_point_inside_it_and_not_one_in_the_padding() {
+        let rectangle = Footprint::parse(&RECTANGLE).unwrap();
+        let footprint = PaddedFootprint::new(&rectangle, padding(0.05)).unwrap();
+        assert!(footprint.outline_holds([0.399, 0.0]));
+        assert!(!footprint.outline_holds([0.43, 0.0]));
+        assert!(!footprint.outline_holds([0.0, -2.0]));
+    }
+
+    // The inscribed radius is the nearest edge, the circumscribed one the
+    // farthest vertex.
+    #[test]
+    fn the_radii_are_the_nearest_edge_and_the_farthest_vertex() {
+        let footprint = unpadded(&RECTANGLE);
+        assert!((footprint.inscribed_radius_m() - 0.2).abs() < 1e-15);
+        assert!((footprint.circumscribed_radius_m() - 0.5).abs() < 1e-15);
     }
 
     // The footprint reads the highest cost under its edges, the closing edge

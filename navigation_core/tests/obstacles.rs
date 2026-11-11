@@ -16,6 +16,7 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
 use camera_core::pose::{PlanarPose, Pose};
@@ -213,15 +214,17 @@ fn a_table_above_the_band_marks_only_its_legs_and_the_floor_none(tc: TestCase) {
         .chain(surface(BOX[0], BOX[1], box_m))
         .chain(sides(BOX, box_m))
         .collect();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights, small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(odom(), bounds(), heights, small_square(), NonZeroUsize::MIN)
+        .expect("whole voxels");
     let sensor = sensor_at(SENSOR, 0.0);
     live.insert_depth_frame(
+        0,
         &seen_from(&sensor, &points),
         away(),
         on_base(away(), &sensor),
         range(),
-    );
+    )
+    .expect("the live obstacles' one source");
 
     let geometry = live.columns();
     let lethal = lethal_cells(&layer(&live));
@@ -303,15 +306,17 @@ fn a_step_down_deeper_than_the_limit_marks_where_the_rays_cross_the_floor_and_a_
         .into_iter()
         .chain(seen_lower.iter().copied())
         .collect();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights, small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(odom(), bounds(), heights, small_square(), NonZeroUsize::MIN)
+        .expect("whole voxels");
     let sensor = sensor_at(sensor_position, 0.0);
     live.insert_depth_frame(
+        0,
         &seen_from(&sensor, &points),
         away(),
         on_base(away(), &sensor),
         range(),
-    );
+    )
+    .expect("the live obstacles' one source");
     let lethal = lethal_cells(&layer(&live));
     if !deeper {
         assert!(
@@ -366,15 +371,23 @@ fn a_box_before_a_drop() -> LiveObstacles {
         .chain(surface(BOX[0], BOX[1], box_m))
         .chain(sides(BOX, box_m))
         .collect();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let sensor = sensor_at(sensor_position, 0.0);
     live.insert_depth_frame(
+        0,
         &seen_from(&sensor, &points),
         away(),
         on_base(away(), &sensor),
         range(),
-    );
+    )
+    .expect("the live obstacles' one source");
     live
 }
 
@@ -477,15 +490,23 @@ fn a_turned_or_finer_grid_marks_every_cell_under_a_wall_and_knows_the_seen_floor
         .into_iter()
         .chain(surface([-1.0, -1.0], [1.5, 0.45], 0.0))
         .collect();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let sensor = sensor_at(SENSOR, 0.0);
     live.insert_depth_frame(
+        0,
         &seen_from(&sensor, &points),
         away(),
         on_base(away(), &sensor),
         range(),
-    );
+    )
+    .expect("the live obstacles' one source");
     let twelfth_of_a_turn = planar(0.0, 0.0, std::f64::consts::FRAC_PI_6);
     let half_a_voxel = PositiveFinite::parse(VOXEL_M / 2.0).expect("positive");
     let turned = (
@@ -659,8 +680,14 @@ fn drive_toward(
     heights: ObstacleHeights,
 ) -> Vec<(LiveObstacles, Vec<[f64; 3]>)> {
     let rays = camera_rays();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights, drive_footprint()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights,
+        drive_footprint(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let mut lower_seen = Vec::new();
     let frames = 68;
     (0..=frames)
@@ -675,11 +702,13 @@ fn drive_toward(
             let sensor = sensor_at(camera, 0.0);
             let base = base_at(base_x);
             live.insert_depth_frame(
+                0,
                 &seen_from(&sensor, &points),
                 base,
                 on_base(base, &sensor),
                 range(),
-            );
+            )
+            .expect("the live obstacles' one source");
             (live.clone(), lower_seen.clone())
         })
         .collect()
@@ -756,7 +785,8 @@ fn a_cleared_footprint_holds_no_drop() {
     let base_x = DRIVE_EDGE_X + 0.4;
     let base = base_at(base_x);
     let sensor = sensor_at(camera_at(base_x), 0.0);
-    live.insert_depth_frame(&[], base, on_base(base, &sensor), range());
+    live.insert_depth_frame(0, &[], base, on_base(base, &sensor), range())
+        .expect("the live obstacles' one source");
     let lethal = lethal_cells(&layer(&live));
     let geometry = live.columns();
     let under = cells_under(
@@ -838,8 +868,14 @@ fn a_lone_wrong_far_reading_in_each_frame_marks_no_cell(tc: TestCase) {
         depth_m: 0.25,
     };
     let rays = camera_rays();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), drive_footprint()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        drive_footprint(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     for frame in 0..tc.draw(gs::integers::<u32>().min_value(1).max_value(5)) {
         let base_x = tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
         let camera = camera_at(base_x);
@@ -863,11 +899,13 @@ fn a_lone_wrong_far_reading_in_each_frame_marks_no_cell(tc: TestCase) {
         let sensor = sensor_at(camera, 0.0);
         let base = base_at(base_x);
         live.insert_depth_frame(
+            0,
             &seen_from(&sensor, &points),
             base,
             on_base(base, &sensor),
             range(),
-        );
+        )
+        .expect("the live obstacles' one source");
         let lethal = lethal_cells(&layer(&live));
         assert!(lethal.is_empty(), "frame {frame} marks {lethal:?}");
     }
@@ -930,8 +968,14 @@ const WRONG_EVERY: usize = 50;
 #[test]
 fn wrong_far_readings_among_a_forward_cameras_rays_mark_no_drop() {
     let rays = camera_rays();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), drive_footprint()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        drive_footprint(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let box_cells = cells_under(live.columns(), FLAT_DRIVE_BOX[0], FLAT_DRIVE_BOX[1]);
     for frame in 0..=50_usize {
         let base_x = -0.5 + frame as f64 * 0.02;
@@ -952,11 +996,13 @@ fn wrong_far_readings_among_a_forward_cameras_rays_mark_no_drop() {
             .collect();
         let sensor = sensor_at(camera, 0.0);
         live.insert_depth_frame(
+            0,
             &seen_from(&sensor, &points),
             base_at(base_x),
             on_base(base_at(base_x), &sensor),
             range(),
-        );
+        )
+        .expect("the live obstacles' one source");
         let lethal = lethal_cells(&layer(&live));
         assert!(
             lethal.is_subset(&box_cells),
@@ -1006,8 +1052,14 @@ fn drawn_wrong_far_readings_mark_a_drop_only_where_three_of_one_frame_cross(tc: 
     // 0.3 x 5 / 0.4^2, 9.4 times its height's single-precision rounding there, 2.4e-7 m.
     const CROSSING_ROUNDING_M: f64 = 1e-5;
     let rays = camera_rays();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), drive_footprint()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        drive_footprint(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let columns = live.columns();
     let box_cells = cells_under(columns, FLAT_DRIVE_BOX[0], FLAT_DRIVE_BOX[1]);
     let wrong_share = tc.draw(gs::floats().min_value(0.0).max_value(1.0));
@@ -1040,11 +1092,13 @@ fn drawn_wrong_far_readings_mark_a_drop_only_where_three_of_one_frame_cross(tc: 
         let crossings: Vec<[f64; 2]> = readings.iter().filter_map(|&(_, at)| at).collect();
         let sensor = sensor_at(camera, 0.0);
         live.insert_depth_frame(
+            0,
             &seen_from(&sensor, &points),
             base_at(base_x),
             on_base(base_at(base_x), &sensor),
             range(),
-        );
+        )
+        .expect("the live obstacles' one source");
         crossed_by_three.extend(columns_crossed_by_three(
             columns,
             &crossings,
@@ -1071,10 +1125,17 @@ fn a_cleared_obstacle_is_marked_again_by_the_next_frame() {
     let points = surface(box_[0], box_[1], 0.3);
     let sensor = sensor_at(SENSOR, 0.0);
     let frame = seen_from(&sensor, &points);
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let insert = |live: &mut LiveObstacles, points: &[[f32; 3]], base: PlanarPose| {
-        live.insert_depth_frame(points, base, on_base(base, &sensor), range())
+        live.insert_depth_frame(0, points, base, on_base(base, &sensor), range())
+            .expect("the live obstacles' one source")
     };
     for _ in 0..10 {
         insert(&mut live, &frame, away());
@@ -1135,8 +1196,8 @@ fn a_base_that_sees_its_own_deck_as_it_drives_and_turns_marks_no_cell(tc: TestCa
             turn_rad * f64::from(k) / f64::from(turn_steps),
         )
     });
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), footprint).expect("whole voxels");
+    let mut live = LiveObstacles::new(odom(), bounds(), heights(), footprint, NonZeroUsize::MIN)
+        .expect("whole voxels");
     for base in driving.chain(turning) {
         let sensor = sensor_at([base.x(), base.y(), mount_m], base.yaw());
         let seen: Vec<[f64; 3]> = deck
@@ -1147,11 +1208,13 @@ fn a_base_that_sees_its_own_deck_as_it_drives_and_turns_marks_no_cell(tc: TestCa
             })
             .collect();
         live.insert_depth_frame(
+            0,
             &seen_from(&sensor, &seen),
             base,
             on_base(base, &sensor),
             range(),
-        );
+        )
+        .expect("the live obstacles' one source");
         let marked = lethal_cells(&layer(&live));
         assert!(
             marked.is_empty(),
@@ -1187,15 +1250,23 @@ fn the_footprint_clearing_leaves_no_occupied_cell_under_it_and_every_saved_cell(
             ]
         })
         .collect();
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), footprint.clone()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        footprint.clone(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let sensor = sensor_at(SENSOR, 0.0);
     live.insert_depth_frame(
+        0,
         &seen_from(&sensor, &points),
         base,
         on_base(base, &sensor),
         range(),
-    );
+    )
+    .expect("the live obstacles' one source");
 
     let columns = live.columns();
     let (width, height) = (columns.size_x(), columns.size_y());
@@ -1251,13 +1322,20 @@ fn standing(base: PlanarPose) -> Sweep<PlanarPose> {
 // own cell alone.
 #[test]
 fn a_ray_that_met_nothing_frees_and_marks_nothing() {
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let base = standing(away());
     let lidar = on_base(away(), &sensor_at([-0.5, 0.0, 0.3], 0.0));
     let marks =
         LaserScan::parse(-0.1, 0.1, 0.0, 0.05, 8.0, &[10000.0, 0.0, 9.0]).expect("a scan of marks");
-    live.insert_laser_scan(&marks, base, lidar, range());
+    live.insert_laser_scan(0, &marks, base, lidar, range())
+        .expect("the live obstacles' one source");
     assert!(
         layer(&live)
             .grid()
@@ -1268,7 +1346,8 @@ fn a_ray_that_met_nothing_frees_and_marks_nothing() {
     );
     let one_hit = LaserScan::parse(-0.1, 0.1, 0.0, 0.05, 8.0, &[10000.0, 1.012, 0.0])
         .expect("a scan of one hit");
-    live.insert_laser_scan(&one_hit, base, lidar, range());
+    live.insert_laser_scan(0, &one_hit, base, lidar, range())
+        .expect("the live obstacles' one source");
     let hit = live
         .columns()
         .cell_of([0.512, 0.0])
@@ -1302,13 +1381,20 @@ fn each_ray_of_a_turning_scan_lands_where_the_sensor_stood_at_its_time() {
         &ranges,
     )
     .expect("a scan of the wall");
-    let mut live =
-        LiveObstacles::new(odom(), bounds(), heights(), small_square()).expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let base = Sweep {
         first_ray: planar(lidar_x, 0.0, 0.0),
         last_ray: planar(lidar_x, 0.0, turn),
     };
-    live.insert_laser_scan(&scan, base, lidar_on_base(), range());
+    live.insert_laser_scan(0, &scan, base, lidar_on_base(), range())
+        .expect("the live obstacles' one source");
     let columns = live.columns();
     let wall: BTreeSet<(u32, u32)> = (0..rays)
         .map(|i| {

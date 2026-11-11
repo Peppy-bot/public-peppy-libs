@@ -6,6 +6,7 @@
 //! the planner locates its start and goal as `worldToMapContinuous` does,
 //! each in its arithmetic.
 
+use camera_core::pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 
 /// A cell nothing occupies.
@@ -300,6 +301,20 @@ impl CostGrid {
     pub(crate) fn costs_mut(&mut self) -> &mut [u8] {
         &mut self.costs
     }
+
+    /// The centers of the grid's lethal cells in the frame of a base at
+    /// `base` in the grid's frame: the grid's share of the points the stop
+    /// reads
+    /// ([`LiveObstacles::occupied_seen_from`](crate::obstacles::LiveObstacles::occupied_seen_from)),
+    /// as the collision monitor reads a source's points in the base's frame.
+    pub(crate) fn lethal_centers_seen_from(&self, base: PlanarPose) -> Vec<[f64; 2]> {
+        let geometry = self.geometry;
+        geometry
+            .cells()
+            .filter(|&cell| self.cost(cell) == LETHAL)
+            .map(|cell| base.apply_inverse(geometry.center_of(cell)))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +323,24 @@ mod tests {
 
     fn geometry() -> GridGeometry {
         GridGeometry::new(4, 3, PositiveFinite::parse(0.5).unwrap(), [-1.0, 2.0]).unwrap()
+    }
+
+    // The lethal cells' centers come back in the base's frame: ahead of a base
+    // turned toward them, along its +x.
+    #[test]
+    fn the_lethal_centers_come_back_in_the_base_frame() {
+        let mut costs = vec![FREE; 12];
+        costs[geometry().index(geometry().cell(3, 1).unwrap())] = LETHAL;
+        costs[0] = INSCRIBED;
+        let grid = CostGrid::from_costs(geometry(), costs).unwrap();
+        let base = PlanarPose::new(0.75, 0.75, std::f64::consts::FRAC_PI_2).unwrap();
+        let centers = grid.lethal_centers_seen_from(base);
+        assert_eq!(centers.len(), 1);
+        let [x, y] = centers[0];
+        assert!(
+            (x - 2.0).abs() < 1e-12 && (y + 0.0).abs() < 1e-12,
+            "{x} {y}"
+        );
     }
 
     #[test]

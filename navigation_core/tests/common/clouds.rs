@@ -2,6 +2,8 @@
 //! grid, with voxels of the grid's cells, a cloud inserted into them, and the margins that
 //! keep a point's cell and band from turning on the rounding of the frame it is judged in.
 
+use std::num::NonZeroUsize;
+
 use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::PaddedFootprint;
@@ -90,6 +92,7 @@ pub fn live_obstacles_over(
         bounds,
         heights,
         padded_footprint,
+        NonZeroUsize::MIN,
     )
     .expect("a map over the grid");
     let columns = live.columns();
@@ -113,11 +116,13 @@ pub fn insert_cloud(
     let pose = Pose::new(sensor.position, sensor.orientation).expect("the sensor's pose");
     let [x, y, yaw] = base;
     live.insert_depth_frame(
+        0,
         points,
         planar(x, y, yaw),
         on_base(planar(x, y, yaw), &pose),
         PositiveFinite::parse(range_m).expect("a positive range"),
-    );
+    )
+    .expect("the live obstacles' one source");
 }
 
 /// Panics unless each of `points`, in the grid's frame, lies `EDGE_MARGIN_M` or more from
