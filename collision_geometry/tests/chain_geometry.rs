@@ -11,7 +11,9 @@ use collision_geometry::chain::{
 };
 use collision_geometry::gjk::Hull;
 use collision_geometry::hull::exact_hull;
-use collision_geometry::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use collision_geometry::nalgebra::{
+    Isometry3, Point3, Translation3, UnitQuaternion, UnitVector3, Vector3,
+};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -104,19 +106,43 @@ fn sign(tc: &TestCase) -> f64 {
     f64::from(tc.draw(gs::integers::<i8>().min_value(-1).max_value(1)))
 }
 
-/// The unit direction of `terms`, each a unit direction and a drawn weight, weighed by
-/// the weights taken relative to the largest, so that no weight, however small, rounds
-/// the direction of its term: `None` when every weight is 0.
-fn weighed_direction(terms: &[(Vector3<f64>, f64)]) -> Option<Vector3<f64>> {
+/// The unit direction of `terms`, each a direction and a drawn weight, weighed by the
+/// weights taken relative to the largest: the largest term enters at full length, so a
+/// term whose relative weight leaves the normal range of floats moves the sum by at most
+/// the smallest float. `None` when every weight is 0.
+fn weighed_direction(terms: &[(UnitVector3<f64>, f64)]) -> Option<Vector3<f64>> {
     let largest = terms.iter().map(|&(_, weight)| weight).fold(0.0, f64::max);
     (largest > 0.0).then(|| {
         terms
             .iter()
             .fold(Vector3::zeros(), |sum, (direction, weight)| {
-                sum + direction * (weight / largest)
+                sum + direction.into_inner() * (weight / largest)
             })
             .normalize()
     })
+}
+
+/// The [`weighed_direction`] of `terms`, the test case rejected when every weight is 0.
+fn drawn_direction(tc: &TestCase, terms: &[(UnitVector3<f64>, f64)]) -> Vector3<f64> {
+    weighed_direction(terms).unwrap_or_else(|| tc.reject())
+}
+
+/// A weighed direction has unit length and the direction of its largest term however
+/// small the weights, as the surface directions that
+/// a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it drew at
+/// 10,000 cases weigh them: a cap's axis weighted 5.667e-162, whose square underflows,
+/// and a face normal weighted below the normal range of floats.
+#[test]
+fn a_weighed_direction_holds_its_largest_term_however_small_the_weights() {
+    let axis = Vector3::z_axis();
+    let normal = UnitVector3::new_normalize(Vector3::new(-0.930, -0.367, -0.020));
+    assert_eq!(
+        weighed_direction(&[(axis, 5.667004161121765e-162)]),
+        Some(axis.into_inner())
+    );
+    let along_normal = weighed_direction(&[(normal, 5e-324)]).expect("a weight above 0");
+    assert!((along_normal - normal.into_inner()).amax() <= f64::EPSILON);
+    assert_eq!(weighed_direction(&[(axis, 0.0), (normal, 0.0)]), None);
 }
 
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
@@ -134,18 +160,18 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
         CollisionGeometry::Mesh { .. } => {
             let hull = piece.hull();
             let (on_face, vertices) = point_on_face(tc, hull, drawn_index(tc, hull.faces()));
-            let terms: Vec<(Vector3<f64>, f64)> = hull
+            let terms: Vec<(UnitVector3<f64>, f64)> = hull
                 .faces()
                 .iter()
                 .zip(hull.planes())
                 .filter(|(face, _)| vertices.iter().all(|vertex| face.contains(vertex)))
-                .map(|(_, (normal, _))| (*normal, weight()))
+                .map(|(_, (normal, _))| (UnitVector3::new_normalize(*normal), weight()))
                 .collect();
-            let Some(direction) = weighed_direction(&terms) else {
-                tc.reject()
-            };
             let center = hull.center();
-            return (center + (on_face - center) * scale, direction);
+            return (
+                center + (on_face - center) * scale,
+                drawn_direction(tc, &terms),
+            );
         }
         CollisionGeometry::Box { size } => {
             let half_extents = size * (scale / 2.0);
@@ -160,7 +186,12 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             });
             let terms = (0..3)
                 .filter(|&i| sides[i] != 0.0)
-                .map(|i| (Vector3::ith(i, sides[i]), weight()))
+                .map(|i| {
+                    (
+                        UnitVector3::new_normalize(Vector3::ith(i, sides[i])),
+                        weight(),
+                    )
+                })
                 .collect();
             (point, terms)
         }
@@ -176,8 +207,9 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             } else {
                 end * half_length
             };
-            let outward = on_side.then(|| (radial, weight()));
-            let axial = (end != 0.0).then(|| (Vector3::z() * end, weight()));
+            let outward = on_side.then(|| (UnitVector3::new_normalize(radial), weight()));
+            let axial =
+                (end != 0.0).then(|| (UnitVector3::new_normalize(Vector3::z() * end), weight()));
             (
                 radial * across + Vector3::z() * along,
                 outward.into_iter().chain(axial).collect(),
@@ -185,15 +217,15 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
         }
         CollisionGeometry::Sphere { radius } => {
             let direction = tc.draw(unit_vectors());
-            (direction * (radius * scale), vec![(direction, 1.0)])
+            (
+                direction * (radius * scale),
+                vec![(UnitVector3::new_normalize(direction), 1.0)],
+            )
         }
-    };
-    let Some(direction) = weighed_direction(&terms) else {
-        tc.reject()
     };
     (
         element.origin * Point3::from(point),
-        element.origin.rotation * direction,
+        element.origin.rotation * drawn_direction(tc, &terms),
     )
 }
 
