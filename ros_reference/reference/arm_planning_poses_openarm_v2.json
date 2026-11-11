@@ -7,7 +7,7 @@
     },
     {
       "moveit": {"bending":20.897005421080454,"clearance":-1,"collisions":4,"duration":2.189571647933438,"held_clearance":null,"length":5.593387710226161,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":1.892470012912941},
-      "ours": {"bending":1.038544061908018,"clearance":0.0035358829935574917,"collisions":0,"duration":1.9812771165592171,"held_clearance":null,"length":5.494878089980392,"self_clearance":null,"share_of_tolerance":null,"turning":0.6675073489775455}
+      "ours": {"bending":1.0385440619080186,"clearance":0.0035358829935575264,"collisions":0,"duration":1.9812771165592176,"held_clearance":null,"length":5.494878089980392,"self_clearance":null,"share_of_tolerance":null,"turning":0.667507348977546}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2,"turning":null},
@@ -23,7 +23,7 @@
     },
     {
       "moveit": {"bending":7.153264891519,"clearance":0.07769866794888249,"collisions":0,"duration":1.9696758326136867,"held_clearance":null,"length":4.610312191658617,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0.9918763615992412},
-      "ours": {"bending":6.546320385619585,"clearance":0.005040607277114775,"collisions":0,"duration":2.6086202084600902,"held_clearance":null,"length":6.226790588591535,"self_clearance":null,"share_of_tolerance":null,"turning":2.5218570223502828}
+      "ours": {"bending":6.546320385619617,"clearance":0.005040607277114891,"collisions":0,"duration":2.6086202084600907,"held_clearance":null,"length":6.226790588591535,"self_clearance":null,"share_of_tolerance":null,"turning":2.5218570223502828}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},

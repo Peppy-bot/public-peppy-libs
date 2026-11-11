@@ -7,7 +7,7 @@
     },
     {
       "moveit": {"bending":37.767890988321135,"clearance":-1,"collisions":11,"duration":4.024389492589889,"held_clearance":null,"length":8.124810255750951,"self_clearance":0.024095175326768702,"share_of_tolerance":null,"status":1,"turning":4.168033467906609},
-      "ours": {"bending":22.776022790330714,"clearance":0.001050828094944188,"collisions":0,"duration":3.326196533814486,"held_clearance":null,"length":8.598071412843238,"self_clearance":0.024095175326768702,"share_of_tolerance":null,"turning":3.063318355848677}
+      "ours": {"bending":22.776022790330714,"clearance":0.0010508280949441812,"collisions":0,"duration":3.3261965338144854,"held_clearance":null,"length":8.598071412843236,"self_clearance":0.024095175326768702,"share_of_tolerance":null,"turning":3.063318355848677}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2,"turning":null},
@@ -22,8 +22,8 @@
       "ours": null
     },
     {
-      "moveit": {"bending":16.484148196794074,"clearance":0.0006512407516237645,"collisions":0,"duration":3.112802641611462,"held_clearance":null,"length":6.044201960140793,"self_clearance":0.08966143424130373,"share_of_tolerance":null,"status":1,"turning":2.6630204086352456},
-      "ours": {"bending":19.15064938859113,"clearance":0.0010764124564819643,"collisions":0,"duration":3.48383649443975,"held_clearance":null,"length":6.801630019004149,"self_clearance":0.08463270099527079,"share_of_tolerance":null,"turning":3.8925716736137064}
+      "moveit": {"bending":0,"clearance":0.0010911293525805428,"collisions":0,"duration":1.2817005156828263,"held_clearance":null,"length":2.340482323446264,"self_clearance":0.08083042166996438,"share_of_tolerance":null,"status":1,"turning":0},
+      "ours": {"bending":19.15064938859113,"clearance":0.0010764124564819643,"collisions":0,"duration":3.483836494439753,"held_clearance":null,"length":6.801630019004149,"self_clearance":0.08463270099527075,"share_of_tolerance":null,"turning":3.8925716736137064}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10,"turning":null},
