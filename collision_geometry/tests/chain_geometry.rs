@@ -104,6 +104,14 @@ fn sign(tc: &TestCase) -> f64 {
     f64::from(tc.draw(gs::integers::<i8>().min_value(-1).max_value(1)))
 }
 
+/// `direction` at unit length, divided first by its largest component, so the square of
+/// its length does not underflow where drawn weights leave every component tiny.
+fn unit(direction: Vector3<f64>) -> Vector3<f64> {
+    let largest = direction.amax();
+    assert!(largest > 0.0, "the zero direction has no unit length");
+    (direction / largest).normalize()
+}
+
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
 /// about its center, with a drawn outward unit direction of the surface's normal cone
 /// there, both in the frame of its link: a point `t` meters from the surface point along
@@ -127,9 +135,9 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
                 .fold(Vector3::zeros(), |sum, (_, (normal, _))| {
                     sum + normal * weight()
                 });
-            tc.assume(direction.norm() > 0.0);
+            tc.assume(direction.amax() > 0.0);
             let center = hull.center();
-            return (center + (on_face - center) * scale, direction.normalize());
+            return (center + (on_face - center) * scale, unit(direction));
         }
         CollisionGeometry::Box { size } => {
             let half_extents = size * (scale / 2.0);
@@ -171,10 +179,10 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             (direction * (radius * scale), direction)
         }
     };
-    tc.assume(direction.norm() > 0.0);
+    tc.assume(direction.amax() > 0.0);
     (
         element.origin * Point3::from(point),
-        element.origin.rotation * direction.normalize(),
+        element.origin.rotation * unit(direction),
     )
 }
 
