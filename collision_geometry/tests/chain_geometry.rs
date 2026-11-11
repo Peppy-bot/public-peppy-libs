@@ -104,12 +104,19 @@ fn sign(tc: &TestCase) -> f64 {
     f64::from(tc.draw(gs::integers::<i8>().min_value(-1).max_value(1)))
 }
 
-/// `direction` at unit length, divided first by its largest component, so the square of
-/// its length does not underflow where drawn weights leave every component tiny.
-fn unit(direction: Vector3<f64>) -> Vector3<f64> {
-    let largest = direction.amax();
-    assert!(largest > 0.0, "the zero direction has no unit length");
-    (direction / largest).normalize()
+/// The unit direction of `terms`, each a unit direction and a drawn weight, weighed by
+/// the weights taken relative to the largest, so that no weight, however small, rounds
+/// the direction of its term: `None` when every weight is 0.
+fn weighed_direction(terms: &[(Vector3<f64>, f64)]) -> Option<Vector3<f64>> {
+    let largest = terms.iter().map(|&(_, weight)| weight).fold(0.0, f64::max);
+    (largest > 0.0).then(|| {
+        terms
+            .iter()
+            .fold(Vector3::zeros(), |sum, (direction, weight)| {
+                sum + direction * (weight / largest)
+            })
+            .normalize()
+    })
 }
 
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
@@ -123,21 +130,22 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
     let weight = || tc.draw(gs::floats().min_value(0.0).max_value(1.0));
     let fraction = || tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
     let element = piece.element();
-    let (point, direction) = match element.geometry {
+    let (point, terms) = match element.geometry {
         CollisionGeometry::Mesh { .. } => {
             let hull = piece.hull();
             let (on_face, vertices) = point_on_face(tc, hull, drawn_index(tc, hull.faces()));
-            let direction = hull
+            let terms: Vec<(Vector3<f64>, f64)> = hull
                 .faces()
                 .iter()
                 .zip(hull.planes())
                 .filter(|(face, _)| vertices.iter().all(|vertex| face.contains(vertex)))
-                .fold(Vector3::zeros(), |sum, (_, (normal, _))| {
-                    sum + normal * weight()
-                });
-            tc.assume(direction.amax() > 0.0);
+                .map(|(_, (normal, _))| (*normal, weight()))
+                .collect();
+            let Some(direction) = weighed_direction(&terms) else {
+                tc.reject()
+            };
             let center = hull.center();
-            return (center + (on_face - center) * scale, unit(direction));
+            return (center + (on_face - center) * scale, direction);
         }
         CollisionGeometry::Box { size } => {
             let half_extents = size * (scale / 2.0);
@@ -150,7 +158,11 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
                     sides[i] * half_extents[i]
                 }
             });
-            (point, Vector3::from_fn(|i, _| sides[i] * weight()))
+            let terms = (0..3)
+                .filter(|&i| sides[i] != 0.0)
+                .map(|i| (Vector3::ith(i, sides[i]), weight()))
+                .collect();
+            (point, terms)
         }
         CollisionGeometry::Cylinder { radius, length } => {
             let (radius, half_length) = (radius * scale, length * scale / 2.0);
@@ -164,25 +176,24 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             } else {
                 end * half_length
             };
-            let outward = if on_side {
-                radial * weight()
-            } else {
-                Vector3::zeros()
-            };
+            let outward = on_side.then(|| (radial, weight()));
+            let axial = (end != 0.0).then(|| (Vector3::z() * end, weight()));
             (
                 radial * across + Vector3::z() * along,
-                outward + Vector3::z() * (end * weight()),
+                outward.into_iter().chain(axial).collect(),
             )
         }
         CollisionGeometry::Sphere { radius } => {
             let direction = tc.draw(unit_vectors());
-            (direction * (radius * scale), direction)
+            (direction * (radius * scale), vec![(direction, 1.0)])
         }
     };
-    tc.assume(direction.amax() > 0.0);
+    let Some(direction) = weighed_direction(&terms) else {
+        tc.reject()
+    };
     (
         element.origin * Point3::from(point),
-        element.origin.rotation * unit(direction),
+        element.origin.rotation * direction,
     )
 }
 
