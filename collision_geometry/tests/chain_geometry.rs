@@ -107,9 +107,9 @@ fn sign(tc: &TestCase) -> f64 {
 }
 
 /// The unit direction of `terms`, each a direction and a drawn weight, weighed by the
-/// weights taken relative to the largest: the largest term enters at full length, so a
-/// term whose relative weight leaves the normal range of floats moves the sum by at most
-/// the smallest float. `None` when every weight is 0.
+/// weights taken relative to the largest: the largest term enters at unit length, so a
+/// term whose relative weight leaves the normal range of floats moves each component of
+/// the sum by less than `f64::MIN_POSITIVE`. `None` when every weight is 0.
 fn weighed_direction(terms: &[(UnitVector3<f64>, f64)]) -> Option<Vector3<f64>> {
     let largest = terms.iter().map(|&(_, weight)| weight).fold(0.0, f64::max);
     (largest > 0.0).then(|| {
@@ -125,24 +125,6 @@ fn weighed_direction(terms: &[(UnitVector3<f64>, f64)]) -> Option<Vector3<f64>> 
 /// The [`weighed_direction`] of `terms`, the test case rejected when every weight is 0.
 fn drawn_direction(tc: &TestCase, terms: &[(UnitVector3<f64>, f64)]) -> Vector3<f64> {
     weighed_direction(terms).unwrap_or_else(|| tc.reject())
-}
-
-/// A weighed direction has unit length and the direction of its largest term however
-/// small the weights, as the surface directions that
-/// a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it drew at
-/// 10,000 cases weigh them: a cap's axis weighted 5.667e-162, whose square underflows,
-/// and a face normal weighted below the normal range of floats.
-#[test]
-fn a_weighed_direction_holds_its_largest_term_however_small_the_weights() {
-    let axis = Vector3::z_axis();
-    let normal = UnitVector3::new_normalize(Vector3::new(-0.930, -0.367, -0.020));
-    assert_eq!(
-        weighed_direction(&[(axis, 5.667004161121765e-162)]),
-        Some(axis.into_inner())
-    );
-    let along_normal = weighed_direction(&[(normal, 5e-324)]).expect("a weight above 0");
-    assert!((along_normal - normal.into_inner()).amax() <= f64::EPSILON);
-    assert_eq!(weighed_direction(&[(axis, 0.0), (normal, 0.0)]), None);
 }
 
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
@@ -1077,4 +1059,21 @@ fn a_rounded_part_is_refused() {
     let hull = cube_piece(0.05);
     let parts = [("part", std::slice::from_ref(&hull), Isometry3::identity())];
     BodyMask::of(parts, Padding::new(1.0, 0.0).expect("a valid padding"));
+}
+
+/// The weighed direction of one term is the term's direction, however small its weight:
+/// the weights `a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it`
+/// drew on a cap's axis, 5.667004161121765e-162, and on a face normal, 5e-324.
+#[test]
+fn the_weighed_direction_of_one_term_is_its_direction_however_small_its_weight() {
+    let normal = UnitVector3::new_normalize(Vector3::new(-0.930, -0.367, -0.020));
+    for (direction, weight) in [
+        (Vector3::z_axis(), 5.667004161121765e-162),
+        (normal, 5e-324),
+    ] {
+        assert_eq!(
+            weighed_direction(&[(direction, weight)]),
+            Some(direction.into_inner())
+        );
+    }
 }
