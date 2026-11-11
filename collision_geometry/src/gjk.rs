@@ -687,7 +687,8 @@ fn closest_segment(a: SupportPoint, b: SupportPoint) -> SubSimplex {
 }
 
 /// Closest point on triangle `abc` to the origin (Ericson 5.1.5, query point at
-/// the origin), returned as the carrying sub-simplex and weights.
+/// the origin), returned as the carrying sub-simplex and weights. In the face
+/// interior the point is the origin's projection along the face normal.
 fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSimplex {
     let (pa, pb, pc) = (a.v, b.v, c.v);
     let ab = pb - pa;
@@ -697,7 +698,8 @@ fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSim
     // its region tests below divide by a vanishing area: its closest feature is
     // the best of its edges, which are robust to collapsed points. Plateau ties
     // in the support scan feed such triangles in.
-    let area2 = ab.cross(&ac).norm_squared();
+    let n = ab.cross(&ac);
+    let area2 = n.norm_squared();
     let scale2 = ab
         .norm_squared()
         .max(ac.norm_squared())
@@ -751,12 +753,13 @@ fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSim
         return SubSimplex::edge(pb + (pc - pb) * t, b, c, t);
     }
 
-    // Face interior.
+    // Face interior: the projection along the normal, square to the face to
+    // rounding on a thin triangle too. The weights locate the witnesses.
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
     SubSimplex {
-        closest: pa + ab * v + ac * w,
+        closest: n * (n.dot(&pa) / area2),
         simplex: vec![a, b, c],
         weights: vec![1.0 - v - w, v, w],
     }
@@ -934,6 +937,83 @@ mod tests {
             "collinear triangle must project onto its segment, got {:?}",
             tri.closest
         );
+    }
+
+    /// A point on the surface of a piece whose vertices lie micrometers apart, as
+    /// chain_geometry's a_body_decomposed_into_regions_holds_its_link_alone drew
+    /// it, lies at no distance from it: GJK carries the point through a thin
+    /// triangle 0.13 m long and 4.5e-6 m wide.
+    #[test]
+    fn a_point_on_a_hull_with_close_vertices_lies_at_no_distance() {
+        let piece = hull_of(&[
+            pt(
+                -0.19313923348336007,
+                -0.07288127031685154,
+                0.01882304243373482,
+            ),
+            pt(
+                -0.18836179933689512,
+                -0.0055126651475915795,
+                -0.0863608306672523,
+            ),
+            pt(
+                -0.18569882063962548,
+                0.03203911577298016,
+                0.08636083066725231,
+            ),
+            pt(
+                -0.18092138649316053,
+                0.09940772094224012,
+                -0.01882304243373481,
+            ),
+            pt(
+                -0.06099447136970123,
+                0.02318586138114867,
+                0.08637615582065189,
+            ),
+            pt(
+                -0.05988087015281115,
+                -0.08234180795897361,
+                0.018839418806104968,
+            ),
+            pt(
+                -0.05985217463499671,
+                0.09082211663347362,
+                -0.018823042433734845,
+            ),
+            pt(
+                -0.0598521746349967,
+                -0.0823418079589736,
+                0.018840727107177498,
+            ),
+            pt(
+                -0.0598521746349967,
+                -0.014625905174718961,
+                -0.0863608306672523,
+            ),
+            pt(
+                -0.0598521746349967,
+                0.02310454604279622,
+                0.08637615582065189,
+            ),
+            pt(
+                -0.059852174634996695,
+                -0.08234180795897361,
+                0.018836257516627056,
+            ),
+            pt(
+                -0.059852174634996695,
+                0.02310485558605967,
+                0.0863761558206519,
+            ),
+        ]);
+        let on_surface = pt(
+            -0.06843488421336655,
+            -0.08173452470868792,
+            0.01883836758713442,
+        );
+        let r = distance(&Vertex(on_surface), &piece);
+        assert!(r.distance.abs() <= ORIGIN_EPS2.sqrt(), "{}", r.distance);
     }
 
     /// Axis-aligned box of half-extent `h` centered at `c`, as eight vertices.
