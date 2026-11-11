@@ -1,9 +1,10 @@
 //! Shared control-loop and runtime primitives: pacing, filtering, rate
-//! limiting, the timing of a motion, the health of a motor, the setpoint
-//! stream, the service, receive and ask loops, the fault that ends a node, the
-//! model a component is configured for, latched failure logging, waiting and
-//! locking from synchronous code, and the arms a request names, for robot
-//! nodes and the kinematics crates that plan their moves.
+//! limiting, the timing of a motion, the health of a motor, a mobile base's
+//! footprint, the setpoint stream, the service, receive and ask loops, the
+//! fault that ends a node, the model a component is configured for, latched
+//! failure logging, waiting and locking from synchronous code, and the arms a
+//! request names, for robot nodes and the kinematics crates that plan their
+//! moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -22,6 +23,10 @@
 //!   of it.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
+//! - [`non_negative_finite`]: a finite float of at least zero, carried as proof it was
+//!   checked.
+//! - [`footprint`]: a mobile base's footprint, the outline it covers about its
+//!   center.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
 //! - [`receiving`]: the loop that receives one subscription for the life of
 //!   a node, with the pause after a receive error.
@@ -55,9 +60,11 @@ pub mod chase;
 pub mod component_model;
 pub mod fault;
 pub mod filters;
+pub mod footprint;
 pub mod latched_log;
 pub mod minimum_jerk;
 pub mod motor_health;
+pub mod non_negative_finite;
 pub mod pacer;
 pub mod path_timing;
 pub mod positive_finite;
