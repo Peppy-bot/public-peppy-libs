@@ -1,36 +1,105 @@
-"""Tests for the camera plumbing: parsing a model entry's cameras, z16
-conversion, and pacing."""
+"""Tests for the camera plumbing: a robot's cameras from its description's
+optical frames and a model entry's renders, z16 conversion, and pacing."""
 
+import math
 import struct
-from pathlib import Path
+from dataclasses import dataclass
+from itertools import pairwise
 
 import numpy as np
-import pyjson5
 import pytest
+from robot_description_py import model
 
 from sim_robot_core.cameras import (
+    CameraRender,
     DepthSpec,
+    DepthStream,
     FrameIdCounter,
     FramePacer,
+    camera_configs,
+    camera_pose,
     depth_to_z16,
-    parse_cameras,
+    parse_renders,
 )
+from sim_robot_core.errors import ModelEntryError
 from sim_robot_core.models import shipped_entry
 
 
-def load_camera_configs(path: Path):
-    """The cameras of an entry written to `path`."""
-    return parse_cameras(str(path), pyjson5.loads(path.read_text())["cameras"])
+@dataclass(frozen=True)
+class Depths:
+    """The depths a camera measures as robot_description_py's DepthRange
+    gives them."""
+
+    near: float
+    far: float
 
 
-class TestParseCameras:
+@dataclass(frozen=True)
+class Frame:
+    """An optical frame as robot_description_py's CameraFrame gives one."""
+
+    name: str = "cam"
+    parent_link: str = "link"
+    xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    depth_range: Depths | None = None
+
+
+def render(**overrides) -> dict:
+    fields = {"fovy_deg": 60, "color": {"width": 8, "height": 4}, "fps": 15}
+    fields.update(overrides)
+    return fields
+
+
+def one_camera(depth_range: Depths | None = None, **overrides):
+    """The config of one camera whose description gives it `depth_range`,
+    rendered as `render(**overrides)`."""
+    frame = Frame(depth_range=depth_range)
+    (config,) = camera_configs("entry", [frame], parse_renders("entry", {"cam": render(**overrides)}))
+    return config
+
+
+def cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def rotate(quat_wxyz, vector):
+    """`vector` turned by the unit quaternion `quat_wxyz`."""
+    w, x, y, z = quat_wxyz
+    axis = (x, y, z)
+    twice = tuple(2.0 * c for c in cross(axis, vector))
+    turned = cross(axis, twice)
+    return tuple(v + w * t + u for v, t, u in zip(vector, twice, turned, strict=True))
+
+
+class TestCameraPose:
+    def test_an_unturned_optical_frame_is_the_camera_frame_turned_half_about_x(self):
+        pos, quat = camera_pose((0.1, 0.2, 0.3), (0.0, 0.0, 0.0))
+        assert pos == (0.1, 0.2, 0.3)
+        assert quat == pytest.approx((0.0, 1.0, 0.0, 0.0))
+
+    @pytest.mark.parametrize(
+        "rpy", [(0.3, -0.2, 1.1), (2.5715925867, 0.0, 0.0), (-1.0, 0.7, -2.9)]
+    )
+    def test_the_camera_looks_along_the_optical_frames_view_with_its_up_against_the_optical_down(
+        self, rpy
+    ):
+        _, quat = camera_pose((0.0, 0.0, 0.0), rpy)
+        roll, pitch, yaw = rpy
+        # The optical frame's +z and +y in the parent frame, built from the
+        # URDF's fixed-axis angles: Rz(yaw) Ry(pitch) Rx(roll).
+        cr, sr, cp, sp, cy, sy = (math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch), math.cos(yaw), math.sin(yaw))
+        view = (cy * sp * cr + sy * sr, sy * sp * cr - cy * sr, cp * cr)
+        down = (cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, cp * sr)
+        assert rotate(quat, (0.0, 0.0, -1.0)) == pytest.approx(view)
+        assert rotate(quat, (0.0, 1.0, 0.0)) == pytest.approx(tuple(-v for v in down))
+        assert quat[0] >= 0.0 and math.isclose(sum(v * v for v in quat), 1.0)
+
+
+class TestCameras:
     def test_the_openarm_v2_rig_parses(self):
-        configs = shipped_entry("openarm_v2").cameras
-        assert [c.name for c in configs] == [
-            "wrist_left",
-            "wrist_right",
-            "chest",
-        ]
+        configs = shipped_entry("openarm_v2", model("openarm_v2").description()).cameras
+        assert [c.name for c in configs] == ["wrist_left", "wrist_right", "chest"]
         by_name = {c.name: c for c in configs}
         for wrist in ("wrist_left", "wrist_right"):
             assert (by_name[wrist].width, by_name[wrist].height) == (960, 600)
@@ -39,179 +108,130 @@ class TestParseCameras:
         chest = by_name["chest"]
         assert (chest.width, chest.height) == (1280, 720)
         assert chest.parent_link == "openarm_body_link0"
-        # The ZED Mini's left lens front as Waldo's head camera derivation
-        # reads it off Enactic's CAD, looking 62 degrees below the horizon.
-        assert chest.pos == pytest.approx((0.0792, 0.0315, 0.7941))
-        assert chest.quat_wxyz == pytest.approx((0.6861027, 0.1710647, -0.1710647, -0.6861027))
+        # The chest camera looks at the robot's front, 62 degrees below the
+        # horizon, as Waldo's head camera derivation reads it off the CAD.
+        view = rotate(chest.quat_wxyz, (0.0, 0.0, -1.0))
+        assert view[1] == pytest.approx(0.0, abs=1e-6) and view[0] > 0.0
+        assert math.degrees(math.atan2(-view[2], view[0])) == pytest.approx(62.0, abs=0.05)
         assert chest.depth is not None
         assert (chest.depth.width, chest.depth.height) == (640, 360)
-
-    def _write_config(self, tmp_path, body: str) -> Path:
-        path = tmp_path / "cameras.json5"
-        path.write_text(body)
-        return path
-
-    def _entry(self, **overrides) -> str:
-        fields = {
-            "name": '"cam"',
-            "parent_link": '"link"',
-            "pos": "[0, 0, 0]",
-            "quat_wxyz": "[1, 0, 0, 0]",
-            "fovy_deg": "60",
-            "color": "{ width: 8, height: 4 }",
-            "fps": "15",
-        }
-        fields.update(overrides)
-        return "{" + ", ".join(f"{k}: {v}" for k, v in fields.items()) + "}"
-
-    def test_unknown_camera_key_rejected(self, tmp_path):
-        """A misspelled optional key must fail, not silently change the stream:
-        `dpeth` would otherwise yield a colour-only camera where the file
-        plainly describes an rgbd one."""
-        path = self._write_config(
-            tmp_path,
-            "{ cameras: ["
-            + self._entry(dpeth="{ width: 4, height: 2, min_depth_m: 0.1, max_range_m: 10 }")
-            + "] }",
+        # The depths the description's depth sensor on the chest camera gives.
+        (described,) = (
+            frame.depth_range
+            for frame in model("openarm_v2").description().cameras
+            if frame.name == "chest"
         )
-        with pytest.raises(RuntimeError, match="unknown key"):
-            load_camera_configs(path)
+        assert (chest.depth.min_depth_m, chest.depth.max_range_m) == (described.near, described.far)
 
-    def test_unknown_color_key_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path,
-            "{ cameras: [" + self._entry(color="{ width: 8, height: 4, fps: 15 }") + "] }",
-        )
-        with pytest.raises(RuntimeError, match="unknown key"):
-            load_camera_configs(path)
+    def test_a_camera_takes_its_pose_from_its_frame(self):
+        frame = Frame(xyz=(0.0, 0.055, -0.045), rpy=(2.5715925867, 0.0, 0.0))
+        (config,) = camera_configs("entry", [frame], parse_renders("entry", {"cam": render()}))
+        assert (config.pos, config.quat_wxyz) == camera_pose(frame.xyz, frame.rpy)
+        assert config.parent_link == "link"
 
-    def test_unknown_depth_key_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path,
-            "{ cameras: ["
-            + self._entry(
-                depth="{ width: 4, height: 2, min_depth_m: 0.1, max_range_m: 10, units: 0.001 }"
+    def test_a_render_reads_once_into_typed_values(self):
+        assert parse_renders("entry", {"cam": render(depth={"width": 4, "height": 2})}) == {
+            "cam": CameraRender(
+                fovy_deg=60.0, width=8, height=4, fps=15, depth=DepthStream(width=4, height=2)
             )
-            + "] }",
+        }
+
+    def test_a_depth_camera_streams_the_depths_its_description_gives_at_its_renders_size(self):
+        config = one_camera(Depths(near=0.1, far=10.0), depth={"width": 4, "height": 2})
+        assert config.depth == DepthSpec(width=4, height=2, min_depth_m=0.1, max_range_m=10.0)
+
+    def test_a_camera_rendering_depth_its_description_gives_no_range_says_what_to_write(self):
+        with pytest.raises(ModelEntryError) as refused:
+            one_camera(depth={"width": 4, "height": 2})
+        assert str(refused.value) == (
+            "entry: camera 'cam' renders depth, and the description gives it no depth range: "
+            'give its URDF <gazebo reference="cam_optical_frame"><sensor name="cam" '
+            'type="depth"><camera><clip><near>NEAR</near><far>FAR</far></clip></camera></sensor>'
+            "</gazebo>, in meters, or render it without depth"
         )
-        with pytest.raises(RuntimeError, match="unknown key"):
-            load_camera_configs(path)
 
-    def test_duplicate_names_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry()}, {self._entry()}] }}"
-        )
-        with pytest.raises(RuntimeError, match="duplicate"):
-            load_camera_configs(path)
+    def test_a_camera_its_description_gives_a_depth_range_streams_depth(self):
+        with pytest.raises(
+            ModelEntryError,
+            match=r"entry: the description gives camera 'cam' a depth range of 0\.1 to 10\.0 m, and "
+            r"its render streams no depth: give it depth: \{ width, height \}",
+        ):
+            one_camera(Depths(near=0.1, far=10.0))
 
-    def test_a_model_with_no_camera_lists_none(self, tmp_path):
-        path = self._write_config(tmp_path, "{ cameras: [] }")
-        assert load_camera_configs(path) == ()
+    def test_a_description_range_beyond_the_wire_ceiling_is_refused_naming_the_camera(self):
+        with pytest.raises(ModelEntryError, match="entry: camera 'cam': .*wire ceiling"):
+            one_camera(Depths(near=0.1, far=100.0), depth={"width": 4, "height": 2})
 
-    def test_cameras_that_are_not_a_list_are_rejected(self):
-        with pytest.raises(RuntimeError, match="'cameras' must be a list"):
-            parse_cameras("entry", {"name": "cam"})
+    def test_a_camera_of_the_description_with_no_entry_is_rejected(self):
+        with pytest.raises(
+            ModelEntryError,
+            match="the cameras of the description are \\['cam'\\], and the entry renders \\[\\]: "
+            "give the entry one render per camera of the description",
+        ):
+            camera_configs("entry", [Frame()], {})
 
-    def test_unnormalized_quat_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path,
-            f"{{ cameras: [{self._entry(quat_wxyz='[1, 1, 0, 0]')}] }}",
-        )
-        with pytest.raises(RuntimeError, match="norm"):
-            load_camera_configs(path)
+    def test_an_entry_of_no_camera_of_the_description_is_rejected(self):
+        with pytest.raises(ModelEntryError, match="the entry renders \\['cam', 'other'\\]"):
+            camera_configs("entry", [Frame()], parse_renders("entry", {"cam": render(), "other": render()}))
 
-    def test_nonfinite_pos_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry(pos='[0, 0, NaN]')}] }}"
-        )
-        with pytest.raises(RuntimeError, match="finite"):
-            load_camera_configs(path)
+    def test_a_model_with_no_camera_lists_none(self):
+        assert camera_configs("entry", [], {}) == ()
 
-    @pytest.mark.parametrize("fovy", ["0", "180", "-10"])
-    def test_fovy_out_of_range_rejected(self, tmp_path, fovy):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry(fovy_deg=fovy)}] }}"
-        )
-        with pytest.raises(RuntimeError, match="fovy"):
-            load_camera_configs(path)
+    def test_a_camera_of_the_description_with_no_file_says_to_create_it(self):
+        with pytest.raises(
+            ModelEntryError,
+            match="the cameras of the description are \\['cam'\\], and no entry renders them: "
+            "create models/aloha.json5 with one render per camera of the description",
+        ):
+            camera_configs("models/aloha.json5", [Frame()], None)
 
-    @pytest.mark.parametrize("fps", ["0", "-1", "1.5", "256", "true"])
-    def test_bad_fps_rejected(self, tmp_path, fps):
-        path = self._write_config(tmp_path, f"{{ cameras: [{self._entry(fps=fps)}] }}")
-        with pytest.raises(RuntimeError, match="fps"):
-            load_camera_configs(path)
+    def test_a_model_with_no_camera_needs_no_file(self):
+        assert camera_configs("models/aloha.json5", [], None) == ()
 
-    def test_bool_fovy_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry(fovy_deg='true')}] }}"
-        )
-        with pytest.raises(RuntimeError, match="fovy"):
-            load_camera_configs(path)
+    def test_cameras_that_are_not_a_map_are_rejected(self):
+        with pytest.raises(ModelEntryError, match="'cameras' must map camera names"):
+            parse_renders("entry", [])
 
-    def test_bool_pos_component_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry(pos='[0, true, 0]')}] }}"
-        )
-        with pytest.raises(RuntimeError, match="finite"):
-            load_camera_configs(path)
+    def test_unknown_camera_key_rejected(self):
+        """A misspelled optional key fails: `dpeth` names no stream."""
+        with pytest.raises(ModelEntryError, match="unknown key"):
+            one_camera(dpeth={"width": 4, "height": 2})
 
-    def test_non_object_entry_rejected(self, tmp_path):
-        path = self._write_config(tmp_path, "{ cameras: [7] }")
-        with pytest.raises(RuntimeError, match="object"):
-            load_camera_configs(path)
+    def test_unknown_color_key_rejected(self):
+        with pytest.raises(ModelEntryError, match="unknown key"):
+            one_camera(color={"width": 8, "height": 4, "fps": 15})
 
-    def test_non_object_depth_rejected(self, tmp_path):
-        path = self._write_config(
-            tmp_path, f"{{ cameras: [{self._entry(depth='7')}] }}"
-        )
-        with pytest.raises(RuntimeError, match="depth must be an object"):
-            load_camera_configs(path)
+    def test_unknown_depth_key_rejected(self):
+        """The depths a camera measures are its description's, not its render's."""
+        with pytest.raises(ModelEntryError, match=r"unknown key\(s\) \['max_range_m', 'min_depth_m'\]"):
+            one_camera(depth={"width": 4, "height": 2, "min_depth_m": 0.1, "max_range_m": 10})
 
-    def test_bool_depth_range_rejected(self, tmp_path):
-        entry = self._entry(
-            depth="{ width: 4, height: 2, min_depth_m: true, max_range_m: 1.0 }"
-        )
-        path = self._write_config(tmp_path, f"{{ cameras: [{entry}] }}")
-        with pytest.raises(RuntimeError, match="depth range"):
-            load_camera_configs(path)
+    @pytest.mark.parametrize("fovy", [0, 180, -10, True])
+    def test_fovy_out_of_range_rejected(self, fovy):
+        with pytest.raises(ModelEntryError, match="fovy"):
+            one_camera(fovy_deg=fovy)
 
-    def test_inverted_depth_range_rejected(self, tmp_path):
-        entry = self._entry(
-            depth="{ width: 4, height: 2, min_depth_m: 2.0, max_range_m: 1.0 }"
-        )
-        path = self._write_config(tmp_path, f"{{ cameras: [{entry}] }}")
-        with pytest.raises(RuntimeError, match="depth range"):
-            load_camera_configs(path)
+    @pytest.mark.parametrize("fps", [0, -1, 1.5, 256, True])
+    def test_bad_fps_rejected(self, fps):
+        with pytest.raises(ModelEntryError, match="fps"):
+            one_camera(fps=fps)
 
-    def test_fps_upper_bound_accepted(self, tmp_path):
-        path = self._write_config(tmp_path, f"{{ cameras: [{self._entry(fps='255')}] }}")
-        (config,) = load_camera_configs(path)
-        assert config.fps == 255
+    def test_non_object_entry_rejected(self):
+        with pytest.raises(ModelEntryError, match="object"):
+            parse_renders("entry", {"cam": 7})
 
-    @pytest.mark.parametrize(
-        "depth_range",
-        [
-            "min_depth_m: 0.1, max_range_m: 100.0",
-            "min_depth_m: NaN, max_range_m: 1.0",
-            "min_depth_m: 0.1, max_range_m: Infinity",
-        ],
-    )
-    def test_depth_range_outside_wire_ceiling_rejected(self, tmp_path, depth_range):
-        path = self._write_config(
-            tmp_path,
-            f"{{ cameras: [{self._entry(depth=f'{{ width: 4, height: 2, {depth_range} }}')}] }}",
-        )
-        with pytest.raises(RuntimeError, match="wire ceiling"):
-            load_camera_configs(path)
+    def test_non_object_depth_rejected(self):
+        with pytest.raises(ModelEntryError, match="depth must be an object"):
+            one_camera(depth=7)
 
-    @pytest.mark.parametrize("dims", ["width: 3, height: 2", "width: 4, height: 1"])
-    def test_depth_grid_must_subsample_color_grid(self, tmp_path, dims):
-        path = self._write_config(
-            tmp_path,
-            f"{{ cameras: [{self._entry(depth=f'{{ {dims}, min_depth_m: 0.1, max_range_m: 1.0 }}')}] }}",
-        )
-        with pytest.raises(RuntimeError, match="subsample"):
-            load_camera_configs(path)
+    def test_fps_upper_bound_accepted(self):
+        assert one_camera(fps=255).fps == 255
+
+    @pytest.mark.parametrize("dims", [(3, 2), (4, 1)])
+    def test_depth_grid_must_subsample_color_grid(self, dims):
+        width, height = dims
+        with pytest.raises(ModelEntryError, match="subsample"):
+            one_camera(depth={"width": width, "height": height})
 
 
 class TestDepthSpec:
@@ -315,4 +335,4 @@ class TestFramePacer:
         pacer = FramePacer(60)
         taken = [pacer.take_if_due(100.0 + i * 0.0165) for i in range(600)]
         assert sum(taken) >= 594
-        assert all(a or b for a, b in zip(taken, taken[1:]))
+        assert all(a or b for a, b in pairwise(taken))

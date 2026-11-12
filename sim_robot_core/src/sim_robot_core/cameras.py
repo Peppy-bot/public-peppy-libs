@@ -1,17 +1,20 @@
 """Camera plumbing shared by the simulation engines.
 
-Parses the cameras of a model's entry into validated configs, converts
-rendered depth to the z16 wire format, and paces per-camera capture;
-everything renderer-specific stays in the engine.
+Reads how a model's entry renders each camera, builds the configs of a
+robot's cameras from the optical frames of its description, with the depths
+each depth camera measures, and those renders, converts rendered depth to the
+z16 wire format, and paces per-camera capture; everything renderer-specific
+stays in the engine.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
+
+from sim_robot_core.errors import ModelEntryError
 
 # Wire constants shared with the real camera nodes: rgb8 color frames and z16
 # depth (u16 little-endian millimeters, 0 = invalid), aligned depth-to-color
@@ -46,7 +49,33 @@ class DepthSpec:
 
 
 @dataclass(frozen=True)
+class DepthStream:
+    """The size of the depth image the engines render for a camera that
+    measures depth, whose range its description gives."""
+
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class CameraRender:
+    """How the engines render one camera of a model: its vertical field of
+    view, its color stream, its frame rate and, on an rgbd camera, its depth
+    stream."""
+
+    fovy_deg: float
+    width: int
+    height: int
+    fps: int
+    depth: DepthStream | None
+
+
+@dataclass(frozen=True)
 class CameraConfig:
+    """One camera a robot carries: the link it hangs from and its pose in
+    that link's frame, in the engines' camera frame, which looks along its
+    own -Z with +Y up the picture and +X to its right; and how it renders."""
+
     name: str
     parent_link: str
     pos: tuple[float, float, float]
@@ -55,17 +84,14 @@ class CameraConfig:
     width: int
     height: int
     fps: int
-    depth: Optional[DepthSpec]
+    depth: DepthSpec | None
 
 
-# Every key each object accepts. A key outside these is a typo, and letting it
-# pass would quietly change the stream: `dpeth` yields a colour-only camera
-# rather than the rgbd one the file describes.
-_CAMERA_KEYS = frozenset(
-    {"name", "parent_link", "pos", "quat_wxyz", "fovy_deg", "color", "fps", "depth"}
-)
+# Every key each object accepts. A key outside these is a typo, which the
+# parser refuses: `dpeth` names no stream of the camera.
+_CAMERA_KEYS = frozenset({"fovy_deg", "color", "fps", "depth"})
 _COLOR_KEYS = frozenset({"width", "height"})
-_DEPTH_KEYS = frozenset({"width", "height", "min_depth_m", "max_range_m"})
+_DEPTH_KEYS = frozenset({"width", "height"})
 
 
 def _reject_unknown_keys(obj: dict, allowed: frozenset, what: str, fail) -> None:
@@ -74,39 +100,136 @@ def _reject_unknown_keys(obj: dict, allowed: frozenset, what: str, fail) -> None
         raise fail(f"{what} has unknown key(s) {unknown}; allowed: {sorted(allowed)}")
 
 
-def parse_cameras(source: str, entries) -> tuple[CameraConfig, ...]:
-    """Parse and validate the cameras a model's entry lists, failing loudly on
-    any bad entry so a typo never silently drops or distorts a stream.
-    `source` names the entry in every refusal. A model with no camera lists
-    none."""
-    if not isinstance(entries, list):
-        raise RuntimeError(f"{source}: 'cameras' must be a list, got {entries!r}")
-    configs = tuple(_parse_camera(source, entry) for entry in entries)
-    names = [config.name for config in configs]
-    if len(set(names)) != len(names):
-        raise RuntimeError(f"{source} has duplicate camera names: {sorted(names)}")
-    return configs
+def parse_renders(source: str, entries) -> dict[str, CameraRender]:
+    """How the engines render each camera of a model, by the camera's name:
+    `entries`, a model entry's map of camera names to how each renders, read
+    once. A bad render is refused, so a typo never distorts a stream.
+    `source` names the entry in every refusal."""
+    if not isinstance(entries, dict):
+        raise ModelEntryError(f"{source}: 'cameras' must map camera names to entries, got {entries!r}")
+    return {name: _parse_render(source, name, entry) for name, entry in entries.items()}
 
 
-def _parse_camera(source: str, entry) -> CameraConfig:
+def camera_configs(
+    source: str, frames, renders: dict[str, CameraRender] | None
+) -> tuple[CameraConfig, ...]:
+    """The configs of a robot's cameras: each optical frame of its
+    description (`frames`, robot_description_py's CameraFrame), measuring
+    the depths the description gives it, rendered as the camera of the same
+    name in `renders`, the renders of the entry at `source`, or None where no
+    file is there. A camera of the description with no render and a render
+    of no camera of the description are refused, so a typo never drops a
+    stream: the refusal names the entry, or says to create it where no file
+    is there. A camera rendered with a depth stream is one the description
+    gives a depth range, and one rendered without is one it gives none; any
+    other is refused naming the camera and what to write."""
+    names = [frame.name for frame in frames]
+    if renders is None and names:
+        raise ModelEntryError(
+            f"the cameras of the description are {sorted(names)}, and no entry renders them: "
+            f"create {source} with one render per camera of the description, under its name"
+        )
+    if renders is None:
+        return ()
+    if set(names) != set(renders):
+        raise ModelEntryError(
+            f"{source}: the cameras of the description are {sorted(names)}, and the entry "
+            f"renders {sorted(renders)}: give the entry one render per camera of the "
+            "description, under its name"
+        )
+    return tuple(_config(source, frame, renders[frame.name]) for frame in frames)
+
+
+def _config(source: str, frame, render: CameraRender) -> CameraConfig:
+    pos, quat = camera_pose(frame.xyz, frame.rpy)
+    return CameraConfig(
+        name=frame.name,
+        parent_link=frame.parent_link,
+        pos=pos,
+        quat_wxyz=quat,
+        fovy_deg=render.fovy_deg,
+        width=render.width,
+        height=render.height,
+        fps=render.fps,
+        depth=_depth(source, frame, render.depth),
+    )
+
+
+def _depth(source: str, frame, stream: DepthStream | None) -> DepthSpec | None:
+    """The depth the camera of `frame` streams: the depth range its
+    description gives it, rendered at the size of `stream`, the depth stream
+    of its render in the entry at `source`."""
+    name = frame.name
+    depth_range = frame.depth_range
+    if stream is None and depth_range is None:
+        return None
+    if depth_range is None:
+        raise ModelEntryError(
+            f"{source}: camera '{name}' renders depth, and the description gives it no depth "
+            f'range: give its URDF <gazebo reference="{name}_optical_frame"><sensor name="{name}" '
+            'type="depth"><camera><clip><near>NEAR</near><far>FAR</far></clip></camera></sensor>'
+            "</gazebo>, in meters, or render it without depth"
+        )
+    if stream is None:
+        raise ModelEntryError(
+            f"{source}: the description gives camera '{name}' a depth range of "
+            f"{depth_range.near} to {depth_range.far} m, and its render streams no depth: "
+            "give it depth: { width, height }"
+        )
+    try:
+        return DepthSpec(
+            width=stream.width,
+            height=stream.height,
+            min_depth_m=depth_range.near,
+            max_range_m=depth_range.far,
+        )
+    except ValueError as exc:
+        raise ModelEntryError(f"{source}: camera '{name}': {exc}") from exc
+
+
+def camera_pose(xyz, rpy) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """The pose in the engines' camera frame of a camera whose optical frame
+    stands at `xyz` turned by the URDF angles `rpy` (roll about x, then pitch
+    about y, then yaw about z, each about the parent's fixed axes). The
+    optical frame looks along its +Z with +Y down the picture; the camera
+    frame is the optical frame turned half a turn about its own X, which
+    looks along -Z with +Y up. The quaternion is unit, with w >= 0."""
+    roll, pitch, yaw = (float(angle) for angle in rpy)
+    optical = _quat_mul(
+        _quat_mul(_axis_quat((0.0, 0.0, 1.0), yaw), _axis_quat((0.0, 1.0, 0.0), pitch)),
+        _axis_quat((1.0, 0.0, 0.0), roll),
+    )
+    camera = _quat_mul(optical, _axis_quat((1.0, 0.0, 0.0), math.pi))
+    if camera[0] < 0.0:
+        camera = tuple(-component for component in camera)
+    x, y, z = (float(coordinate) for coordinate in xyz)
+    return (x, y, z), camera
+
+
+def _axis_quat(axis, angle: float) -> tuple[float, float, float, float]:
+    half = angle / 2.0
+    s = math.sin(half)
+    return (math.cos(half), axis[0] * s, axis[1] * s, axis[2] * s)
+
+
+def _quat_mul(a, b) -> tuple[float, float, float, float]:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _parse_render(source: str, name: str, entry) -> CameraRender:
+    def fail(reason: str) -> ModelEntryError:
+        return ModelEntryError(f"{source}: camera '{name}': {reason}")
+
     if not isinstance(entry, dict):
-        raise RuntimeError(f"{source}: camera entry must be an object, got {entry!r}")
-    name = entry.get("name")
-    if not name or not isinstance(name, str):
-        raise RuntimeError(f"{source}: camera entry missing 'name': {entry}")
-
-    def fail(reason: str) -> RuntimeError:
-        return RuntimeError(f"{source}: camera '{name}': {reason}")
-
+        raise fail(f"its entry must be an object, got {entry!r}")
     _reject_unknown_keys(entry, _CAMERA_KEYS, "camera entry", fail)
-    parent_link = entry.get("parent_link")
-    if not parent_link or not isinstance(parent_link, str):
-        raise fail("missing 'parent_link'")
-    pos = _finite_vector(entry.get("pos"), 3, fail, "pos")
-    quat = _finite_vector(entry.get("quat_wxyz"), 4, fail, "quat_wxyz")
-    norm = math.sqrt(sum(v * v for v in quat))
-    if not math.isclose(norm, 1.0, abs_tol=1e-3):
-        raise fail(f"quat_wxyz norm {norm} is not 1")
     fovy_deg = entry.get("fovy_deg")
     if not _is_number(fovy_deg) or not 0.0 < float(fovy_deg) < 180.0:
         raise fail(f"fovy_deg {fovy_deg!r} must be in (0, 180)")
@@ -126,19 +249,10 @@ def _parse_camera(source: str, entry) -> CameraConfig:
         if not isinstance(d, dict):
             raise fail(f"depth must be an object, got {d!r}")
         _reject_unknown_keys(d, _DEPTH_KEYS, "depth", fail)
-        min_depth_m = d.get("min_depth_m")
-        max_range_m = d.get("max_range_m")
-        if not _is_number(min_depth_m) or not _is_number(max_range_m):
-            raise fail(f"depth range ({min_depth_m!r}, {max_range_m!r}) must be numbers")
-        try:
-            depth = DepthSpec(
-                width=_positive_int(d.get("width"), fail, "depth.width"),
-                height=_positive_int(d.get("height"), fail, "depth.height"),
-                min_depth_m=float(min_depth_m),
-                max_range_m=float(max_range_m),
-            )
-        except ValueError as exc:
-            raise fail(str(exc)) from exc
+        depth = DepthStream(
+            width=_positive_int(d.get("width"), fail, "depth.width"),
+            height=_positive_int(d.get("height"), fail, "depth.height"),
+        )
         # Color and depth describe one camera, so the depth grid must decimate
         # the color grid by a single integer factor on both axes: the two grids
         # then share a principal point and an aspect ratio whichever way an
@@ -153,31 +267,11 @@ def _parse_camera(source: str, entry) -> CameraConfig:
                 f"{width}x{height} by one integer factor"
             )
 
-    return CameraConfig(
-        name=name,
-        parent_link=parent_link,
-        pos=pos,
-        quat_wxyz=quat,
-        fovy_deg=float(fovy_deg),
-        width=width,
-        height=height,
-        fps=fps,
-        depth=depth,
-    )
+    return CameraRender(fovy_deg=float(fovy_deg), width=width, height=height, fps=fps, depth=depth)
 
 
 def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _finite_vector(value, length: int, fail, field: str) -> tuple[float, ...]:
-    if (
-        not isinstance(value, list)
-        or len(value) != length
-        or not all(_is_number(v) and math.isfinite(v) for v in value)
-    ):
-        raise fail(f"{field} must be {length} finite numbers, got {value!r}")
-    return tuple(float(v) for v in value)
 
 
 def _positive_int(value, fail, field: str) -> int:
@@ -228,7 +322,7 @@ class FramePacer:
         if fps <= 0:
             raise ValueError(f"fps must be positive, got {fps}")
         self._period = 1.0 / fps
-        self._deadline: Optional[float] = None
+        self._deadline: float | None = None
 
     def seconds_until_due(self, now: float) -> float:
         """Return the remaining wait without claiming a frame or moving the deadline."""
