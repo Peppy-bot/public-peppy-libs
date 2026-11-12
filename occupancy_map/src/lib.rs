@@ -10,6 +10,9 @@
 //!   [`Scan`] inserted with the shapes it cuts out ([`Cutout`];
 //!   [`RobotCutout`] is the robot's body as `collision_geometry` places it,
 //!   and a [`ShapeCutout`] a collision object's shape grown by a padding),
+//!   each point of a scan read in the map's frame as the map inserts it
+//!   ([`Reading`]), a scan inserted with points that clear and mark nothing
+//!   (`insert_clearing`),
 //!   the occupied voxels inside a box, `clear`, `clear_intersecting`,
 //!   which clears the voxels a collision object's shape intersects or
 //!   touches, `occupy_intersecting`, which marks the same voxels
@@ -45,6 +48,6 @@ pub use distance::{DistanceField, DistanceGradient, NotANumber};
 pub use frame::{Frame, FrameError};
 pub use key::Key;
 pub use map::{
-    Bounds, Columns, Cutout, InsertError, MapError, RobotCutout, Scan, ShapeCutout, Voxel,
+    Bounds, Columns, Cutout, InsertError, MapError, Reading, RobotCutout, Scan, ShapeCutout, Voxel,
     VoxelBox, VoxelMap,
 };
