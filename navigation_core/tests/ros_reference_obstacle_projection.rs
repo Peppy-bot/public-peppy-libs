@@ -73,7 +73,10 @@ fn the_lethal_cells_are_nav2s_for_the_same_points() {
                 cloud.base,
                 source.obstacle_max_range,
             );
-            let ours = lethal_cells(&live.project(PlanarPose::IDENTITY, geometry));
+            let projected = live
+                .project(PlanarPose::IDENTITY, geometry)
+                .expect("a finite placement");
+            let ours = lethal_cells(&projected);
             assert_eq!(
                 ours,
                 cloud.lethal,

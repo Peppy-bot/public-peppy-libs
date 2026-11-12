@@ -1457,7 +1457,6 @@ fn clearing_columns_frees_their_voxels_and_no_other(tc: TestCase) {
     let keys_on = |axis: usize| (highest_key.0[axis] - lowest_key.0[axis] + 1) as u32;
     assert_eq!((columns.size_x, columns.size_y), (keys_on(0), keys_on(1)));
     assert_eq!(columns.side_m, VOXEL_M);
-    assert_eq!(columns.bottom_m, f64::from(lowest_key.0[2]) * VOXEL_M);
     let cleared: BTreeSet<[u32; 2]> = (0..tc.draw(gs::integers::<usize>().max_value(30)))
         .map(|_| {
             [

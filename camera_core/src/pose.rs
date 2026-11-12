@@ -138,12 +138,15 @@ impl Pose {
 
     /// The pose `ratio` of the way from this pose to `to`, 0 this pose and 1
     /// `to`: the origins interpolated as tf2's `Vector3::setInterpolate3`, and
-    /// the orientations by tf2's `Quaternion::slerp`, the shorter way round.
-    pub fn interpolated(&self, to: &Pose, ratio: f64) -> Pose {
+    /// the orientations by tf2's `Quaternion::slerp`, the shorter way round. A
+    /// ratio that is not finite, or one that carries the origin past the
+    /// largest double, makes no pose: the error gives the position and the
+    /// orientation.
+    pub fn interpolated(&self, to: &Pose, ratio: f64) -> Result<Pose, PoseError> {
         let rest = 1.0 - ratio;
         let origin = std::array::from_fn(|i| rest * self.origin[i] + ratio * to.origin[i]);
         let orientation = slerp(self.orientation(), to.orientation(), ratio);
-        Pose::new(origin, orientation).expect("a slerp of two unit quaternions is one")
+        Pose::new(origin, orientation)
     }
 
     /// The pose of the frame this pose is placed in, in the placed frame:
@@ -231,12 +234,34 @@ pub fn yaw_of_quaternion([x, y, z, w]: [f64; 4]) -> f64 {
 
 /// Where one frame sits in another on the floor plane: a position in meters,
 /// and a heading in radians, counterclockwise about +Z from +X.
+/// [`PlanarPose::new`] refuses a value that is not finite.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanarPose {
+    x: f64,
+    y: f64,
+    yaw: f64,
+}
+
+/// A position and a heading that make no planar pose: a value that is not
+/// finite.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanarPoseError {
     pub x: f64,
     pub y: f64,
     pub yaw: f64,
 }
+
+impl fmt::Display for PlanarPoseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "x {} m, y {} m and yaw {} rad make no planar pose: give finite numbers",
+            self.x, self.y, self.yaw
+        )
+    }
+}
+
+impl std::error::Error for PlanarPoseError {}
 
 impl PlanarPose {
     /// The pose that places a frame on the frame it is placed in.
@@ -245,6 +270,38 @@ impl PlanarPose {
         y: 0.0,
         yaw: 0.0,
     };
+
+    /// The pose at `x` and `y`, in meters, heading `yaw`, in radians; a value
+    /// that is not finite makes no pose.
+    pub fn new(x: f64, y: f64, yaw: f64) -> Result<Self, PlanarPoseError> {
+        if !(x.is_finite() && y.is_finite() && yaw.is_finite()) {
+            return Err(PlanarPoseError { x, y, yaw });
+        }
+        Ok(Self { x, y, yaw })
+    }
+
+    /// The position along the x axis, in meters.
+    pub fn x(self) -> f64 {
+        self.x
+    }
+
+    /// The position along the y axis, in meters.
+    pub fn y(self) -> f64 {
+        self.y
+    }
+
+    /// The heading, in radians, counterclockwise about +Z from +X.
+    pub fn yaw(self) -> f64 {
+        self.yaw
+    }
+
+    /// The pose in space: the position on the floor plane, at height 0, and
+    /// the heading as a turn about +Z, its quaternion made as tf2's
+    /// `setRPY(0, 0, yaw)` makes it ([`quaternion_of_yaw`]).
+    pub fn to_pose(self) -> Pose {
+        Pose::new([self.x, self.y, 0.0], quaternion_of_yaw(self.yaw))
+            .expect("a finite position and the quaternion of a finite heading make a pose")
+    }
 
     /// A point of the placed frame in the frame the pose places it in: turned
     /// by the heading, then moved by the position.
@@ -385,16 +442,16 @@ mod tests {
             let end = Pose::new([3.0, -2.0, 0.5], orientation).expect("a quarter turn about +Z");
             let point = [1.0, 0.0, 0.0];
             assert!(close(
-                start.interpolated(&end, 0.0).apply(point),
+                start.interpolated(&end, 0.0).unwrap().apply(point),
                 start.apply(point),
                 1e-12
             ));
             assert!(close(
-                start.interpolated(&end, 1.0).apply(point),
+                start.interpolated(&end, 1.0).unwrap().apply(point),
                 end.apply(point),
                 1e-12
             ));
-            let middle = start.interpolated(&end, 0.5);
+            let middle = start.interpolated(&end, 0.5).unwrap();
             let half_way = std::f64::consts::FRAC_PI_4;
             assert!(close(
                 middle.apply(point),
@@ -402,6 +459,19 @@ mod tests {
                 1e-12
             ));
         }
+    }
+
+    // A ratio that is not finite, and one that carries the origin past the
+    // largest double, interpolate to no pose.
+    #[test]
+    fn an_interpolation_to_no_pose_is_refused() {
+        let start = Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let far = Pose::new([f64::MAX / 1.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(start.interpolated(&far, ratio).is_err(), "{ratio}");
+        }
+        assert!(start.interpolated(&far, 2.0).is_err());
+        assert!(start.interpolated(&far, 1.0).is_ok());
     }
 
     // A heading comes back from its quaternion to rounding on the whole
@@ -435,14 +505,52 @@ mod tests {
         assert_eq!(yaw_of_quaternion(down), -2.0 * down[1].atan2(down[0]));
     }
 
+    fn planar(x: f64, y: f64, yaw: f64) -> PlanarPose {
+        PlanarPose::new(x, y, yaw).expect("a finite pose")
+    }
+
+    // A planar pose takes finite numbers and gives them back; a value that is
+    // not finite makes none, the refusal naming each.
+    #[test]
+    fn a_planar_pose_wants_finite_numbers() {
+        let pose = planar(1.0, -2.0, 0.5);
+        assert_eq!((pose.x(), pose.y(), pose.yaw()), (1.0, -2.0, 0.5));
+        for (x, y, yaw) in [
+            (f64::NAN, 0.0, 0.0),
+            (0.0, f64::INFINITY, 0.0),
+            (0.0, 0.0, f64::NEG_INFINITY),
+        ] {
+            let refused = PlanarPose::new(x, y, yaw).unwrap_err();
+            assert_eq!(
+                (
+                    refused.x.to_bits(),
+                    refused.y.to_bits(),
+                    refused.yaw.to_bits()
+                ),
+                (x.to_bits(), y.to_bits(), yaw.to_bits())
+            );
+        }
+        assert_eq!(
+            PlanarPose::new(f64::NAN, 0.0, 0.0).unwrap_err().to_string(),
+            "x NaN m, y 0 m and yaw 0 rad make no planar pose: give finite numbers"
+        );
+    }
+
+    // A planar pose in space stands on the floor plane, turned about +Z by
+    // its heading as tf2's setRPY makes the turn.
+    #[test]
+    fn a_planar_pose_in_space_stands_on_the_floor_turned_about_z() {
+        let pose = planar(1.0, -2.0, 2.5).to_pose();
+        assert_eq!(pose.origin(), [1.0, -2.0, 0.0]);
+        assert_eq!(pose.orientation(), quaternion_of_yaw(2.5));
+        let [x, y] = planar(1.0, -2.0, 2.5).apply([0.3, 0.4]);
+        assert!(close(pose.apply([0.3, 0.4, 0.7]), [x, y, 0.7], 1e-12));
+    }
+
     // A planar pose turns a point by its heading, then moves it.
     #[test]
     fn a_planar_pose_turns_a_point_then_moves_it() {
-        let quarter = PlanarPose {
-            x: 1.0,
-            y: -2.0,
-            yaw: std::f64::consts::FRAC_PI_2,
-        };
+        let quarter = planar(1.0, -2.0, std::f64::consts::FRAC_PI_2);
         let [x, y] = quarter.apply([3.0, 0.5]);
         assert!(
             (x - 0.5).abs() < 1e-12 && (y - 1.0).abs() < 1e-12,

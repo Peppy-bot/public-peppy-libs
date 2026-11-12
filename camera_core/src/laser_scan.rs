@@ -14,12 +14,16 @@
 //! sensor's pose at the ray's time, interpolated between its poses at the first
 //! and the last ray by the share `i * (1 / (n - 1))` of the sweep, as
 //! laser_geometry's `transformLaserScanToPointCloud` interpolates them
-//! ([`Pose::interpolated`]). The caller gives the two poses: where the sensor
-//! stood at the timestamp and [`LaserScan::sweep_s`] after it.
+//! ([`Pose::interpolated`]). The caller gives the two poses as a [`Sweep`]:
+//! where the sensor stood at the timestamp, its first ray, and
+//! [`LaserScan::sweep_s`] after it, its last ray. A ray at whose share the
+//! two poses interpolate to no pose places no hit. Each [`PlacedHit`] keeps
+//! the hit in the sensor's frame at its ray's time too, where a body fixed to
+//! the sensor holds it however the sensor moved while it swept.
 
 use std::fmt;
 
-use crate::pose::Pose;
+use crate::pose::{Pose, PoseError};
 
 /// lidar_2d:v1's range of a ray the sensor could not measure, or of a surface
 /// nearer than `min_range_m`.
@@ -28,6 +32,25 @@ const UNMEASURED_MARK_M: f32 = 0.0;
 /// lidar_2d:v1's range of a ray that met nothing within `max_range_m`, above
 /// every `max_range_m` the contract allows.
 const NO_RETURN_MARK_M: f32 = 10000.0;
+
+/// Where a scan's sensor, or the base it rides on, stood at the scan's first
+/// ray, its timestamp, and at its last ray, [`LaserScan::sweep_s`] after it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sweep<P> {
+    pub first_ray: P,
+    pub last_ray: P,
+}
+
+/// A ray's hit: where it lies in the sensor's frame where the sensor stood at
+/// the ray's time, and where the sensor's pose at that time places it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedHit {
+    /// The hit in the sensor's frame at the ray's time.
+    pub in_sensor: [f64; 3],
+    /// The hit in the frame of the sensor's poses, placed by the sensor's
+    /// pose at the ray's time.
+    pub placed: [f64; 3],
+}
 
 /// What one ray measured.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -240,18 +263,16 @@ impl LaserScan {
         (0..self.ranges.len()).map(|index| self.ray(index))
     }
 
-    /// Each ray's hit, the marks left out, in ray order, in the frame of the
-    /// sensor's poses: `at_first_ray` and `at_last_ray`, the sensor's poses at
-    /// the scan's timestamp and [`LaserScan::sweep_s`] after it, each hit
-    /// placed where the sensor stood at its ray's time.
-    pub fn placed_hits(&self, at_first_ray: &Pose, at_last_ray: &Pose) -> Vec<[f64; 3]> {
+    /// Each ray's hit, the marks left out, in ray order: in the sensor's frame
+    /// at its ray's time, and placed in the frame of the sensor's poses
+    /// `sensor` where the sensor stood at its ray's time; a ray at whose time
+    /// the poses interpolate to no pose places none.
+    pub fn placed_hits(&self, sensor: &Sweep<Pose>) -> Vec<PlacedHit> {
         self.rays()
             .filter_map(|ray| {
-                let local = ray.hit()?;
-                Some(
-                    self.sensor_at(ray.index, at_first_ray, at_last_ray)
-                        .apply(local),
-                )
+                let in_sensor = ray.hit()?;
+                let placed = self.sensor_at(ray.index, sensor).ok()?.apply(in_sensor);
+                Some(PlacedHit { in_sensor, placed })
             })
             .collect()
     }
@@ -260,14 +281,16 @@ impl LaserScan {
     /// the last ray interpolated by the share `index * (1 / (n - 1))` of the
     /// sweep, 0 for a scan of one ray, as laser_geometry computes it
     /// (laser_geometry.cpp:334, 346).
-    fn sensor_at(&self, index: usize, at_first_ray: &Pose, at_last_ray: &Pose) -> Pose {
+    fn sensor_at(&self, index: usize, sensor: &Sweep<Pose>) -> Result<Pose, PoseError> {
         let intervals = self.ranges.len() - 1;
         let ranges_norm = if intervals > 0 {
             1.0 / intervals as f64
         } else {
             0.0
         };
-        at_first_ray.interpolated(at_last_ray, index as f64 * ranges_norm)
+        sensor
+            .first_ray
+            .interpolated(&sensor.last_ray, index as f64 * ranges_norm)
     }
 }
 
@@ -278,6 +301,13 @@ mod tests {
 
     fn identity() -> Pose {
         Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity")
+    }
+
+    fn sweep(first_ray: Pose, last_ray: Pose) -> Sweep<Pose> {
+        Sweep {
+            first_ray,
+            last_ray,
+        }
     }
 
     fn scan(ranges: &[f32]) -> LaserScan {
@@ -400,40 +430,49 @@ mod tests {
     }
 
     // A sensor that stands still places each hit along its ray; one that
-    // turns while it sweeps places each where it stood at that ray's time.
+    // turns while it sweeps places each where it stood at that ray's time,
+    // and keeps each hit in its own frame along the ray as it measured it.
     #[test]
     fn each_hit_lands_where_the_sensor_stood_at_its_ray() {
         let scan = scan(&[1.0; 5]);
-        let still = scan.placed_hits(&identity(), &identity());
-        assert_eq!(still.len(), 5);
-        for (index, &hit) in still.iter().enumerate() {
+        let along_ray = |index: usize| {
             let angle = -0.5 + index as f64 * 0.25;
-            assert!(close(hit, [angle.cos(), angle.sin(), 0.0], 1e-12));
+            [angle.cos(), angle.sin(), 0.0]
+        };
+        let still = scan.placed_hits(&sweep(identity(), identity()));
+        assert_eq!(still.len(), 5);
+        for (index, hit) in still.iter().enumerate() {
+            assert!(close(hit.placed, along_ray(index), 1e-12));
+            assert!(close(hit.in_sensor, along_ray(index), 1e-12));
         }
         // The sensor turns back by the whole fan while it sweeps, so every ray
         // points along the first ray's direction in the frame of the poses.
         let half = -0.5_f64;
         let turned = Pose::new([0.0; 3], [0.0, 0.0, half.sin(), half.cos()]).expect("a turn");
         for (index, hit) in scan
-            .placed_hits(&identity(), &turned)
+            .placed_hits(&sweep(identity(), turned))
             .into_iter()
             .enumerate()
         {
             assert!(
-                close(hit, [0.5_f64.cos(), -0.5_f64.sin(), 0.0], 1e-12),
+                close(hit.placed, [0.5_f64.cos(), -0.5_f64.sin(), 0.0], 1e-12),
+                "ray {index}: {hit:?}"
+            );
+            assert!(
+                close(hit.in_sensor, along_ray(index), 1e-12),
                 "ray {index}: {hit:?}"
             );
         }
         // The mark of ray 1 places no hit; rays 0 and 2 stand at -0.5 and
         // 0 rad.
-        let marked = scan_with_marks().placed_hits(&identity(), &identity());
+        let marked = scan_with_marks().placed_hits(&sweep(identity(), identity()));
         assert_eq!(marked.len(), 2);
         assert!(close(
-            marked[0],
+            marked[0].placed,
             [0.5_f64.cos(), -0.5_f64.sin(), 0.0],
             1e-12
         ));
-        assert!(close(marked[1], [3.0, 0.0, 0.0], 1e-12));
+        assert!(close(marked[1].placed, [3.0, 0.0, 0.0], 1e-12));
     }
 
     // The sensor moves 1 m along +X while it sweeps six rays, so each ray's
@@ -444,7 +483,11 @@ mod tests {
         let scan = scan(&[1.0; 6]);
         let moved = Pose::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let shares: Vec<f64> = (0..6)
-            .map(|index| scan.sensor_at(index, &identity(), &moved).origin()[0])
+            .map(|index| {
+                scan.sensor_at(index, &sweep(identity(), moved))
+                    .expect("a share of the sweep")
+                    .origin()[0]
+            })
             .collect();
         let expected: Vec<f64> = (0..6).map(|i| f64::from(i) * (1.0 / 5.0)).collect();
         assert_eq!(shares, expected);
@@ -465,14 +508,14 @@ mod tests {
             Pose::new([0.0; 3], [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()])
                 .expect("a turn about +Z")
         };
-        let hits = scan.placed_hits(&heading(2.6), &heading(2.9));
+        let hits = scan.placed_hits(&sweep(heading(2.6), heading(2.9)));
         assert_eq!(hits.len(), RAYS);
         for (index, hit) in hits.into_iter().enumerate() {
             let share = index as f64 / (RAYS - 1) as f64;
             let angle = f64::from(-0.25_f32) + index as f64 * f64::from(degree);
             let along = angle + 2.6 + 0.3 * share;
             assert!(
-                close(hit, [along.cos(), along.sin(), 0.0], 1e-12),
+                close(hit.placed, [along.cos(), along.sin(), 0.0], 1e-12),
                 "ray {index}: {hit:?}"
             );
         }
@@ -487,9 +530,13 @@ mod tests {
     fn a_scan_of_one_ray_places_its_hit_by_the_first_pose() {
         let scan = scan(&[1.0]);
         let moved = Pose::new([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
-        let hits = scan.placed_hits(&identity(), &moved);
+        let hits = scan.placed_hits(&sweep(identity(), moved));
         assert_eq!(hits.len(), 1);
-        assert!(close(hits[0], [0.5_f64.cos(), -0.5_f64.sin(), 0.0], 1e-12));
+        assert!(close(
+            hits[0].placed,
+            [0.5_f64.cos(), -0.5_f64.sin(), 0.0],
+            1e-12
+        ));
         assert_eq!(scan.sweep_s(), 0.0);
     }
 }

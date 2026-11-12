@@ -9,6 +9,7 @@ use navigation_core::obstacles::{LiveObstacles, ObstacleLayer};
 /// The obstacle layer of `live` over the map's columns.
 pub fn layer(live: &LiveObstacles) -> ObstacleLayer {
     live.project(PlanarPose::IDENTITY, live.columns())
+        .expect("a finite placement")
 }
 
 /// The lethal cells of `layer`, each its column and row.

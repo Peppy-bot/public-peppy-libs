@@ -62,15 +62,16 @@ pub fn compose(
 
 #[cfg(test)]
 mod tests {
+
     use camera_core::pose::{PlanarPose, Pose};
     use control_core::non_negative_finite::NonNegativeFinite;
     use control_core::positive_finite::PositiveFinite;
-    use occupancy_map::{Bounds, Frame, VoxelMap};
+    use occupancy_map::{Bounds, Frame};
 
     use super::*;
     use crate::footprint::PaddedFootprint;
     use crate::grid::{FREE, LETHAL};
-    use crate::obstacles::{LiveObstacles, ObstacleHeights};
+    use crate::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
     use crate::saved_grid::MapThresholds;
     use control_core::footprint::Footprint;
 
@@ -92,38 +93,37 @@ mod tests {
         let saved =
             SavedGrid::from_image(4, 1, &[128, 0, 254, 128], tenth(), [0.0; 2], thresholds())
                 .unwrap();
-        let map = VoxelMap::new(
-            Frame::parse("map").unwrap(),
-            tenth(),
-            Bounds {
-                min: [0.0, 0.0, -0.25],
-                max: [0.39, 0.09, 1.2],
-            },
-        )
-        .unwrap();
+        let bounds = Bounds {
+            min: [0.0, 0.0, -0.25],
+            max: [0.39, 0.09, 1.2],
+        };
         let footprint = PaddedFootprint::new(
             &Footprint::parse(&[[-0.04, -0.04], [0.04, -0.04], [0.04, 0.04], [-0.04, 0.04]])
                 .unwrap(),
             NonNegativeFinite::parse(0.0).unwrap(),
         )
         .unwrap();
-        let heights = ObstacleHeights::parse(0.2, 0.5, 0.1, tenth()).unwrap();
-        let mut live = LiveObstacles::new(map, heights, footprint).unwrap();
-        let sensor = Pose::new([0.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
-        let away = PlanarPose {
-            x: -5.0,
-            y: 0.0,
-            yaw: 0.0,
-        };
+        let heights = ObstacleHeights::parse(ObstacleHeightsParams {
+            min_obstacle_height_m: 0.2,
+            max_obstacle_height_m: 0.5,
+            max_step_down_m: 0.1,
+            voxel_m: tenth(),
+        })
+        .unwrap();
+        let mut live =
+            LiveObstacles::new(Frame::parse("map").unwrap(), bounds, heights, footprint).unwrap();
+        let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
+        let sensor_on_base = Pose::new([5.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
         live.insert_depth_frame(
             &[[0.2, 0.0, -0.7]],
-            sensor,
             away,
+            sensor_on_base,
             PositiveFinite::parse(5.0).unwrap(),
-        )
-        .unwrap();
+        );
         let geometry = saved.grid().geometry();
-        let obstacles = live.project(PlanarPose::IDENTITY, geometry);
+        let obstacles = live
+            .project(PlanarPose::IDENTITY, geometry)
+            .expect("a finite placement");
         assert_eq!(obstacles.grid().costs(), [FREE, FREE, LETHAL, UNKNOWN]);
         let grid = compose(Some(&saved), &obstacles, None).unwrap();
         assert_eq!(grid.costs(), [FREE, LETHAL, LETHAL, UNKNOWN]);

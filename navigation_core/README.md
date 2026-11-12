@@ -65,8 +65,8 @@ let params = PlannerParams {
         refinements: 2,
     }),
 };
-let start = PlanarPose { x: 0.0, y: 0.0, yaw: 0.0 };
-let goal = PlanarPose { x: 3.0, y: 1.5, yaw: 1.0 };
+let start = PlanarPose::new(0.0, 0.0, 0.0)?;
+let goal = PlanarPose::new(3.0, 1.5, 1.0)?;
 let path = plan(&grid, &footprint, start, goal, &params)?;
 ```
 
@@ -95,55 +95,107 @@ and ends the smoothing, and the iteration bound `max_iterations` ends it after o
 fewer. A converged smoothing runs again from its result `refinements` times. A path of 11
 poses or fewer is left as the search gives it.
 
-Before its search, the planner tests the start, then the goal, by the cost of its cell,
-as Smac 2D's collision checker tests a cell for a base taken as its inscribed circle: a
-cell at or above `INSCRIBED` is in collision, and an unknown cell is not while
-`allow_unknown` is true. It fails with `StartOccupied` or `GoalOccupied` for a cell in
-collision, and with `NoPath` when the search ends without reaching the goal's cell, its
-iteration bound included. A start or a goal off the grid fails `StartOffGrid` or
-`GoalOffGrid`, and a heading that is not finite `HeadingNotFinite`. These failures
-follow base_navigation:v1's rule and depart from Smac 2D three ways: Smac 2D never tests
-the start, and plans from one in collision; it returns the goal for a start and a goal in
-one cell before any test, where both tests run here first; and it fails `StartOccupied`
-for any search that ends after one iteration, where a free start walled in fails `NoPath`
-here. The planner reads no clock: it runs as Smac 2D runs with a `max_planning_time` no
-search reaches.
+Before its search, the planner tests the start, then the goal, by the cost of its cell, as
+Smac 2D's collision checker tests a cell for a base taken as its inscribed circle: a cell
+at or above `INSCRIBED` is in collision, and an unknown cell is not while `allow_unknown`
+is true. It fails with `StartOccupied` or `GoalOccupied` for a cell in collision, and with
+`NoPath` when the search ends without reaching the goal's cell, its iteration bound
+included. A start or a goal off the grid fails `StartOffGrid` or `GoalOffGrid`. These
+failures follow base_navigation:v1's rule and depart from Smac 2D three ways: Smac 2D
+never tests the start, and plans from one in collision; it returns the goal for a start
+and a goal in one cell before any test, where both tests run here first; and it fails
+`StartOccupied` for any search that ends after one iteration, where a free start walled in
+fails `NoPath` here. The planner reads no clock: it runs as Smac 2D runs with a
+`max_planning_time` no search reaches.
 
 ## The layers
 
 `LiveObstacles` holds an `occupancy_map` voxel map in a frame fixed to the floor, its z up
 from the floor, the `ObstacleHeights` that judge its voxels, and the padded footprint.
-`insert_depth_frame` inserts a depth frame's points, all at the frame's time, and
-`insert_laser_scan` a laser scan's hits, each placed where the sensor stood at its ray's
-time and traced from the sensor's origin at the first ray, as Nav2's observation buffer
-traces a scan from the origin at its stamp. A depth sample of 0 and a ray that carries a
-mark of lidar_2d:v1 make no point: a ray that met nothing frees and marks nothing, as
-Nav2's obstacle layer leaves it with `inf_is_valid` false. After each frame, every voxel of the
-map's columns under the padded footprint, at the base's pose at the frame's time, takes
-one miss's log-odds, as the obstacle layer writes `FREE_SPACE` under its footprint, the
-columns found as Nav2's `convexFillCells` finds the cells under a polygon. A voxel the base
-stood on reads free, and the next frame that sees an obstacle there marks it again, as the
-obstacle layer marks a cleared cell; what the sensors see of the robot itself within the
-footprint marks nothing. `clear` forgets every voxel.
+Each insert places the sensor by the base's pose on the floor at the frame's time and the
+sensor's pose on the base. `insert_depth_frame` inserts a depth frame's points, all at the
+frame's time, and `insert_laser_scan` a laser scan's hits, the base's poses at the scan's
+first and last rays given as a `camera_core::laser_scan::Sweep`, each hit placed where the
+sensor stood at its ray's time and traced from the sensor's origin at the first ray, as
+Nav2's observation buffer traces a scan from the origin at its stamp. Nav2's obstacle
+layer places every hit of a scan where the sensor stood at the scan's stamp; here a sensor
+that moves while it sweeps places each hit where it measured it. Two more departures
+follow from `occupancy_map`'s insert: every frame goes into the voxel map, where Nav2
+skips an observation whose sensor origin lies off its grid, and a point's range is its
+distance from the sensor in 3-D, where Nav2's marking measures it in the plane, so a point
+beyond the range in 3-D and within it in the plane clears to the range here. A depth
+sample of 0 and a ray that carries a mark of lidar_2d:v1 make no point: a ray that met
+nothing frees and marks nothing, as Nav2's obstacle layer leaves it with `inf_is_valid`
+false. After each frame, every voxel of the map's columns under the padded footprint, at
+the base's pose at the frame's time, takes one miss's log-odds, as the obstacle layer
+writes `FREE_SPACE` under its footprint, the columns found as Nav2's `convexFillCells`
+finds the cells under a polygon, and none of them is a drop: the base stands on floor
+there. A voxel the base stood on reads free, and the next frame that sees an obstacle
+there marks it again, as the obstacle layer marks a cleared cell; what the sensors see of
+the robot itself within the footprint marks nothing. `clear` forgets every voxel and every
+drop.
 
-`project` gives the `ObstacleLayer` over a grid's geometry, the map placed in the grid's
-frame at a `PlanarPose`: a cell is `LETHAL` under the center of an occupied voxel whose
-height lies from `min_obstacle_height_m` to `max_obstacle_height_m`, both included, as
-Nav2's observation buffer keeps a point, or more than `max_step_down_m` below the floor, a
-drop the sensors saw; `FREE` where the map knows a voxel over it; `UNKNOWN` otherwise.
-`ObstacleHeights::parse` takes the heights with the side of the map's voxels and refuses a
-height that is not a whole number of voxels, at least one, naming the nearest whole
-values, so a voxel's center judges as its points do and the floor's own voxels, either
-side of the floor, are neither an obstacle nor a drop; `LiveObstacles::new` takes a map of
-that side whose bottom lies a voxel or more below `max_step_down_m` under the floor, and
-refuses another, naming the lowest bottom that serves. `columns` is the grid of the map's
-columns, one cell a column: the grid a navigator in the map's frame plans on. `recentered`
-moves the map over other bounds, keeping what it knows of the voxels both hold, for a grid
-that moves with the base. `new` and `recentered` refuse a map of more columns on an axis
-than a cost grid's axis holds (`MAX_AXIS_CELLS`). `PaddedFootprint::collides_at` tells
-whether the base collides at a pose, as Nav2's spin tests each heading of its turn: the
-cost under the padded footprint's outline at `LETHAL` or above, so a lethal cell, an
-unknown cell or a vertex off the grid.
+A drop is a column whose floor lies more than `max_step_down_m` down, the step's plane,
+which each frame's rays find through the floor's plane. Each ray that points down from
+above the floor reads the floor's plane in the column where its line crosses it: past,
+when its reading lies below the step's plane (a return there, or no return with its range
+reaching there, as `occupancy_map`'s `Scan::readings` reads it), and short, when it
+returns above the floor's plane, before the crossing. A column where at least three rays
+of one frame read past, more than the rays that read short and the returns of that frame
+that stand in it at or above the step's plane together, is a drop until the footprint
+clears it: one or two wrong far readings through a column mark none, and wrong far
+readings among rays that see an obstacle before the floor, or through a column whose floor
+the frame sees, are outnumbered there. A ray over an edge crosses the floor's plane just
+past the edge, so a drop shows from the edge on before a sensor sees the lower floor, the
+cell that holds the edge too when more of the frame's rays read past the step through it
+than see its floor.
+
+Wrong far readings fall at random, so three of one frame can fall in a column whose floor
+the frame sees little of and mark a drop there. Measured on rendered depth frames of a
+flat floor, from two camera mounts at two speeds, with 2% and with 4% of the readings
+nearer than 2 m reading a depth drawn uniformly from their own out to the camera's range,
+ten seeds each, 24,000 frames in all: the rule marks 52 false drop cells, and one of them
+lies in the base's path within the stop's horizon for 33 frames of one drive. On the same
+frames, a count of two marks 152, a count of one 3,839, and a count of three that need not
+outnumber the rays short and standing 516,867.
+
+`project` gives the `ObstacleLayer` over a grid's geometry, the voxel map placed in the
+grid's frame at a `PlanarPose`. A voxel stands for every point inside it, and Nav2's
+obstacle layer marks the cell of every point, so a column of the voxel map marks every
+cell whose square overlaps the column's square, on a grid turned against the map or finer
+than it too: a cell is `LETHAL` where its square overlaps the square of a column that
+holds an occupied voxel whose center lies from `min_obstacle_height_m` to
+`max_obstacle_height_m`, both included, as Nav2's observation buffer keeps a point, or of
+a drop's column; `FREE` where it overlaps the square of any other column the map knows a
+voxel of; `UNKNOWN` otherwise. Two squares overlap when they share more than a line or a
+point, which the separating axes of convex polygons decide exactly, and each column's
+square stands a sliver in from the column's sides, so on a grid of the map's own lattice a
+column marks its own cell alone. A placement that puts a corner of a column's square at a
+point that is not finite fails with `PlacementNotFinite`; a column whose square's extent
+on the grid's lattice is not finite marks no cell, the cells of the grid that its square
+overlaps among them, as the overlap is decided on that extent. `ObstacleHeights::parse`
+takes the heights with the side of the voxels, `ObstacleHeightsParams`, and refuses a
+height of the band that is not a whole number of voxels, at least one, naming the nearest
+whole values, so a voxel's center judges as its points do, but for a point exactly at
+`max_obstacle_height_m`, which lies in the voxel above the band and marks nothing where
+Nav2 keeps it, and the floor's own voxels, either side of the floor, are no obstacle;
+`max_step_down_m` takes any height above the floor. `LiveObstacles::new` makes its voxel
+map in a frame and over bounds, of the voxels the heights judge and of no more columns on
+an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), and `recentered` takes bounds of
+no more. `columns` is the grid of the voxel map's columns, one cell a column: the grid a
+navigator plans on in the voxel map's frame. `recentered` moves the map and the drops over
+other bounds, keeping what it knows of the columns both hold, for a grid that moves with
+the base.
+
+`PaddedFootprint::collides_at` checks one pose of base_navigation:v1's sweep, under which
+a turn and a straight drive fail when the padded footprint placed at a step of the
+controller meets an occupied cell: a lethal cell under the padded footprint's outline
+collides, as does a vertex off the grid, which Nav2's `footprintCost` reads as lethal, and
+a cell never seen counts as free, as base_navigation:v1 counts it, where Nav2's spin
+collides on an unknown cell too. The cost under the outline reads lethal at the first edge
+that holds a lethal cell, whatever the edges before it hold: Nav2's `footprintCost` ends
+early only once its highest cost so far is lethal, so an unknown cell on an earlier edge
+makes a later lethal cell read as unknown there. The smoother reads the same cost.
 
 `SavedGrid::from_image` reads a saved map's 8-bit gray image at the `MapThresholds` of its
 YAML file, as nav2_map_server's `loadMapFromFile` reads a trinary map: each pixel's

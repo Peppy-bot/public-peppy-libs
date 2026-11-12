@@ -287,8 +287,6 @@ pub struct Columns {
     pub size_x: u32,
     pub size_y: u32,
     pub side_m: f64,
-    /// The height of every column's bottom, the lowest z the map holds.
-    pub bottom_m: f64,
 }
 
 /// What one voxel of the map holds.
@@ -462,7 +460,6 @@ impl VoxelMap {
             size_x: count(0),
             size_y: count(1),
             side_m,
-            bottom_m: f64::from(self.grid.lo.0[2]) * side_m,
         }
     }
 

@@ -141,8 +141,8 @@ seeing the object.
 
 `columns` gives the map seen from above: a grid of square columns of the voxel's side, one
 column for each pair of x and y keys the map holds, the first with its corner at the
-lowest x and y the map holds, each from the map's bottom, `bottom_m`, the lowest z the map
-holds, to its top. `clear_columns` clears every voxel of each column it is given, from the
+lowest x and y the map holds, each from the map's bottom, the lowest z the map holds, to
+its top. `clear_columns` clears every voxel of each column it is given, from the
 map's bottom to its top: each takes one miss's log-odds, so it reads free and the next hit
 marks it occupied again. A navigator clears the columns under a mobile base's footprint
 with it (`navigation_core`).

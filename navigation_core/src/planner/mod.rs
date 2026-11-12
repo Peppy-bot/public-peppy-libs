@@ -7,8 +7,7 @@
 //! reached the goal's cell, and the last pose's heading.
 //!
 //! A start or a goal off the grid fails with [`PlanError::StartOffGrid`] or
-//! [`PlanError::GoalOffGrid`], and a heading that is not finite with
-//! [`PlanError::HeadingNotFinite`]. A cell at or above
+//! [`PlanError::GoalOffGrid`]. A cell at or above
 //! [`INSCRIBED`](crate::grid::INSCRIBED) is an obstacle for the base's
 //! center, and an unknown cell is passable only when
 //! [`SearchParams::allow_unknown`] is true. Before the search, the planner
@@ -41,7 +40,7 @@ mod smoother;
 
 use std::num::NonZeroU32;
 
-use camera_core::pose::PlanarPose;
+use camera_core::pose::{PlanarPose, PlanarPoseError};
 
 use crate::footprint::PaddedFootprint;
 use crate::grid::{Cell, CostGrid, GridPoint};
@@ -122,11 +121,6 @@ pub enum PlanError {
         .0[1]
     )]
     GoalOffGrid([f64; 2]),
-    #[error(
-        "the start's heading {start_rad} rad or the goal's heading {goal_rad} rad is not \
-         finite: give finite headings"
-    )]
-    HeadingNotFinite { start_rad: f64, goal_rad: f64 },
     #[error(
         "the start, cell ({}, {}), is an obstacle for the base's center: start the base clear \
          of every obstacle",
@@ -218,8 +212,8 @@ pub fn plan(
     goal: PlanarPose,
     params: &PlannerParams,
 ) -> Result<Vec<PlanarPose>, PlanError> {
-    let start_xy = [start.x, start.y];
-    let goal_xy = [goal.x, goal.y];
+    let start_xy = [start.x(), start.y()];
+    let goal_xy = [goal.x(), goal.y()];
     let start_point = grid
         .geometry()
         .locate(start_xy)
@@ -228,35 +222,29 @@ pub fn plan(
         .geometry()
         .locate(goal_xy)
         .ok_or(PlanError::GoalOffGrid(goal_xy))?;
-    if !(start.yaw.is_finite() && goal.yaw.is_finite()) {
-        return Err(PlanError::HeadingNotFinite {
-            start_rad: start.yaw,
-            goal_rad: goal.yaw,
-        });
-    }
     let path = search_located(grid, start_point, goal_point, &params.search)?;
     let [goal_x, goal_y] = goal_point.world();
     if start_point.cell() == goal_point.cell() {
-        let yaw = if start.yaw != goal.yaw && params.use_final_approach_orientation {
-            start.yaw
+        let yaw = if start.yaw() != goal.yaw() && params.use_final_approach_orientation {
+            start.yaw()
         } else {
-            goal.yaw
+            goal.yaw()
         };
-        return Ok(vec![PlanarPose {
-            x: goal_x,
-            y: goal_y,
-            yaw,
-        }]);
+        return Ok(vec![
+            PlanarPose::new(goal_x, goal_y, yaw).expect("the goal's position and a pose's heading"),
+        ]);
     }
     let geometry = grid.geometry();
     let [origin_x, origin_y] = geometry.origin();
     let resolution = geometry.resolution_m();
-    let mut poses: Vec<PlanarPose> = path
+    let mut poses: Vec<PathPose> = path
         .cells
         .iter()
-        .map(|cell| PlanarPose {
-            x: f64::from(origin_x as f32) + f64::from(cell.x() as f32) * resolution,
-            y: f64::from(origin_y as f32) + f64::from(cell.y() as f32) * resolution,
+        .map(|cell| PathPose {
+            xy: [
+                f64::from(origin_x as f32) + f64::from(cell.x() as f32) * resolution,
+                f64::from(origin_y as f32) + f64::from(cell.y() as f32) * resolution,
+            ],
             yaw: 0.0,
         })
         .collect();
@@ -264,13 +252,35 @@ pub fn plan(
         smoother::smooth(&mut poses, grid, footprint, smoother);
     }
     let last = poses.len() - 1;
-    poses[last].x = goal_x;
-    poses[last].y = goal_y;
+    poses[last].xy = [goal_x, goal_y];
     poses[last].yaw = if params.use_final_approach_orientation {
-        let (end, approach) = (poses[last], poses[last - 1]);
-        heading((end.y - approach.y).atan2(end.x - approach.x))
+        let (end, approach) = (poses[last].xy, poses[last - 1].xy);
+        heading((end[1] - approach[1]).atan2(end[0] - approach[0]))
     } else {
-        goal.yaw
+        goal.yaw()
     };
-    Ok(poses)
+    Ok(poses
+        .into_iter()
+        .map(|pose| {
+            pose.placed().expect(
+                "a corner of a grid that single precision holds, a smoothed pose and the goal \
+                 are finite",
+            )
+        })
+        .collect())
+}
+
+/// A pose of the path while the planner builds it: its position along x and
+/// y in the grid's frame, and its heading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PathPose {
+    xy: [f64; 2],
+    yaw: f64,
+}
+
+impl PathPose {
+    /// The planar pose, refused where a value is not finite.
+    fn placed(self) -> Result<PlanarPose, PlanarPoseError> {
+        PlanarPose::new(self.xy[0], self.xy[1], self.yaw)
+    }
 }

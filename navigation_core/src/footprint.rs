@@ -121,14 +121,14 @@ impl PaddedFootprint {
     /// The footprint's vertices with the base's center at `pose`, in the
     /// frame of the pose.
     pub fn placed_at(&self, pose: PlanarPose) -> Vec<[f64; 2]> {
-        let cos_th = pose.yaw.cos();
-        let sin_th = pose.yaw.sin();
+        let cos_th = pose.yaw().cos();
+        let sin_th = pose.yaw().sin();
         self.points
             .iter()
             .map(|p| {
                 [
-                    pose.x + (p[0] * cos_th - p[1] * sin_th),
-                    pose.y + (p[0] * sin_th + p[1] * cos_th),
+                    pose.x() + (p[0] * cos_th - p[1] * sin_th),
+                    pose.y() + (p[0] * sin_th + p[1] * cos_th),
                 ]
             })
             .collect()
@@ -149,6 +149,24 @@ impl PaddedFootprint {
     /// or a vertex off the grid collides, and an unknown cell alone counts as
     /// free. The base's center lies inside its outline, so a center off the
     /// grid puts a vertex off it.
+    ///
+    /// The check reads the cells under the outline alone, so a sweep finds
+    /// every lethal cell its footprint passes over only while no point of the
+    /// outline moves farther than the grid's cell from one checked pose to the
+    /// next: a longer step carries an edge past a lethal cell that then lies
+    /// inside the outline, under no edge, at both poses. A step that moves the
+    /// base's center a length along an arc of curvature kappa, turning toward
+    /// +y, moves a point of the outline at (x, y) in the base's frame about
+    /// sqrt((1 - kappa y)^2 + (kappa x)^2) times that length, kappa times its
+    /// distance from the arc's center, to first order in the step's turn: 1 +
+    /// kappa |y| for a point beside the center on the arc's outer side. So a
+    /// sweep keeps the center's step at most one cell over the largest of that
+    /// factor on the outline's vertices, a cell on a straight drive. Nav2's arc
+    /// check steps the center a cell along a drive, whatever its curvature, and
+    /// the farthest vertex a cell along a turn in place
+    /// (nav2_regulated_pure_pursuit_controller src/collision_checker.cpp:72-85),
+    /// so on a curved drive its outer points move more than a cell a step,
+    /// and it can miss a lethal cell there.
     pub fn collides_at(&self, grid: &CostGrid, pose: PlanarPose) -> bool {
         self.cost_at(grid, pose) == f64::from(LETHAL)
     }
@@ -291,7 +309,7 @@ mod tests {
     }
 
     fn at(x: f64, y: f64) -> PlanarPose {
-        PlanarPose { x, y, yaw: 0.0 }
+        PlanarPose::new(x, y, 0.0).unwrap()
     }
 
     // The rectangle at (0.55, 0.55) on `grid_with`'s grid runs its first edge
@@ -391,11 +409,7 @@ mod tests {
     // A placed footprint turns about the base's center, then moves with it.
     #[test]
     fn a_placed_footprint_turns_and_moves_with_the_base() {
-        let pose = PlanarPose {
-            x: 1.0,
-            y: 2.0,
-            yaw: std::f64::consts::FRAC_PI_2,
-        };
+        let pose = PlanarPose::new(1.0, 2.0, std::f64::consts::FRAC_PI_2).unwrap();
         assert_close(
             &unpadded(&RECTANGLE).placed_at(pose),
             &[[1.3, 1.8], [1.3, 2.4], [0.7, 2.4], [0.7, 1.8]],

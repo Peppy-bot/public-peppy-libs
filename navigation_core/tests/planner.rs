@@ -12,6 +12,7 @@ use std::num::NonZeroU32;
 use camera_core::pose::PlanarPose;
 use common::finite::multiplier;
 use common::footprints::padded;
+use common::poses::planar;
 use common::properties::{
     COST_TOLERANCE, corner, grids, obstacle_costs, passable, passable_cells, with_cost,
 };
@@ -20,11 +21,11 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::{Cell, CostGrid, FREE, GridGeometry, UNKNOWN};
-use navigation_core::obstacles::{LiveObstacles, ObstacleHeights};
+use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
 use navigation_core::planner::{
     CostTravelMultiplier, PlanError, PlannerParams, SearchParams, plan, search,
 };
-use occupancy_map::{Bounds, Frame, VoxelMap};
+use occupancy_map::{Bounds, Frame};
 
 /// The largest side of a grid the exhaustive search runs on.
 const SMALL_SIDE: u32 = 8;
@@ -41,16 +42,12 @@ fn search_params(tc: &TestCase) -> SearchParams {
 
 /// The pose at `point`, heading along +x.
 fn at(point: [f64; 2]) -> PlanarPose {
-    PlanarPose {
-        x: point[0],
-        y: point[1],
-        yaw: 0.0,
-    }
+    planar(point[0], point[1], 0.0)
 }
 
 /// The position of `pose`.
 fn xy(pose: PlanarPose) -> [f64; 2] {
-    [pose.x, pose.y]
+    [pose.x(), pose.y()]
 }
 
 /// The pose at the center of `cell`.
@@ -368,14 +365,20 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
         min: [low[0], low[1], -0.5],
         max: [high[0], high[1], 0.5],
     };
-    let map = VoxelMap::new(
+    let heights = ObstacleHeights::parse(ObstacleHeightsParams {
+        min_obstacle_height_m: 0.1,
+        max_obstacle_height_m: 0.3,
+        max_step_down_m: 0.1,
+        voxel_m: voxel,
+    })
+    .expect("whole voxels");
+    let live = LiveObstacles::new(
         Frame::parse("odom").expect("a frame name"),
-        voxel,
         bounds([-1.0, -1.0], [1.0, 1.0]),
+        heights,
+        small_footprint(),
     )
     .expect("a map");
-    let heights = ObstacleHeights::parse(0.1, 0.3, 0.1, voxel).expect("whole voxels");
-    let live = LiveObstacles::new(map, heights, small_footprint()).expect("the map's voxels");
     let cells = |tc: &TestCase, low: i32, high: i32| {
         f64::from(tc.draw(gs::integers::<i32>().min_value(low).max_value(high))) * side
     };
@@ -413,7 +416,7 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
     let path = plan(&grid, &small_footprint(), start, goal, &params).expect("a free grid");
     let first = path.first().expect("a path holds a pose");
     assert_eq!(
-        new.cell_of([first.x + side / 2.0, first.y + side / 2.0]),
+        new.cell_of([first.x() + side / 2.0, first.y() + side / 2.0]),
         Some(start_cell),
         "the path starts at {first:?}, the start lies at {start:?}"
     );
@@ -421,8 +424,8 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
     assert_eq!(xy(*last), xy(goal));
 }
 
-// A start or a goal off the grid, or not a number, is refused by name, the start first, and
-// a heading that is not finite, infinite or not a number.
+// A start or a goal off the grid, or a searched point that is not a number, is refused by
+// name, the start first.
 #[test]
 fn a_start_or_a_goal_off_the_grid_is_refused() {
     let geometry = GridGeometry::new(4, 4, PositiveFinite::parse(1.0).unwrap(), [0.0; 2]).unwrap();
@@ -434,10 +437,6 @@ fn a_start_or_a_goal_off_the_grid_is_refused() {
     });
     let on = at([1.5, 1.5]);
     let off = at([4.5, 1.5]);
-    let nan = PlanarPose {
-        yaw: f64::NAN,
-        ..on
-    };
     let footprint = small_footprint();
     assert_eq!(
         plan(&grid, &footprint, off, off, &params),
@@ -447,32 +446,36 @@ fn a_start_or_a_goal_off_the_grid_is_refused() {
         plan(&grid, &footprint, on, off, &params),
         Err(PlanError::GoalOffGrid(xy(off)))
     );
-    assert!(matches!(
-        plan(&grid, &footprint, on, nan, &params),
-        Err(PlanError::HeadingNotFinite { start_rad, goal_rad })
-            if start_rad == on.yaw && goal_rad.is_nan()
-    ));
-    let infinite = PlanarPose {
-        yaw: f64::INFINITY,
-        ..on
-    };
-    assert_eq!(
-        plan(&grid, &footprint, infinite, on, &params),
-        Err(PlanError::HeadingNotFinite {
-            start_rad: f64::INFINITY,
-            goal_rad: on.yaw
-        })
-    );
     assert_eq!(
         search(&grid, xy(on), xy(off), &params.search),
         Err(PlanError::GoalOffGrid(xy(off)))
     );
-    assert!(
-        !PlanError::GoalOffGrid(xy(off))
-            .to_string()
-            .contains("heading"),
-        "a point names no heading"
-    );
+    assert!(matches!(
+        search(&grid, [f64::NAN, 1.5], xy(on), &params.search),
+        Err(PlanError::StartOffGrid([x, _])) if x.is_nan()
+    ));
+}
+
+// A grid that reaches the edge of single precision's range, its origin at 3e38 m and its
+// four cells 1e37 m wide, plans: its cells' corners from Smac 2D's single precision origin
+// are finite, the path runs through three cells, and its last pose stands on the goal.
+#[test]
+fn a_grid_at_the_edge_of_single_precision_plans() {
+    let (origin, side) = (3e38, 1e37);
+    let geometry =
+        GridGeometry::new(4, 4, PositiveFinite::parse(side).unwrap(), [origin, 0.0]).unwrap();
+    let grid = CostGrid::filled(geometry, FREE);
+    let params = planner_params(SearchParams {
+        cost_travel_multiplier: multiplier(1.0),
+        allow_unknown: false,
+        max_iterations: NonZeroU32::new(100).unwrap(),
+    });
+    let start = planar(origin + 0.5 * side, 0.5 * side, 0.0);
+    let goal = planar(origin + 2.5 * side, 0.5 * side, 0.0);
+    let path =
+        plan(&grid, &small_footprint(), start, goal, &params).expect("a path on a free grid");
+    assert_eq!(path.len(), 3);
+    assert_eq!(path.last().map(|pose| xy(*pose)), Some(xy(goal)));
 }
 
 // A multiplier below 0, beyond single precision's range or not a number is refused at
@@ -507,16 +510,8 @@ fn a_multiplier_beyond_single_precision_is_refused() {
 fn a_start_and_a_goal_in_one_cell_keep_the_start_heading_on_a_final_approach() {
     let geometry = GridGeometry::new(4, 4, PositiveFinite::parse(1.0).unwrap(), [0.0; 2]).unwrap();
     let grid = CostGrid::filled(geometry, FREE);
-    let start = PlanarPose {
-        x: 1.2,
-        y: 1.3,
-        yaw: 0.3,
-    };
-    let goal = PlanarPose {
-        x: 1.7,
-        y: 1.6,
-        yaw: 1.2,
-    };
+    let start = planar(1.2, 1.3, 0.3);
+    let goal = planar(1.7, 1.6, 1.2);
     let search = SearchParams {
         cost_travel_multiplier: multiplier(1.0),
         allow_unknown: false,
@@ -528,7 +523,7 @@ fn a_start_and_a_goal_in_one_cell_keep_the_start_heading_on_a_final_approach() {
     };
     assert_eq!(
         plan(&grid, &small_footprint(), start, goal, &approach),
-        Ok(vec![PlanarPose { yaw: 0.3, ..goal }])
+        Ok(vec![planar(goal.x(), goal.y(), 0.3)])
     );
     assert_eq!(
         plan(

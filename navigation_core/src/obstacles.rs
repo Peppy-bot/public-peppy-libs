@@ -2,64 +2,169 @@
 //! cost grid as Nav2 1.5.2's obstacle layer marks the points of its sensors
 //! (nav2_costmap_2d plugins/obstacle_layer.cpp, src/observation_buffer.cpp).
 //!
-//! [`LiveObstacles`] holds an occupancy map in a frame fixed to the floor, its
-//! z up from the floor, and inserts each sensor frame into it, as
-//! occupancy_map inserts a scan. A depth frame's points all stand at the
-//! frame's time. A laser scan's hits each stand where the sensor stood at
-//! their ray's time ([`LaserScan::placed_hits`]), carried into the sensor's
-//! frame at the first ray, from whose origin the map traces every ray, as the
-//! observation buffer traces a scan from the sensor's origin at its stamp
+//! [`LiveObstacles`] holds an occupancy map, the voxel map, in a frame fixed
+//! to the floor, its z up from the floor, and inserts each sensor frame into
+//! it, as occupancy_map inserts a scan, the sensor placed by the base's pose
+//! on the floor at the frame's time and the sensor's pose on the base. A
+//! depth frame's points all stand at the frame's time. A laser scan's hits
+//! each stand where the sensor stood at their ray's time
+//! ([`LaserScan::placed_hits`]), the base's poses at the scan's first and
+//! last rays given as a [`Sweep`], carried into the sensor's frame at the
+//! first ray, from whose origin the map traces every ray, as the observation
+//! buffer traces a scan from the sensor's origin at its stamp
 //! (`ObservationBuffer::bufferCloud`). A depth sample of 0 and a ray that
 //! carries a mark of lidar_2d:v1 make no point: a ray that met nothing frees
 //! and marks nothing, as the obstacle layer leaves it with `inf_is_valid`
 //! false (`ObstacleLayer::laserScanCallback`).
 //!
-//! After each frame, the voxels of every column under the padded footprint,
-//! placed at the base's pose at the frame's time, take one miss's log-odds, as
-//! the obstacle layer writes `FREE_SPACE` under its footprint
-//! (`ObstacleLayer::updateCosts`, `Costmap2D::setConvexPolygonCost`), the
-//! columns found as Nav2 finds the cells under a footprint. A voxel the base
-//! stood on reads free, and the next frame that sees an obstacle there marks
-//! it again, as the obstacle layer marks a cleared cell; what the sensors see
-//! of the robot itself within the footprint marks nothing.
+//! Three departures from the obstacle layer's marking
+//! (`ObstacleLayer::updateBounds`, obstacle_layer.cpp:512-581) follow from
+//! occupancy_map's insert and from placing each hit at its ray's time:
 //!
-//! [`LiveObstacles::project`] gives the obstacle layer over a grid: a cell is
-//! lethal under the center of an occupied voxel whose height lies between
-//! `min_obstacle_height_m` and `max_obstacle_height_m`, both included, as the
-//! observation buffer keeps a point, or more than `max_step_down_m` below the
-//! floor, a drop the sensors saw; free where the map knows a voxel over it;
-//! and unknown otherwise. Each height is a whole number of the map's voxels,
-//! at least one, so a voxel's center judges as its points do, and the floor's
-//! own voxels, either side of the floor, are neither an obstacle nor a drop:
-//! [`ObstacleHeights::parse`] takes the voxel's side with the heights, and
-//! [`LiveObstacles::new`] a map of that side. [`LiveObstacles::recentered`]
-//! moves the map over other bounds, keeping what it knows of the voxels both
-//! hold, for a grid that moves with the base.
+//! - The obstacle layer projects a scan in the scan's own frame
+//!   (obstacle_layer.cpp:398), so laser_geometry's two transforms are the
+//!   identity and every hit stands where the sensor stood at the scan's
+//!   stamp; here each hit stands where the sensor stood at its own ray's
+//!   time, so a sensor that moves while it sweeps places each hit where it
+//!   measured it.
+//! - The obstacle layer skips an observation whose sensor origin lies off its
+//!   grid (obstacle_layer.cpp:516-519); here every frame goes into the voxel
+//!   map, whose bounds clip its rays.
+//! - The obstacle layer keeps a point within `obstacle_max_range` by its
+//!   distance from the sensor's origin in the plane (obstacle_layer.cpp:549-571);
+//!   occupancy_map judges a point's range by its distance in 3-D
+//!   (`Scan::readings`), so a point beyond the range in 3-D and within it in
+//!   the plane clears to the range here where Nav2 marks its cell.
+//!
+//! After each frame, the voxels of every column under the padded footprint,
+//! placed at the base's pose at the frame's time (at a laser scan's first
+//! ray), take one miss's log-odds, as the obstacle layer writes `FREE_SPACE`
+//! under its footprint (`ObstacleLayer::updateCosts`,
+//! `Costmap2D::setConvexPolygonCost`), the columns found as Nav2 finds the
+//! cells under a footprint, and none of them is a drop: the base stands on
+//! floor there. A voxel the base stood on reads free, and the next frame that
+//! sees an obstacle there marks it again, as the obstacle layer marks a
+//! cleared cell; what the sensors see of the robot itself within the
+//! footprint marks nothing.
+//!
+//! A drop is a column whose floor lies more than `max_step_down_m` down, the
+//! step's plane, which each frame's rays find through the floor's plane. Each
+//! ray that points down from above the floor reads the floor's plane in the
+//! column where its line crosses it: past, when its reading lies below the
+//! step's plane (a return there, or no return with its range reaching there),
+//! and short, when it returns above the floor's plane, before the crossing. A
+//! column where at least three rays of one frame read past, more than the rays
+//! that read short and the returns of that frame that stand in it at or above
+//! the step's plane together, is a drop until the footprint clears it: one or
+//! two wrong far readings through a column mark none, and wrong far readings
+//! among rays that see an obstacle before the floor, or through a column whose
+//! floor the frame sees, are outnumbered there. A ray over an edge crosses the
+//! floor's plane just past the edge, so a drop shows from the edge on before a
+//! sensor sees the lower floor, the cell that holds the edge too when more of
+//! the frame's rays read past the step through it than see its floor.
+//!
+//! Wrong far readings fall at random, so three of one frame can fall in a
+//! column whose floor the frame sees little of and mark a drop there. Measured
+//! on rendered depth frames of a flat floor, from two camera mounts at two
+//! speeds, with 2% and with 4% of the readings nearer than 2 m reading a depth
+//! drawn uniformly from their own out to the camera's range, ten seeds each,
+//! 24,000 frames in all: the rule marks 52 false drop cells, and one of them
+//! lies in the base's path within the stop's horizon for 33 frames of one
+//! drive. On the same frames, a count of two marks 152, a count of one 3,839,
+//! and a count of three that need not outnumber the rays short and standing
+//! 516,867.
+//!
+//! [`LiveObstacles::project`] gives the obstacle layer over a grid, the voxel
+//! map placed in the grid's frame. A voxel stands for every point inside it,
+//! and the obstacle layer marks the cell of every point
+//! (obstacle_layer.cpp:525-581), so a column of the voxel map marks every
+//! cell whose square overlaps the column's square, on a grid turned against
+//! the map or finer than it too: a cell is lethal where its square overlaps
+//! the square of a column that holds an occupied voxel whose center lies
+//! between `min_obstacle_height_m` and `max_obstacle_height_m`, both included,
+//! as the observation buffer keeps a point, or of a drop's column; free where
+//! it overlaps the square of any other column the map knows a voxel of; and
+//! unknown otherwise. Two squares overlap when they share more than a line or
+//! a point, which the separating axes of convex polygons decide exactly: the
+//! two axes of the grid and the two of the turned square. Nav2 marks points,
+//! so the overlap of a column's square with a cell is the crate's own. Each
+//! column's square stands a sliver in from the column's sides, so on a grid of
+//! the map's own lattice a column's square overlaps the column's cell alone.
+//! A placement that puts a corner of a column's square at a point that is not
+//! finite is refused ([`PlacementNotFinite`]); a column whose square's extent
+//! on the grid's lattice, its corners' offsets from the grid's origin over the
+//! resolution, is not finite marks no cell, the cells of the grid that its
+//! square overlaps among them, as the overlap is decided on that extent.
+//!
+//! Each height of the band is a whole number of the map's voxels, at least
+//! one, so a voxel's center judges as its points do but one: a point exactly
+//! at `max_obstacle_height_m` lies in the voxel above the band and marks
+//! nothing, where the obstacle layer keeps it (obstacle_layer.cpp:535). The
+//! floor's own voxels, either side of the floor, are no obstacle.
+//! [`ObstacleHeights::parse`] takes the voxel's side with the heights
+//! ([`ObstacleHeightsParams`]), and [`LiveObstacles::new`] makes its voxel map
+//! of that side.
+//! [`LiveObstacles::recentered`] moves the map and the drops over other
+//! bounds, keeping what it knows of the columns both hold, for a grid that
+//! moves with the base.
 
-use camera_core::laser_scan::LaserScan;
+use std::collections::{BTreeSet, HashMap};
+use std::ops::RangeInclusive;
+
+use camera_core::laser_scan::{LaserScan, Sweep};
 use camera_core::pose::{PlanarPose, Pose};
 use control_core::positive_finite::PositiveFinite;
-use occupancy_map::{Bounds, InsertError, MapError, Scan, VoxelMap};
+use occupancy_map::{Bounds, Frame, MapError, Reading, Scan, VoxelMap};
 
 use crate::footprint::PaddedFootprint;
-use crate::grid::{CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, UNKNOWN};
+use crate::grid::{Cell, CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, UNKNOWN};
 use crate::raster::polygon_cells;
 
 /// How far a height may lie from a whole number of voxels, in voxels: the
 /// rounding of a height of meters over the voxel's side.
 const WHOLE_VOXEL_TOLERANCE: f64 = 1e-9;
 
-/// The heights, in meters above the floor, that judge an occupied voxel of a
-/// side `voxel_m`: an obstacle from `min_obstacle_height_m` to
-/// `max_obstacle_height_m`, both included, and a drop more than
-/// `max_step_down_m` below the floor, each a whole number of voxels, at least
-/// one.
+/// How far in from its column's sides the square of a column sets its
+/// corners, as a share of the voxel's side: single precision's epsilon times
+/// the most cells a grid's axis holds. A saved grid holds its resolution in
+/// single precision, as an `OccupancyGrid` does, so its cells and the voxels
+/// of the same side part by at most half that epsilon a cell, and its lattice
+/// lies within half this share of the voxel lattice over any axis a grid
+/// holds: the square of each column overlaps the column's own cell alone there,
+/// as on a grid of the map's own lattice.
+const COLUMN_SQUARE_INSET: f64 = f32::EPSILON as f64 * MAX_AXIS_CELLS as f64;
+
+/// The fewest rays of one frame that read past the step's plane through a
+/// column for the column to be a drop: three, so one or two wrong far readings
+/// through a column that no other ray reads mark none, measured as the module
+/// doc gives.
+const MIN_RAYS_PAST_THE_STEP: u32 = 3;
+
+/// The heights of a navigator's launch, in meters above the floor, and the
+/// side of the voxels they judge, by a launch's names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObstacleHeightsParams {
+    /// The lowest height of an obstacle.
+    pub min_obstacle_height_m: f64,
+    /// The highest height of an obstacle.
+    pub max_obstacle_height_m: f64,
+    /// The deepest step down the base drives down, below the floor.
+    pub max_step_down_m: f64,
+    /// The side of the voxel map's voxels.
+    pub voxel_m: PositiveFinite,
+}
+
+/// The heights, in meters above the floor, that judge the voxels of a side
+/// `voxel_m` and the rays of a frame: an obstacle in an occupied voxel from
+/// `min_obstacle_height_m` to `max_obstacle_height_m`, both included, each a
+/// whole number of voxels, at least one, and a drop where rays read past the
+/// plane `max_step_down_m` below the floor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ObstacleHeights {
     min_obstacle_height_m: f64,
     max_obstacle_height_m: f64,
     max_step_down_m: f64,
-    voxel_m: f64,
+    voxel_m: PositiveFinite,
 }
 
 /// Why three heights judge no voxel.
@@ -115,14 +220,15 @@ pub enum ObstacleHeightsError {
 }
 
 impl ObstacleHeights {
-    /// The heights of a navigator's launch, in meters, for a voxel map of
-    /// voxels `voxel_m` on a side.
-    pub fn parse(
-        min_obstacle_height_m: f64,
-        max_obstacle_height_m: f64,
-        max_step_down_m: f64,
-        voxel_m: PositiveFinite,
-    ) -> Result<Self, ObstacleHeightsError> {
+    /// The heights of `params`, finite, a band above the floor of whole
+    /// voxels, at least one, and a step down below it.
+    pub fn parse(params: ObstacleHeightsParams) -> Result<Self, ObstacleHeightsError> {
+        let ObstacleHeightsParams {
+            min_obstacle_height_m,
+            max_obstacle_height_m,
+            max_step_down_m,
+            voxel_m,
+        } = params;
         let heights = [
             min_obstacle_height_m,
             max_obstacle_height_m,
@@ -151,12 +257,12 @@ impl ObstacleHeights {
             min_obstacle_height_m,
             max_obstacle_height_m,
             max_step_down_m,
-            voxel_m: voxel_m.get(),
+            voxel_m,
         };
         heights
-            .named()
+            .band()
             .into_iter()
-            .try_for_each(|(name, height_m)| whole_voxels(name, height_m, heights.voxel_m))?;
+            .try_for_each(|(name, height_m)| whole_voxels(name, height_m, voxel_m.get()))?;
         Ok(heights)
     }
 
@@ -172,19 +278,22 @@ impl ObstacleHeights {
         self.max_step_down_m
     }
 
-    /// Whether an occupied voxel centered `height_m` above the floor marks its
-    /// cell: an obstacle in the band, or a drop below the step.
-    fn marks(&self, height_m: f64) -> bool {
+    /// Whether an occupied voxel centered `height_m` above the floor is an
+    /// obstacle: its center in the band.
+    fn is_obstacle(&self, height_m: f64) -> bool {
         (self.min_obstacle_height_m..=self.max_obstacle_height_m).contains(&height_m)
-            || height_m < -self.max_step_down_m
     }
 
-    /// Each height by the name a launch gives it.
-    fn named(&self) -> [(&'static str, f64); 3] {
+    /// The height of the step's plane: `max_step_down_m` below the floor.
+    fn step_plane_z(&self) -> f64 {
+        -self.max_step_down_m
+    }
+
+    /// Each height of the band by the name a launch gives it.
+    fn band(&self) -> [(&'static str, f64); 2] {
         [
             ("min_obstacle_height_m", self.min_obstacle_height_m),
             ("max_obstacle_height_m", self.max_obstacle_height_m),
-            ("max_step_down_m", self.max_step_down_m),
         ]
     }
 }
@@ -216,28 +325,9 @@ fn whole_voxels(
     Ok(())
 }
 
-/// Why a map and heights keep no live obstacles, or keep none over other
-/// bounds.
+/// Why bounds keep no live obstacles.
 #[derive(Debug, thiserror::Error)]
 pub enum LiveObstaclesError {
-    #[error(
-        "the heights judge voxels of {heights_voxel_m} m and the map holds voxels of \
-         {map_voxel_m} m: parse the heights with the map's voxel size"
-    )]
-    VoxelSize {
-        heights_voxel_m: f64,
-        map_voxel_m: f64,
-    },
-    #[error(
-        "the map's bottom lies at {bottom_m} m, and a drop shows in a voxel more than \
-         max_step_down_m {max_step_down_m} m below the floor: give the map bounds that reach \
-         down to {lowest_needed_m} m or lower"
-    )]
-    AboveTheDrops {
-        bottom_m: f64,
-        max_step_down_m: f64,
-        lowest_needed_m: f64,
-    },
     #[error(
         "the map holds {size_x} by {size_y} columns of voxels, more than {} on an axis, the \
          most a cost grid's axis holds: give the map narrower bounds or larger voxels",
@@ -254,144 +344,190 @@ pub enum LiveObstaclesError {
     Map(#[from] MapError),
 }
 
+/// A placement of the voxel map in a grid's frame that puts a corner of a
+/// column's square at a point that is not finite.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error(
+    "the voxel map placed in the grid's frame at x {} m, y {} m, yaw {} rad puts a column's \
+     corner at a point that is not finite: give an x and a y that, moved by the map's extent, \
+     stay finite",
+    .grid_from_map.x(),
+    .grid_from_map.y(),
+    .grid_from_map.yaw()
+)]
+pub struct PlacementNotFinite {
+    pub grid_from_map: PlanarPose,
+}
+
 /// The live obstacles of a mobile base: its voxel map, the heights that judge
-/// its voxels, its padded footprint, and the grid of the map's columns.
+/// its voxels and its rays, its padded footprint, the grid of the map's
+/// columns, and the columns of that grid that are drops.
 #[derive(Debug, Clone)]
 pub struct LiveObstacles {
     map: VoxelMap,
     heights: ObstacleHeights,
     footprint: PaddedFootprint,
     columns: GridGeometry,
+    drops: BTreeSet<Cell>,
 }
 
 impl LiveObstacles {
-    /// The live obstacles of `map`, a map in a frame fixed to the floor, its z
-    /// up from the floor, judged by `heights`, which judge voxels of the map's
-    /// side, for a base of `padded_footprint`. The map's bottom lies a voxel or
-    /// more below `max_step_down_m` under the floor, so it holds the voxels a
-    /// drop shows in. A map of more columns on an axis than a cost grid's axis
-    /// holds is refused.
+    /// The live obstacles of an empty map in `frame`, a frame fixed to the
+    /// floor, its z up from the floor, over `bounds`, of the voxels `heights`
+    /// judge, for a base of `padded_footprint`, with no drop. Bounds of more
+    /// columns on an axis than a cost grid's axis holds are refused.
     pub fn new(
-        map: VoxelMap,
+        frame: Frame,
+        bounds: Bounds,
         heights: ObstacleHeights,
         padded_footprint: PaddedFootprint,
     ) -> Result<Self, LiveObstaclesError> {
-        if map.voxel_size() != heights.voxel_m {
-            return Err(LiveObstaclesError::VoxelSize {
-                heights_voxel_m: heights.voxel_m,
-                map_voxel_m: map.voxel_size(),
-            });
-        }
-        let lowest_needed_m = -(heights.max_step_down_m + heights.voxel_m);
-        let bottom_m = map.columns().bottom_m;
-        if bottom_m > lowest_needed_m + WHOLE_VOXEL_TOLERANCE * heights.voxel_m {
-            return Err(LiveObstaclesError::AboveTheDrops {
-                bottom_m,
-                max_step_down_m: heights.max_step_down_m,
-                lowest_needed_m,
-            });
-        }
+        let map = VoxelMap::new(frame, heights.voxel_m, bounds)?;
         Ok(Self {
             columns: columns_of(&map)?,
             map,
             heights,
             footprint: padded_footprint,
+            drops: BTreeSet::new(),
         })
     }
 
-    /// The live obstacles over `bounds`, in the map's frame: each voxel the
-    /// old bounds and the new hold keeps what the map knew of it, and every
-    /// other voxel is unknown, as a grid that moves with the base keeps the
+    /// The live obstacles over `bounds`, in the map's frame: each voxel and
+    /// each column the old bounds and the new hold keeps what the map knew of
+    /// it and whether it is a drop, and every other voxel is unknown and every
+    /// other column no drop, as a grid that moves with the base keeps the
     /// obstacles around it. Bounds of more columns on an axis than a cost
     /// grid's axis holds are refused.
     pub fn recentered(&self, bounds: Bounds) -> Result<Self, LiveObstaclesError> {
         let map = self.map.recentered(bounds)?;
+        let columns = columns_of(&map)?;
+        let drops = self
+            .drops
+            .iter()
+            .filter_map(|&cell| columns.cell_of(self.columns.center_of(cell)))
+            .collect();
         Ok(Self {
-            columns: columns_of(&map)?,
+            columns,
             map,
             heights: self.heights,
             footprint: self.footprint.clone(),
+            drops,
         })
     }
 
-    /// The grid of the map's columns, one cell a column: the grid a navigator
-    /// in the map's frame plans on.
+    /// The grid of the voxel map's columns, one cell a column: the grid a
+    /// navigator plans on in the voxel map's frame.
     pub fn columns(&self) -> GridGeometry {
         self.columns
     }
 
-    /// Inserts the points of a depth frame, in the sensor's frame, the sensor
-    /// at `sensor` and the base at `base` at the frame's time, in the map's
-    /// frame, a point farther than `max_range_m` clearing to it as occupancy_map
-    /// clears one; then clears the columns under the footprint at `base`.
+    /// Inserts the points of a depth frame, in the sensor's frame, the base at
+    /// `base` in the map's frame and the sensor at `sensor_on_base` in the
+    /// base's frame at the frame's time, a point farther than `max_range_m`
+    /// clearing to it as occupancy_map clears one; then clears the columns
+    /// under the footprint at `base`.
     pub fn insert_depth_frame(
         &mut self,
         points: &[[f32; 3]],
-        sensor: Pose,
         base: PlanarPose,
+        sensor_on_base: Pose,
         max_range_m: PositiveFinite,
-    ) -> Result<(), InsertError> {
-        self.insert(points, sensor, max_range_m)?;
+    ) {
+        let sensor = base.to_pose().compose(&sensor_on_base);
+        self.insert(points, sensor, max_range_m);
         self.clear_footprint(base);
-        Ok(())
     }
 
-    /// Inserts the hits of a laser scan, the sensor at `sensor_at_first_ray`
-    /// and at `sensor_at_last_ray` at the times of its first and last rays,
-    /// and the base at `base` at the scan's time, in the map's frame, each hit
-    /// placed at its ray's time and traced from the sensor's origin at the
-    /// first ray; then clears the columns under the footprint at `base`.
+    /// Inserts the hits of a laser scan, the base at `base`'s poses in the
+    /// map's frame at the times of the scan's first and last rays and the
+    /// sensor at `sensor_on_base` in the base's frame, each hit placed at its
+    /// ray's time and traced from the sensor's origin at the first ray; then
+    /// clears the columns under the footprint at the base's pose at the first
+    /// ray, the scan's time.
     pub fn insert_laser_scan(
         &mut self,
         scan: &LaserScan,
-        sensor_at_first_ray: &Pose,
-        sensor_at_last_ray: &Pose,
-        base: PlanarPose,
+        base: Sweep<PlanarPose>,
+        sensor_on_base: Pose,
         max_range_m: PositiveFinite,
-    ) -> Result<(), InsertError> {
-        let to_first_ray = sensor_at_first_ray.inverse();
+    ) {
+        let sensor = Sweep {
+            first_ray: base.first_ray.to_pose().compose(&sensor_on_base),
+            last_ray: base.last_ray.to_pose().compose(&sensor_on_base),
+        };
+        let to_first_ray = sensor.first_ray.inverse();
         let points: Vec<[f32; 3]> = scan
-            .placed_hits(sensor_at_first_ray, sensor_at_last_ray)
+            .placed_hits(&sensor)
             .into_iter()
-            .map(|hit| to_first_ray.apply(hit).map(|c| c as f32))
+            .map(|hit| to_first_ray.apply(hit.placed).map(|c| c as f32))
             .collect();
-        self.insert(&points, *sensor_at_first_ray, max_range_m)?;
-        self.clear_footprint(base);
-        Ok(())
+        self.insert(&points, sensor.first_ray, max_range_m);
+        self.clear_footprint(base.first_ray);
     }
 
-    /// Forgets everything the sensors saw: every voxel unknown.
+    /// Forgets everything the sensors saw: every voxel unknown, and no drop.
     pub fn clear(&mut self) {
         self.map.clear();
+        self.drops.clear();
     }
 
     /// The obstacle layer over a grid of `geometry`, the map placed in the
-    /// grid's frame at `grid_from_map`. The map's frame and the grid's share
-    /// the floor, so the pose is planar and the heights read the map's z.
-    pub fn project(&self, grid_from_map: PlanarPose, geometry: GridGeometry) -> ObstacleLayer {
-        let mut grid = CostGrid::filled(geometry, UNKNOWN);
-        let costs = grid.costs_mut();
+    /// grid's frame at `grid_from_map`, as the module gives it: every cell
+    /// whose square overlaps the square of a column that holds an obstacle or
+    /// is a drop lethal, every other cell whose square overlaps the square of
+    /// a column the map knows a voxel of free. The map's frame and the grid's
+    /// share the floor, so the pose is planar and the heights read the map's
+    /// z. A placement that puts a corner of a column's square at a point that
+    /// is not finite is refused.
+    pub fn project(
+        &self,
+        grid_from_map: PlanarPose,
+        geometry: GridGeometry,
+    ) -> Result<ObstacleLayer, PlacementNotFinite> {
+        let mut known_columns = BTreeSet::new();
+        let mut marked_columns = self.drops.clone();
         for key in self.map.known() {
             let [x, y, z] = self.map.center(key);
-            let Some(cell) = geometry.cell_of(grid_from_map.apply([x, y])) else {
-                continue;
-            };
-            let cost = &mut costs[geometry.index(cell)];
-            if self.map.is_occupied(key) && self.heights.marks(z) {
-                *cost = LETHAL;
-            } else if *cost == UNKNOWN {
-                *cost = FREE;
+            let column = self
+                .columns
+                .cell_of([x, y])
+                .expect("a voxel's center lies over its column");
+            known_columns.insert(column);
+            if self.map.is_occupied(key) && self.heights.is_obstacle(z) {
+                marked_columns.insert(column);
             }
         }
-        ObstacleLayer { grid }
+        let mut grid = CostGrid::filled(geometry, UNKNOWN);
+        for (columns, cost) in [(&known_columns, FREE), (&marked_columns, LETHAL)] {
+            for &column in columns {
+                for cell in self.cells_under_column(column, grid_from_map, &geometry)? {
+                    grid.costs_mut()[geometry.index(cell)] = cost;
+                }
+            }
+        }
+        Ok(ObstacleLayer { grid })
     }
 
-    fn insert(
-        &mut self,
-        points: &[[f32; 3]],
-        sensor: Pose,
-        max_range_m: PositiveFinite,
-    ) -> Result<(), InsertError> {
+    /// The cells of a grid of `geometry` whose squares overlap the square of
+    /// the map's column `column`, placed in the grid's frame at
+    /// `grid_from_map`, its corners [`COLUMN_SQUARE_INSET`] in from the
+    /// column's sides.
+    fn cells_under_column(
+        &self,
+        column: Cell,
+        grid_from_map: PlanarPose,
+        geometry: &GridGeometry,
+    ) -> Result<Vec<Cell>, PlacementNotFinite> {
+        let [x, y] = self.columns.center_of(column);
+        let half = self.columns.resolution_m() * (0.5 - COLUMN_SQUARE_INSET);
+        let square = [[-half, -half], [half, -half], [half, half], [-half, half]]
+            .map(|[dx, dy]| grid_from_map.apply([x + dx, y + dy]));
+        cells_overlapping(geometry, square).ok_or(PlacementNotFinite { grid_from_map })
+    }
+
+    /// Inserts `points` as a scan in the map's own frame with no cutout, the
+    /// one scan occupancy_map's insert takes without a refusal.
+    fn insert(&mut self, points: &[[f32; 3]], sensor: Pose, max_range_m: PositiveFinite) {
         let frame = self.map.frame().clone();
         let scan = Scan {
             frame: &frame,
@@ -399,18 +535,191 @@ impl LiveObstacles {
             points,
             max_range_m,
         };
-        self.map.insert(&scan, &[])
+        self.map
+            .insert(&scan, &[])
+            .expect("a scan in the map's own frame with no cutout inserts");
+        self.mark_drops(&scan);
     }
 
-    /// Clears every voxel of the columns under the footprint at `base`; none
+    /// Marks a drop in each column the votes of `scan`'s readings show one in
+    /// ([`FloorVotes`]).
+    fn mark_drops(&mut self, scan: &Scan) {
+        let origin = scan.sensor.origin();
+        let step_z = self.heights.step_plane_z();
+        let mut votes: HashMap<Cell, FloorVotes> = HashMap::new();
+        for reading in scan.readings() {
+            if let Some(cell) = surface_at(reading, step_z).and_then(|at| self.columns.cell_of(at))
+            {
+                votes.entry(cell).or_default().surfaces += 1;
+            }
+            if let Some((crossing, read)) = read_through_floor(origin, reading, step_z)
+                && let Some(cell) = self.columns.cell_of(crossing)
+            {
+                votes.entry(cell).or_default().count(read);
+            }
+        }
+        self.drops.extend(
+            votes
+                .into_iter()
+                .filter(|(_, votes)| votes.show_a_drop())
+                .map(|(cell, _)| cell),
+        );
+    }
+
+    /// Clears every voxel of the columns under the footprint at `base`, and
+    /// unmarks every drop among them, the base standing on floor there; none
     /// when a vertex lies off the map, as Nav2 then clears no cell.
     fn clear_footprint(&mut self, base: PlanarPose) {
         let Some(cells) = polygon_cells(&self.columns, &self.footprint.placed_at(base)) else {
             return;
         };
+        for cell in &cells {
+            self.drops.remove(cell);
+        }
         self.map
             .clear_columns(cells.into_iter().map(|cell| [cell.x(), cell.y()]));
     }
+}
+
+/// Where a return stands at or above the step's plane, on x and y: a surface
+/// within the step of the floor or above it.
+fn surface_at(reading: Reading, step_z: f64) -> Option<[f64; 2]> {
+    match reading {
+        Reading::Return([x, y, z]) if z >= step_z => Some([x, y]),
+        _ => None,
+    }
+}
+
+/// How a ray reads the floor's plane where its line crosses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FloorRead {
+    /// Its reading lies below the step's plane.
+    Past,
+    /// It returned above the floor's plane, before the crossing.
+    Short,
+}
+
+/// Where the line of the ray from `origin` to `reading` crosses the floor's
+/// plane, and how the ray reads it there: past, for a reading below the step's
+/// plane at `step_z`, a return or no return at the range, and short, for a
+/// return above the floor's plane; none for any other reading, for a ray that
+/// does not point down from above the floor, and for a reading that is not a
+/// number.
+fn read_through_floor(
+    origin: [f64; 3],
+    reading: Reading,
+    step_z: f64,
+) -> Option<([f64; 2], FloorRead)> {
+    let (end, read) = match reading {
+        Reading::Return(end) | Reading::NoReturn(end) if end[2] < step_z => (end, FloorRead::Past),
+        Reading::Return(end) if end[2] > 0.0 => (end, FloorRead::Short),
+        _ => return None,
+    };
+    if !(origin[2] > 0.0 && end[2] < origin[2]) {
+        return None;
+    }
+    let along = origin[2] / (origin[2] - end[2]);
+    Some((
+        [0, 1].map(|i| origin[i] + along * (end[i] - origin[i])),
+        read,
+    ))
+}
+
+/// What the readings of one frame tell of one column: how many rays read past
+/// the step's plane through its floor's plane, how many aimed there returned
+/// short, above the floor's plane, and how many returns stand in it at or above
+/// the step's plane, on its floor or above it.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct FloorVotes {
+    past: u32,
+    short: u32,
+    surfaces: u32,
+}
+
+impl FloorVotes {
+    fn count(&mut self, read: FloorRead) {
+        match read {
+            FloorRead::Past => self.past += 1,
+            FloorRead::Short => self.short += 1,
+        }
+    }
+
+    /// Whether the column is a drop: at least [`MIN_RAYS_PAST_THE_STEP`] rays
+    /// read past the step's plane through it, more than returned short of it
+    /// and stand in it together.
+    fn show_a_drop(self) -> bool {
+        self.past >= MIN_RAYS_PAST_THE_STEP && self.past > self.short + self.surfaces
+    }
+}
+
+/// The cells of `geometry` whose squares overlap the parallelogram of
+/// `corners`, in order, in meters in the grid's frame, by more than a line or
+/// a point: the cells within the corners' extent along each of the grid's
+/// axes that no normal of the parallelogram's sides parts from it, as the
+/// separating axes of two convex polygons find their overlap. None when a
+/// corner is not finite. No cell when the parallelogram's extent on the
+/// grid's lattice, its corners' offsets from the origin over the resolution,
+/// is not finite, the cells of the grid that it overlaps among them, as the
+/// separating axes decide the overlap on that extent.
+fn cells_overlapping(geometry: &GridGeometry, corners: [[f64; 2]; 4]) -> Option<Vec<Cell>> {
+    if !all_finite(&corners) {
+        return None;
+    }
+    let origin = geometry.origin();
+    let resolution = geometry.resolution_m();
+    let lattice = corners.map(|corner| [0, 1].map(|i| (corner[i] - origin[i]) / resolution));
+    if !all_finite(&lattice) {
+        return Some(Vec::new());
+    }
+    let cells_along = |axis: [f64; 2], size: u32| -> Option<RangeInclusive<u32>> {
+        let [low, high] = extent_along(axis, &lattice);
+        let first = low.floor().max(0.0);
+        let last = (high.ceil() - 1.0).min(f64::from(size) - 1.0);
+        (first <= last).then_some(first as u32..=last as u32)
+    };
+    let (Some(xs), Some(ys)) = (
+        cells_along([1.0, 0.0], geometry.size_x()),
+        cells_along([0.0, 1.0], geometry.size_y()),
+    ) else {
+        return Some(Vec::new());
+    };
+    let normals = [[0, 1], [1, 2]].map(|[from, to]| {
+        let [dx, dy] = [0, 1].map(|i| lattice[to][i] - lattice[from][i]);
+        [-dy, dx]
+    });
+    let overlaps = |x: u32, y: u32| {
+        let (x, y) = (f64::from(x), f64::from(y));
+        let cell = [[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]];
+        normals.iter().all(|&normal| {
+            let [cell_low, cell_high] = extent_along(normal, &cell);
+            let [low, high] = extent_along(normal, &lattice);
+            cell_low < high && low < cell_high
+        })
+    };
+    Some(
+        xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+            .filter(|&(x, y)| overlaps(x, y))
+            .map(|(x, y)| geometry.cell(x, y).expect("an extent clamped to the grid"))
+            .collect(),
+    )
+}
+
+/// Whether every coordinate of `points` is finite.
+fn all_finite(points: &[[f64; 2]]) -> bool {
+    points
+        .iter()
+        .flatten()
+        .all(|coordinate| coordinate.is_finite())
+}
+
+/// The least and the greatest of `points` along `axis`.
+fn extent_along(axis: [f64; 2], points: &[[f64; 2]]) -> [f64; 2] {
+    points
+        .iter()
+        .map(|point| point[0] * axis[0] + point[1] * axis[1])
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[low, high], along| {
+            [low.min(along), high.max(along)]
+        })
 }
 
 /// The grid of `map`'s columns, one cell a column, when a grid's axis holds
@@ -453,18 +762,16 @@ mod tests {
     use super::*;
     use control_core::footprint::Footprint;
     use control_core::non_negative_finite::NonNegativeFinite;
-    use occupancy_map::Frame;
 
-    fn map(voxel_m: f64) -> VoxelMap {
-        VoxelMap::new(
-            Frame::parse("odom").unwrap(),
-            PositiveFinite::parse(voxel_m).unwrap(),
-            Bounds {
-                min: [-1.0, -1.0, -0.5],
-                max: [1.0, 1.0, 1.0],
-            },
-        )
-        .unwrap()
+    fn odom() -> Frame {
+        Frame::parse("odom").unwrap()
+    }
+
+    fn bounds() -> Bounds {
+        Bounds {
+            min: [-1.0, -1.0, -0.5],
+            max: [1.0, 1.0, 1.0],
+        }
     }
 
     fn square() -> PaddedFootprint {
@@ -479,66 +786,344 @@ mod tests {
         PositiveFinite::parse(0.05).unwrap()
     }
 
+    /// The band from 0.1 m to 0.5 m of voxels 0.05 m on a side, and a step of 0.1 m.
+    fn heights() -> ObstacleHeights {
+        ObstacleHeights::parse(ObstacleHeightsParams {
+            min_obstacle_height_m: 0.1,
+            max_obstacle_height_m: 0.5,
+            max_step_down_m: 0.1,
+            voxel_m: twentieth(),
+        })
+        .unwrap()
+    }
+
+    /// The live obstacles of one occupied voxel, in the band, over the
+    /// column from (0, 0) to (0.05, 0.05), seen from straight above.
+    fn one_occupied_voxel() -> LiveObstacles {
+        let mut live = LiveObstacles::new(odom(), bounds(), heights(), square()).unwrap();
+        let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
+        let sensor_on_base = Pose::new([5.025, 0.025, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        live.insert_depth_frame(
+            &[[0.0, 0.0, -0.7]],
+            away,
+            sensor_on_base,
+            PositiveFinite::parse(5.0).unwrap(),
+        );
+        live
+    }
+
+    // On grids of half the voxel's side, turned against the map, one column
+    // marks exactly the cells whose squares share area with its square, each
+    // share found apart from this code by clipping the cell against the square:
+    // at a turn of 0.42237 rad, cell (101, 101), half under the square, among
+    // them; at the pose (0.46, -0.42, 2.88), cell (418, 381), under it by
+    // 0.85%, among them, and cell (415, 382), which the square never reaches,
+    // not. Each set holds under a change of 1e-9 m in the square's side.
+    #[test]
+    fn a_column_marks_exactly_the_cells_its_square_overlaps() {
+        let live = one_occupied_voxel();
+        let half_a_voxel = PositiveFinite::parse(0.025).unwrap();
+        let turned = (
+            PlanarPose::new(0.0, 0.0, 0.42237).unwrap(),
+            200,
+            [-2.5, -2.5],
+            vec![
+                (99, 100),
+                (99, 101),
+                (99, 102),
+                (100, 100),
+                (100, 101),
+                (100, 102),
+                (101, 100),
+                (101, 101),
+                (101, 102),
+            ],
+        );
+        let moved = (
+            PlanarPose::new(0.46, -0.42, 2.88).unwrap(),
+            800,
+            [-10.0, -10.0],
+            vec![
+                (415, 381),
+                (416, 381),
+                (416, 382),
+                (416, 383),
+                (417, 381),
+                (417, 382),
+                (417, 383),
+                (418, 381),
+                (418, 382),
+                (418, 383),
+            ],
+        );
+        for (grid_from_map, size, origin, expected) in [turned, moved] {
+            let geometry = GridGeometry::new(size, size, half_a_voxel, origin).unwrap();
+            let layer = live.project(grid_from_map, geometry).unwrap();
+            let lethal: BTreeSet<(u32, u32)> = geometry
+                .cells()
+                .filter(|&cell| layer.grid().cost(cell) == LETHAL)
+                .map(|cell| (cell.x(), cell.y()))
+                .collect();
+            assert_eq!(lethal, expected.into_iter().collect(), "{grid_from_map:?}");
+        }
+    }
+
+    // A cell that meets a square at a line or a point alone is not under it:
+    // on a grid of 1 m cells, a square whose sides lie on cell boundaries
+    // covers its own cells and not the cells beside it; a square turned an
+    // eighth of a turn, its corners at the middles of cells' sides, covers the
+    // five cells it shares area with and not the four whose corners touch it;
+    // and one whose corner lies on a boundary between two cells' sides covers
+    // the six cells it shares area with and not the cell its corner touches,
+    // which only the grid's own axis parts from it.
+    #[test]
+    fn a_cell_that_meets_a_square_at_a_line_or_a_point_alone_is_not_under_it() {
+        let geometry =
+            GridGeometry::new(5, 5, PositiveFinite::parse(1.0).unwrap(), [0.0; 2]).unwrap();
+        let cells = |corners| -> BTreeSet<(u32, u32)> {
+            cells_overlapping(&geometry, corners)
+                .unwrap()
+                .into_iter()
+                .map(|cell| (cell.x(), cell.y()))
+                .collect()
+        };
+        let on_boundaries = [[1.0, 1.0], [3.0, 1.0], [3.0, 2.0], [1.0, 2.0]];
+        assert_eq!(cells(on_boundaries), BTreeSet::from([(1, 1), (2, 1)]));
+        let turned = [[1.5, 0.5], [2.5, 1.5], [1.5, 2.5], [0.5, 1.5]];
+        assert_eq!(
+            cells(turned),
+            BTreeSet::from([(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)])
+        );
+        let pointed = [[2.0, 0.5], [3.0, 1.5], [2.0, 2.5], [1.0, 1.5]];
+        assert_eq!(
+            cells(pointed),
+            BTreeSet::from([(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)])
+        );
+    }
+
+    // A square with a corner that is not finite overlaps no cell and is refused; a finite
+    // placement whose corners lie past the largest double cells from the grid, on a grid of
+    // 0.05 m cells, or past the grid, on a grid of 2 m cells, marks no cell, as does a
+    // square standing on a corner at the origin of a grid of cells the least normal double
+    // wide, which overlaps three of the grid's cells, and whose top corner alone lies past
+    // the largest double cells up the grid's lattice, the corner neither side's normal is
+    // drawn from; a map that knows no voxel places none, and its layer is unknown.
+    #[test]
+    fn a_placement_is_refused_only_where_a_corner_is_not_finite() {
+        let live = one_occupied_voxel();
+        let geometry = GridGeometry::new(40, 40, twentieth(), [-1.0, -1.0]).unwrap();
+        for corner in [[f64::NAN, 0.0], [0.0, f64::INFINITY]] {
+            let square = [corner, [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+            assert_eq!(cells_overlapping(&geometry, square), None, "{corner:?}");
+        }
+        let far = PlanarPose::new(f64::MAX, 0.0, 0.0).unwrap();
+        let two_meters =
+            GridGeometry::new(40, 40, PositiveFinite::parse(2.0).unwrap(), [-1.0, -1.0]).unwrap();
+        for geometry in [geometry, two_meters] {
+            let layer = live.project(far, geometry).unwrap();
+            assert!(
+                layer.grid().costs().iter().all(|&cost| cost == UNKNOWN),
+                "{geometry:?}"
+            );
+        }
+        let finest = GridGeometry::new(
+            2,
+            2,
+            PositiveFinite::parse(f64::MIN_POSITIVE).unwrap(),
+            [0.0; 2],
+        )
+        .unwrap();
+        let standing = [[-2.0, 2.0], [0.0, 0.0], [2.0, 2.0], [0.0, 4.0]];
+        assert_eq!(cells_overlapping(&finest, standing), Some(Vec::new()));
+        let empty = LiveObstacles::new(odom(), bounds(), heights(), square()).unwrap();
+        let layer = empty.project(far, geometry).unwrap();
+        assert!(layer.grid().costs().iter().all(|&cost| cost == UNKNOWN));
+    }
+
+    // A grid whose last cells end inside a column's square marks the one cell
+    // of the square it holds, (19, 19); a grid that ends a sliver before the
+    // square, the square within the cell past its last, marks none, every
+    // cell unknown.
+    #[test]
+    fn a_grid_that_ends_at_a_column_marks_only_the_cells_it_holds() {
+        let live = one_occupied_voxel();
+        let through = GridGeometry::new(20, 20, twentieth(), [-0.975, -0.975]).unwrap();
+        let layer = live.project(PlanarPose::IDENTITY, through).unwrap();
+        let lethal: Vec<Cell> = through
+            .cells()
+            .filter(|&cell| layer.grid().cost(cell) == LETHAL)
+            .collect();
+        assert_eq!(lethal, vec![through.cell(19, 19).unwrap()]);
+        let before = GridGeometry::new(20, 20, twentieth(), [-1.0, -1.0]).unwrap();
+        let layer = live.project(PlanarPose::IDENTITY, before).unwrap();
+        assert!(layer.grid().costs().iter().all(|&cost| cost == UNKNOWN));
+    }
+
     #[test]
     fn heights_want_numbers_a_band_above_the_floor_and_a_step() {
         assert!(matches!(
-            ObstacleHeights::parse(f64::NAN, 0.5, 0.1, twentieth()),
+            ObstacleHeights::parse(ObstacleHeightsParams {
+                min_obstacle_height_m: f64::NAN,
+                max_obstacle_height_m: 0.5,
+                max_step_down_m: 0.1,
+                voxel_m: twentieth()
+            }),
             Err(ObstacleHeightsError::NotFinite { .. })
         ));
         assert_eq!(
-            ObstacleHeights::parse(0.0, 0.5, 0.1, twentieth()),
+            ObstacleHeights::parse(ObstacleHeightsParams {
+                min_obstacle_height_m: 0.0,
+                max_obstacle_height_m: 0.5,
+                max_step_down_m: 0.1,
+                voxel_m: twentieth()
+            }),
             Err(ObstacleHeightsError::FloorBand(0.0))
         );
         assert!(matches!(
-            ObstacleHeights::parse(0.5, 0.5, 0.1, twentieth()),
+            ObstacleHeights::parse(ObstacleHeightsParams {
+                min_obstacle_height_m: 0.5,
+                max_obstacle_height_m: 0.5,
+                max_step_down_m: 0.1,
+                voxel_m: twentieth()
+            }),
             Err(ObstacleHeightsError::Inverted { .. })
         ));
         assert_eq!(
-            ObstacleHeights::parse(0.1, 0.5, 0.0, twentieth()),
+            ObstacleHeights::parse(ObstacleHeightsParams {
+                min_obstacle_height_m: 0.1,
+                max_obstacle_height_m: 0.5,
+                max_step_down_m: 0.0,
+                voxel_m: twentieth()
+            }),
             Err(ObstacleHeightsError::StepDown(0.0))
         );
-        let heights = ObstacleHeights::parse(0.1, 0.5, 0.1, twentieth()).unwrap();
-        assert!(heights.marks(0.1) && heights.marks(0.5) && heights.marks(-0.125));
-        assert!(!heights.marks(0.075) && !heights.marks(0.525) && !heights.marks(-0.075));
+        let heights = heights();
+        assert!(heights.is_obstacle(0.1) && heights.is_obstacle(0.5));
+        assert!(!heights.is_obstacle(0.075) && !heights.is_obstacle(0.525));
+        assert_eq!(heights.step_plane_z(), -0.1);
     }
 
-    // A map whose bottom lies less than a voxel below the step under the floor
-    // holds no voxel a drop shows in: refused, naming the lowest bottom that
-    // serves; a map a voxel deeper is kept.
+    // A ray down from above the floor reads the floor's plane where its line
+    // crosses it: past, for a return or a ray with no return that ends below
+    // the step's plane, and short, for a return above the floor's plane, the
+    // crossing then beyond the return along the ray.
     #[test]
-    fn a_map_reaches_a_voxel_below_the_step() {
-        let heights = ObstacleHeights::parse(0.1, 0.5, 0.1, twentieth()).unwrap();
-        let reaching_down_to = |min_z: f64| {
-            VoxelMap::new(
-                Frame::parse("odom").unwrap(),
-                twentieth(),
-                Bounds {
-                    min: [-1.0, -1.0, min_z],
-                    max: [1.0, 1.0, 1.0],
-                },
-            )
-            .unwrap()
-        };
-        let refused = LiveObstacles::new(reaching_down_to(-0.08), heights, square()).unwrap_err();
-        let LiveObstaclesError::AboveTheDrops {
-            bottom_m,
-            lowest_needed_m,
-            ..
-        } = refused
-        else {
-            panic!("{refused:?}");
-        };
-        assert!((bottom_m + 0.1).abs() < 1e-12 && (lowest_needed_m + 0.15).abs() < 1e-12);
-        assert!(refused.to_string().contains("down to -0.15"), "{refused}");
-        assert!(LiveObstacles::new(reaching_down_to(-0.12), heights, square()).is_ok());
+    fn a_ray_down_reads_the_floor_plane_where_its_line_crosses_it() {
+        let origin = [0.0, 0.0, 1.0];
+        let step_z = -0.5;
+        for (reading, read) in [
+            (Reading::Return([4.0, 2.0, -1.0]), FloorRead::Past),
+            (Reading::NoReturn([4.0, 2.0, -1.0]), FloorRead::Past),
+            (Reading::Return([1.0, 0.5, 0.5]), FloorRead::Short),
+        ] {
+            assert_eq!(
+                read_through_floor(origin, reading, step_z),
+                Some(([2.0, 1.0], read)),
+                "{reading:?}"
+            );
+        }
     }
 
-    // A height off the voxels names the whole values either side of it, and one
-    // within the floor's voxels names the least it may be; live obstacles take a
-    // map of the voxels the heights judge.
+    // A return on the floor or within the step below it, a ray with no return
+    // that ends above the step's plane, a ray that points level or up, a sensor
+    // at or below the floor and a reading that is not a number read nothing of
+    // the floor's plane.
     #[test]
-    fn heights_are_whole_voxels_of_the_map() {
-        let refused = ObstacleHeights::parse(0.12, 0.5, 0.1, twentieth()).unwrap_err();
+    fn a_ray_that_reads_neither_past_the_step_nor_above_the_floor_reads_nothing() {
+        let origin = [0.0, 0.0, 1.0];
+        let step_z = -0.5;
+        for reading in [
+            Reading::Return([2.0, 0.0, 0.0]),
+            Reading::Return([2.0, 0.0, -0.5]),
+            Reading::NoReturn([2.0, 0.0, -0.2]),
+            Reading::Return([1.0, 0.0, 1.0]),
+            Reading::Return([1.0, 0.0, 1.5]),
+            Reading::Return([f64::NAN, 0.0, f64::NAN]),
+            Reading::NoReturn([f64::NAN; 3]),
+        ] {
+            assert_eq!(
+                read_through_floor(origin, reading, step_z),
+                None,
+                "{reading:?}"
+            );
+        }
+        for below in [0.0, -0.2] {
+            assert_eq!(
+                read_through_floor([0.0, 0.0, below], Reading::Return([1.0, 0.0, -1.0]), step_z),
+                None
+            );
+        }
+    }
+
+    // A return at or above the step's plane stands in its column; one below it,
+    // a ray with no return and a reading that is not a number stand nowhere.
+    #[test]
+    fn a_surface_stands_where_a_return_lies_at_or_above_the_step_plane() {
+        let step_z = -0.1;
+        assert_eq!(
+            surface_at(Reading::Return([1.0, 2.0, 0.0]), step_z),
+            Some([1.0, 2.0])
+        );
+        assert_eq!(
+            surface_at(Reading::Return([1.0, 2.0, -0.1]), step_z),
+            Some([1.0, 2.0])
+        );
+        assert_eq!(
+            surface_at(Reading::Return([1.0, 2.0, 0.4]), step_z),
+            Some([1.0, 2.0])
+        );
+        for reading in [
+            Reading::Return([1.0, 2.0, -0.2]),
+            Reading::NoReturn([1.0, 2.0, 0.0]),
+            Reading::Return([1.0, 2.0, f64::NAN]),
+        ] {
+            assert_eq!(surface_at(reading, step_z), None, "{reading:?}");
+        }
+    }
+
+    // A column is a drop where at least three rays of a frame read past the
+    // step's plane through it, more than returned short and stand in it
+    // together: two past alone, or as many short or standing as past, marks
+    // none.
+    #[test]
+    fn a_drop_needs_three_rays_past_outnumbering_those_short_and_standing() {
+        let votes = |past: u32, short: u32, surfaces: u32| {
+            FloorVotes {
+                past,
+                short,
+                surfaces,
+            }
+            .show_a_drop()
+        };
+        assert!(!votes(2, 0, 0) && !votes(3, 3, 0) && !votes(5, 0, 5) && !votes(4, 2, 2));
+        assert!(votes(3, 0, 0) && votes(3, 2, 0) && votes(5, 2, 2) && votes(9, 0, 8));
+        let mut counted = FloorVotes::default();
+        for read in [FloorRead::Past, FloorRead::Short, FloorRead::Past] {
+            counted.count(read);
+        }
+        assert_eq!(
+            counted,
+            FloorVotes {
+                past: 2,
+                short: 1,
+                surfaces: 0
+            }
+        );
+    }
+
+    // A height of the band off the voxels names the whole values either side of
+    // it, and one within the floor's voxels names the least it may be, while the
+    // step, a plane the rays read, takes any height above the floor; live
+    // obstacles keep a map of the voxels the heights judge.
+    #[test]
+    fn the_band_heights_are_whole_voxels_of_the_map() {
+        let refused = ObstacleHeights::parse(ObstacleHeightsParams {
+            min_obstacle_height_m: 0.12,
+            max_obstacle_height_m: 0.5,
+            max_step_down_m: 0.1,
+            voxel_m: twentieth(),
+        })
+        .unwrap_err();
         let ObstacleHeightsError::NotWholeVoxels {
             name,
             lower_m,
@@ -551,24 +1136,31 @@ mod tests {
         assert_eq!(name, "min_obstacle_height_m");
         assert!((lower_m - 0.1).abs() < 1e-12 && (upper_m - 0.15).abs() < 1e-12);
         assert_eq!(
-            ObstacleHeights::parse(0.1, 0.5, 0.05, PositiveFinite::parse(0.1).unwrap()),
+            ObstacleHeights::parse(ObstacleHeightsParams {
+                min_obstacle_height_m: 0.05,
+                max_obstacle_height_m: 0.5,
+                max_step_down_m: 0.1,
+                voxel_m: PositiveFinite::parse(0.1).unwrap()
+            }),
             Err(ObstacleHeightsError::WithinTheFloorVoxels {
-                name: "max_step_down_m",
+                name: "min_obstacle_height_m",
                 height_m: 0.05,
                 voxel_m: 0.1,
             })
         );
-        let whole = ObstacleHeights::parse(0.1, 0.5, 0.1, twentieth()).unwrap();
-        let refused = LiveObstacles::new(map(0.1), whole, square()).unwrap_err();
-        let LiveObstaclesError::VoxelSize {
-            heights_voxel_m,
-            map_voxel_m,
-        } = refused
-        else {
-            panic!("{refused:?}");
-        };
-        assert_eq!((heights_voxel_m, map_voxel_m), (0.05, 0.1));
-        let live = LiveObstacles::new(map(0.05), whole, square()).unwrap();
+        for step_m in [0.03, 0.12] {
+            assert!(
+                ObstacleHeights::parse(ObstacleHeightsParams {
+                    min_obstacle_height_m: 0.1,
+                    max_obstacle_height_m: 0.5,
+                    max_step_down_m: step_m,
+                    voxel_m: twentieth()
+                })
+                .is_ok()
+            );
+        }
+        let whole = heights();
+        let live = LiveObstacles::new(odom(), bounds(), whole, square()).unwrap();
         assert_eq!(live.columns().resolution_m(), 0.05);
         assert_eq!(live.columns().origin(), [-1.0, -1.0]);
         let moved = live
@@ -591,7 +1183,13 @@ mod tests {
             min: [-half_m, 0.0, -0.5],
             max: [half_m, 0.05, 1.0],
         };
-        let heights = ObstacleHeights::parse(0.1, 0.5, 0.1, tenth).unwrap();
+        let heights = ObstacleHeights::parse(ObstacleHeightsParams {
+            min_obstacle_height_m: 0.1,
+            max_obstacle_height_m: 0.5,
+            max_step_down_m: 0.1,
+            voxel_m: tenth,
+        })
+        .unwrap();
         let too_many = |refused: LiveObstaclesError| {
             assert!(
                 matches!(
@@ -602,9 +1200,8 @@ mod tests {
                 "{refused:?}"
             );
         };
-        let wide = VoxelMap::new(Frame::parse("odom").unwrap(), tenth, long).unwrap();
-        too_many(LiveObstacles::new(wide, heights, square()).unwrap_err());
-        let live = LiveObstacles::new(map(0.1), heights, square()).unwrap();
+        too_many(LiveObstacles::new(odom(), long, heights, square()).unwrap_err());
+        let live = LiveObstacles::new(odom(), bounds(), heights, square()).unwrap();
         too_many(live.recentered(long).unwrap_err());
     }
 

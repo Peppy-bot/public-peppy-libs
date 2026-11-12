@@ -2,15 +2,16 @@
 //! grid, with voxels of the grid's cells, a cloud inserted into them, and the margins that
 //! keep a point's cell and band from turning on the rounding of the frame it is judged in.
 
-use camera_core::pose::{PlanarPose, Pose};
+use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::GridGeometry;
-use navigation_core::obstacles::{LiveObstacles, ObstacleHeights};
-use occupancy_map::{Bounds, Frame, VoxelMap};
+use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
+use occupancy_map::{Bounds, Frame};
 use ros_reference::{Grid, SensorTransform};
 
 use super::footprints;
+use super::poses::{on_base, planar};
 
 /// How far, in meters, each of Nav2's points lies at least from a cell's edge and from the
 /// band's ends: Nav2 transforms the points in single precision and the voxel map in double,
@@ -56,12 +57,12 @@ pub fn heights_of(
     max_obstacle_height: f64,
     voxel_m: f64,
 ) -> ObstacleHeights {
-    ObstacleHeights::parse(
-        min_obstacle_height,
-        max_obstacle_height,
-        STEP_DOWN_M,
-        PositiveFinite::parse(voxel_m).expect("a positive voxel size"),
-    )
+    ObstacleHeights::parse(ObstacleHeightsParams {
+        min_obstacle_height_m: min_obstacle_height,
+        max_obstacle_height_m: max_obstacle_height,
+        max_step_down_m: STEP_DOWN_M,
+        voxel_m: PositiveFinite::parse(voxel_m).expect("a positive voxel size"),
+    })
     .expect("the scenario's band, of whole voxels")
 }
 
@@ -76,21 +77,21 @@ pub fn live_obstacles_over(
     assert_on_step(grid.origin[0], voxel_m, "the grid's origin");
     assert_on_step(grid.origin[1], voxel_m, "the grid's origin");
     let half = voxel_m / 2.0;
-    let map = VoxelMap::new(
+    let bounds = Bounds {
+        min: [grid.origin[0] + half, grid.origin[1] + half, MAP_DEPTH_M[0]],
+        max: [
+            grid.origin[0] + (f64::from(grid.size_x) - 0.5) * voxel_m,
+            grid.origin[1] + (f64::from(grid.size_y) - 0.5) * voxel_m,
+            MAP_DEPTH_M[1],
+        ],
+    };
+    let live = LiveObstacles::new(
         Frame::parse("map").expect("a frame name"),
-        PositiveFinite::parse(voxel_m).expect("a positive voxel size"),
-        Bounds {
-            min: [grid.origin[0] + half, grid.origin[1] + half, MAP_DEPTH_M[0]],
-            max: [
-                grid.origin[0] + (f64::from(grid.size_x) - 0.5) * voxel_m,
-                grid.origin[1] + (f64::from(grid.size_y) - 0.5) * voxel_m,
-                MAP_DEPTH_M[1],
-            ],
-        },
+        bounds,
+        heights,
+        padded_footprint,
     )
     .expect("a map over the grid");
-    let live =
-        LiveObstacles::new(map, heights, padded_footprint).expect("heights of the map's voxels");
     let columns = live.columns();
     assert_eq!(
         (columns.size_x(), columns.size_y()),
@@ -113,11 +114,10 @@ pub fn insert_cloud(
     let [x, y, yaw] = base;
     live.insert_depth_frame(
         points,
-        pose,
-        PlanarPose { x, y, yaw },
+        planar(x, y, yaw),
+        on_base(planar(x, y, yaw), &pose),
         PositiveFinite::parse(range_m).expect("a positive range"),
-    )
-    .expect("the scan stands in the map's frame");
+    );
 }
 
 /// Panics unless each of `points`, in the grid's frame, lies `EDGE_MARGIN_M` or more from

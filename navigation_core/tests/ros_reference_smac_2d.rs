@@ -27,6 +27,7 @@ use std::num::NonZeroU32;
 use camera_core::pose::PlanarPose;
 use common::finite::{multiplier, non_negative};
 use common::footprints::padded;
+use common::poses::planar;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::grid::{Cell, CostGrid, GridGeometry};
 use navigation_core::planner::{
@@ -87,17 +88,13 @@ fn grid_of(cases: &Cases) -> CostGrid {
 }
 
 fn pose_of(pose: [f64; 3]) -> PlanarPose {
-    PlanarPose {
-        x: pose[0],
-        y: pose[1],
-        yaw: pose[2],
-    }
+    planar(pose[0], pose[1], pose[2])
 }
 
 /// The cell of `grid` holding the position of `pose`, a scenario's start or goal.
 fn cell_of(grid: &CostGrid, pose: PlanarPose) -> Cell {
     grid.geometry()
-        .cell_of([pose.x, pose.y])
+        .cell_of([pose.x(), pose.y()])
         .expect("the scenario's start and goal lie in its grid")
 }
 
@@ -172,8 +169,13 @@ fn the_planner_gives_smac_2ds_paths() {
                 "{what}: the smoothed length"
             );
 
-            let cells = search(&grid, [start.x, start.y], [goal.x, goal.y], &raw.search)
-                .unwrap_or_else(|e| panic!("{what}: the search fails: {e}"));
+            let cells = search(
+                &grid,
+                [start.x(), start.y()],
+                [goal.x(), goal.y()],
+                &raw.search,
+            )
+            .unwrap_or_else(|e| panic!("{what}: the search fails: {e}"));
             let smac_cells: Vec<(u32, u32)> = expected
                 .raw
                 .iter()
@@ -198,34 +200,35 @@ fn the_planner_gives_smac_2ds_paths() {
 
             for (i, (ours, smac)) in ours_raw.iter().zip(&expected.raw).enumerate() {
                 assert!(
-                    ours.x.to_bits() == smac[0].to_bits() && ours.y.to_bits() == smac[1].to_bits(),
+                    ours.x().to_bits() == smac[0].to_bits()
+                        && ours.y().to_bits() == smac[1].to_bits(),
                     "{what} pose {i}: ours ({}, {}), Smac's ({}, {})",
-                    ours.x,
-                    ours.y,
+                    ours.x(),
+                    ours.y(),
                     smac[0],
                     smac[1]
                 );
                 assert!(
-                    heading_difference(ours.yaw, smac[2]) <= HEADING_RAD,
+                    heading_difference(ours.yaw(), smac[2]) <= HEADING_RAD,
                     "{what} pose {i}: our heading {}, Smac's {}",
-                    ours.yaw,
+                    ours.yaw(),
                     smac[2]
                 );
             }
             for (i, (ours, smac)) in ours_smoothed.iter().zip(&expected.smoothed).enumerate() {
                 assert!(
-                    (ours.x - smac[0]).abs() <= SMOOTHED_M
-                        && (ours.y - smac[1]).abs() <= SMOOTHED_M,
+                    (ours.x() - smac[0]).abs() <= SMOOTHED_M
+                        && (ours.y() - smac[1]).abs() <= SMOOTHED_M,
                     "{what} smoothed pose {i}: ours ({}, {}), Smac's ({}, {})",
-                    ours.x,
-                    ours.y,
+                    ours.x(),
+                    ours.y(),
                     smac[0],
                     smac[1]
                 );
                 assert!(
-                    heading_difference(ours.yaw, smac[2]) <= HEADING_RAD,
+                    heading_difference(ours.yaw(), smac[2]) <= HEADING_RAD,
                     "{what} smoothed pose {i}: our heading {}, Smac's {}",
-                    ours.yaw,
+                    ours.yaw(),
                     smac[2]
                 );
             }

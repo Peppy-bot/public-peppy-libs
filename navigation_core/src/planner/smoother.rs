@@ -15,11 +15,11 @@
 
 use std::num::NonZeroU32;
 
-use camera_core::pose::PlanarPose;
 use control_core::non_negative_finite::NonNegativeFinite;
 
 use crate::footprint::PaddedFootprint;
 use crate::grid::{CostGrid, MAX_NON_OBSTACLE, UNKNOWN};
+use crate::planner::PathPose;
 use crate::pose::heading;
 
 /// The smoother's settings, Smac's `smoother` parameters.
@@ -52,7 +52,7 @@ const OVERLAP_M: f64 = 1e-4;
 
 /// `Smoother::smooth` on `path`, a holonomic path in `grid`'s frame.
 pub(crate) fn smooth(
-    path: &mut [PlanarPose],
+    path: &mut [PathPose],
     grid: &CostGrid,
     footprint: &PaddedFootprint,
     params: &SmootherParams,
@@ -68,7 +68,7 @@ pub(crate) fn smooth(
 
 /// `Smoother::smoothImpl`.
 fn smooth_impl(
-    path: &mut Vec<PlanarPose>,
+    path: &mut Vec<PathPose>,
     grid: &CostGrid,
     footprint: &PaddedFootprint,
     params: &SmootherParams,
@@ -93,13 +93,13 @@ fn smooth_impl(
         }
         for i in 1..path_size - 1 {
             for j in 0..2 {
-                let x_i = axis(&path[i], j);
-                let mut y_i = axis(&new_path[i], j);
-                let y_m1 = axis(&new_path[i - 1], j);
-                let y_ip1 = axis(&new_path[i + 1], j);
+                let x_i = path[i].xy[j];
+                let mut y_i = new_path[i].xy[j];
+                let y_m1 = new_path[i - 1].xy[j];
+                let y_ip1 = new_path[i + 1].xy[j];
                 let y_i_org = y_i;
                 y_i += data_w * (x_i - y_i) + smooth_w * (y_ip1 + y_m1 - (2.0 * y_i));
-                set_axis(&mut new_path[i], j, y_i);
+                new_path[i].xy[j] = y_i;
                 change += (y_i - y_i_org).abs();
             }
         }
@@ -121,33 +121,55 @@ fn smooth_impl(
 }
 
 /// Whether the footprint at `pose` lies on no obstacle of `grid`: the cost
-/// under its outline at most [`MAX_NON_OBSTACLE`], or unknown.
-fn admissible(grid: &CostGrid, footprint: &PaddedFootprint, pose: &PlanarPose) -> bool {
-    let cost = footprint.cost_at(grid, *pose) as f32;
-    !(cost > f32::from(MAX_NON_OBSTACLE) && cost != f32::from(UNKNOWN))
-}
-
-fn axis(pose: &PlanarPose, j: usize) -> f64 {
-    if j == 0 { pose.x } else { pose.y }
-}
-
-fn set_axis(pose: &mut PlanarPose, j: usize, value: f64) {
-    if j == 0 {
-        pose.x = value;
-    } else {
-        pose.y = value;
-    }
+/// under its outline at most [`MAX_NON_OBSTACLE`], or unknown. A pose that is
+/// not finite lies on no cell of the grid and is not admissible, as a vertex
+/// off the grid reads lethal.
+fn admissible(grid: &CostGrid, footprint: &PaddedFootprint, pose: &PathPose) -> bool {
+    pose.placed().is_ok_and(|placed| {
+        let cost = footprint.cost_at(grid, placed) as f32;
+        !(cost > f32::from(MAX_NON_OBSTACLE) && cost != f32::from(UNKNOWN))
+    })
 }
 
 /// `updateApproximatePathOrientations` for a holonomic path: each pose but
 /// the last heads towards the next, unless the two lie on each other.
-fn update_orientations(path: &mut [PlanarPose]) {
+fn update_orientations(path: &mut [PathPose]) {
     for i in 0..path.len() - 1 {
-        let dx = path[i + 1].x - path[i].x;
-        let dy = path[i + 1].y - path[i].y;
+        let dx = path[i + 1].xy[0] - path[i].xy[0];
+        let dy = path[i + 1].xy[1] - path[i].xy[1];
         if dx.abs() < OVERLAP_M && dy.abs() < OVERLAP_M {
             continue;
         }
         path[i].yaw = heading(dy.atan2(dx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::{FREE, GridGeometry};
+    use control_core::footprint::Footprint;
+    use control_core::positive_finite::PositiveFinite;
+
+    // A pose of a free grid is admissible, and one whose position or heading is not finite
+    // lies on no cell and is not.
+    #[test]
+    fn a_pose_that_is_not_finite_is_not_admissible() {
+        let geometry =
+            GridGeometry::new(20, 20, PositiveFinite::parse(0.1).unwrap(), [0.0; 2]).unwrap();
+        let grid = CostGrid::filled(geometry, FREE);
+        let footprint = PaddedFootprint::new(
+            &Footprint::parse(&[[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]).unwrap(),
+            NonNegativeFinite::parse(0.0).unwrap(),
+        )
+        .unwrap();
+        let at = |xy: [f64; 2], yaw: f64| PathPose { xy, yaw };
+        assert!(admissible(&grid, &footprint, &at([1.0, 1.0], 0.3)));
+        assert!(!admissible(&grid, &footprint, &at([f64::NAN, 1.0], 0.3)));
+        assert!(!admissible(
+            &grid,
+            &footprint,
+            &at([1.0, 1.0], f64::INFINITY)
+        ));
     }
 }

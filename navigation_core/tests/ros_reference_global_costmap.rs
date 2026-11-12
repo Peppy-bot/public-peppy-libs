@@ -17,11 +17,13 @@
 mod common;
 
 use camera_core::pose::PlanarPose;
+
 use common::clouds::{
     assert_clear_of_edges, assert_on_step, geometry_of, heights_of, insert_cloud,
     live_obstacles_over, padded_as_nav2,
 };
 use common::footprints::inside_by;
+use common::poses::planar;
 use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::costmap::compose;
@@ -147,9 +149,11 @@ fn the_cost_grid_is_nav2s_global_cost_map() {
             cases.base,
             cases.obstacle.depth.obstacle_max_range,
         );
-        let obstacles = live.project(PlanarPose::IDENTITY, geometry);
+        let obstacles = live
+            .project(PlanarPose::IDENTITY, geometry)
+            .expect("a finite placement");
         let [x, y, yaw] = cases.base;
-        let under_footprint: Vec<[f64; 2]> = footprint.placed_at(PlanarPose { x, y, yaw });
+        let under_footprint: Vec<[f64; 2]> = footprint.placed_at(planar(x, y, yaw));
         let freed_unknown: Vec<_> = geometry
             .cells()
             .filter(|&cell| {

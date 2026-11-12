@@ -7,6 +7,9 @@
 //! back to the first, sorted by column, and each column filled between its
 //! lowest and highest outline cells. A concave polygon's column takes the whole
 //! span between them, as Nav2 fills it.
+//!
+//! [`polygon_cells`] sets no cell for a polygon with a vertex off the grid, as
+//! Nav2 does.
 
 use crate::grid::{Cell, GridGeometry};
 
