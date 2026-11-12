@@ -1,6 +1,6 @@
 //! The model of the robot a component (an arm, a gripper) is a part of, as the robot's
-//! initializer names it on each call of component_ready's `is_ready`: the first call
-//! configures the component for the model, and every later call names the same model.
+//! initializer names it with component_ready's `set_model`: the first call configures
+//! the component for the model, and every later call names the same model.
 
 use std::fmt::Display;
 use std::sync::Mutex;
