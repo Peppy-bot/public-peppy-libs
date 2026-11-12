@@ -32,7 +32,7 @@ impl ForwardKinematics {
     /// use [`chain_kinematics`] directly).
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
         let robot = urdf_rs::read_from_string(urdf).map_err(|e| format!("parse URDF: {e}"))?;
-        let tree = Tree::from_robot(&robot).map_err(SrsError::NotSrsArm)?;
+        let tree = Tree::from_robot(&robot).map_err(|e| SrsError::NotSrsArm(e.to_string()))?;
         let base = tree
             .link_index(base_link)
             .ok_or_else(|| format!("URDF missing base link '{base_link}'"))?;
