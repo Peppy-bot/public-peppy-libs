@@ -36,7 +36,7 @@ The SRDF of every model gives:
   group of its finger joints. The group names are the names limb_motion
   addresses the limbs by: `left_arm`, `right_arm`, `left_gripper`,
   `right_gripper` on an OpenArm, `arm` and `gripper` on an SO-101.
-- the states `ready` and `home` of each arm, `park` where the arm has one, and
+- the states `ready`, `home` and `start` of each arm, `park` where the arm has one, and
   `closed` and `open` of each gripper ([`states`]).
 - the disabled pairs, each with its reason: `Adjacent` for two links on one
   joint, `Never` for two links the joint limits keep apart, `Default` for two
@@ -124,7 +124,7 @@ name that is not one file's.
    grasp link, with an end effector on the grasp link; each gripper as the
    group of its finger joints, with its `closed` and `open` states, which put
    each finger at one of its joint's limits, a different one each; each arm's
-   `ready` and `home` states; and every pair of links whose collisions it
+   `ready`, `home` and `start` states; and every pair of links whose collisions it
    disables, with its reason.
 4. Build: `build.rs` bundles the model by its id with the digest of its
    files, and the crate's tests hold every bundled model to the rules above,
@@ -156,7 +156,7 @@ cargo test
 ```
 
 The tests hold every bundled model to the rules above: its arms with their
-`ready` and `home` states, each finger's `closed` and `open` positions at its
+`ready`, `home` and `start` states, each finger's `closed` and `open` positions at its
 joint's limits, the origin of each gripper link with collision geometry at -z
 of its grasp frame, its digest, its meshes the ones its URDF names, and its
 files in its directory; each bundled model drives a node compiled for its own

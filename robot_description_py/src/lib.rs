@@ -23,6 +23,7 @@ type Vector3 = (f64, f64, f64);
 fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("READY", states::READY)?;
     module.add("HOME", states::HOME)?;
+    module.add("START", states::START)?;
     module.add("PARK", states::PARK)?;
     module.add("CLOSED", states::CLOSED)?;
     module.add("OPEN", states::OPEN)?;

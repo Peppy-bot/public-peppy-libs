@@ -73,6 +73,8 @@ pub mod states {
     pub const READY: &str = "ready";
     /// An arm's home posture, the one it rests in.
     pub const HOME: &str = "home";
+    /// An arm's start posture, the one a simulation stands it in when its robot joins.
+    pub const START: &str = "start";
     /// An arm's park posture, which robot_guide answers.
     pub const PARK: &str = "park";
     /// Where a gripper's fingers stand shut. Every gripper with a finger gives it.

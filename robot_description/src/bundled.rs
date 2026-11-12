@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn every_model_has_its_arms_ready_and_home_postures_and_gripper_ends_at_joint_limits() {
+    fn every_model_has_its_arms_ready_home_and_start_postures_and_gripper_ends_at_joint_limits() {
         for bundled in models() {
             let description = bundled.description();
             assert!(!description.arms().is_empty(), "{}: arms", bundled.id());
@@ -200,7 +200,11 @@ mod tests {
                     bundled.id(),
                     arm.name
                 );
-                for posture in [crate::states::READY, crate::states::HOME] {
+                for posture in [
+                    crate::states::READY,
+                    crate::states::HOME,
+                    crate::states::START,
+                ] {
                     let values = description
                         .state(&arm.name, posture)
                         .unwrap_or_else(|| panic!("{} {}: {posture}", bundled.id(), arm.name));

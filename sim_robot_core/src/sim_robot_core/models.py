@@ -6,7 +6,7 @@ attach goal carries, as robot_description_py reads them: each arm group with
 the joints it moves, each gripper group with where its closed and open states
 put each finger and the finger each mimic finger follows, the optical frame
 of each camera with the depths a depth camera measures, and the posture the
-robot starts in, every arm at its ready state and every gripper closed. The
+robot starts in, every arm at its start state and every gripper closed. The
 limbs have the names the robot answers to in limb_motion and limb_state
 (left_arm and left_gripper on an OpenArm, arm and gripper on an SO-101).
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyjson5
-from robot_description_py import READY, RobotDescription
+from robot_description_py import START, RobotDescription
 from robot_description_py import model as bundled_model
 
 from sim_robot_core.cameras import (
@@ -227,10 +227,10 @@ def _gripper(source: str, gripper) -> Gripper:
 def _start_posture(source: str, description: RobotDescription) -> dict[str, float]:
     posture: dict[str, float] = {}
     for arm in description.arms:
-        ready = description.state(arm.name, READY)
-        if ready is None:
-            raise _fail(source, f"the description gives the arm '{arm.name}' no {READY} state")
-        posture.update(zip(arm.joints, ready, strict=True))
+        start = description.state(arm.name, START)
+        if start is None:
+            raise _fail(source, f"the description gives the arm '{arm.name}' no {START} state")
+        posture.update(zip(arm.joints, start, strict=True))
         posture.update((finger.joint, finger.closed) for finger in arm.gripper.fingers)
     return posture
 
@@ -245,7 +245,7 @@ def _entry_of(
     its cameras rendered as `renders` gives the camera of the same name, the
     renders of the entry at `source`, or None where no file is there. A
     camera of the description with no render and a render of no camera of
-    the description are refused naming the entry; an arm with no ready state
+    the description are refused naming the entry; an arm with no start state
     and a finger that does not travel, naming the model."""
     described = f"model {model}"
     arms = tuple(Arm(name=arm.name, joints=arm.joints) for arm in description.arms)

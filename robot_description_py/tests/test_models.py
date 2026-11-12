@@ -44,9 +44,10 @@ def test_written_files_are_the_models_files(tmp_path):
 
 
 def test_the_state_names_are_the_ones_the_srdf_gives():
-    assert (robot_description_py.READY, robot_description_py.HOME, robot_description_py.PARK) == (
-        "ready",
-        "home",
-        "park",
-    )
+    assert (
+        robot_description_py.READY,
+        robot_description_py.HOME,
+        robot_description_py.START,
+        robot_description_py.PARK,
+    ) == ("ready", "home", "start", "park")
     assert (robot_description_py.CLOSED, robot_description_py.OPEN) == ("closed", "open")

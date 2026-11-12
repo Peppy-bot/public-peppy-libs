@@ -8,6 +8,7 @@ type _Vector3 = tuple[float, float, float]
 
 READY: Final[str]
 HOME: Final[str]
+START: Final[str]
 PARK: Final[str]
 CLOSED: Final[str]
 OPEN: Final[str]

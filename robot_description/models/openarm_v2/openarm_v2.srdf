@@ -61,6 +61,26 @@ limitations under the License.
         <joint name="openarm_right_joint6" value="0"/>
         <joint name="openarm_right_joint7" value="0"/>
     </group_state>
+    <!-- Start: the posture a simulation stands the arm in when the robot joins,
+         each upper arm hanging and the elbow bent a quarter turn. -->
+    <group_state name="start" group="left_arm">
+        <joint name="openarm_left_joint1" value="0"/>
+        <joint name="openarm_left_joint2" value="0"/>
+        <joint name="openarm_left_joint3" value="0"/>
+        <joint name="openarm_left_joint4" value="1.570796"/>
+        <joint name="openarm_left_joint5" value="0"/>
+        <joint name="openarm_left_joint6" value="0"/>
+        <joint name="openarm_left_joint7" value="0"/>
+    </group_state>
+    <group_state name="start" group="right_arm">
+        <joint name="openarm_right_joint1" value="0"/>
+        <joint name="openarm_right_joint2" value="0"/>
+        <joint name="openarm_right_joint3" value="0"/>
+        <joint name="openarm_right_joint4" value="1.570796"/>
+        <joint name="openarm_right_joint5" value="0"/>
+        <joint name="openarm_right_joint6" value="0"/>
+        <joint name="openarm_right_joint7" value="0"/>
+    </group_state>
     <group_state name="home" group="left_arm">
         <joint name="openarm_left_joint1" value="0"/>
         <joint name="openarm_left_joint2" value="-0.09"/>

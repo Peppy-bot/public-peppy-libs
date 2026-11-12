@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from robot_description_py import READY, RobotDescription, model
+from robot_description_py import START, RobotDescription, model
 
 from sim_robot_core import models as models_module
 from sim_robot_core.errors import ModelEntryError
@@ -131,19 +131,19 @@ class TestFromTheDescription:
             assert mimic.joint in driven
 
     @pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101"])
-    def test_a_robot_starts_at_ready_with_its_grippers_closed(self, name):
+    def test_a_robot_starts_at_its_start_state_with_its_grippers_closed(self, name):
         description = model(name).description()
         expected = {}
         for arm in description.arms:
-            expected.update(zip(arm.joints, description.state(arm.name, READY), strict=True))
+            expected.update(zip(arm.joints, description.state(arm.name, START), strict=True))
             expected.update((finger.joint, finger.closed) for finger in arm.gripper.fingers)
         posture = bundled(name).start_posture
         assert posture == expected
         assert set(posture) == set(bundled(name).joints())
 
-    def test_an_arm_with_no_ready_state_is_refused(self):
-        description = so101_with_srdf('<group_state name="ready" group="arm">', '<group_state name="rest" group="arm">')
-        with pytest.raises(ModelEntryError, match="^model so101: the description gives the arm 'arm' no ready state$"):
+    def test_an_arm_with_no_start_state_is_refused(self):
+        description = so101_with_srdf('<group_state name="start" group="arm">', '<group_state name="rest" group="arm">')
+        with pytest.raises(ModelEntryError, match="^model so101: the description gives the arm 'arm' no start state$"):
             shipped_entry("so101", description)
 
     def test_a_finger_that_does_not_travel_is_refused(self):

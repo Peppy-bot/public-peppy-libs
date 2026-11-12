@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from robot_description_py import CLOSED, HOME, OPEN, READY, RobotDescription, model
+from robot_description_py import CLOSED, HOME, OPEN, READY, START, RobotDescription, model
 
 
 def test_files_of_two_robots_do_not_make_one_description():
@@ -53,7 +53,7 @@ def test_each_arm_gives_its_chain_and_its_gripper():
 def test_a_state_gives_one_position_per_joint_or_none():
     description = model("so101").description()
     (arm,) = description.arms
-    for posture in [READY, HOME]:
+    for posture in [READY, HOME, START]:
         positions = description.state(arm.name, posture)
         assert positions is not None and len(positions) == len(arm.joints)
     assert description.state(arm.name, "no_such_state") is None

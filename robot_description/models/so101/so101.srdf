@@ -33,6 +33,15 @@
         <joint name="wrist_flex" value="1.03"/>
         <joint name="wrist_roll" value="0.32"/>
     </group_state>
+    <!-- Start: the posture a simulation stands the arm in when the robot joins,
+         the arm folded over its base. -->
+    <group_state name="start" group="arm">
+        <joint name="shoulder_pan" value="-0.05"/>
+        <joint name="shoulder_lift" value="-1.72"/>
+        <joint name="elbow_flex" value="1.68"/>
+        <joint name="wrist_flex" value="1.24"/>
+        <joint name="wrist_roll" value="0.32"/>
+    </group_state>
     <group_state name="closed" group="gripper">
         <joint name="gripper" value="-0.174533"/>
     </group_state>
