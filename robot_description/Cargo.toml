@@ -1,0 +1,23 @@
+[package]
+name = "robot_description"
+version = "0.1.0"
+edition = "2024"
+description = "A robot's description as its URDF and its SRDF, read together and held to each other: its arms as chains to their grasp points, their grippers and where each finger shuts and opens, its named postures, the pairs of links whose collisions are disabled, and the optical frames of its cameras with the depths each depth camera measures. Bundles the description of each robot model of this repository, by model id, with a digest of its files and, behind the `meshes` feature, its collision meshes. No hardware or messaging deps."
+
+[workspace]
+
+[features]
+meshes = []
+
+[dependencies]
+chain_kinematics = { path = "../chain_kinematics" }
+roxmltree = "0.21"
+thiserror = "2"
+urdf-rs = "0.10"
+
+[build-dependencies]
+sha2 = "0.11"
+
+[dev-dependencies]
+nalgebra = "0.35"
+sha2 = "0.11"
