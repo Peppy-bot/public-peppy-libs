@@ -1,14 +1,14 @@
 """Asyncio plumbing shared by Python peppy nodes' stream tasks: logging,
 pacing, subscription receive, gated wire-input consumption, service serving,
-and wire timestamps."""
+asking another node until it answers, and wire timestamps."""
 
 from __future__ import annotations
 
 import asyncio
 import math
 import time
-from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, Protocol, TypeVar
 
 from control_core_py.params import require_positive
 
@@ -19,6 +19,9 @@ class SetpointError(ValueError):
 
 _RECEIVE_RETRY_S = 0.1
 _SERVICE_RETRY_S = 1.0
+_ASK_RETRY_S = 1.0
+
+_Answer = TypeVar("_Answer")
 
 _node_tag = "node"
 
@@ -204,6 +207,44 @@ async def serve(node_runner, service_module, handler, label: str) -> None:
         else:
             log(f"{label}: its request stream ended; it listens again in {_SERVICE_RETRY_S:g} s")
         await asyncio.sleep(_SERVICE_RETRY_S)
+
+
+async def _unless_cancelled(awaitable: Awaitable[_Answer], token: CancellationToken) -> tuple[bool, _Answer | None]:
+    """Await `awaitable` unless the token cancels first: (True, its result), or
+    (False, None) on a cancel, which wins a tie. An error of `awaitable`
+    propagates."""
+    cancelled = asyncio.ensure_future(token.cancelled())
+    work = asyncio.ensure_future(awaitable)
+    try:
+        await asyncio.wait([cancelled, work], return_when=asyncio.FIRST_COMPLETED)
+        if cancelled.done() or not work.done():
+            return False, None
+        return True, work.result()
+    finally:
+        cancelled.cancel()
+        work.cancel()
+        await asyncio.gather(cancelled, work, return_exceptions=True)
+
+
+async def ask(
+    question: str, token: CancellationToken, ask_once: Callable[[], Awaitable[_Answer]]
+) -> _Answer | None:
+    """Ask `ask_once` until it answers, and give the answer, or None once the
+    token cancels. A cancel ends the loop at once, while it asks or waits.
+    The first failure of a run is logged as "{question} failing: {error};
+    suppressing repeats", and the loop asks again _ASK_RETRY_S after each
+    failure."""
+    failing = Latch()
+    while True:
+        try:
+            answered, answer = await _unless_cancelled(ask_once(), token)
+        except Exception as e:
+            failing.trip(f"{question} failing: {e!r}")
+        else:
+            return answer if answered else None
+        waited, _ = await _unless_cancelled(asyncio.sleep(_ASK_RETRY_S), token)
+        if not waited:
+            return None
 
 
 def wire_timestamp_s(clock_now_ns: int, captured_monotonic: float) -> float:
