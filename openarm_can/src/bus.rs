@@ -203,14 +203,14 @@ impl CanSock {
     }
 }
 
-/// A CAN interface with the motors that live on it.
-pub(crate) struct MotorBus {
-    socket: CanSock,
-    slots: Vec<MotorSlot>,
-}
+/// One CAN interface, opened: the socket that an [`ArmCan`](crate::ArmCan) or a
+/// [`GripperCan`](crate::GripperCan) drives the motors on it over.
+pub struct CanInterface(CanSock);
 
-impl MotorBus {
-    pub fn open(interface: &str, enable_fd: bool, slots: Vec<MotorSlot>) -> Result<Self> {
+impl CanInterface {
+    /// Opens `interface`, in CAN FD when `enable_fd`. Refused when the machine has no
+    /// interface of that name, or when the interface is down.
+    pub fn open(interface: &str, enable_fd: bool) -> Result<Self> {
         let open_err = |source| CanError::Open {
             interface: interface.to_owned(),
             source,
@@ -220,18 +220,38 @@ impl MotorBus {
         } else {
             CanSock::Classic(CanSocket::open(interface).map_err(open_err)?)
         };
+        let raw = match &socket {
+            CanSock::Classic(s) => s.as_raw_socket(),
+            CanSock::Fd(s) => s.as_raw_socket(),
+        };
+        // The kernel binds a socket to an interface that is down and leaves
+        // ENETDOWN pending on it, which this takes.
+        if let Some(pending) = raw.take_error().map_err(open_err)? {
+            return Err(open_err(pending));
+        }
         // Backstop from the reference implementation: reads happen only after
         // a readiness poll, but if that invariant is ever wrong (kernel or
         // driver quirk), SO_RCVTIMEO bounds the blocking read instead of
         // letting it hang the caller's mutex forever. Kernel rounding makes
         // the effective bound one scheduler tick, not the literal value.
-        let raw = match &socket {
-            CanSock::Classic(s) => s.as_raw_socket(),
-            CanSock::Fd(s) => s.as_raw_socket(),
-        };
         raw.set_read_timeout(Some(RECV_BACKSTOP))
             .map_err(open_err)?;
-        Ok(Self { socket, slots })
+        Ok(Self(socket))
+    }
+}
+
+/// A CAN interface with the motors that live on it.
+pub(crate) struct MotorBus {
+    socket: CanSock,
+    slots: Vec<MotorSlot>,
+}
+
+impl MotorBus {
+    pub fn new(interface: CanInterface, slots: Vec<MotorSlot>) -> Self {
+        Self {
+            socket: interface.0,
+            slots,
+        }
     }
 
     pub fn slots(&self) -> &[MotorSlot] {
@@ -567,6 +587,18 @@ mod tests {
     fn a_receive_pass_always_waits() {
         let pass = ReceivePass::new(Duration::from_micros(1));
         assert_eq!(pass.first_timeout_us, 1);
+    }
+
+    #[test]
+    fn an_interface_the_machine_lacks_is_refused_naming_it() {
+        for enable_fd in [true, false] {
+            let Err(CanError::Open { interface, .. }) =
+                CanInterface::open("no_such_can", enable_fd)
+            else {
+                panic!("an interface the machine lacks is refused (FD {enable_fd})");
+            };
+            assert_eq!(interface, "no_such_can");
+        }
     }
 
     fn gripper_slot() -> MotorSlot {

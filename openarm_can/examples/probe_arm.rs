@@ -17,7 +17,9 @@
 //! defaults, and one whose `mstr id` differs from its siblings' pattern will
 //! act on commands while its replies go to an id nobody reads.
 
-use openarm_can::{ARM_DOF, ARM_MOTOR_TYPES, ArmCan, EffectiveRatings, MotorParam, MotorStatus};
+use openarm_can::{
+    ARM_DOF, ARM_MOTOR_TYPES, ArmCan, CanInterface, EffectiveRatings, MotorParam, MotorStatus,
+};
 
 /// Generous windows: this runs once, by hand, and a slow reply is worth
 /// waiting for.
@@ -28,7 +30,7 @@ fn main() {
         eprintln!("usage: probe_arm <can-interface>");
         std::process::exit(2);
     };
-    let mut arm = match ArmCan::open(&interface, true) {
+    let mut arm = match CanInterface::open(&interface, true).and_then(ArmCan::open) {
         Ok(arm) => arm,
         Err(e) => {
             eprintln!("open {interface}: {e}");
