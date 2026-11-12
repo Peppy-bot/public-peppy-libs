@@ -1,12 +1,9 @@
 {
   "kind": "forward_kinematics",
-  "urdf": "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
-  "meshes": "so101_description/src/so101_description/urdf/collision",
-  "chains": [
+  "description": "robot_description/models/so101",
+  "arms": [
     {
       "name": "arm",
-      "joints": ["shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll"],
-      "tip_link": "gripper_frame_link",
       "configurations": [
         [0.0,0.0,0.0,0.0,0.0],
         [-1.91986,-1.74533,-1.69,-1.65806,-2.74385],

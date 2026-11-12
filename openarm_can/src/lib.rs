@@ -1,7 +1,8 @@
 //! Pure-Rust driver for OpenArm's Damiao DM motors over Linux SocketCAN.
 //!
-//! [`ArmCan`] and [`GripperCan`] take `&mut self` for every bus operation;
-//! wrap them in `Arc<Mutex<_>>` for cross-task sharing.
+//! [`ArmCan`] and [`GripperCan`] each drive the motors on one [`CanInterface`],
+//! and take `&mut self` for every bus operation; wrap them in `Arc<Mutex<_>>`
+//! for cross-task sharing.
 //!
 //! The arm motor lineup and CAN addressing are identical across OpenArm v1.0 and v2.0
 //! (same DM motors, same bus IDs), so they live once at the crate root ([`ARM_MOTOR_TYPES`],
@@ -21,7 +22,7 @@ use std::time::Duration;
 
 use control_core::time::ticks_within;
 
-pub use bus::ReceivePass;
+pub use bus::{CanInterface, ReceivePass};
 use bus::{MotorBus, MotorSlot};
 use protocol::TorquePu;
 pub use protocol::{DriveState, EffectiveRatings, FaultKind, MotorParam, MotorStatus, MotorType};
@@ -67,9 +68,8 @@ pub mod v10 {
     pub const GRIPPER_SEND_ID: u32 = 0x08;
     pub const GRIPPER_RECV_ID: u32 = 0x18;
 
-    // joint=0 m (closed) ↔ motor=0 rad, joint=GRIPPER_OPEN_M ↔ motor=GRIPPER_OPEN_RAD.
-    // Values match ROS2 openarm/v10_simple_hardware.
-    pub const GRIPPER_OPEN_M: f64 = 0.044;
+    // The motor stands at 0 rad with the jaws shut and at GRIPPER_OPEN_RAD with them fully open,
+    // as ROS2 openarm/v10_simple_hardware maps them.
     #[allow(clippy::approx_constant)]
     pub const GRIPPER_OPEN_RAD: f64 = -1.0472;
 }
@@ -82,12 +82,6 @@ pub mod v20 {
     pub const GRIPPER_MOTOR_TYPE: MotorType = MotorType::DM4310;
     pub const GRIPPER_SEND_ID: u32 = 0x08;
     pub const GRIPPER_RECV_ID: u32 = 0x18;
-
-    // The gripper motor closes at 0 rad and opens toward GRIPPER_OPEN_RAD. This is the
-    // motor-frame open angle used by enactic's POS_FORCE reference (test_gripper_posforce
-    // commands 0..π/2); each finger joint travels π/2 rad (the right hand's URDF range
-    // mirrored to -π/2..0), so the motor↔finger ratio is 1:1.
-    pub const GRIPPER_OPEN_RAD: f64 = std::f64::consts::FRAC_PI_2;
 }
 
 /// Receive window for the motor's reply to a control-mode write during
@@ -203,13 +197,13 @@ pub type Result<T> = std::result::Result<T, CanError>;
 pub struct ArmCan(MotorBus);
 
 impl ArmCan {
-    /// Opens `can_interface` and registers the seven arm motors
-    /// ([`ARM_MOTOR_TYPES`] on [`ARM_SEND_IDS`] / [`ARM_RECV_IDS`]).
-    pub fn open(can_interface: &str, enable_fd: bool) -> Result<Self> {
+    /// Registers the seven arm motors on `interface` ([`ARM_MOTOR_TYPES`] on
+    /// [`ARM_SEND_IDS`] / [`ARM_RECV_IDS`]).
+    pub fn open(interface: CanInterface) -> Result<Self> {
         let slots = (0..ARM_DOF)
             .map(|i| MotorSlot::new(ARM_MOTOR_TYPES[i], ARM_SEND_IDS[i], ARM_RECV_IDS[i], 0))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self(MotorBus::open(can_interface, enable_fd, slots)?))
+        Ok(Self(MotorBus::new(interface, slots)))
     }
 
     pub fn enable_all(&mut self) -> Result<()> {
@@ -362,16 +356,15 @@ pub struct GripperCan<M: Mode> {
 }
 
 impl GripperCan<Mit> {
-    /// Opens the gripper motor in MIT mode; command it with
+    /// Opens the gripper motor on `interface` in MIT mode; command it with
     /// [`mit_control`](Self::mit_control).
     pub fn open_mit(
-        can_interface: &str,
-        enable_fd: bool,
+        interface: CanInterface,
         motor_type: MotorType,
         send_id: u32,
         recv_id: u32,
     ) -> Result<Self> {
-        Self::open(can_interface, enable_fd, motor_type, send_id, recv_id, 0)
+        Self::open(interface, motor_type, send_id, recv_id, 0)
     }
 
     /// MIT-mode command: PD to `q`/`dq` plus feedforward `tau`.
@@ -383,18 +376,16 @@ impl GripperCan<Mit> {
 }
 
 impl GripperCan<PosForce> {
-    /// Opens the gripper motor in POS_FORCE mode; command it with
+    /// Opens the gripper motor on `interface` in POS_FORCE mode; command it with
     /// [`set_position`](Self::set_position).
     pub fn open_pos_force(
-        can_interface: &str,
-        enable_fd: bool,
+        interface: CanInterface,
         motor_type: MotorType,
         send_id: u32,
         recv_id: u32,
     ) -> Result<Self> {
         Self::open(
-            can_interface,
-            enable_fd,
+            interface,
             motor_type,
             send_id,
             recv_id,
@@ -417,15 +408,14 @@ impl GripperCan<PosForce> {
 
 impl<M: Mode> GripperCan<M> {
     fn open(
-        can_interface: &str,
-        enable_fd: bool,
+        interface: CanInterface,
         motor_type: MotorType,
         send_id: u32,
         recv_id: u32,
         extra_send_offset: u32,
     ) -> Result<Self> {
         let slot = MotorSlot::new(motor_type, send_id, recv_id, extra_send_offset)?;
-        let mut bus = MotorBus::open(can_interface, enable_fd, vec![slot])?;
+        let mut bus = MotorBus::new(interface, vec![slot]);
         bus.set_control_mode(M::CONTROL_MODE)?;
         bus.drain(CTRL_MODE_ECHO_TIMEOUT_US)?;
         Ok(Self {
@@ -541,18 +531,9 @@ mod tests {
     }
 
     #[test]
-    fn v1_gripper_mapping_signs_oppose() {
-        // Linear mapping: 0 m → 0 rad, GRIPPER_OPEN_M → GRIPPER_OPEN_RAD. The open
-        // direction is negative in the motor frame; a sign flip sends the gripper
-        // the wrong way.
-        assert!(v10::GRIPPER_OPEN_M > 0.0);
+    fn v1_gripper_opens_toward_negative_motor_angles() {
+        // A sign flip sends the gripper the wrong way.
         assert!(v10::GRIPPER_OPEN_RAD < 0.0);
-    }
-
-    #[test]
-    fn v2_gripper_opens_positive() {
-        // The v2 pinch gripper closes at 0 rad and opens toward a positive motor angle.
-        assert!(v20::GRIPPER_OPEN_RAD > 0.0);
     }
 
     #[test]

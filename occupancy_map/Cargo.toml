@@ -16,7 +16,7 @@ thiserror = "2"
 [dev-dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
-openarm_description = { path = "../openarm_description", features = ["meshes"] }
+robot_description = { path = "../robot_description", features = ["meshes"] }
 ros_reference = { path = "../ros_reference" }
 
 [profile.dev]

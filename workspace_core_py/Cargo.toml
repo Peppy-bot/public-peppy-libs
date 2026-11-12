@@ -2,7 +2,7 @@
 name = "workspace_core_py"
 version = "0.1.0"
 edition = "2024"
-description = "Python bindings of workspace_core for a robot's backbone in Python: the limits, the grasp directions, the parsing of a workspace:v1 request, the reach memo, and the answers of a robot without a perception camera."
+description = "Python bindings of workspace_core for a robot's backbone in Python: the limits, the grasp directions, the parsing of a workspace:v1 request, the reach rule over its own solver, the clearance of its arms over a surface, the reach memo, and the answers of a robot without a perception camera."
 publish = false
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
@@ -17,4 +17,5 @@ crate-type = ["cdylib"]
 [dependencies]
 # The stable ABI of Python 3.12: one build loads on every Python from 3.12.
 pyo3 = { version = "0.30", features = ["abi3-py312"] }
-workspace_core = { path = "../workspace_core" }
+robot_description = { path = "../robot_description" }
+workspace_core = { path = "../workspace_core", features = ["description"] }

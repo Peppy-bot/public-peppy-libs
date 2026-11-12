@@ -40,22 +40,21 @@ impl Arm {
         Ok(Self { fk, model })
     }
 
+    /// The arm `arm` of the robot `description` describes: its chain from the arm's base
+    /// link, with the URDF's limits, and its tool at the arm's grasp link.
+    pub fn from_description(
+        description: &robot_description::RobotDescription,
+        arm: &robot_description::Arm,
+    ) -> Result<Self, SrsError> {
+        Self::from_urdf(description.urdf(), &arm.base_link)?.with_tool_link(&arm.grasp_link)
+    }
+
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
     /// folding the IO error into the same `Result`.
     pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
         let fk = ForwardKinematics::from_urdf_file(path, base_link)?;
         let model = ArmModel::from_fk(&fk)?;
         Ok(Self { fk, model })
-    }
-
-    /// Raise the reported lower limit of joint `joint_idx` (0-based, j1..j7) to at
-    /// least `floor`, returning the arm. The parsed URDF is left untouched: this is a
-    /// control margin layered over the mechanical limit (e.g. holding a joint off a
-    /// solver singularity), surfaced through [`limits`](Self::limits) so every
-    /// consumer of the limits inherits it. Panics if `joint_idx >= ARM_DOF`.
-    pub fn with_lower_floor(mut self, joint_idx: usize, floor: f64) -> Self {
-        self.fk.set_lower_floor(joint_idx, floor);
-        self
     }
 
     /// Mount the tool frame the URDF carries as `link_name`, which must sit below
@@ -77,7 +76,7 @@ impl Arm {
 
     /// The arm as a plain serial chain: what the topology-agnostic operations in
     /// [`chain_kinematics`] take. The chain carries this arm's tool frame and its
-    /// limits, elbow floor included, so a generic law run over it is run over the
+    /// limits, so a generic law run over it is run over the
     /// same arm the SRS-specific methods here describe.
     pub fn chain(&self) -> &chain_kinematics::Chain<ARM_DOF> {
         self.fk.chain()
@@ -96,8 +95,7 @@ impl Arm {
     /// resolving the redundant arm angle per `arm_angle` and selecting the branch
     /// nearest `seed`. Convert a world-frame target with [`base_pose`](Self::base_pose)
     /// first. `None` if the target is unreachable or admits no in-limit solution.
-    /// In-limit means [`limits`](Self::limits), so a floor set by
-    /// [`with_lower_floor`](Self::with_lower_floor) constrains the solutions too.
+    /// In-limit means [`limits`](Self::limits).
     ///
     /// `target` is where the caller wants the end-effector, so on an arm with a
     /// tool it is a tool-frame target; the tool is removed here to leave the tip
@@ -303,14 +301,11 @@ mod tests {
     use crate::properties::STRAIGHT_ELBOW_BAND;
     use kinematics_properties::{TOLERANCE, configs};
 
-    const FIXTURE: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/openarm_v10.urdf"
-    );
+    use crate::openarm_v1::{base, urdf_path};
 
     #[test]
     fn from_urdf_file_loads_and_reports_limits() {
-        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
+        let arm = Arm::from_urdf_file(&urdf_path(), base("left")).expect("load fixture");
         let limits = arm.limits();
         for (i, l) in limits.iter().enumerate() {
             assert!(l.lo <= l.hi, "joint {i}: lo {} > hi {}", l.lo, l.hi);
@@ -324,66 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn with_lower_floor_raises_only_the_targeted_lower_bound() {
-        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
-        let base = arm.limits();
-        // The fixture's elbow has a mechanical lower bound of 0.0.
-        let floored = arm.with_lower_floor(ELBOW, 0.05).limits();
-
-        assert_eq!(
-            floored[ELBOW].lo, 0.05,
-            "targeted joint's lower bound is raised"
-        );
-        assert_eq!(
-            floored[ELBOW].hi, base[ELBOW].hi,
-            "upper bound is untouched"
-        );
-        for i in [0, 1, 2, 4, 5, 6] {
-            assert_eq!(
-                floored[i].lo, base[i].lo,
-                "joint {i} lower bound is untouched"
-            );
-        }
-    }
-
-    #[test]
-    fn a_lower_floor_constrains_the_solutions_not_just_the_report() {
-        // The floor exists to hold a joint off a singularity, which it cannot do if
-        // IK keeps returning configurations under it. Uses a floor far from the
-        // straight-arm singularity so a refusal here is the limit doing the work
-        // rather than the solver failing on conditioning.
-        const FLOOR: f64 = 0.5;
-        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
-            .expect("load fixture")
-            .with_lower_floor(ELBOW, FLOOR);
-        assert_eq!(arm.limits()[ELBOW].lo, FLOOR, "the floor is reported");
-
-        let under: JointVec = [0.1, 0.2, 0.0, 0.30, 0.0, 0.3, 0.0];
-        let target = arm.at(&under).ee_pose();
-        if let Some(s) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &under) {
-            assert!(
-                s.q[ELBOW] >= FLOOR,
-                "IK returned j4 = {} under the {FLOOR} floor it reports",
-                s.q[ELBOW]
-            );
-        }
-    }
-
-    #[test]
-    fn with_lower_floor_below_the_mechanical_limit_is_a_noop() {
-        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
-        let base = arm.limits();
-        let floored = arm.with_lower_floor(ELBOW, -10.0).limits();
-        assert_eq!(
-            floored[ELBOW].lo, base[ELBOW].lo,
-            "a floor under the limit does not lower it"
-        );
-    }
-
-    #[test]
     fn from_urdf_file_missing_path_errors_with_path() {
         // `Arm` is not `Debug` (the FK chain isn't), so match rather than unwrap_err.
-        let err = match Arm::from_urdf_file("/no/such/file.urdf", "openarm_left_link0") {
+        let err = match Arm::from_urdf_file("/no/such/file.urdf", base("left")) {
             Ok(_) => panic!("expected an error for a missing path"),
             Err(e) => e,
         };
@@ -399,7 +337,7 @@ mod tests {
     const RATE_LAMBDA: f64 = 0.05;
 
     fn rate_arm() -> Arm {
-        Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture")
+        Arm::from_urdf_file(&urdf_path(), base("left")).expect("load fixture")
     }
 
     fn ee_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {

@@ -180,21 +180,6 @@ impl<const N: usize> Chain<N> {
         Isometry3::identity()
     }
 
-    /// Raise the reported lower bound of joint `i` to at least `floor`, leaving
-    /// the parsed URDF untouched: a control margin the mechanism does not have
-    /// (holding a joint off a solver singularity), surfaced through
-    /// [`limits`](Self::limits) so every consumer inherits it.
-    pub fn with_lower_floor(mut self, i: usize, floor: f64) -> Self {
-        self.set_lower_floor(i, floor);
-        self
-    }
-
-    /// [`with_lower_floor`](Self::with_lower_floor) on an already-built chain.
-    pub fn set_lower_floor(&mut self, i: usize, floor: f64) {
-        assert!(i < N, "joint index {i} out of range (N = {N})");
-        self.limits[i].lo = self.limits[i].lo.max(floor).min(self.limits[i].hi);
-    }
-
     /// Mount a tool frame the URDF carries, which must sit below the tip on
     /// fixed joints only. The chain then reports and is commanded at that frame
     /// throughout, so a caller cannot drive one frame and read another.

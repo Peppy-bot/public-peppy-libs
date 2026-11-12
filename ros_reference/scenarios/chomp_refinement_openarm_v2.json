@@ -1,10 +1,7 @@
 {
   "kind": "chomp_refinement",
-  "urdf": "openarm_description/assets/openarm_v20.urdf",
-  "meshes": "openarm_description/assets/meshes_v20",
-  "chains": [
-    {"name":"left_arm","base_link":"openarm_left_base_link","tip_link":"openarm_left_tcp","joints":["openarm_left_joint1","openarm_left_joint2","openarm_left_joint3","openarm_left_joint4","openarm_left_joint5","openarm_left_joint6","openarm_left_joint7"]}
-  ],
+  "description": "robot_description/models/openarm_v2",
+  "group": "left_arm",
   "voxel_size": 0.04,
   "map_half_side": 1.6,
   "min_clearance": 0.0,

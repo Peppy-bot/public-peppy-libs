@@ -9,6 +9,7 @@
 //! test at the 5% level.
 
 mod arm_scenes;
+mod openarm_v2;
 
 use ros_reference::arm_planning::{MOVEIT_SUCCESS, Probed};
 #[cfg(target_arch = "x86_64")]
@@ -16,7 +17,9 @@ use ros_reference::arm_planning::{Ours, Refiner};
 use ros_reference::chomp_refinement::{Case, RefinementCase};
 
 #[cfg(target_arch = "x86_64")]
-use arm_scenes::{JOINTS, on_the_arms, plan_scene, samplers};
+use arm_scenes::{on_the_arms, plan_scene, samplers};
+#[cfg(target_arch = "x86_64")]
+use openarm_v2::{ARMS, JOINTS};
 
 /// The level of the sign test: the chance at even odds of a tally as far from even.
 const SIGNIFICANCE: f64 = 0.05;
@@ -31,10 +34,9 @@ const SIGNIFICANCE: f64 = 0.05;
 fn each_scenario_carries_the_paths_this_crate_plans() {
     for case in Case::load_all() {
         let refinements = &case.refinements;
-        on_the_arms::<JOINTS, _>(
-            &refinements.chains,
-            &case.urdf,
-            &case.meshes,
+        on_the_arms::<JOINTS, ARMS, _>(
+            std::slice::from_ref(&case.arm),
+            &case.robot,
             |arms, standing| {
                 let samplers = samplers(arms);
                 for refiner in [Refiner::None, Refiner::Chomp] {
@@ -45,7 +47,7 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
                             Refiner::Chomp => &c.scene.refined,
                         };
                         assert_eq!(
-                            plan_scene::<JOINTS, JOINTS, _>(
+                            plan_scene::<JOINTS, JOINTS, ARMS, _>(
                                 arms, standing, &samplers, &plans, scene
                             )
                             .ours,

@@ -91,6 +91,8 @@ src/
   ik.rs       closed-form arm-angle inverse kinematics and its feasible intervals
   line.rs     the Cartesian plan: the walk of a straight line on chain_kinematics' walk_line and KDL search
   error.rs    what can go wrong building an arm
+tools/
+  kdl_reference.py  the KDL reference tables of tests/dynamics.rs
 ```
 
 ## Testing
@@ -101,9 +103,10 @@ HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
 cargo bench                                    # FK, Jacobian, dynamics and IK on the control path
 ```
 
-The kinematics are checked as [Hegel](https://hegel.dev) properties over drawn
-configurations, seeds, arm angles and targets on both arms of the fixture,
-drawn by the generators [`kinematics_properties`](../kinematics_properties)
+The fixture is the OpenArm v1.0 as robot_description bundles it
+(`tests/common/openarm_v1.rs`). The kinematics are checked as
+[Hegel](https://hegel.dev) properties over drawn configurations, seeds, arm
+angles and targets on both arms of the fixture, drawn by the generators [`kinematics_properties`](../kinematics_properties)
 shares with `chain_kinematics`. Four suites carry most of the weight:
 
 - **`tests/psi_completeness.rs`** - `FromSeed` solves every reachable target
@@ -115,7 +118,19 @@ shares with `chain_kinematics`. Four suites carry most of the weight:
   parity gate: a refactor that changes a number fails here rather than on the
   robot. Regenerate deliberately with `SRS_PARITY_REGENERATE=1`, and never to
   make a change pass.
-- **Dynamics** are checked against KDL `TreeIdSolver_RNE` reference values, so
-  the branched gripper is included, and gravity additionally against the
-  potential-energy gradient. FK is cross-checked against `k` (a dev-dependency
-  only) as an independent implementation.
+- **Dynamics** are checked against KDL's recursive Newton-Euler reference
+  values over the arm's chain with every link below its last joint folded into
+  it, so the branched gripper is included, and gravity additionally against the
+  potential-energy gradient. `tools/kdl_reference.py` prints those tables in
+  the image of the ROS reference harness, which carries KDL's Python bindings,
+  from the repository root:
+
+  ```sh
+  docker build --quiet ros_reference > /tmp/ros_reference.iid
+  docker run --rm --network none --volume "$PWD:/repository:ro" \
+      "$(cat /tmp/ros_reference.iid)" bash -c \
+      'source /opt/ros/lyrical/setup.bash && python3 /repository/srs_model/tools/kdl_reference.py /repository'
+  ```
+
+  FK is cross-checked against `k` (a dev-dependency only) as an independent
+  implementation.

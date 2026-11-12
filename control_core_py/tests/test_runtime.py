@@ -250,3 +250,57 @@ async def test_tied_cancellation_and_receive_failure_leaves_no_orphan_exception(
     finally:
         loop.set_exception_handler(None)
     assert captured == []
+
+
+async def test_ask_gives_the_first_answer():
+    async def ask_once():
+        return "so101"
+
+    assert await runtime.ask("get_identity", FakeToken(), ask_once) == "so101"
+
+
+async def test_ask_waits_out_each_failure_and_logs_the_first_of_a_run(monkeypatch, capsys):
+    pauses = []
+    real_sleep = asyncio.sleep
+
+    async def pause(seconds):
+        pauses.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(runtime.asyncio, "sleep", pause)
+    answers = [RuntimeError("no reply"), RuntimeError("no reply"), "so101"]
+
+    async def ask_once():
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    assert await runtime.ask("robot_identity", FakeToken(), ask_once) == "so101"
+    assert pauses == [1.0, 1.0]
+    out = capsys.readouterr().out
+    assert out.count("robot_identity failing: RuntimeError('no reply'); suppressing repeats") == 1
+
+
+async def test_ask_ends_with_none_once_cancelled_while_it_asks():
+    token = FakeToken()
+    asked = asyncio.Event()
+
+    async def ask_once():
+        asked.set()
+        await asyncio.Event().wait()
+
+    asking = asyncio.ensure_future(runtime.ask("get_identity", token, ask_once))
+    await asked.wait()
+    token.cancel()
+    assert await asyncio.wait_for(asking, 1.0) is None
+
+
+async def test_ask_ends_with_none_once_cancelled_while_it_waits_out_a_failure():
+    token = FakeToken()
+
+    async def ask_once():
+        token.cancel()
+        raise RuntimeError("no reply")
+
+    assert await asyncio.wait_for(runtime.ask("get_identity", token, ask_once), 1.0) is None

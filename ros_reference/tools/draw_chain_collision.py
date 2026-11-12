@@ -1,5 +1,13 @@
-"""Writes the chain collision scenarios of the ROS reference harness, and the URDF of the
-arm dressed in primitives that one of them names, with the mesh of its wedge.
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
+"""Writes the chain collision scenarios of the ROS reference harness, and the model
+directory of the robot dressed in primitives that one of them names: its URDF, its SRDF and
+the mesh of its wedge.
 
 Each arm of OpenArm v2, dressed in its collision meshes, and the arm of PRIMITIVE_ARM,
 dressed in boxes, cylinders and spheres drawn about any origin and in a wedge mesh
@@ -16,8 +24,8 @@ with an offset. CHOMP's collision checker places each carried link's collision s
 at each of SPHERE_PADDINGS: none, and the clearance of OpenArm v2's launch. Run it from
 any directory:
 
-    python3 ros_reference/tools/draw_chain_collision.py
-    python3 ros_reference/tools/draw_chain_collision.py --drawn 50
+    uv run ros_reference/tools/draw_chain_collision.py
+    uv run ros_reference/tools/draw_chain_collision.py --drawn 50
 
 The second draws a large set for a local run, which the README describes.
 """
@@ -25,15 +33,21 @@ The second draws a large set for a local run, which the README describes.
 import math
 import struct
 
+from robot_description_py import CLOSED, OPEN
+
 from drawing import (
     CONFIGURATIONS_DRAWN,
+    OPENARM_V2,
     REPOSITORY,
+    arms,
+    chain_links,
     configurations,
     element_to_link,
     generator,
     joint_limits,
     link_bounds,
-    openarm_joints,
+    meshes,
+    model_file,
     options,
     robot,
     write,
@@ -52,13 +66,22 @@ PADDINGS = [
 SPHERE_PADDINGS = [0.0, 0.04]
 
 OPENARM = "chain_collision_openarm_v2"
-OPENARM_URDF = "openarm_description/assets/openarm_v20.urdf"
-OPENARM_MESHES = "openarm_description/assets/meshes_v20"
 
 PRIMITIVES = "chain_collision_primitive_arm"
-PRIMITIVE_ARM = "ros_reference/robots/primitive_arm.urdf"
-PRIMITIVE_MESHES = "ros_reference/robots/meshes"
+# The robot dressed in primitives, by its name, its model directory, and the joints of its
+# arm.
+PRIMITIVE_ROBOT = "primitive_arm"
+PRIMITIVE_ARM = f"ros_reference/robots/{PRIMITIVE_ROBOT}"
 PRIMITIVE_JOINTS = 7
+# Its arm, by its group, the chain from BASE_LINK to TOOL_LINK, its grasp point, and its
+# gripper, by its group, the finger that slides off the arm's last link on FINGER_JOINT,
+# closed at the start of FINGER_TRAVEL and open at its end.
+ARM_GROUP = "arm"
+BASE_LINK = "base"
+TOOL_LINK = "tool"
+GRIPPER_GROUP = "gripper"
+FINGER_JOINT = "finger_joint"
+FINGER_TRAVEL = (0.0, 0.05)
 # The link of PRIMITIVE_ARM that carries the wedge mesh, and the mesh: a square of side
 # 0.1 at x = 0 and a point at x = 1, which the URDF scales by WEDGE_SCALE.
 WEDGE_LINK = "link_4"
@@ -73,18 +96,15 @@ SIZES = (0.02, 0.15)
 REACH = 0.08
 
 
-def openarm_carried_links(side):
-    """The collision-bearing links an arm of OpenArm v2 carries: the child of each joint,
-    the end effector's base being the child of the last."""
-    return [f"openarm_{side}_link{i}" for i in range(1, 7)] + [
-        f"openarm_{side}_ee_base_link"
+def carried_links(parsed, description, arm):
+    """The collision-bearing links that `arm`, an arm of the model directory `description`
+    whose URDF is `parsed`, carries: each link of its chain past its base link, in the
+    chain's order, that holds a collision element."""
+    return [
+        link
+        for link in chain_links(description, arm)
+        if parsed.find(f"link[@name='{link}']/collision") is not None
     ]
-
-
-def primitive_carried_links():
-    """The collision-bearing links the arm of PRIMITIVE_ARM carries: the child of each
-    joint, and the tool fixed to the last."""
-    return [f"link_{i}" for i in range(1, PRIMITIVE_JOINTS + 1)] + ["tool"]
 
 
 def probe_points(rng, bounds):
@@ -158,15 +178,16 @@ def surface_probes(rng, parsed, links):
     return probes
 
 
-def chain(rng, parsed, meshes, name, joints, tip_link, links, drawn):
-    """A chain of a scenario, with its configurations, the probe points about `links` at
-    each, and the surface probes of its primitives at the first."""
-    bounds = {link: link_bounds(parsed, link, meshes) for link in links}
-    limits = [joint_limits(parsed, joint) for joint in joints]
+def posed_arm(rng, description, arm, drawn):
+    """`arm`, an arm of the model directory `description`, as a scenario poses it, with its
+    configurations, the probe points about each link it carries at each, and the surface
+    probes of their primitives at the first."""
+    parsed = robot(description)
+    links = carried_links(parsed, description, arm)
+    bounds = {link: link_bounds(parsed, link, meshes(description)) for link in links}
+    limits = [joint_limits(description, joint) for joint in arm.joints]
     return {
-        "name": name,
-        "joints": joints,
-        "tip_link": tip_link,
+        "name": arm.name,
         "configurations": [
             {
                 "positions": positions,
@@ -209,7 +230,7 @@ def draw_link(rng, name):
         rpy = " ".join(repr(rng.uniform(-math.pi, math.pi)) for _ in range(3))
         elements += (
             f'    <collision><origin xyz="0 0 0" rpy="{rpy}"/><geometry>'
-            f'<mesh filename="package://ros_reference/robots/meshes/{WEDGE}" '
+            f'<mesh filename="package://{meshes(PRIMITIVE_ARM)}/{WEDGE}" '
             f'scale="{WEDGE_SCALE} {WEDGE_SCALE} {WEDGE_SCALE}"/></geometry></collision>\n'
         )
     return f'  <link name="{name}">\n{elements}  </link>\n'
@@ -238,24 +259,73 @@ def draw_joint(rng, name, kind, parent, child, limits):
 
 
 def draw_primitive_arm(rng):
-    """Writes the URDF of an arm of PRIMITIVE_JOINTS revolute joints from `base`, its
-    links dressed in drawn primitives: `link_1` to `link_7`, a `tool` fixed to `link_7`,
-    a `finger` on a prismatic joint off `link_7`, and a `stand` fixed to `base`."""
-    links = ["base"] + [f"link_{i}" for i in range(1, PRIMITIVE_JOINTS + 1)]
-    text = '<?xml version="1.0"?>\n<robot name="primitive_arm">\n  <link name="base"/>\n'
-    text += "".join(draw_link(rng, link) for link in links[1:] + ["tool", "finger", "stand"])
+    """Writes the URDF of an arm of PRIMITIVE_JOINTS revolute joints from BASE_LINK, its
+    links dressed in drawn primitives: `link_1` to `link_7`, TOOL_LINK fixed to `link_7`,
+    a `finger` on the prismatic FINGER_JOINT off `link_7`, and a `stand` fixed to
+    BASE_LINK; and its SRDF and the mesh of its wedge."""
+    links = [BASE_LINK] + [f"link_{i}" for i in range(1, PRIMITIVE_JOINTS + 1)]
+    text = (
+        f'<?xml version="1.0"?>\n<robot name="{PRIMITIVE_ROBOT}">\n'
+        f'  <link name="{BASE_LINK}"/>\n'
+    )
+    text += "".join(
+        draw_link(rng, link) for link in links[1:] + [TOOL_LINK, "finger", "stand"]
+    )
     for i in range(1, PRIMITIVE_JOINTS + 1):
         reach = rng.uniform(0.5, math.pi)
         text += draw_joint(rng, f"joint_{i}", "revolute", links[i - 1], links[i], (-reach, reach))
-    text += draw_joint(rng, "tool_joint", "fixed", links[-1], "tool", None)
-    text += draw_joint(rng, "finger_joint", "prismatic", links[-1], "finger", (0.0, 0.05))
-    text += draw_joint(rng, "stand_joint", "fixed", "base", "stand", None)
+    text += draw_joint(rng, "tool_joint", "fixed", links[-1], TOOL_LINK, None)
+    text += draw_joint(rng, FINGER_JOINT, "prismatic", links[-1], "finger", FINGER_TRAVEL)
+    text += draw_joint(rng, "stand_joint", "fixed", BASE_LINK, "stand", None)
     text += "</robot>\n"
-    path = REPOSITORY / PRIMITIVE_ARM
+    write_model_file("urdf", text)
+    write_srdf()
+    write_wedge()
+
+
+def write_model_file(extension, text):
+    """Writes `text` into PRIMITIVE_ARM's file of `extension`."""
+    path = REPOSITORY / model_file(PRIMITIVE_ARM, extension)
     path.parent.mkdir(exist_ok=True)
     path.write_text(text)
-    print(f"wrote {PRIMITIVE_ARM}")
-    write_wedge()
+    print(f"wrote {model_file(PRIMITIVE_ARM, extension)}")
+
+
+def srdf_number(value):
+    """`value` as an SRDF of the repository writes a number: the shortest text that reads
+    back as it, a whole number with no fraction."""
+    return repr(value).removesuffix(".0")
+
+
+def write_srdf():
+    """Writes the SRDF of PRIMITIVE_ARM: its one arm, the chain from BASE_LINK to TOOL_LINK,
+    and its gripper, FINGER_JOINT, closed and open at the ends of FINGER_TRAVEL."""
+    closed, opened = (srdf_number(value) for value in FINGER_TRAVEL)
+    write_model_file(
+        "srdf",
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The arm of primitives and a turned wedge that the chain collision scenarios dress: its one
+  arm, the chain from the base to the tool, and its gripper, the one sliding finger, shut and
+  open at the ends of its travel.
+-->
+<robot name="{PRIMITIVE_ROBOT}">
+    <group name="{ARM_GROUP}">
+        <chain base_link="{BASE_LINK}" tip_link="{TOOL_LINK}"/>
+    </group>
+    <group name="{GRIPPER_GROUP}">
+        <joint name="{FINGER_JOINT}"/>
+    </group>
+    <group_state name="{CLOSED}" group="{GRIPPER_GROUP}">
+        <joint name="{FINGER_JOINT}" value="{closed}"/>
+    </group_state>
+    <group_state name="{OPEN}" group="{GRIPPER_GROUP}">
+        <joint name="{FINGER_JOINT}" value="{opened}"/>
+    </group_state>
+    <end_effector name="hand" parent_link="{TOOL_LINK}" group="{GRIPPER_GROUP}" parent_group="{ARM_GROUP}"/>
+</robot>
+""",
+    )
 
 
 def write_wedge():
@@ -272,63 +342,36 @@ def write_wedge():
         for corner in triangle:
             data += struct.pack("<3f", *corner)
         data += bytes(2)
-    path = REPOSITORY / PRIMITIVE_MESHES / WEDGE
+    path = REPOSITORY / meshes(PRIMITIVE_ARM) / WEDGE
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(data)
-    print(f"wrote {PRIMITIVE_MESHES}/{WEDGE}")
+    print(f"wrote {meshes(PRIMITIVE_ARM)}/{WEDGE}")
 
 
 def main():
     drawn = options(__doc__, DRAWN_CONFIGURATIONS, CONFIGURATIONS_DRAWN).parse_args().drawn
     rng = generator(OPENARM)
-    parsed = robot(OPENARM_URDF)
     write(
         OPENARM,
         {
             "kind": "chain_collision",
-            "urdf": OPENARM_URDF,
-            "meshes": OPENARM_MESHES,
+            "description": OPENARM_V2,
             "paddings": PADDINGS,
             "sphere_paddings": SPHERE_PADDINGS,
-            "chains": [
-                chain(
-                    rng,
-                    parsed,
-                    OPENARM_MESHES,
-                    side,
-                    openarm_joints(side),
-                    f"openarm_{side}_tcp",
-                    openarm_carried_links(side),
-                    drawn,
-                )
-                for side in ["left", "right"]
-            ],
+            "arms": [posed_arm(rng, OPENARM_V2, arm, drawn) for arm in arms(OPENARM_V2)],
         },
     )
 
     rng = generator(PRIMITIVES)
     draw_primitive_arm(rng)
-    parsed = robot(PRIMITIVE_ARM)
     write(
         PRIMITIVES,
         {
             "kind": "chain_collision",
-            "urdf": PRIMITIVE_ARM,
-            "meshes": PRIMITIVE_MESHES,
+            "description": PRIMITIVE_ARM,
             "paddings": PADDINGS,
             "sphere_paddings": SPHERE_PADDINGS,
-            "chains": [
-                chain(
-                    rng,
-                    parsed,
-                    PRIMITIVE_MESHES,
-                    "arm",
-                    [f"joint_{i}" for i in range(1, PRIMITIVE_JOINTS + 1)],
-                    "tool",
-                    primitive_carried_links(),
-                    drawn,
-                )
-            ],
+            "arms": [posed_arm(rng, PRIMITIVE_ARM, arm, drawn) for arm in arms(PRIMITIVE_ARM)],
         },
     )
 

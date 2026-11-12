@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the orientation constraints scenario of the ROS reference harness.
 
 OpenArm v2's left arm stands at a configuration drawn inside its limits, and its grasp link
@@ -8,8 +15,8 @@ drawn angle about the free axis, then by that angle about a drawn axis square to
 free axis stands exactly that angle from its direction in the target. Run it from any
 directory:
 
-    python3 ros_reference/tools/draw_orientation_constraints.py
-    python3 ros_reference/tools/draw_orientation_constraints.py --drawn 500
+    uv run ros_reference/tools/draw_orientation_constraints.py
+    uv run ros_reference/tools/draw_orientation_constraints.py --drawn 500
 
 The second draws a large set for a local run, which the README describes.
 """
@@ -17,8 +24,9 @@ The second draws a large set for a local run, which the README describes.
 import math
 
 from drawing import (
+    OPENARM_V2,
     about_axis,
-    chain,
+    arm,
     configuration,
     generator,
     joint_limits,
@@ -31,7 +39,6 @@ from drawing import (
 )
 
 NAME = "orientation_constraints_openarm_v2"
-URDF = "openarm_description/assets/openarm_v20.urdf"
 DRAWN_CASES = 1
 # A tight tolerance and a wide one, which tells the sine of the free axis's bound from its
 # angle.
@@ -71,17 +78,17 @@ def target_from(rng, turn, angle, free):
 def main():
     parsed_arguments = options(__doc__, DRAWN_CASES, "cases per tolerance, axis and share").parse_args()
     rng = generator(NAME)
-    parsed = robot(URDF)
-    arm = chain("left")
-    joints = arm["joints"]
-    limits = [joint_limits(parsed, joint) for joint in joints]
+    parsed = robot(OPENARM_V2)
+    posed = arm(OPENARM_V2, "left_arm")
+    joints = posed.joints
+    limits = [joint_limits(OPENARM_V2, joint) for joint in joints]
     cases = []
     for tolerance in TOLERANCES:
         for free_axis, free in FREE_AXES.items():
             for share in SHARES:
                 for _ in range(parsed_arguments.drawn):
                     positions = configuration(rng, limits)
-                    turn, _at = link_pose(parsed, arm["tip_link"], dict(zip(joints, positions)))
+                    turn, _at = link_pose(parsed, posed.grasp_link, dict(zip(joints, positions)))
                     cases.append(
                         {
                             "positions": positions,
@@ -96,9 +103,8 @@ def main():
         NAME,
         {
             "kind": "orientation_constraints",
-            "urdf": URDF,
-            "joints": joints,
-            "link_name": arm["tip_link"],
+            "description": OPENARM_V2,
+            "arm": posed.name,
             "cases": cases,
         },
     )

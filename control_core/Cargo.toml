@@ -2,7 +2,7 @@
 name = "control_core"
 version = "0.1.0"
 edition = "2024"
-description = "Shared control-loop and runtime primitives for the robot nodes and the kinematics crates: pacing, filtering, rate limiting, motion timing, motor health, the setpoint stream, the service and receive loops, latched failure logging, and waiting and locking from synchronous code. Pure Rust, no hardware or messaging deps."
+description = "Shared control-loop and runtime primitives for the robot nodes and the kinematics crates: pacing, filtering, rate limiting, motion timing, motor health, the setpoint stream, the service, receive and ask loops, the fault that ends a node, the model a component is configured for, latched failure logging, and waiting and locking from synchronous code. Pure Rust, no hardware or messaging deps."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
 # whatever sits above this repository, which is what lets a consumer pull the

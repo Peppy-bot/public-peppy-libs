@@ -34,9 +34,28 @@ pub enum CollisionError {
 /// [`Geometry`](Self::Geometry) catch-all, since they carry an opaque reason.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
-    /// Two chains were given the same base link.
-    #[error("two chains start at '{base}'; give each chain its own base link")]
-    SharedBase { base: String },
+    /// Two arms of the description start their chains at one base link.
+    #[error(
+        "the arms '{first}' and '{second}' both start at '{base}'; the SRDF gives each arm \
+         a chain from a base link of its own"
+    )]
+    SharedBase {
+        first: String,
+        second: String,
+        base: String,
+    },
+
+    /// The description gives another count of arms than the model holds chains.
+    #[error("the description gives {found} arms and the model holds {expected}")]
+    Arms { expected: usize, found: usize },
+
+    /// An arm of the description has another count of joints than the model's chains.
+    #[error("arm '{arm}' of the description has {found} joints and the model's chains {expected}")]
+    ArmJoints {
+        arm: String,
+        expected: usize,
+        found: usize,
+    },
 
     /// Two bodies resolved to the same name.
     #[error("duplicate body name '{name}'")]
@@ -47,51 +66,21 @@ pub enum BuildError {
     SharedLink { name: String },
 
     /// A link on a moving joint off a chain link has collision geometry, so it is a
-    /// finger, and the builder's fingers do not name it.
+    /// finger, and no gripper of the description names its joint.
     #[error(
-        "'{link}' rides a moving joint off a chain link; name it in the fingers, with the joint position at which it is shut"
+        "'{link}' rides a moving joint off a chain link; add its joint to its arm's gripper group in the SRDF"
     )]
     UnnamedFinger { link: String },
 
-    /// The builder's fingers name a link that is no finger of a chain.
-    #[error("the fingers name '{link}', which rides no moving joint off a chain link")]
+    /// A finger of a gripper of the description, with collision geometry, rides no
+    /// moving joint off a chain link.
+    #[error("the gripper finger '{link}' rides no moving joint off a chain link")]
     NoSuchFinger { link: String },
 
-    /// A finger's shut position is neither limit of its joint.
-    #[error(
-        "finger '{link}' is shut at {shut}, which is neither limit of its joint, {lower} or {upper}"
-    )]
-    ShutOffTheLimits {
-        link: String,
-        shut: f64,
-        lower: f64,
-        upper: f64,
-    },
-
-    /// An exclusion names a pair the derived rules do not check.
-    #[error("the exclusions name '{a}' and '{b}', a pair the model does not check")]
-    NotChecked { a: String, b: String },
-
-    /// Supplied clip regions were keyed by a name that is not a collision body.
-    #[error("supplied clip regions name '{name}', which is not a collision body")]
-    UnknownSuppliedBody { name: String },
-
-    /// A body's pieces could not be fitted from its mesh and clip regions; see
-    /// [`GeometryError`] for the specific reason.
+    /// A body's pieces could not be fitted from its mesh; see [`GeometryError`] for the
+    /// specific reason.
     #[error(transparent)]
     Fit(#[from] GeometryError),
-
-    /// A name (e.g. an exclusion) did not resolve to a known body.
-    #[error("unknown body '{name}'")]
-    UnknownBody { name: String },
-
-    /// A checked-pair spec referenced an unknown body.
-    #[error("pair references unknown body '{name}'")]
-    UnknownPairBody { name: String },
-
-    /// A checked-pair spec paired a body with itself.
-    #[error("pair '{name}' against itself")]
-    SelfPair { name: String },
 
     /// A lower-level geometry, URDF, or mesh failure during assembly.
     #[error("{0}")]

@@ -1,27 +1,19 @@
-//! Axis-aligned clip regions: the decomposition primitive for a concave body.
-//! A single convex hull of a concave mesh bridges its features into one bulging
-//! solid, so a caller instead names regions of the body; each region's clipped
-//! mesh surface gets the same fit every link gets, and the union of pieces bounds
-//! the body tightly.
-
-use std::collections::BTreeMap;
+//! Axis-aligned clip regions, which cut a concave mesh into slices. A single convex
+//! hull of a concave mesh bridges its features into one bulging solid, so a URDF names
+//! each slice of such a mesh as a collision element of its own: each slice gets the fit
+//! every element gets, and the union of the pieces bounds the body tightly.
 
 use nalgebra::Point3;
 
-use crate::GeometryError;
-
-/// An axis-aligned region `[min, max]` a body's mesh is clipped to before hull
-/// fitting, in the body's fit frame (root frame for a world-fixed body, link
-/// frame for a chain link). A bound may be infinite to leave that side open.
-/// Construction rejects NaN bounds and empty spans, so a held `ClipRegion`
-/// always spans a volume.
+/// An axis-aligned region `[min, max]` a mesh is clipped to, in the mesh's frame. A
+/// bound may be infinite to leave that side open. Construction rejects NaN bounds and
+/// empty spans, so a held `ClipRegion` always spans a volume.
 ///
-/// The fitted pieces must jointly contain the body's whole mesh surface
-/// (checked at build), and the check certifies each ~1 mm face patch inside a
-/// single piece, so adjacent regions should overlap by a few millimeters
-/// rather than share exact cut planes. A bound resting exactly on a large flat
-/// mesh face captures that face into the region's hull; sit bounds ~1 mm off
-/// such planes.
+/// The pieces fitted to the slices of a mesh hold its whole surface only where
+/// adjacent regions overlap: [`verify_contains`](crate::fit::verify_contains)
+/// certifies each ~1 mm face patch inside a single piece, so adjacent regions overlap by
+/// a few millimeters. A bound resting exactly on a large flat mesh face captures that face
+/// into the region's piece; sit bounds ~1 mm off such planes.
 #[derive(Clone, Copy, Debug)]
 pub struct ClipRegion {
     min: Point3<f64>,
@@ -46,64 +38,20 @@ impl ClipRegion {
         Ok(ClipRegion { min, max })
     }
 
-    /// The regions of each body that `regions` names, by the body's name: each body
-    /// with the `[min, max]` corners of its regions. Errors on a body named twice, and on
-    /// the first bounds of a body that span no volume.
-    pub fn by_body(
-        regions: &[(&str, &[[[f64; 3]; 2]])],
-    ) -> Result<BTreeMap<String, Vec<ClipRegion>>, GeometryError> {
-        regions
-            .iter()
-            .try_fold(BTreeMap::new(), |mut by_body, &(body, bounds)| {
-                if by_body.contains_key(body) {
-                    return Err(GeometryError::RegionsTwice {
-                        body: body.to_owned(),
-                    });
-                }
-                by_body.insert(body.to_owned(), Self::all_from_bounds(body, bounds)?);
-                Ok(by_body)
-            })
-    }
-
-    /// The regions of `body` that `bounds` give, each its `[min, max]` corners. Errors
-    /// on the first bounds that span no volume, naming the body and their index.
-    fn all_from_bounds(
-        body: &str,
-        bounds: &[[[f64; 3]; 2]],
-    ) -> Result<Vec<ClipRegion>, GeometryError> {
-        bounds
-            .iter()
-            .enumerate()
-            .map(|(index, [min, max])| {
-                ClipRegion::new(Point3::from(*min), Point3::from(*max)).map_err(|reason| {
-                    GeometryError::InvalidRegion {
-                        body: body.to_owned(),
-                        index,
-                        reason,
-                    }
-                })
-            })
-            .collect()
-    }
-
-    /// The region's slice of the mesh surface: every triangle of the soup
-    /// (each three points one triangle) clipped to the region's planes, as the
-    /// deduplicated, deterministically ordered clipped-polygon vertices.
-    /// Boundary-inclusive, so a triangle lying in a bound plane is kept and
-    /// adjoining regions both cover it.
-    pub(crate) fn clip_triangles(&self, soup: &[Point3<f64>]) -> Vec<Point3<f64>> {
+    /// The region's slice of the mesh surface `soup` (each three points one triangle),
+    /// as a triangle soup: each triangle clipped to the region's planes, the polygon a
+    /// clip leaves a fan of triangles from its first corner. A clip that leaves fewer
+    /// than three corners (a triangle that touches a bound plane, or a degenerate
+    /// sliver) gives one triangle of its corners repeated, so the slice holds every
+    /// point the clip keeps and a fit of the slice spans what the clip reaches.
+    /// Boundary-inclusive, so a triangle lying in a bound plane is kept and adjoining
+    /// regions both hold it.
+    pub fn slice(&self, soup: &[Point3<f64>]) -> Vec<Point3<f64>> {
         let (triangles, _) = soup.as_chunks::<3>();
-        let mut points: Vec<Point3<f64>> = triangles
+        triangles
             .iter()
-            .flat_map(|tri| self.clip_triangle(tri))
-            .collect();
-        points.sort_by(|p, q| {
-            p.x.total_cmp(&q.x)
-                .then_with(|| p.y.total_cmp(&q.y))
-                .then_with(|| p.z.total_cmp(&q.z))
-        });
-        points.dedup();
-        points
+            .flat_map(|tri| fan(&self.clip_triangle(tri)))
+            .collect()
     }
 
     /// Sutherland-Hodgman: the triangle successively clipped against each
@@ -122,6 +70,20 @@ impl ClipRegion {
             }
         }
         poly
+    }
+}
+
+/// The triangles of `polygon`, a fan from its first corner; a polygon of fewer than
+/// three corners is one triangle of its corners repeated.
+fn fan(polygon: &[Point3<f64>]) -> Vec<Point3<f64>> {
+    match polygon {
+        [] => Vec::new(),
+        [a] => vec![*a, *a, *a],
+        [a, b] => vec![*a, *b, *b],
+        [first, rest @ ..] => rest
+            .windows(2)
+            .flat_map(|edge| [*first, edge[0], edge[1]])
+            .collect(),
     }
 }
 
@@ -175,6 +137,18 @@ mod tests {
         points.iter().any(|q| (q - p).norm() < 1e-12)
     }
 
+    /// The distinct points of a slice.
+    fn corners(slice: &[Point3<f64>]) -> Vec<Point3<f64>> {
+        let mut points = slice.to_vec();
+        points.sort_by(|p, q| {
+            p.x.total_cmp(&q.x)
+                .then_with(|| p.y.total_cmp(&q.y))
+                .then_with(|| p.z.total_cmp(&q.z))
+        });
+        points.dedup();
+        points
+    }
+
     #[test]
     fn rejects_nan_and_empty_spans() {
         assert!(ClipRegion::new(pt(0.0, 0.0, f64::NAN), pt(1.0, 1.0, 1.0)).is_err());
@@ -184,52 +158,41 @@ mod tests {
     }
 
     #[test]
-    fn bounds_read_as_regions_and_the_first_empty_one_is_named() {
-        let regions = ClipRegion::all_from_bounds(
-            "body",
-            &[
-                [[-INF, -INF, -INF], [INF, INF, 0.0]],
-                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
-            ],
-        )
-        .expect("two boxes");
-        let above = [pt(0.1, 0.1, 0.5), pt(0.4, 0.1, 0.5), pt(0.1, 0.4, 0.5)];
-        assert!(regions[0].clip_triangles(&above).is_empty());
-        assert_eq!(regions[1].clip_triangles(&above).len(), 3);
-        let error = ClipRegion::all_from_bounds(
-            "body",
-            &[[[0.0; 3], [1.0; 3]], [[0.0; 3], [1.0, 0.0, 1.0]]],
-        )
-        .expect_err("the second spans nothing");
-        assert!(
-            matches!(&error, GeometryError::InvalidRegion { body, index: 1, .. } if body == "body"),
-            "{error}"
-        );
+    fn a_fan_repeats_the_corners_of_a_polygon_of_fewer_than_three() {
+        let [a, b, c, d] = [
+            pt(0., 0., 0.),
+            pt(1., 0., 0.),
+            pt(1., 1., 0.),
+            pt(0., 1., 0.),
+        ];
+        assert!(fan(&[]).is_empty());
+        assert_eq!(fan(&[a]), [a, a, a]);
+        assert_eq!(fan(&[a, b]), [a, b, b]);
+        assert_eq!(fan(&[a, b, c, d]), [a, b, c, a, c, d]);
     }
 
     #[test]
     fn a_triangle_inside_passes_unchanged() {
         let tri = [pt(0.1, 0.1, 0.1), pt(0.4, 0.1, 0.1), pt(0.1, 0.4, 0.1)];
-        let out = region([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).clip_triangles(&tri);
-        assert_eq!(out.len(), 3);
-        for v in tri {
-            assert!(contains(&out, v), "corner {v:?} lost");
-        }
+        let out = region([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).slice(&tri);
+        assert_eq!(out, tri);
     }
 
     #[test]
     fn a_triangle_outside_clips_to_nothing() {
         let tri = [pt(2.0, 0.0, 0.0), pt(3.0, 0.0, 0.0), pt(2.0, 1.0, 0.0)];
-        let out = region([0.0, -1.0, -1.0], [1.0, 1.0, 1.0]).clip_triangles(&tri);
+        let out = region([0.0, -1.0, -1.0], [1.0, 1.0, 1.0]).slice(&tri);
         assert!(out.is_empty());
     }
 
     #[test]
     fn a_straddling_triangle_gains_the_cut_points() {
         // One corner beyond x = 1: the clip keeps the two inside corners and
-        // adds the two edge crossings, exactly on the plane.
+        // adds the two edge crossings, exactly on the plane, as two triangles.
         let tri = [pt(0.0, 0.0, 0.0), pt(2.0, 0.0, 0.0), pt(0.0, 2.0, 0.0)];
-        let out = region([-INF, -INF, -INF], [1.0, INF, INF]).clip_triangles(&tri);
+        let slice = region([-INF, -INF, -INF], [1.0, INF, INF]).slice(&tri);
+        assert_eq!(slice.len(), 6);
+        let out = corners(&slice);
         assert_eq!(out.len(), 4);
         assert!(contains(&out, pt(0.0, 0.0, 0.0)));
         assert!(contains(&out, pt(0.0, 2.0, 0.0)));
@@ -240,18 +203,18 @@ mod tests {
     #[test]
     fn both_neighbors_keep_a_triangle_on_their_shared_plane() {
         let tri = [pt(0.5, 0.0, 0.0), pt(0.5, 1.0, 0.0), pt(0.5, 0.0, 1.0)];
-        let below = region([-INF, -INF, -INF], [0.5, INF, INF]).clip_triangles(&tri);
-        let above = region([0.5, -INF, -INF], [INF, INF, INF]).clip_triangles(&tri);
-        assert_eq!(below.len(), 3, "coplanar triangle kept below the cut");
-        assert_eq!(above.len(), 3, "coplanar triangle kept above the cut");
+        let below = region([-INF, -INF, -INF], [0.5, INF, INF]).slice(&tri);
+        let above = region([0.5, -INF, -INF], [INF, INF, INF]).slice(&tri);
+        assert_eq!(below, tri, "coplanar triangle kept below the cut");
+        assert_eq!(above, tri, "coplanar triangle kept above the cut");
     }
 
     #[test]
     fn a_degenerate_sliver_keeps_its_boundary_points() {
         // Collinear soup: no area to clip, but the surviving points still feed
-        // the hull cloud so the sliver's extent is not lost.
+        // the fit so the sliver's extent is not lost.
         let tri = [pt(0.0, 0.0, 0.0), pt(2.0, 0.0, 0.0), pt(1.0, 0.0, 0.0)];
-        let out = region([-INF, -INF, -INF], [1.5, INF, INF]).clip_triangles(&tri);
+        let out = region([-INF, -INF, -INF], [1.5, INF, INF]).slice(&tri);
         assert!(contains(&out, pt(0.0, 0.0, 0.0)));
         assert!(contains(&out, pt(1.0, 0.0, 0.0)));
         assert!(contains(&out, pt(1.5, 0.0, 0.0)), "cut point on the sliver");
@@ -303,7 +266,8 @@ mod tests {
         for [a, b, c, d] in faces {
             soup.extend([a, b, c, a, c, d]);
         }
-        let out = region([-INF, -INF, 0.5], [INF, INF, INF]).clip_triangles(&soup);
+        let out = region([-INF, -INF, 0.5], [INF, INF, INF]).slice(&soup);
+        assert_eq!(out.len() % 3, 0, "a slice is a triangle soup");
         assert!(out.iter().all(|p| p.z >= 0.5), "a point escaped the clip");
         for corner in [
             pt(0., 0., 1.),

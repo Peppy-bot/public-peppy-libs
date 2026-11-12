@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The arm of primitives and a turned wedge that the chain collision scenarios dress: its one
+  arm, the chain from the base to the tool, and its gripper, the one sliding finger, shut and
+  open at the ends of its travel.
+-->
+<robot name="primitive_arm">
+    <group name="arm">
+        <chain base_link="base" tip_link="tool"/>
+    </group>
+    <group name="gripper">
+        <joint name="finger_joint"/>
+    </group>
+    <group_state name="closed" group="gripper">
+        <joint name="finger_joint" value="0"/>
+    </group_state>
+    <group_state name="open" group="gripper">
+        <joint name="finger_joint" value="0.05"/>
+    </group_state>
+    <end_effector name="hand" parent_link="tool" group="gripper" parent_group="arm"/>
+</robot>

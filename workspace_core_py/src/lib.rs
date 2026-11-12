@@ -13,6 +13,8 @@ use workspace_core::{
     ABOVE_SURFACE, GRASP_ANGLE_TOLERANCE, GraspDirection, REACH_TOLERANCE, Reach,
 };
 
+mod rule;
+
 /// A point or a direction, `(x, y, z)`.
 type Vector3 = (f64, f64, f64);
 
@@ -23,6 +25,7 @@ type Bounds = (f64, f64, f64, f64);
 /// what it needs to give the workspace:v1 answer of a robot without a
 /// perception camera, around the reach its own solver gives. The limits, the
 /// grasp directions, the parsing of a request, the grid targets of a surface,
+/// the reach rule over its solver, the clearance of its arms over a surface,
 /// the reach memo, and the answers with their messages.
 #[pymodule]
 fn workspace_core_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -42,6 +45,9 @@ fn workspace_core_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PySurfaceAnswer>()?;
     module.add_class::<PyPointAnswer>()?;
     module.add_class::<PyPositionsAnswer>()?;
+    module.add_class::<rule::PySolves>()?;
+    module.add_class::<rule::PyArmBodies>()?;
+    module.add_function(wrap_pyfunction!(rule::reach, module)?)?;
     module.add_function(wrap_pyfunction!(angle_between, module)?)?;
     module.add_function(wrap_pyfunction!(
         describe_without_perception_camera,
@@ -172,8 +178,9 @@ impl PyReach {
 
     /// No arm reaches the target: the closest stops `by` metres short of it,
     /// at most REACH_TOLERANCE when the arms come close enough but none can
-    /// point its gripper a grasp direction there. Raises ValueError when `by`
-    /// is not a finite number of at least 0.
+    /// point its gripper a grasp direction there, or only in poses that are
+    /// not clear. Raises ValueError when `by` is not a finite number of at
+    /// least 0.
     #[staticmethod]
     fn short(by: f64) -> PyResult<Self> {
         if !(by.is_finite() && by >= 0.0) {
@@ -417,11 +424,13 @@ fn numbers(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
 
 /// The direction `values` gives, an iterable of three numbers.
 fn direction(values: &Bound<'_, PyAny>) -> PyResult<[f64; 3]> {
+    three(values, "a direction")
+}
+
+/// The three numbers `values` gives, an iterable of them, which a refusal names as `what`.
+fn three(values: &Bound<'_, PyAny>, what: &str) -> PyResult<[f64; 3]> {
     <[f64; 3]>::try_from(numbers(values)?).map_err(|numbers| {
-        PyValueError::new_err(format!(
-            "a direction holds 3 numbers, not {}",
-            numbers.len()
-        ))
+        PyValueError::new_err(format!("{what} holds 3 numbers, not {}", numbers.len()))
     })
 }
 

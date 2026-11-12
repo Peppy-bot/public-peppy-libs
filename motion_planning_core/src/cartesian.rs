@@ -686,12 +686,11 @@ mod tests {
     use chain_kinematics::{ChainSpec, JointSelection};
     use collision_geometry::chain::ChainGeometry;
     use nalgebra::{Translation3, UnitQuaternion};
-    use openarm_description::{HardwareVersion, Side};
     use srs_model::ArmAnglePolicy;
 
     use super::*;
     use crate::arm::Arm;
-    use crate::goal::tests::left_arm;
+    use crate::goal::tests::{LEFT, left_arm, openarm_v2};
     use crate::plan::tests::world;
     use crate::scene::Objects;
 
@@ -907,10 +906,11 @@ mod tests {
     // the precision, each from the same state before it, the state the closed form reached.
     #[test]
     fn the_kdl_search_completes_the_steps_the_closed_form_completes() {
-        let version = HardwareVersion::V2;
-        let closed_form = srs_model::Arm::from_urdf(version.urdf(), version.base_link(Side::Left))
+        let description = openarm_v2();
+        let left = &description.arms()[LEFT.place()];
+        let closed_form = srs_model::Arm::from_urdf(description.urdf(), &left.base_link)
             .expect("an SRS arm")
-            .with_tool_link(version.tcp_link(Side::Left))
+            .with_tool_link(&left.grasp_link)
             .expect("its grasp point");
         let chain = left_arm();
         let limits = chain.limits();

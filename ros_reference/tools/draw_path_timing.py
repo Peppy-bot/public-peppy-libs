@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the path timing scenario of the ROS reference harness.
 
 Each path runs through waypoints of OpenArm v2's left arm inside its joint limits, under
@@ -26,27 +33,28 @@ but a cornered one blends at execute_joint_path's deviation, JOINT_PATH_DEVIATIO
 gives each path's point at the fractions of its length that sample each of its pieces
 (`piece_fractions`). Run it from any directory:
 
-    python3 ros_reference/tools/draw_path_timing.py
-    python3 ros_reference/tools/draw_path_timing.py --drawn 5
+    uv run ros_reference/tools/draw_path_timing.py
+    uv run ros_reference/tools/draw_path_timing.py --drawn 5
 
 The second draws a large set for a local run, which the README describes.
 """
 
+import itertools
 import math
 
 from drawing import (
+    OPENARM_V2,
     REPOSITORY,
+    arm,
+    described,
     generator,
     joint_limits,
-    openarm_joints,
     options,
-    robot,
     rust_constants,
     write,
 )
 
 NAME = "path_timing_openarm_v2"
-URDF = "openarm_description/assets/openarm_v20.urdf"
 DRAWN_PATHS = 1
 MAX_DEVIATIONS = [0.01, 0.05, 0.1, 0.2]
 # control_core's JOINT_PATH_CORNER_DEVIATION, the deviation of execute_joint_path.
@@ -93,8 +101,9 @@ TURNING_BACK_COS = rust_constants(REPOSITORY / "control_core" / "src" / "path_ti
 ]
 
 
-def velocity_limits(parsed, joints):
-    return [float(parsed.find(f"joint[@name='{joint}']/limit").get("velocity")) for joint in joints]
+def velocity_limits(description, joints):
+    """The velocity limit of each of `joints`, joints of the model directory `description`."""
+    return [described(description).joint_limits(joint).velocity for joint in joints]
 
 
 def unit(v):
@@ -223,7 +232,7 @@ def pieces(waypoints, max_deviation):
     piece along each leg, and at each corner an arc that turns with the corner, of radius
     its tangent length over tan(turn / 2)."""
     turns = [turn(*corner) for corner in zip(waypoints, waypoints[1:], waypoints[2:])]
-    legs = [math.dist(a, b) for a, b in zip(waypoints, waypoints[1:])]
+    legs = [math.dist(a, b) for a, b in itertools.pairwise(waypoints)]
     tangents = [
         tangent_length(turn_rad, leg_in, leg_out, max_deviation)
         for turn_rad, leg_in, leg_out in zip(turns, legs, legs[1:])
@@ -298,10 +307,9 @@ def drawn_paths(rng, limits, max_velocity, k):
 def main():
     drawn = options(__doc__, DRAWN_PATHS, "paths drawn of each drawn case").parse_args().drawn
     rng = generator(NAME)
-    parsed = robot(URDF)
-    joints = openarm_joints("left")
-    limits = [joint_limits(parsed, joint) for joint in joints]
-    max_velocity = velocity_limits(parsed, joints)
+    joints = arm(OPENARM_V2, "left_arm").joints
+    limits = [joint_limits(OPENARM_V2, joint) for joint in joints]
+    max_velocity = velocity_limits(OPENARM_V2, joints)
     paths = [p for k in range(drawn) for p in drawn_paths(rng, limits, max_velocity, k)]
     out, back = drawn_waypoints(rng, limits, 2)
     paths.append(path("turning_back", [out, back, out], JOINT_PATH_DEVIATION, max_velocity))

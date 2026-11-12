@@ -1,10 +1,12 @@
 #include "arm_planning.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -13,12 +15,17 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
-#include <moveit/planning_pipeline/planning_pipeline.hpp>
+#include <moveit/ompl_interface/model_based_planning_context.hpp>
+#include <moveit/planning_interface/planning_interface.hpp>
+#include <moveit/planning_interface/planning_request_adapter.hpp>
+#include <moveit/planning_interface/planning_response_adapter.hpp>
 #include <moveit/planning_scene/planning_scene.hpp>
 #include <moveit/robot_state/conversions.hpp>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.hpp>
+#include <ompl/base/goals/GoalLazySamples.h>
 #include <ompl/util/Console.h>
 #include <ompl/util/RandomNumbers.h>
+#include <pluginlib/class_loader.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include "arm_scene.hpp"
@@ -31,6 +38,9 @@ constexpr const char* pipeline_namespace = "ompl";
 // MoveIt's own check: both ran the planner.
 constexpr int moveit_success = moveit_msgs::msg::MoveItErrorCodes::SUCCESS;
 constexpr int moveit_invalid_motion_plan = moveit_msgs::msg::MoveItErrorCodes::INVALID_MOTION_PLAN;
+// How often the reference reads whether MoveIt's goal sampler still samples: as often as
+// OMPL's planner reads whether a goal sample has come (OMPL 2.0.2 Planner.cpp:329).
+constexpr std::chrono::milliseconds goal_sampling_poll{10};
 
 // The configuration of the scenario's planner, by its name and its parameters: RRTConnect
 // for `rrt_connect` and RRTstar for `rrt_star`, each at the parameters of MoveIt's
@@ -76,6 +86,35 @@ bool refined_by_chomp(const std::string& refiner) {
   return false;
 }
 
+// MoveIt's plugins of the base class `Plugin`, and the pluginlib loader that loaded them,
+// whose libraries hold their code, declared first so that it outlives them.
+template <class Plugin>
+struct Plugins {
+  std::unique_ptr<pluginlib::ClassLoader<Plugin>> loader;
+  std::vector<std::shared_ptr<Plugin>> loaded;
+};
+
+// The plugins `names` of moveit_core's base class `base_class`, in their order.
+template <class Plugin>
+Plugins<Plugin> plugins(const std::string& base_class, const std::vector<std::string>& names) {
+  Plugins<Plugin> plugins{
+      std::make_unique<pluginlib::ClassLoader<Plugin>>("moveit_core", base_class), {}};
+  for (const auto& name : names) {
+    plugins.loaded.push_back(plugins.loader->createUniqueInstance(name));
+  }
+  return plugins;
+}
+
+// MoveIt's planning pipeline: its planner, its request adapters and its response adapters,
+// each loaded and initialized on the pipeline's node and namespace as PlanningPipeline loads
+// them (moveit2 2.15.2 planning_pipeline.cpp:115-249), which `generate_plan` runs in the
+// pipeline's order.
+struct Pipeline {
+  Plugins<planning_interface::PlannerManager> planner;
+  Plugins<planning_interface::PlanningRequestAdapter> request_adapters;
+  Plugins<planning_interface::PlanningResponseAdapter> response_adapters;
+};
+
 // The pipeline: the OMPL planner the scenario names, ended as its termination
 // says, by its `iterations` (MoveIt's termination condition Iteration) or by the
 // request's allowed planning time alone (MoveIt's default); MoveIt's default request
@@ -83,23 +122,14 @@ bool refined_by_chomp(const std::string& refiner) {
 // adapters AddTimeOptimalParameterization and ValidateSolution: MoveIt's defaults but
 // DisplayMotionPath, which publishes the path for display. MoveIt simplifies each path
 // in the time left, as simplify_solutions, true by default, says.
-std::shared_ptr<planning_pipeline::PlanningPipeline> pipeline(
-    const moveit::core::RobotModelPtr& model, const nlohmann::json& scenario,
-    const PlannerConfig& planner) {
+Pipeline pipeline_of(const moveit::core::RobotModelPtr& model, const nlohmann::json& scenario,
+                     const PlannerConfig& planner) {
   start_ros();
   const std::string ns = pipeline_namespace;
   std::vector<rclcpp::Parameter> parameters{
-      {ns + ".planning_plugins", std::vector<std::string>{"ompl_interface/OMPLPlanner"}},
-      {ns + ".request_adapters",
-       std::vector<std::string>{"default_planning_request_adapters/ResolveConstraintFrames",
-                                "default_planning_request_adapters/ValidateWorkspaceBounds",
-                                "default_planning_request_adapters/CheckStartStateBounds",
-                                "default_planning_request_adapters/CheckStartStateCollision"}},
-      {ns + ".response_adapters",
-       std::vector<std::string>{"default_planning_response_adapters/AddTimeOptimalParameterization",
-                                "default_planning_response_adapters/ValidateSolution"}},
       {ns + ".start_state_max_bounds_error", 0.0},
-      {ns + "." + group + ".planner_configs", std::vector<std::string>{planner.name}},
+      {ns + "." + group_of(*model, scenario).name + ".planner_configs",
+       std::vector<std::string>{planner.name}},
   };
   parameters.insert(parameters.end(), planner.parameters.begin(), planner.parameters.end());
   const auto termination = scenario.at("termination").get<std::string>();
@@ -115,7 +145,91 @@ std::shared_ptr<planning_pipeline::PlanningPipeline> pipeline(
   options.automatically_declare_parameters_from_overrides(true);
   options.parameter_overrides(parameters);
   auto node = std::make_shared<rclcpp::Node>("arm_planning_reference", options);
-  return std::make_shared<planning_pipeline::PlanningPipeline>(model, node, ns);
+  Pipeline loaded{
+      plugins<planning_interface::PlannerManager>("planning_interface::PlannerManager",
+                                                  {"ompl_interface/OMPLPlanner"}),
+      plugins<planning_interface::PlanningRequestAdapter>(
+          "planning_interface::PlanningRequestAdapter",
+          {"default_planning_request_adapters/ResolveConstraintFrames",
+           "default_planning_request_adapters/ValidateWorkspaceBounds",
+           "default_planning_request_adapters/CheckStartStateBounds",
+           "default_planning_request_adapters/CheckStartStateCollision"}),
+      plugins<planning_interface::PlanningResponseAdapter>(
+          "planning_interface::PlanningResponseAdapter",
+          {"default_planning_response_adapters/AddTimeOptimalParameterization",
+           "default_planning_response_adapters/ValidateSolution"}),
+  };
+  if (!loaded.planner.loaded.front()->initialize(model, node, ns)) {
+    throw std::runtime_error("MoveIt's OMPL planner refuses the scenario's parameters");
+  }
+  for (const auto& adapter : loaded.request_adapters.loaded) {
+    adapter->initialize(node, ns);
+  }
+  for (const auto& adapter : loaded.response_adapters.loaded) {
+    adapter->initialize(node, ns);
+  }
+  return loaded;
+}
+
+// Waits until the goal sampler of `context`, the OMPL planner's context of a request, ends.
+// MoveIt's ConstrainedGoalSampler samples on a thread of its own from the context's making,
+// and ends at max_goal_samples goal states or at max_goal_sampling_attempts attempts while
+// the planner has no solution (moveit2 2.15.2 constrained_goal_sampler.cpp:96-111). The
+// planner then takes the goal states the sampler added, in the order it added them, as on a
+// machine whose inverse kinematics answers at once.
+void wait_for_goal_samples(const planning_interface::PlanningContext& context) {
+  const auto* ompl_context =
+      dynamic_cast<const ompl_interface::ModelBasedPlanningContext*>(&context);
+  if (ompl_context == nullptr) {
+    throw std::runtime_error("MoveIt's OMPL planner answered a context that is no "
+                             "ompl_interface::ModelBasedPlanningContext");
+  }
+  const ompl::base::GoalPtr& goal = ompl_context->getOMPLSimpleSetup()->getGoal();
+  if (!goal || !goal->hasType(ompl::base::GOAL_LAZY_SAMPLES)) {
+    throw std::runtime_error("the goal of MoveIt's OMPL context of a pose goal is no "
+                             "ompl::base::GoalLazySamples, MoveIt's ConstrainedGoalSampler");
+  }
+  const auto& sampler = *goal->as<ompl::base::GoalLazySamples>();
+  while (sampler.isSampling()) {
+    std::this_thread::sleep_for(goal_sampling_poll);
+  }
+}
+
+// MoveIt's plan of `request` in `scene` by `pipeline`, in the order of PlanningPipeline's
+// generatePlan (moveit2 2.15.2 planning_pipeline.cpp:251-374): each request adapter, the
+// first that fails ending the plan with its error code; the planner's context of the
+// adapted request and its solve; and each response adapter while the plan succeeds. For a
+// goal of poses, `goal_of_poses`, the context's goal sampler ends before the context solves.
+bool generate_plan(const Pipeline& pipeline, const planning_scene::PlanningSceneConstPtr& scene,
+                   const planning_interface::MotionPlanRequest& request,
+                   planning_interface::MotionPlanResponse& response, bool goal_of_poses) {
+  planning_interface::MotionPlanRequest adapted = request;
+  for (const auto& adapter : pipeline.request_adapters.loaded) {
+    response.error_code = adapter->adapt(scene, adapted).val;
+    if (!response.error_code) {
+      return false;
+    }
+  }
+  const auto context =
+      pipeline.planner.loaded.front()->getPlanningContext(scene, adapted, response.error_code);
+  if (!context) {
+    response.error_code = moveit::core::MoveItErrorCode::PLANNING_FAILED;
+    return false;
+  }
+  if (goal_of_poses) {
+    wait_for_goal_samples(*context);
+  }
+  context->solve(response);
+  if (!response.error_code) {
+    return false;
+  }
+  for (const auto& adapter : pipeline.response_adapters.loaded) {
+    adapter->adapt(scene, adapted, response);
+    if (!response.error_code) {
+      return false;
+    }
+  }
+  return static_cast<bool>(response);
 }
 
 // Whether `goal` is a pose of each chain's tip link, and no configuration.
@@ -233,17 +347,16 @@ moveit_msgs::msg::OrientationConstraint path_orientation(const nlohmann::json& h
 // MoveIt's answer to a scene, planned within `time_limit` seconds by the planner
 // `planner_id`, its path refined by CHOMP with `chomp`: the error code of the plan, or of
 // CHOMP where it refines one, and the probe of the path when they planned one.
-nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
-                             const std::string& planner_id, bool chomp,
+nlohmann::json moveit_answer(const Pipeline& pipeline, const std::string& planner_id, bool chomp,
                              const planning_scene::PlanningScenePtr& scene,
                              const moveit::core::RobotModelPtr& model, const nlohmann::json& s,
                              double time_limit, const Probing& probing) {
-  const auto& arm = *model->getJointModelGroup(group);
+  const auto& arm = *model->getJointModelGroup(probing.group);
   // The scene's state: the arms at the scene's start, holding what the scene attaches.
   const moveit::core::RobotState start(scene->getCurrentState());
 
   planning_interface::MotionPlanRequest request;
-  request.group_name = group;
+  request.group_name = probing.group;
   request.pipeline_id = pipeline_namespace;
   request.planner_id = planner_id;
   request.num_planning_attempts = 1;
@@ -265,7 +378,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
   seed_moveit(seed);
   planning_interface::MotionPlanResponse response;
   const std::uint64_t built = moveit_generators();
-  const bool planned = planner.generatePlan(scene, request, response);
+  const bool planned = generate_plan(pipeline, scene, request, response, is_poses(s.at("goal")));
   const int status = response.error_code.val;
   if ((status == moveit_success || status == moveit_invalid_motion_plan) &&
       moveit_generators() == built) {
@@ -308,17 +421,13 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
 }  // namespace
 
 nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
-  const ChainGroup chains = chains_of(scenario);
-  const auto model = arm_model(scenario, chains, inputs);
+  const auto model = arm_model(scenario, inputs);
+  const ArmGroup group = group_of(*model, scenario);
   const PlannerConfig config =
       planner_config(scenario.at("planner").get<std::string>(), pipeline_namespace);
   const bool chomp = refined_by_chomp(scenario.at("refiner").get<std::string>());
-  auto planner = pipeline(model, scenario, config);
-  const auto& checked_pairs = scenario.at("checked_pairs");
-  Probing probing = probing_of(scenario, chains, *model);
-  // The probes measure the robot's own bodies apart where motion_planning_core's self
-  // model checks pairs of them.
-  probing.self = !checked_pairs.empty();
+  const Pipeline pipeline = pipeline_of(model, scenario, config);
+  const Probing probing = probing_of(scenario, group, *model);
   const double voxel_size = scenario.at("voxel_size").get<double>();
   // MoveIt keeps the plans' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
@@ -331,15 +440,15 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     // that no scene before it drew from. A scene of a configuration loads none, and its
     // joint constraint reads none.
     if (is_poses(s.at("goal"))) {
-      load_kdl(model, chains.solver_groups());
+      load_kdl(model, group.solver_groups());
     }
-    const auto scene = scene_of(model, s, voxel_size, checked_pairs, padding);
+    const auto scene = scene_of(model, s, voxel_size, group, padding);
     const auto& ours = s.at("ours");
     Probing of_the_scene = probing;
     of_the_scene.held = held_targets_of(s, *model);
     answers.push_back({
         {"moveit",
-         moveit_answer(*planner, config.name, chomp, scene, model, s, time_limit,
+         moveit_answer(pipeline, config.name, chomp, scene, model, s, time_limit,
                        of_the_scene)},
         {"ours", ours.contains("waypoints")
                      ? ours_probed(*scene, model, ours.at("waypoints"), of_the_scene)

@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the occupancy scenario of the ROS reference harness.
 
 A turned sensor reads a still scene REPEATS times, which takes a voxel to each clamp of
@@ -30,8 +37,8 @@ point by the reciprocal of its length, then puts the point at the range one roun
 short of the voxel face at MAX_RANGE, and a division by the length puts it on the face.
 Run it from any directory:
 
-    python3 ros_reference/tools/draw_occupancy.py
-    python3 ros_reference/tools/draw_occupancy.py --drawn 30
+    uv run ros_reference/tools/draw_occupancy.py
+    uv run ros_reference/tools/draw_occupancy.py --drawn 30
 
 The second draws a large set for a local run, which the README describes.
 """

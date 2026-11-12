@@ -22,7 +22,6 @@ use occupancy_map::{
     Bounds, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, RobotCutout, Scan,
     ShapeCutout, Voxel, VoxelMap, depth_points,
 };
-use openarm_description::Side;
 
 #[path = "common/arms.rs"]
 mod arms;
@@ -34,7 +33,7 @@ mod meshes;
 mod pose;
 #[path = "common/slab.rs"]
 mod slab;
-use arms::OPENARM_V2_ARMS;
+use arms::{LEFT, OPENARM_V2_ARMS, RIGHT};
 use ball::Ball;
 use pose::pose_of;
 use slab::box_entry;
@@ -338,11 +337,7 @@ fn a_point_inside_a_cutout_marks_nothing(tc: TestCase) {
 // log-odds, and its ray clears. The bare arm leaves the same point a hit.
 #[hegel::test]
 fn the_padded_robot_is_cut_out_where_it_stands(tc: TestCase) {
-    let side = if tc.draw(gs::booleans()) {
-        Side::Left
-    } else {
-        Side::Right
-    };
+    let side = if tc.draw(gs::booleans()) { LEFT } else { RIGHT };
     let arm = &OPENARM_V2_ARMS[side];
     let q = arm
         .chain()
@@ -429,8 +424,8 @@ const FAR_BOX_BODY: &str = r#"<robot name="far_box_body">
 // takes the lowest log-odds. The same scan with nothing cut out marks it.
 #[test]
 fn a_point_inside_the_robots_body_is_cut_out() {
-    let body = BodyGeometry::from_urdf(BOX_BODY, "", &[]).expect("a box body");
-    let far = BodyGeometry::from_urdf(FAR_BOX_BODY, "", &[]).expect("a box body");
+    let body = BodyGeometry::from_urdf(BOX_BODY, "").expect("a box body");
+    let far = BodyGeometry::from_urdf(FAR_BOX_BODY, "").expect("a box body");
     let none = Padding::new(1.0, 0.0).expect("the padding that grows nothing");
     let (grown, far) = (body.mask(none), far.mask(none));
     let root = Isometry3::translation(0.4, -0.3, -0.6);

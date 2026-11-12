@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the Cartesian paths scenario of the ROS reference harness.
 
 Cases of OpenArm v2's left arm, each a start drawn inside the joint limits off the seams of
@@ -12,15 +19,14 @@ collision object; a turn in place; two lines; a line that stands still, then a l
 the last joint's link; and a line
 from a start inside a box. A line, a turn and two lines avoid collisions in every other
 round. motion_planning_core's example cartesian_scenes answers every case and gives the
-pairs of the robot's own links its paths check and the step of its lines, which the script
-writes into the scenario. Of the first DRAWN cases, the scenario keeps the first that shows
-each behavior of BEHAVIORS, and the first line a box ends with the same line unchecked,
-whole. It runs cargo in motion_planning_core, so the host builds that crate. Run it from
-any directory:
+step of its lines, which the script writes into the scenario. Of the first DRAWN cases, the
+scenario keeps the first that shows each behavior of BEHAVIORS, and the first line a box
+ends with the same line unchecked, whole. It runs cargo in motion_planning_core, so the
+host builds that crate. Run it from any directory:
 
-    python3 ros_reference/tools/draw_cartesian_paths.py
-    python3 ros_reference/tools/draw_cartesian_paths.py --drawn 200
-    python3 ros_reference/tools/draw_cartesian_paths.py --drawn 200 --min-clearance 0.04
+    uv run ros_reference/tools/draw_cartesian_paths.py
+    uv run ros_reference/tools/draw_cartesian_paths.py --drawn 200
+    uv run ros_reference/tools/draw_cartesian_paths.py --drawn 200 --min-clearance 0.04
 
 The second keeps the first 200 cases in place of those it picks, a large set for a local
 run, which the README describes. The third keeps them at a clearance of 4 cm:
@@ -30,18 +36,19 @@ robot against the octomap and the objects, which meets itself unpadded; it goes 
 set.
 """
 
+import itertools
 import math
 
 from drawing import (
     IDENTITY,
-    chain,
+    OPENARM_V2,
+    arm,
     configuration,
     example,
     generator,
-    grasp_link,
     joint_limits,
     link_pose,
-    openarm_joints,
+    moved_link,
     options,
     robot,
     run_example,
@@ -50,9 +57,8 @@ from drawing import (
 )
 
 NAME = "cartesian_paths_openarm_v2"
-SIDE = "left"
-URDF = "openarm_description/assets/openarm_v20.urdf"
-MESHES = "openarm_description/assets/meshes_v20"
+# The arm the cases move, by its SRDF name.
+ARM = arm(OPENARM_V2, "left_arm")
 VOXEL_SIZE = 0.04
 MAP_HALF_SIDE = 1.6
 # The clearance of the committed scenario's paths: MoveIt's links unpadded, so the parity
@@ -65,10 +71,11 @@ DRAWN = 200
 # of pi from it.
 SEAM_JOINTS = (1, 5)
 # The link the arm's last joint moves, to which the grasp link is fixed.
-LAST_JOINT_LINK = f"openarm_{SIDE}_ee_base_link"
-# Where the arm's reach starts: the origin of its second link, 0.6 m from the grasp point with
-# the arm straight (draw_arm_planning.py's SHORT_REACH_M).
-SHOULDER_LINK = f"openarm_{SIDE}_link2"
+LAST_JOINT_LINK = moved_link(OPENARM_V2, ARM.joints[-1])
+# Where the arm's reach starts: the origin of its second link, the link its second joint
+# moves, 0.6 m from the grasp point with the arm straight (draw_arm_planning.py's
+# SHORT_REACH_M).
+SHOULDER_LINK = moved_link(OPENARM_V2, ARM.joints[1])
 # How long a line is, and how far it turns.
 LINE_M = (0.05, 0.3)
 # A line that neither moves nor turns.
@@ -121,14 +128,14 @@ def line(rng, lengths=LINE_M, most=MAX_TURN_RAD):
 
 def position_at(model, link, start):
     """The position of `link` with the arm at `start`."""
-    return link_pose(model, link, dict(zip(openarm_joints(SIDE), start)))[1]
+    return link_pose(model, link, dict(zip(ARM.joints, start)))[1]
 
 
 def line_to_a_block(rng, model, limits):
     """A start, a line of the grasp point from it, and the line's point at BLOCK_SHARE."""
     start = off_the_branch_seams(rng, limits)
     offset = line(rng, BLOCKED_LINE_M)
-    at = position_at(model, grasp_link(SIDE), start)
+    at = position_at(model, ARM.grasp_link, start)
     return start, offset, [p + BLOCK_SHARE * d for p, d in zip(at, offset["translation"])]
 
 
@@ -152,7 +159,7 @@ def block_object(point):
     }
 
 
-def case(rng, start, offsets, avoid_collisions, boxes=(), objects=(), link=grasp_link(SIDE)):
+def case(rng, start, offsets, avoid_collisions, boxes=(), objects=(), link=ARM.grasp_link):
     return {
         "start": start,
         "link": link,
@@ -170,7 +177,7 @@ def case(rng, start, offsets, avoid_collisions, boxes=(), objects=(), link=grasp
 def away_from_the_shoulder(rng, model, start):
     """The longest line from the grasp point's pose at `start` straight away from the
     shoulder, turning as a drawn line turns."""
-    at = position_at(model, grasp_link(SIDE), start)
+    at = position_at(model, ARM.grasp_link, start)
     shoulder = position_at(model, SHOULDER_LINK, start)
     away = [a - s for a, s in zip(at, shoulder)]
     norm = math.sqrt(sum(a * a for a in away))
@@ -209,7 +216,7 @@ def round_of_cases(rng, model, limits, k):
     )
     turn = {"translation": [0.0, 0.0, 0.0], "rotation": rotation_vector(rng, MAX_TURN_RAD)}
     contact_start = start()
-    contact_point = position_at(model, grasp_link(SIDE), contact_start)
+    contact_point = position_at(model, ARM.grasp_link, contact_start)
     return [
         free,
         past_the_reach,
@@ -254,7 +261,7 @@ def in_place(answered):
 
 
 def follows_the_grasp_point(answered):
-    return answered["link"] == grasp_link(SIDE)
+    return answered["link"] == ARM.grasp_link
 
 
 def one_free_line(answered):
@@ -298,7 +305,7 @@ BEHAVIORS = {
 def box_pair(answered):
     """The place of the first of `answered` that a box ends and whose next is the same line
     unchecked, whole."""
-    for k, (blocked, unchecked) in enumerate(zip(answered, answered[1:])):
+    for k, (blocked, unchecked) in enumerate(itertools.pairwise(answered)):
         if (
             blocked["boxes"]
             and blocked["avoid_collisions"]
@@ -332,11 +339,15 @@ def scenario(drawn, min_clearance):
     """The scenario of the cases it picks, or with `drawn` of the first `drawn`, at
     `min_clearance`."""
     rng = generator(NAME)
-    model = robot(URDF)
-    limits = [joint_limits(model, joint) for joint in openarm_joints(SIDE)]
+    model = robot(OPENARM_V2)
+    limits = [joint_limits(OPENARM_V2, joint) for joint in ARM.joints]
     cases = drawn_cases(rng, model, limits, drawn or DRAWN)
     voxels = {"voxel_size": VOXEL_SIZE, "map_half_side": MAP_HALF_SIDE}
-    header = {"kind": "cartesian_paths", "urdf": URDF, "meshes": MESHES, "chains": [chain(SIDE)]}
+    header = {
+        "kind": "cartesian_paths",
+        "description": OPENARM_V2,
+        "group": ARM.name,
+    }
     answers = run_example(
         example("cartesian_scenes"),
         {**header, **voxels, "min_clearance": min_clearance, "cases": cases},
@@ -344,7 +355,6 @@ def scenario(drawn, min_clearance):
     answered = [{**one, "ours": ours} for one, ours in zip(cases, answers["ours"], strict=True)]
     return {
         **header,
-        "checked_pairs": answers["checked_pairs"],
         **voxels,
         "min_clearance": min_clearance,
         "step": answers["step"],

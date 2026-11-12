@@ -106,44 +106,20 @@ pub use nalgebra;
 /// naming a second version of the crate.
 pub use chain_kinematics;
 
-/// Test fixtures: load a concrete SRS arm (the OpenArm V1.0) from the bundled
-/// fixture URDF, giving the agnostic tests a real arm to check against.
-/// `side` is `"left"`/`"right"`; left vs right is encoded entirely by the link
-/// names, so there is no side parameter beyond which links are selected.
+/// Test fixtures: the fixture arm of `openarm_v1` loaded as forward kinematics, an SRS
+/// model and its limits, giving the agnostic tests a real arm to check against.
 #[cfg(test)]
 pub(crate) mod test_support {
     use crate::fk::ForwardKinematics;
     use crate::model::ArmModel;
     use std::sync::LazyLock;
 
-    /// The fixture URDF's path, a literal that `include_str!` also takes.
-    macro_rules! fixture_urdf_path {
-        () => {
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/openarm_v10.urdf"
-            )
-        };
-    }
-
-    /// A concrete SRS arm used only as a test fixture: the real OpenArm V1.0
-    /// description, gripper fingers included, so the distal-payload path is
-    /// exercised by simply loading it. Production callers pass their own URDF via
-    /// the node configuration; this is wired only under `cfg(test)`.
-    pub(crate) const FIXTURE_URDF: &str = include_str!(fixture_urdf_path!());
-
-    /// The path of the fixture URDF, for a reader that loads a file.
-    pub(crate) const FIXTURE_URDF_PATH: &str = fixture_urdf_path!();
-
-    /// Base link where the fixture's 7-DOF chain for `side` starts.
-    fn base(side: &str) -> String {
-        format!("openarm_{side}_link0")
-    }
+    use crate::openarm_v1::{base, urdf};
 
     /// The fixture's forward kinematics for `side`, parsed once per test binary.
     pub(crate) fn v1_fk(side: &str) -> &'static ForwardKinematics {
         fn load(side: &str) -> ForwardKinematics {
-            ForwardKinematics::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture fk")
+            ForwardKinematics::from_urdf(urdf(), base(side)).expect("load fixture fk")
         }
         static LEFT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("left"));
         static RIGHT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("right"));
@@ -163,6 +139,12 @@ pub(crate) mod test_support {
         v1_fk(side).limits()
     }
 }
+
+/// The fixture arm the unit tests check against, the same file the integration
+/// tests reach as `common::openarm_v1`.
+#[cfg(test)]
+#[path = "../tests/common/openarm_v1.rs"]
+pub(crate) mod openarm_v1;
 
 /// The arm sides and the straight-arm band the property tests share, the same
 /// file the integration tests reach as `common::properties`.

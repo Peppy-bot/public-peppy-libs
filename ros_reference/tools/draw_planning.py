@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the planning scenario of the ROS reference harness.
 
 Three worlds of box obstacles in the unit cube: a wall with a block before it, in two
@@ -10,8 +17,8 @@ which PRM and PRM* grow their roadmap, expand it and grow it again, and PRM's pa
 the reference does not answer, is not simplified. A box is open, so its surface is free.
 Run it from any directory:
 
-    python3 ros_reference/tools/draw_planning.py
-    python3 ros_reference/tools/draw_planning.py --drawn 200
+    uv run ros_reference/tools/draw_planning.py
+    uv run ros_reference/tools/draw_planning.py --drawn 200
 
 The second also has every planner plan each wall under each seed from 1 to 200, a large
 set for a local run, which the README describes.

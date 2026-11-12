@@ -1,49 +1,12 @@
-// An SO-101: one five-joint arm carrying a single-jaw gripper, and a wrist
-// camera. The limbs are named as the robot answers to them in limb_motion and
-// limb_state, which is also the link each one's pair comes from on the
-// backbone. Joint names, the start posture and the wrist camera are
-// so101_description's, and tests/test_so101_entry.py holds this entry to it.
+// How the engines render the camera of an SO-101, by the name it has in the
+// description, whose optical frame places it. Its vertical field of view is
+// the one a pinhole camera has with the module's 106 degree horizontal field
+// of view across a 16:9 image; the lens's barrel distortion is not modeled.
+// Its stream is the hardware camera's 720p at 30 frames per second, so a
+// dataset recorded in a simulation has the image shape of one recorded on
+// hardware.
 {
-  // The five arm joints, base to wrist, in the order the arm's pair carries
-  // them.
-  arms: [
-    {
-      name: "arm",
-      joints: ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
-    },
-  ],
-
-  // The single moving jaw. It closes at its joint's lower limit and opens at
-  // the upper one, the whole range being its travel, as the follower maps
-  // 0..100 percent of the calibrated travel on hardware.
-  grippers: [
-    { name: "gripper", fingers: ["gripper"], closed_at: "lower_limit" },
-  ],
-
-  // The wrist camera, in the gripper link's frame: the 32x32 mm UVC module on
-  // SO-ARM100's wrist camera mount, looking past the fixed jaw at the grasp.
-  // The camera looks along its own -Z with +Y as image-up. It streams the
-  // hardware camera's 720p at 30 frames per second.
-  cameras: [
-    {
-      name: "wrist",
-      parent_link: "gripper_link",
-      pos: [0.0, 0.055, -0.045],
-      quat_wxyz: [0.9596617, -0.2811575, 0.0, 0.0],
-      fovy_deg: 73.48,
-      color: { width: 1280, height: 720 },
-      fps: 30,
-    },
-  ],
-
-  // Home: the park pose, the collapsed pose unfolded out of contact, with the
-  // jaw closed at its joint's lower limit.
-  start_posture: {
-    shoulder_pan: -0.05,
-    shoulder_lift: -1.51,
-    elbow_flex: 1.47,
-    wrist_flex: 1.03,
-    wrist_roll: 0.32,
-    gripper: -0.174533,
+  cameras: {
+    wrist: { fovy_deg: 73.48, color: { width: 1280, height: 720 }, fps: 30 },
   },
 }

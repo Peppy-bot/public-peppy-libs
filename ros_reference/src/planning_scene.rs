@@ -16,10 +16,10 @@
 //! probe of the scenario lies inside an object the calls leave standing, grown by each
 //! padding.
 
-use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{Kind, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 /// The `kind` of a planning scene scenario and of its reference output, which refuses
 /// every other kind.
@@ -94,12 +94,10 @@ pub struct Octomap {
 #[serde(deny_unknown_fields)]
 struct Scenario {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    urdf: String,
-    /// The directory of the collision meshes, which the URDF names by their file names,
-    /// relative to the repository root.
-    meshes: String,
-    tip_link: String,
+    /// The robot's model directory, relative to the repository root.
+    description: String,
+    /// The arm the configurations and the paths pose.
+    arm: String,
     octomap: Octomap,
     operations: Vec<Operation>,
     configurations: Vec<BTreeMap<String, f64>>,
@@ -294,12 +292,9 @@ pub struct Configuration {
 pub struct Cases {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    /// The directory of the collision meshes.
-    pub meshes: PathBuf,
-    /// The grasp link of the arm the configurations pose.
-    pub tip_link: String,
+    pub robot: Robot,
+    /// The arm the configurations and the paths pose.
+    pub arm: Arm,
     pub octomap: Octomap,
     pub operations: Vec<Operation>,
     pub scene: MoveItScene,
@@ -326,9 +321,8 @@ impl Cases {
     fn load(name: String) -> Self {
         let Scenario {
             kind: ThisKind::PlanningScene,
-            urdf,
-            meshes,
-            tip_link,
+            description,
+            arm,
             octomap,
             operations,
             configurations,
@@ -336,6 +330,8 @@ impl Cases {
             path_padding,
             cut_out: CutOutProbes { paddings, probes },
         } = read_scenario(&name);
+        let robot = read_robot(&name, &description);
+        let arm = robot.arm(&name, &arm);
         let Reference {
             kind: ThisKind::PlanningScene,
             scene,
@@ -379,9 +375,8 @@ impl Cases {
             )
             .collect();
         Cases {
-            urdf: read_urdf(&name, &urdf),
-            meshes: read_mesh_directory(&name, &meshes),
-            tip_link,
+            robot,
+            arm,
             octomap,
             operations,
             scene,
@@ -581,7 +576,7 @@ mod tests {
     fn a_scenario_of_another_kind_is_refused() {
         let scenario = |kind: &str| {
             format!(
-                r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes", "tip_link": "tip",
+                r#"{{"kind": "{kind}", "description": "d", "arm": "arm",
                     "octomap": {{"voxel_size": 0.04, "keys": []}}, "operations": [],
                     "configurations": [], "paths": [], "path_padding": 0.04,
                     "cut_out": {{"paddings": [], "probes": []}}}}"#

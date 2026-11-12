@@ -1,0 +1,15 @@
+[package]
+name = "robot_description_py"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings of robot_description for the Python nodes and simulation engines: the bundled models by their model id, and a robot's description read from its URDF and SRDF, with its arms, grippers, named states, cameras and joint limits."
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.30", features = ["abi3-py312"] }
+robot_description = { path = "../robot_description", features = ["meshes"] }

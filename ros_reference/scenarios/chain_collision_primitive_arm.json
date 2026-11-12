@@ -1,18 +1,15 @@
 {
   "kind": "chain_collision",
-  "urdf": "ros_reference/robots/primitive_arm.urdf",
-  "meshes": "ros_reference/robots/meshes",
+  "description": "ros_reference/robots/primitive_arm",
   "paddings": [
     {"scale":1.0,"offset":0.0},
     {"scale":1.0,"offset":0.03},
     {"scale":1.1,"offset":0.01}
   ],
   "sphere_paddings": [0.0,0.04],
-  "chains": [
+  "arms": [
     {
       "name": "arm",
-      "joints": ["joint_1","joint_2","joint_3","joint_4","joint_5","joint_6","joint_7"],
-      "tip_link": "tool",
       "configurations": [
         {
           "positions": [0.0,0.0,0.0,0.0,0.0,0.0,0.0],

@@ -613,22 +613,52 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
 #[cfg(test)]
 pub(crate) mod tests {
     use chain_kinematics::{ChainSpec, JointSelection};
-    use openarm_description::{HardwareVersion, Side};
+    use robot_description::{ArmId, RobotDescription};
 
     use super::*;
 
-    /// OpenArm v2's left arm from its base to its grasp point.
-    pub(crate) fn left_arm() -> Chain<7> {
-        let version = HardwareVersion::V2;
+    /// OpenArm v2's left arm, the first of its description's arms.
+    pub(crate) const LEFT: ArmId = ArmId::new(0);
+
+    /// The bundled description of the model `id`.
+    fn bundled(id: &str) -> RobotDescription {
+        robot_description::model(id)
+            .unwrap_or_else(|unknown| panic!("{unknown}"))
+            .description()
+    }
+
+    /// OpenArm v2's description: its arms `left_arm` then `right_arm`.
+    pub(crate) fn openarm_v2() -> RobotDescription {
+        let description = bundled("openarm_v2");
+        let names: Vec<&str> = description
+            .arms()
+            .iter()
+            .map(|arm| arm.name.as_str())
+            .collect();
+        assert_eq!(names, ["left_arm", "right_arm"], "OpenArm v2's arms");
+        description
+    }
+
+    /// The chain of `arm`, an arm of `description`, from its base link to its grasp point.
+    fn arm_chain<const N: usize>(
+        description: &RobotDescription,
+        arm: &robot_description::Arm,
+    ) -> Chain<N> {
         Chain::from_urdf(
-            &urdf_rs::read_from_string(version.urdf()).expect("the URDF parses"),
+            description.robot(),
             &ChainSpec {
-                base_link: Some(version.base_link(Side::Left)),
-                tip_link: version.tcp_link(Side::Left),
+                base_link: Some(&arm.base_link),
+                tip_link: &arm.grasp_link,
                 joints: JointSelection::PathOrder,
             },
         )
-        .expect("the left arm")
+        .unwrap_or_else(|error| panic!("{}: {error}", arm.name))
+    }
+
+    /// OpenArm v2's left arm from its base to its grasp point.
+    pub(crate) fn left_arm() -> Chain<7> {
+        let description = openarm_v2();
+        arm_chain(&description, &description.arms()[LEFT.place()])
     }
 
     /// The grasp point held within `tolerance` of the identity, free about `free_axis`.
@@ -837,15 +867,13 @@ pub(crate) mod tests {
     // a goal of a pose. An inner link departs from MoveIt as on any chain.
     #[test]
     fn a_chain_of_five_joints_takes_the_options_of_a_short_chain() {
-        let chain = Chain::<{ so101_description::ARM_DOF }>::from_urdf(
-            &urdf_rs::read_from_string(so101_description::URDF).expect("the URDF parses"),
-            &ChainSpec {
-                base_link: Some(so101_description::BASE_LINK),
-                tip_link: so101_description::TCP_LINK,
-                joints: JointSelection::PathOrder,
-            },
-        )
-        .expect("SO-101's arm");
+        /// The joints of SO-101's arm.
+        const SO101_JOINTS: usize = 5;
+        let description = bundled("so101");
+        let [arm] = description.arms() else {
+            panic!("SO-101 has one arm");
+        };
+        let chain = arm_chain::<SO101_JOINTS>(&description, arm);
         let tip = |named: Aims| Frame::GraspPoint.search_of(&chain, named);
         assert_eq!(tip(Aims::Position), (Aims::Position, Ends::Converged));
         assert_eq!(tip(Aims::Both), (Aims::PositionFirst, Ends::Approximate));

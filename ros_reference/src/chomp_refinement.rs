@@ -11,14 +11,14 @@
 //! each rounded at the scenario's corner tolerance, as [`Probed`] holds them.
 
 use crate::arm_planning::{
-    self, ArmChain, Held, MOVEIT_SUCCESS, Planner, Probed, Refiner, Scene, SceneGoal, Scenes,
-    Termination, VoxelBox,
+    self, Held, MOVEIT_SUCCESS, Planner, Probed, Refiner, Scene, SceneGoal, Scenes, Termination,
+    VoxelBox,
 };
 use crate::planning_scene::Object;
-use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{Kind, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::Deserialize;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
 
 /// The `kind` of a CHOMP refinement scenario and of its reference output, which refuses every
 /// other kind.
@@ -32,18 +32,15 @@ enum ThisKind {
 /// (moveit2 2.15.2 chomp_planner.cpp:86).
 const CHOMP_WAYPOINTS: usize = 101;
 
-/// The arm, the map and the probes' parameters of a scenario, and its scenes.
+/// The robot, the arm, the map and the probes' parameters of a scenario, and its scenes.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Refinements {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    pub urdf: String,
-    /// The directory of the collision meshes, which the URDF names by their file names,
-    /// relative to the repository root.
-    pub meshes: String,
-    /// The arm whose paths CHOMP refines.
-    pub chains: [ArmChain; 1],
+    /// The robot's model directory, relative to the repository root.
+    pub description: String,
+    /// The SRDF group whose paths CHOMP refines: one arm.
+    pub group: String,
     pub voxel_size: f64,
     /// The half side of the cube about the robot's origin that motion_planning_core's map
     /// covers.
@@ -77,10 +74,8 @@ impl Refinements {
     pub fn plans(&self, refiner: Refiner) -> Scenes {
         Scenes {
             kind: arm_planning::ThisKind::ArmPlanning,
-            urdf: self.urdf.clone(),
-            meshes: self.meshes.clone(),
-            chains: self.chains.to_vec(),
-            checked_pairs: Some(Vec::new()),
+            description: self.description.clone(),
+            group: self.group.clone(),
             voxel_size: self.voxel_size,
             map_half_side: self.map_half_side,
             min_clearance: self.min_clearance,
@@ -185,10 +180,9 @@ pub struct RefinementCase {
 pub struct Case {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    /// The scenario's mesh directory.
-    pub meshes: PathBuf,
+    pub robot: Robot,
+    /// The arm of the scenario's group.
+    pub arm: Arm,
     pub refinements: Refinements,
     pub cases: Vec<RefinementCase>,
 }
@@ -204,26 +198,27 @@ impl Case {
             .into_iter()
             .map(|name| {
                 let refinements: Refinements = read_scenario(&name);
-                let urdf = read_urdf(&name, &refinements.urdf);
-                let meshes = read_mesh_directory(&name, &refinements.meshes);
-                let reference = read_reference(&name);
-                pair(name, urdf, meshes, refinements, reference)
+                let robot = read_robot(&name, &refinements.description);
+                let arm = robot.arm(&name, &refinements.group);
+                let cases = pair(&name, &refinements, read_reference(&name));
+                Case {
+                    name,
+                    robot,
+                    arm,
+                    refinements,
+                    cases,
+                }
             })
             .collect()
     }
 }
 
-fn pair(
-    name: String,
-    urdf: String,
-    meshes: PathBuf,
-    refinements: Refinements,
-    reference: Reference,
-) -> Case {
+/// Each scene of `refinements`, the scenario `name`, paired with its answer of `reference`.
+fn pair(name: &str, refinements: &Refinements, reference: Reference) -> Vec<RefinementCase> {
     let Refinements {
         kind: ThisKind::ChompRefinement,
         ..
-    } = &refinements;
+    } = refinements;
     let Reference {
         kind: ThisKind::ChompRefinement,
         scenes: answers,
@@ -233,7 +228,7 @@ fn pair(
         answers.len(),
         "{name}: an answer per scene"
     );
-    let cases = refinements
+    refinements
         .scenes
         .iter()
         .zip(answers)
@@ -241,14 +236,7 @@ fn pair(
         .map(|(index, (scene, answer))| {
             case_of(&format!("{name} scene {index}"), scene.clone(), answer)
         })
-        .collect();
-    Case {
-        name,
-        urdf,
-        meshes,
-        refinements,
-        cases,
-    }
+        .collect()
 }
 
 /// The scene `scene` of `what` with `answer`, the reference's: an input path of at least two
@@ -303,17 +291,15 @@ fn case_of(what: &str, scene: RefinementScene, answer: SceneAnswer) -> Refinemen
 mod tests {
     use super::*;
 
-    const CHAIN: &str =
-        r#"{"name": "arm", "base_link": "base", "tip_link": "tip", "joints": ["j"]}"#;
     const PATH: &str = "[[0.0], [0.5], [1.0]]";
     /// Our refinement of PATH.
     const REFINED: &str = "[[0.0], [0.25], [0.75], [1.0]]";
 
-    /// The text of a scenario of the kind `kind`, whose one member `chains` holds, and of one
-    /// scene, its input path `path`, our refinement `refined` and its seed `seed`.
-    fn scenario(kind: &str, chains: &str, path: &str, refined: &str, seed: u32) -> String {
+    /// The text of a scenario of the kind `kind`, and of one scene, its input path `path`, our
+    /// refinement `refined` and its seed `seed`.
+    fn scenario(kind: &str, path: &str, refined: &str, seed: u32) -> String {
         format!(
-            r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes", "chains": [{chains}],
+            r#"{{"kind": "{kind}", "description": "d", "group": "arm",
                 "voxel_size": 0.04, "map_half_side": 1.6, "min_clearance": 0.0,
                 "corner_tolerance": 0.1, "goal_tolerance": 0.01, "iterations": 100,
                 "time_limit": 600.0, "probe_spacing": 0.01,
@@ -326,8 +312,7 @@ mod tests {
     }
 
     fn refinements(path: &str, refined: &str) -> Refinements {
-        serde_json::from_str(&scenario("chomp_refinement", CHAIN, path, refined, 1))
-            .expect("parses")
+        serde_json::from_str(&scenario("chomp_refinement", path, refined, 1)).expect("parses")
     }
 
     const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null,
@@ -360,53 +345,35 @@ mod tests {
 
     /// The scenario of the input path `path` and our refinement `ours`, paired with CHOMP's
     /// `status`, `waypoints` and MoveIt's probe of them `refined`.
-    fn paired_with(path: &str, ours: &str, status: i32, waypoints: &str, refined: &str) -> Case {
+    fn paired_with(
+        path: &str,
+        ours: &str,
+        status: i32,
+        waypoints: &str,
+        refined: &str,
+    ) -> Vec<RefinementCase> {
         pair(
-            "scenario".into(),
-            String::new(),
-            PathBuf::new(),
-            refinements(path, ours),
+            "scenario",
+            &refinements(path, ours),
             reference(status, waypoints, refined),
         )
     }
 
-    fn paired(path: &str, status: i32, waypoints: &str, refined: &str) -> Case {
+    fn paired(path: &str, status: i32, waypoints: &str, refined: &str) -> Vec<RefinementCase> {
         paired_with(path, REFINED, status, waypoints, refined)
     }
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
-        let of_kind =
-            |kind| serde_json::from_str::<Refinements>(&scenario(kind, CHAIN, PATH, REFINED, 1));
+        let of_kind = |kind| serde_json::from_str::<Refinements>(&scenario(kind, PATH, REFINED, 1));
         assert!(of_kind("arm_planning").is_err());
         assert!(of_kind("chomp_refinement").is_ok());
     }
 
     #[test]
-    fn a_scenario_of_two_chains_is_refused() {
-        let chains = format!("{CHAIN}, {CHAIN}");
-        assert!(
-            serde_json::from_str::<Refinements>(&scenario(
-                "chomp_refinement",
-                &chains,
-                PATH,
-                REFINED,
-                1
-            ))
-            .is_err()
-        );
-    }
-
-    #[test]
     fn a_scene_of_seed_0_is_refused() {
         let of_seed = |seed| {
-            serde_json::from_str::<Refinements>(&scenario(
-                "chomp_refinement",
-                CHAIN,
-                PATH,
-                REFINED,
-                seed,
-            ))
+            serde_json::from_str::<Refinements>(&scenario("chomp_refinement", PATH, REFINED, seed))
         };
         assert!(of_seed(0).is_err());
         assert!(of_seed(1).is_ok());
@@ -432,15 +399,15 @@ mod tests {
 
     #[test]
     fn a_scene_pairs_with_chomps_path_and_the_probes_of_both_paths() {
-        let case = paired(PATH, MOVEIT_SUCCESS, &chomp_path(1.0), PROBED);
-        let scene = &case.cases[0];
+        let cases = paired(PATH, MOVEIT_SUCCESS, &chomp_path(1.0), PROBED);
+        let scene = &cases[0];
         assert_eq!(scene.chomp.status, MOVEIT_SUCCESS);
         let probed = scene.chomp.probed.expect("MoveIt's probe of CHOMP's path");
         assert_eq!(probed.length, 1.0);
         assert_eq!(scene.input_probed.length, 1.0);
         assert_eq!(scene.ours_probed.length, 1.0);
         let refused = paired(PATH, INVALID_ROBOT_STATE, "null", "null");
-        assert!(refused.cases[0].chomp.probed.is_none());
+        assert!(refused[0].chomp.probed.is_none());
     }
 
     #[test]

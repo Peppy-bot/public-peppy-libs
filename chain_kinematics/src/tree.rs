@@ -17,9 +17,11 @@
 //! with the extrinsic roll-pitch-yaw of `rpy`, the axis is normalised, and a
 //! revolute joint contributes a pure rotation about that axis in the joint frame.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use nalgebra::{Isometry3, Matrix3, Translation3, Unit, UnitQuaternion, Vector3};
+
+use crate::TreeError;
 
 /// How a joint moves, and about what. Prismatic joints are carried rather than
 /// rejected here so the layer above can say *why* it will not accept one.
@@ -95,16 +97,30 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Build from a parsed URDF. Errors when the links and joints do not form a
-    /// single tree, which every later assumption depends on.
-    pub fn from_robot(robot: &urdf_rs::Robot) -> Result<Self, String> {
+    /// Build from a parsed URDF. Refused when a link or a joint is given twice, a
+    /// joint names a link the URDF lacks, a link hangs on two joints, joints join
+    /// links in a loop, other than one link hangs on no joint, or a joint takes more
+    /// than one position: every later assumption depends on one tree of joints that
+    /// each take one value.
+    pub fn from_robot(robot: &urdf_rs::Robot) -> Result<Self, TreeError> {
         let mut by_name = HashMap::with_capacity(robot.links.len());
+        for (index, link) in robot.links.iter().enumerate() {
+            if by_name.insert(link.name.clone(), index).is_some() {
+                return Err(TreeError::LinkTwice(link.name.clone()));
+            }
+        }
+        let mut joint_names = HashSet::with_capacity(robot.joints.len());
+        if let Some(twice) = robot
+            .joints
+            .iter()
+            .find(|joint| !joint_names.insert(joint.name.as_str()))
+        {
+            return Err(TreeError::JointTwice(twice.name.clone()));
+        }
         let links: Vec<Link> = robot
             .links
             .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                by_name.insert(l.name.clone(), i);
+            .map(|l| {
                 let origin = pose_of(&l.inertial.origin);
                 let r = *origin.rotation.to_rotation_matrix().matrix();
                 Link {
@@ -117,29 +133,31 @@ impl Tree {
                 }
             })
             .collect();
-        if links.len() != by_name.len() {
-            return Err("URDF has two links with the same name".into());
-        }
 
         let mut parent_joint = vec![None; links.len()];
         let mut children = vec![Vec::new(); links.len()];
-        let mut joints = Vec::with_capacity(robot.joints.len());
+        let mut joints: Vec<Joint> = Vec::with_capacity(robot.joints.len());
         let mut parents = Vec::with_capacity(robot.joints.len());
         for j in &robot.joints {
-            let parent = *by_name
-                .get(&j.parent.link)
-                .ok_or_else(|| format!("joint '{}' names an absent parent link", j.name))?;
-            let child = *by_name
-                .get(&j.child.link)
-                .ok_or_else(|| format!("joint '{}' names an absent child link", j.name))?;
+            let link_of = |name: &String| {
+                by_name
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| TreeError::NoSuchLink {
+                        joint: j.name.clone(),
+                        link: name.clone(),
+                    })
+            };
+            let parent = link_of(&j.parent.link)?;
+            let child = link_of(&j.child.link)?;
             let idx = joints.len();
-            if parent_joint[child].is_some() {
-                return Err(format!(
-                    "link '{}' has two parent joints: the URDF is not a tree",
-                    links[child].name
-                ));
+            if let Some(first) = parent_joint[child].replace(idx) {
+                return Err(TreeError::LinkOnTwoJoints {
+                    link: j.child.link.clone(),
+                    first: joints[first].name.clone(),
+                    second: j.name.clone(),
+                });
             }
-            parent_joint[child] = Some(idx);
             children[parent].push(idx);
             parents.push(parent);
             joints.push(Joint {
@@ -155,27 +173,21 @@ impl Tree {
             });
         }
 
+        // Every walk here follows `parent_joint` upward, and around a loop of
+        // joints it would never end: a loop is refused here.
+        if let Some(ring) = first_loop(&parent_joint, &parents, &joints) {
+            return Err(TreeError::JointLoop {
+                joints: ring.iter().map(|&j| joints[j].name.clone()).collect(),
+            });
+        }
         let roots: Vec<usize> = (0..links.len())
             .filter(|&i| parent_joint[i].is_none())
             .collect();
         let [root] = roots[..] else {
-            return Err(format!(
-                "URDF must have exactly one root link, found {}",
-                roots.len()
-            ));
+            return Err(TreeError::RootLinks {
+                roots: roots.iter().map(|&i| links[i].name.clone()).collect(),
+            });
         };
-        // One root is not enough to make a tree: a set of links joined in a ring
-        // has no root of its own, so a URDF carrying one alongside a real tree
-        // still presents exactly one. Every walk here follows `parent_joint`
-        // upward and would circle such a ring forever, so it is refused here
-        // rather than discovered as a hang.
-        if let Some(link) = unreached_from(&children, &joints, root, links.len()) {
-            return Err(format!(
-                "link '{}' is not reachable from root link '{}': the URDF's links \
-                 and joints do not form a single tree",
-                links[link].name, links[root].name
-            ));
-        }
 
         Ok(Self {
             links,
@@ -287,26 +299,27 @@ impl Tree {
     }
 }
 
-/// The first link no walk down from `root` reaches, if any: proof that the
-/// links and joints are not one connected tree.
-fn unreached_from(
-    children: &[Vec<usize>],
+/// The joints of the first loop that a walk up from each joint's child meets, in the
+/// order of the joints, each joint the one its link hangs on: none when every link's
+/// walk up ends at a link that hangs on no joint. `parent_joint` holds the joint each
+/// link hangs on, and `parents` the link each joint hangs off.
+fn first_loop(
+    parent_joint: &[Option<usize>],
+    parents: &[usize],
     joints: &[Joint],
-    root: usize,
-    links: usize,
-) -> Option<usize> {
-    let mut seen = vec![false; links];
-    seen[root] = true;
-    let mut queue = VecDeque::from([root]);
-    while let Some(at) = queue.pop_front() {
-        for &j in &children[at] {
-            let child = joints[j].child;
-            if !std::mem::replace(&mut seen[child], true) {
-                queue.push_back(child);
+) -> Option<Vec<usize>> {
+    joints.iter().find_map(|start| {
+        let mut walked: Vec<usize> = Vec::new();
+        let mut link = start.child;
+        while let Some(joint) = parent_joint[link] {
+            if let Some(at) = walked.iter().position(|&seen| seen == joint) {
+                return Some(walked[at..].to_vec());
             }
+            walked.push(joint);
+            link = parents[joint];
         }
-    }
-    seen.iter().position(|reached| !reached)
+        None
+    })
 }
 
 /// URDF `<origin>` as a transform: `translation(xyz)` composed with the extrinsic
@@ -331,7 +344,7 @@ fn inertia_of(i: &urdf_rs::Inertia) -> Matrix3<f64> {
 /// slot, so treating it as anything simpler silently welds or misplaces every
 /// link below it. Refused for the whole model, not just the chain: a multi-slot
 /// joint anywhere makes the tree's single-value-per-joint contract a lie.
-fn kind_of(j: &urdf_rs::Joint) -> Result<JointKind, String> {
+fn kind_of(j: &urdf_rs::Joint) -> Result<JointKind, TreeError> {
     let axis = || Unit::new_normalize(Vector3::new(j.axis.xyz[0], j.axis.xyz[1], j.axis.xyz[2]));
     match &j.joint_type {
         urdf_rs::JointType::Revolute | urdf_rs::JointType::Continuous => {
@@ -339,10 +352,9 @@ fn kind_of(j: &urdf_rs::Joint) -> Result<JointKind, String> {
         }
         urdf_rs::JointType::Prismatic => Ok(JointKind::Prismatic { axis: axis() }),
         urdf_rs::JointType::Fixed => Ok(JointKind::Fixed),
-        other => Err(format!(
-            "joint '{}' has type {other:?}, which needs more than one configuration \
-             value; supported joint types are revolute, continuous, prismatic and fixed",
-            j.name
-        )),
+        other => Err(TreeError::MultiPositionJoint {
+            joint: j.name.clone(),
+            kind: format!("{other:?}").to_lowercase(),
+        }),
     }
 }

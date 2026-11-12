@@ -5,6 +5,7 @@
 //! prismatic joints, each carrying a part.
 
 mod common;
+mod openarm_v2;
 
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
@@ -21,7 +22,8 @@ use urdf_rs::{
     Axis, Collision, Geometry, Joint, JointLimit, JointType, Link, LinkName, Robot, Vec3,
 };
 
-use common::{JOINTS, LEFT_ARM, left_fingers};
+use common::{LEFT_ARM, left_fingers, plan_arm};
+use openarm_v2::{JOINTS, LEFT};
 
 /// The points of `body` in its own frame that move farthest under a rigid motion, with
 /// the pose that places them: a piece's vertices, each pushed out by the hull's inflation
@@ -124,7 +126,7 @@ fn no_point_of_openarm_moves_farther_than_its_reach(tc: TestCase) {
         body: RiderBody::Shape(&object),
     };
     let riders: Vec<Rider> = left_fingers().into_iter().chain([held]).collect();
-    let arm = Arm::new("left_arm", &LEFT_ARM)
+    let arm = plan_arm(LEFT)
         .riding(&riders)
         .expect("the fingers and the object ride the hand");
     assert_moves_within_reach(&tc, &arm);
@@ -240,7 +242,7 @@ fn a_rider_off_the_arm_is_refused() {
         ..fingers[0]
     }];
     assert_eq!(
-        Arm::new("left_arm", &LEFT_ARM).riding(&off).err(),
+        plan_arm(LEFT).riding(&off).err(),
         Some(RiderOffTheArm {
             name: fingers[0].name.to_string(),
             segment: JOINTS,

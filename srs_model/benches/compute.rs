@@ -4,7 +4,7 @@
 //! Each bench mirrors what a consumer does on a control tick: the `get_fk` /
 //! `get_*` dynamics benches re-pose the arm at the requested configuration and
 //! evaluate the term; the `get_ik` benches run the closed-form solver. The
-//! fixture is the bundled OpenArm V1.0 (left arm).
+//! fixture is the OpenArm v1.0 as robot_description bundles it (left arm).
 //!
 //! IK has two cost regimes:
 //!   - `FromSeed` always computes the exact feasible-arm-angle intervals (the
@@ -19,11 +19,12 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use srs_model::{Arm, ArmAnglePolicy, JointVec};
 
-const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
-const BASE: &str = "openarm_left_link0";
+#[path = "../tests/common/openarm_v1.rs"]
+mod openarm_v1;
 
 fn benchmarks(c: &mut Criterion) {
-    let arm = Arm::from_urdf(URDF, BASE).expect("load fixture arm");
+    let arm =
+        Arm::from_urdf(openarm_v1::urdf(), openarm_v1::base("left")).expect("load fixture arm");
     // A non-singular configuration and a non-trivial velocity.
     let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
     let qd: JointVec = [0.4, -0.3, 0.5, -0.2, 0.6, -0.1, 0.3];

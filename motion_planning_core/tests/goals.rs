@@ -3,6 +3,7 @@
 //! end, each sample from the working state the valid goals before it leave.
 
 mod common;
+mod openarm_v2;
 
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -11,14 +12,16 @@ use chain_kinematics::Draws;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, ArmGoal, Axis, Body, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
+    ArmGoal, Axis, Body, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
     OrientationTarget, PositionTarget, sample_goals,
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
-use openarm_description::{HardwareVersion, Side};
 use srs_model::ArmAnglePolicy;
 
-use common::{JOINTS, LEFT_ARM, branch, left_fingers, off_the_branch_seams, positive};
+use common::{
+    LEFT_ARM, branch, left_fingers, left_srs_arm, off_the_branch_seams, plan_arm, positive,
+};
+use openarm_v2::{JOINTS, LEFT};
 
 /// The start a sample sets out from: every joint at 0.
 const ZERO: [f64; JOINTS] = [0.0; JOINTS];
@@ -318,11 +321,7 @@ const TWO_BRANCH_POSES: usize = 10;
 // branches reach, a working state on either branch gives a goal on that branch.
 #[test]
 fn a_goal_sample_sets_out_from_its_working_state() {
-    let version = HardwareVersion::V2;
-    let srs = srs_model::Arm::from_urdf(version.urdf(), version.base_link(Side::Left))
-        .expect("an SRS arm")
-        .with_tool_link(version.tcp_link(Side::Left))
-        .expect("its grasp point");
+    let srs = left_srs_arm();
     let chain = LEFT_ARM.chain();
     let limits = chain.limits();
     let sampler = IkGoalSampler::new(chain.clone());
@@ -452,7 +451,7 @@ fn a_goal_sample_answers_only_what_its_validity_accepts() {
 #[test]
 fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
     let fingers = left_fingers();
-    let arm = Arm::new("left_arm", &LEFT_ARM)
+    let arm = plan_arm(LEFT)
         .riding(&fingers)
         .expect("the fingers ride the hand");
     let q = [0.3, -0.2, 0.1, 1.0, 0.2, 0.1, 0.0];

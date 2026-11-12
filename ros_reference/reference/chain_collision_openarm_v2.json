@@ -1,5 +1,5 @@
 {
-  "chains": [
+  "arms": [
     {
       "bodies": [
         {"center":[0.005183946647221313,0.03433283487791224,0.00022908563311756664],"link":"openarm_left_link1"},
@@ -201,7 +201,7 @@
         }
       ],
       "links": ["openarm_left_link1","openarm_left_link2","openarm_left_link3","openarm_left_link4","openarm_left_link5","openarm_left_link6","openarm_left_ee_base_link"],
-      "name": "left",
+      "name": "left_arm",
       "spheres": [
         [
           [
@@ -480,7 +480,7 @@
         }
       ],
       "links": ["openarm_right_link1","openarm_right_link2","openarm_right_link3","openarm_right_link4","openarm_right_link5","openarm_right_link6","openarm_right_ee_base_link"],
-      "name": "right",
+      "name": "right_arm",
       "spheres": [
         [
           [

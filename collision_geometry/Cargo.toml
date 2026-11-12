@@ -17,8 +17,8 @@ urdf-rs = "0.10"
 hegeltest = { version = "0.51", features = ["static-engine"] }
 kinematics_properties = { path = "../kinematics_properties" }
 libc = "0.2"
-openarm_description = { path = "../openarm_description" }
 rand = "0.10"
+robot_description = { path = "../robot_description" }
 ros_reference = { path = "../ros_reference" }
 
 [[test]]
