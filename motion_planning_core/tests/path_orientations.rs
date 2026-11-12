@@ -6,6 +6,7 @@
 //! can hold fails with no path. A goal that names a position takes the path's orientation.
 
 mod common;
+mod openarm_v2;
 
 use std::f64::consts::PI;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
@@ -23,9 +24,10 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, PLAN_SPARE_M, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at,
-    positive,
+    LEFT_ARM, PLAN_SPARE_M, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at,
+    plan_arm, positive,
 };
+use openarm_v2::{JOINTS, LEFT, RIGHT};
 
 const VOXEL_M: f64 = 0.04;
 /// The half side of the map, in meters: past the arms' reach.
@@ -88,7 +90,7 @@ fn cup_upright(free_axis: Option<Axis>) -> OrientationTarget {
 fn of_the_left_hand(target: OrientationTarget) -> [PathOrientation<'static>; 1] {
     [PathOrientation {
         arm: 0,
-        link_name: "openarm_left_tcp",
+        link_name: &openarm_v2::arm(LEFT).grasp_link,
         target,
     }]
 }
@@ -275,7 +277,7 @@ fn plan_until<const N: usize, const D: usize>(
 /// The left arm as a group of one, and its goal sampler.
 fn left_arm() -> (Arms<'static, JOINTS, JOINTS>, [IkGoalSampler<JOINTS>; 1]) {
     (
-        Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None),
+        Arms::new(vec![plan_arm(LEFT)], None),
         [IkGoalSampler::new(LEFT_ARM.chain().clone())],
     )
 }
@@ -415,13 +417,14 @@ fn the_orientations_hold_in_either_order() {
     let (arms, samplers) = left_arm();
     let hand = cup_upright(Some(Axis::X));
     let start = configuration_at(&LEFT_ARM, NEAR, upright());
+    let posed = LEFT_ARM.chain().at(&start);
     let frame = Frame::Link {
         segment: 2,
         offset: Isometry3::identity(),
     };
     let upper_arm = target(
         frame,
-        LEFT_ARM.chain().at(&start).link_pose_world(2).rotation,
+        posed.link_pose_world(2).rotation,
         UPPER_ARM_TOLERANCE_RAD,
         None,
     );
@@ -429,7 +432,7 @@ fn the_orientations_hold_in_either_order() {
     let [of_the_hand] = of_the_left_hand(hand);
     let of_the_upper_arm = PathOrientation {
         arm: 0,
-        link_name: "openarm_left_link3",
+        link_name: posed.link_name(2),
         target: upper_arm,
     };
     let hand_alone = plan_holding(&arms, &[], start, &[&goal], &samplers, &[of_the_hand])
@@ -456,13 +459,7 @@ fn the_orientations_hold_in_either_order() {
 
 /// Both arms as one group.
 fn both_arms() -> Arms<'static, JOINTS, BOTH> {
-    Arms::new(
-        vec![
-            Arm::new("left_arm", &LEFT_ARM),
-            Arm::new("right_arm", &RIGHT_ARM),
-        ],
-        None,
-    )
+    Arms::new(vec![plan_arm(LEFT), plan_arm(RIGHT)], None)
 }
 
 /// `position` on the robot's other side.
@@ -510,7 +507,7 @@ fn each_of_two_arms_holds_its_orientation() {
         of_the_left_hand,
         PathOrientation {
             arm: 1,
-            link_name: "openarm_right_tcp",
+            link_name: &openarm_v2::arm(RIGHT).grasp_link,
             target: hand,
         },
     ]);

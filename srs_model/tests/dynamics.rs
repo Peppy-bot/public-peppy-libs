@@ -1,22 +1,21 @@
-//! Feedforward dynamics on the real arm, validated two independent ways: KDL
-//! `TreeIdSolver_RNE` reference values (tree inverse dynamics over the whole
-//! URDF with the gripper fingers at home, so the folded distal payload is
-//! included), and the potential-energy gradient, which is what gravity torque
-//! is. The computation itself lives in `chain_kinematics`; this suite is the
-//! evidence it holds on a 7-DOF arm, mirror sides included.
+//! Feedforward dynamics on the fixture arm, validated two independent ways: KDL's
+//! recursive Newton-Euler inverse dynamics (`ChainIdSolver_RNE`, ROS's KDL), over the
+//! arm's chain from its base link to link7 with every link below link7 folded into it,
+//! the gripper fingers at home, so the folded distal payload is included; and the
+//! potential-energy gradient, which is what gravity torque is. The computation itself
+//! lives in `chain_kinematics`; this suite is the evidence it holds on a 7-DOF arm,
+//! mirror sides included.
 //!
-//! Tolerance 1e-3 Nm; sub-threshold reference values written 0.0. Regenerate
-//! the tables with `tools/kdl_reference.cpp`.
+//! Tolerance 1e-3 Nm; sub-threshold reference values written 0.0. `tools/kdl_reference.py`
+//! prints the KDL tables, as the README says.
 
-use srs_model::{ARM_DOF, Arm, JointVec};
+mod common;
+
+use common::arm;
+use srs_model::{ARM_DOF, JointVec};
 use std::f64::consts::FRAC_PI_2;
 
-const FIXTURE: &str = include_str!("fixtures/openarm_v10.urdf");
 const GRAVITY_MAGNITUDE: f64 = 9.81;
-
-fn arm(side: &str) -> Arm {
-    Arm::from_urdf(FIXTURE, &format!("openarm_{side}_link0")).expect("load fixture")
-}
 
 const GRAVITY_POSTURES: [JointVec; 4] = [
     [0.0; ARM_DOF],
@@ -45,10 +44,10 @@ fn gravity_left_matches_kdl() {
     assert_gravity_matches_kdl(
         "left",
         [
-            [0.0983, -0.0515, 0.0, -0.0299, 0.0, 0.0594, -0.0049],
-            [10.4090, 0.0, -0.0515, -3.7841, -0.0648, 0.0, 0.4058],
-            [-3.7157, -0.0515, 0.0, 3.7841, 0.0648, 0.0, -0.4058],
-            [2.6572, -2.4663, 0.2762, -2.1801, 0.0351, -0.1392, 0.3296],
+            [0.0983, -0.0504, 0.0, -0.0299, 0.0, 0.0584, -0.0049],
+            [11.0882, 0.0, -0.0504, -4.1891, -0.0637, 0.0, 0.5417],
+            [-4.1207, -0.0504, 0.0, 4.1891, 0.0637, 0.0, -0.5417],
+            [2.9372, -2.6350, 0.3153, -2.4532, 0.0573, -0.1985, 0.4403],
         ],
     );
 }
@@ -58,10 +57,10 @@ fn gravity_right_matches_kdl() {
     assert_gravity_matches_kdl(
         "right",
         [
-            [-0.0983, 0.0780, 0.0, -0.0299, 0.0, -0.0594, 0.0049],
-            [10.4090, 0.0, -0.0781, 3.7841, -0.0648, 0.0, 0.4058],
-            [3.7157, 0.0780, 0.0, 3.7841, -0.0648, 0.0, 0.4058],
-            [-0.4429, -2.0486, 0.2803, -1.1611, 0.0865, -0.1971, 0.0782],
+            [-0.0983, 0.0791, 0.0, -0.0299, 0.0, -0.0605, 0.0049],
+            [11.0882, 0.0, -0.0791, 4.1891, -0.0658, 0.0, 0.5417],
+            [4.1207, 0.0791, 0.0, 4.1891, -0.0658, 0.0, 0.5417],
+            [-0.4976, -2.1101, 0.2972, -1.2396, 0.1085, -0.2493, 0.1030],
         ],
     );
 }
@@ -139,10 +138,10 @@ fn coriolis_left_matches_kdl() {
     assert_coriolis_matches_kdl(
         "left",
         [
-            [0.0, -0.0714, 0.0, -0.0168, 0.0, 0.0741, -0.0054],
-            [-0.0168, -0.0426, 0.0, 0.0, 0.0, 0.0408, -0.0027],
-            [-0.7638, -0.0104, 0.0, 0.7638, 0.0131, 0.0, -0.0819],
-            [-2.4372, -1.0816, 0.4952, 0.5812, 0.1273, 0.0689, 0.2063],
+            [0.0, -0.0699, 0.0, -0.0168, 0.0, 0.0725, -0.0054],
+            [-0.0168, -0.0416, 0.0, 0.0, 0.0, 0.0398, -0.0027],
+            [-0.8455, -0.0102, 0.0, 0.8455, 0.0129, 0.0, -0.1093],
+            [-3.0458, -1.1971, 0.6039, 0.7945, 0.1688, 0.0769, 0.2765],
         ],
     );
 }
@@ -152,10 +151,10 @@ fn coriolis_right_matches_kdl() {
     assert_coriolis_matches_kdl(
         "right",
         [
-            [0.0, 0.0867, 0.0, -0.0168, 0.0, -0.0740, 0.0054],
-            [0.0168, 0.0430, 0.0, 0.0, 0.0, -0.0407, 0.0027],
-            [-2.2913, 0.0157, 0.0618, 0.7638, -0.0130, -0.0586, 0.0858],
-            [0.1017, -0.8665, 0.1347, -0.2242, -0.0224, -0.0181, 0.0163],
+            [0.0, 0.0882, 0.0, -0.0168, 0.0, -0.0755, 0.0054],
+            [0.0168, 0.0439, 0.0, 0.0, 0.0, -0.0416, 0.0027],
+            [-2.5365, 0.0159, 0.0632, 0.8455, -0.0132, -0.0599, 0.1132],
+            [0.0978, -1.0228, 0.1573, -0.2619, -0.0304, -0.0176, 0.0157],
         ],
     );
 }

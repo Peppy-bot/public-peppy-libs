@@ -2,22 +2,21 @@
 //! its meshes, at construction time. There is no intermediate artifact: the
 //! hulls can never go stale against the geometry.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use collision_geometry::GeometryError;
-use collision_geometry::clip::ClipRegion;
 use collision_geometry::fit::{fit_fixed_link, fit_pieces};
 use collision_geometry::gjk::Hull;
 use collision_geometry::urdf_collision::{ParentJoint, UrdfCollisions};
+use robot_description::Finger;
 
 use crate::BuildError;
-use crate::model::Finger;
 
 /// Convex-hull pieces for every collision body: world-fixed bodies (in root
 /// frame), chain links (in link frame, with any *fixed* collision-bearing child
 /// baked in), and the fingers, each fit as its own body in its finger-link frame
 /// and placed live from its chain's opening. A body has one piece per collision
-/// element of its links, unless the caller supplied clip regions for it.
+/// element of its links.
 pub(crate) struct FittedBodies {
     pub fixed: Vec<(String, Vec<Hull>)>,
     pub links: HashMap<String, Vec<Hull>>,
@@ -27,8 +26,8 @@ pub(crate) struct FittedBodies {
 /// A finger: a collision-bearing link on a movable joint off a chain link, fit as its
 /// own hull and placed at the live opening. `parent_link` is the chain link it hangs
 /// off (its FK segment host); `joint` places its hull in that link's frame at a
-/// given opening ([`ParentJoint::offset`]). `closed` is the joint position at which
-/// the description says the finger is shut, and `open` the joint's other limit.
+/// given opening ([`ParentJoint::offset`]). `closed` and `open` are the joint's
+/// positions where the gripper's `closed` and `open` states put it.
 pub(crate) struct FittedFinger {
     pub name: String,
     pub parent_link: String,
@@ -41,19 +40,15 @@ pub(crate) struct FittedFinger {
 /// Fit all collision bodies. `chains` are the moving-link names per chain (from
 /// FK); every other collision-bearing link must be world-fixed or an attached
 /// child of a chain link, anything else is an error rather than a silently
-/// unmodeled body. A child on a movable joint is a finger, and `fingers` gives the
-/// joint position at which each is shut. `supplied` overrides the auto-fit for named
-/// bodies with a clip-region decomposition, whose fitted pieces are verified here to
-/// contain that body's mesh.
+/// unmodeled body. A child on a movable joint is a finger, which `fingers` must name
+/// with its closed and open positions.
 pub(crate) fn fit_bodies(
     urdf: &UrdfCollisions,
     chains: &[Vec<String>],
-    fingers: &[Finger<'_>],
+    fingers: &[&Finger],
     meshes_dir: &str,
-    supplied: &BTreeMap<String, Vec<ClipRegion>>,
 ) -> Result<FittedBodies, BuildError> {
     let chain_set: HashSet<&str> = chains.iter().flatten().map(String::as_str).collect();
-    let mut body_names: HashSet<String> = HashSet::new();
 
     let mut links = HashMap::new();
     let mut fitted_fingers: Vec<FittedFinger> = Vec::new();
@@ -87,48 +82,31 @@ pub(crate) fn fit_bodies(
             // A movable finger placed live per opening. A finger joint that is not
             // prismatic or revolute (continuous, planar or floating) is refused when
             // the model parses it into its runtime placer.
-            let shut = fingers
+            let finger = fingers
                 .iter()
                 .find(|finger| finger.link == child)
                 .ok_or_else(|| BuildError::UnnamedFinger {
                     link: child.clone(),
-                })?
-                .shut;
-            let (lower, upper) = (joint.lower_limit, joint.upper_limit);
-            let open = if shut == lower {
-                upper
-            } else if shut == upper {
-                lower
-            } else {
-                return Err(BuildError::ShutOffTheLimits {
-                    link: child,
-                    shut,
-                    lower,
-                    upper,
-                });
-            };
+                })?;
+            let (closed, open) = (finger.closed, finger.open);
             let finger_surfaces = urdf.link_surfaces(&child, meshes_dir)?;
-            let hulls = fit_pieces(&child, &finger_surfaces, regions_of(supplied, &child))?;
-            body_names.insert(child.clone());
+            let hulls = fit_pieces(&child, &finger_surfaces)?;
             fitted_fingers.push(FittedFinger {
                 name: child,
                 parent_link: name.clone(),
                 hulls,
                 joint,
-                closed: shut,
+                closed,
                 open,
             });
         }
-        links.insert(
-            name.clone(),
-            fit_pieces(name, &surfaces, regions_of(supplied, name))?,
-        );
-        body_names.insert(name.clone());
+        links.insert(name.clone(), fit_pieces(name, &surfaces)?);
     }
     if let Some(finger) = fingers.iter().find(|finger| {
-        !fitted_fingers
-            .iter()
-            .any(|fitted| fitted.name == finger.link)
+        !urdf.collisions_of(&finger.link).is_empty()
+            && !fitted_fingers
+                .iter()
+                .any(|fitted| fitted.name == finger.link)
     }) {
         return Err(BuildError::NoSuchFinger {
             link: finger.link.to_string(),
@@ -140,21 +118,14 @@ pub(crate) fn fit_bodies(
         if chain_set.contains(name.as_str()) || attached.contains(&name) {
             continue;
         }
-        let hulls = fit_fixed_link(urdf, &name, meshes_dir, regions_of(supplied, &name))
+        let hulls = fit_fixed_link(urdf, &name, meshes_dir)
             .map_err(|error| match error {
                 GeometryError::NotFixedToTheRoot { .. } => BuildError::Geometry(format!(
                     "collision link '{name}' is neither a chain link, an attached child, nor world-fixed: {error}"
                 )),
                 fit => BuildError::Fit(fit),
             })?;
-        body_names.insert(name.clone());
         fixed.push((name, hulls));
-    }
-
-    if let Some(unknown) = supplied.keys().find(|k| !body_names.contains(*k)) {
-        return Err(BuildError::UnknownSuppliedBody {
-            name: unknown.clone(),
-        });
     }
 
     Ok(FittedBodies {
@@ -162,12 +133,4 @@ pub(crate) fn fit_bodies(
         links,
         fingers: fitted_fingers,
     })
-}
-
-/// The clip regions the caller supplied for `body`, if any.
-fn regions_of<'a>(
-    supplied: &'a BTreeMap<String, Vec<ClipRegion>>,
-    body: &str,
-) -> Option<&'a [ClipRegion]> {
-    supplied.get(body).map(Vec::as_slice)
 }

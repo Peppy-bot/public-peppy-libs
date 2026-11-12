@@ -51,9 +51,9 @@ moveit::core::GroupStateValidityCallbackFn state_check(const planning_scene::Pla
 // (cartesian_path_service_capability.cpp:186-188), the case seeding KDL's restarts, which
 // draw from a generator of MoveIt's, and its steps off a singularity.
 nlohmann::json moveit_path(const moveit::core::RobotModel& model,
-                           const planning_scene::PlanningScene& scene, const nlohmann::json& path,
-                           double step) {
-  const auto* arm = model.getJointModelGroup(group);
+                           const planning_scene::PlanningScene& scene, const ArmGroup& group,
+                           const nlohmann::json& path, double step) {
+  const auto* arm = model.getJointModelGroup(group.name);
   const auto link_name = path.at("link").get<std::string>();
   const auto* link = model.getLinkModel(link_name);
   moveit::core::RobotState start(scene.getCurrentState());
@@ -84,9 +84,8 @@ nlohmann::json moveit_path(const moveit::core::RobotModel& model,
 }  // namespace
 
 nlohmann::json cartesian_paths(const nlohmann::json& scenario, Inputs& inputs) {
-  const ChainGroup chains = chains_of(scenario);
-  const auto model = arm_model(scenario, chains, inputs);
-  const auto& checked_pairs = scenario.at("checked_pairs");
+  const auto model = arm_model(scenario, inputs);
+  const ArmGroup group = group_of(*model, scenario);
   const double voxel_size = scenario.at("voxel_size").get<double>();
   // MoveIt keeps the paths' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
@@ -96,9 +95,9 @@ nlohmann::json cartesian_paths(const nlohmann::json& scenario, Inputs& inputs) {
   for (const auto& path : scenario.at("cases")) {
     // Each case loads MoveIt's inverse kinematics as a solver of its own: its random restarts
     // draw from a generator that no case before it drew from.
-    load_kdl(model, chains.solver_groups());
-    const auto scene = scene_of(model, path, voxel_size, checked_pairs, padding);
-    answers.push_back(moveit_path(*model, *scene, path, step));
+    load_kdl(model, group.solver_groups());
+    const auto scene = scene_of(model, path, voxel_size, group, padding);
+    answers.push_back(moveit_path(*model, *scene, group, path, step));
   }
   return {{"kind", "cartesian_paths"}, {"cases", answers}};
 }

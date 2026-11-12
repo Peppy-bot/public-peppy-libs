@@ -1,7 +1,6 @@
 #include "chain_collision.hpp"
 
 #include <algorithm>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -127,25 +126,21 @@ nlohmann::json collision_spheres(const moveit::core::RobotModel& model,
 }  // namespace
 
 nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
-  std::optional<std::string> mesh_directory;
-  if (scenario.contains("meshes")) {
-    mesh_directory = scenario.at("meshes").get<std::string>();
-  }
-  const auto model =
-      robot_model_with_meshes(inputs, scenario.at("urdf").get<std::string>(), mesh_directory);
+  const auto model = description_model(inputs, scenario.at("description").get<std::string>());
   moveit::core::RobotState state(model);
-  auto chains = nlohmann::json::array();
-  for (const auto& chain : scenario.at("chains")) {
-    const auto joints = chain.at("joints").get<std::vector<std::string>>();
-    require_named_path(*model, chain.at("tip_link").get<std::string>(), joints);
-    const auto links = carried_links(*model, joints, chain.at("tip_link").get<std::string>());
+  auto arms = nlohmann::json::array();
+  for (const auto& posed : scenario.at("arms")) {
+    const auto arm = the_arm(*model, posed.at("name").get<std::string>());
+    const auto& joints = arm.joints;
+    require_named_path(*model, arm.tip_link, joints);
+    const auto links = carried_links(*model, joints, arm.tip_link);
     auto shapes = shape_bodies(*model, links);
     const auto centers = growth_centers(*model, links, shapes);
     auto configurations = nlohmann::json::array();
-    for (const auto& configuration : chain.at("configurations")) {
+    for (const auto& configuration : posed.at("configurations")) {
       const auto positions = configuration.at("positions").get<std::vector<double>>();
       if (positions.size() != joints.size()) {
-        throw std::runtime_error("a configuration of " + chain.at("name").get<std::string>() +
+        throw std::runtime_error("a configuration of " + arm.name +
                                  " does not hold one position per joint");
       }
       state.setToDefaultValues();
@@ -202,7 +197,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
                                 {"links", poses},
                                 {"inside", inside}});
     }
-    chains.push_back({{"name", chain.at("name")},
+    arms.push_back({{"name", arm.name},
                       {"links", links},
                       {"bodies", centers},
                       {"spheres", collision_spheres(*model, links, scenario.at("sphere_paddings"))},
@@ -220,7 +215,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
   return {{"kind", "chain_collision"},
           {"paddings", paddings},
           {"sphere_paddings", sphere_paddings},
-          {"chains", chains}};
+          {"arms", arms}};
 }
 
 }  // namespace ros_reference

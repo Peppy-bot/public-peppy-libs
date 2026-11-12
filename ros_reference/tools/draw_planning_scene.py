@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the planning scene scenario of the ROS reference harness: calls of
 motion_planning's scene members on OpenArm v2, applied in order, and configurations of
 its left arm to measure the scene at.
@@ -40,8 +47,8 @@ wholly inside the box mesh; and CORNER_LINK in the open corner of the L. The obj
 drawn before the configurations, so --drawn adds configurations and leaves the objects
 as they are. Run it from any directory:
 
-    python3 ros_reference/tools/draw_planning_scene.py
-    python3 ros_reference/tools/draw_planning_scene.py --drawn 60
+    uv run ros_reference/tools/draw_planning_scene.py
+    uv run ros_reference/tools/draw_planning_scene.py --drawn 60
 
 The second draws a large set for a local run, which the README describes.
 """
@@ -50,14 +57,17 @@ import math
 
 from drawing import (
     IDENTITY,
+    OPENARM_V2,
+    arm,
     box_mesh,
     configurations,
+    finger_links,
     generator,
     joint_limits,
     l_mesh,
     link_bounds,
     link_pose,
-    openarm_joints,
+    meshes,
     options,
     pose_by_link,
     robot,
@@ -68,12 +78,13 @@ from drawing import (
 )
 
 NAME = "planning_scene_openarm_v2"
-URDF = "openarm_description/assets/openarm_v20.urdf"
-MESHES = "openarm_description/assets/meshes_v20"
-LEFT_GRASP_LINK = "openarm_left_tcp"
-RIGHT_GRASP_LINK = "openarm_right_tcp"
-LEFT_FINGERS = ["openarm_left_ee_link1", "openarm_left_ee_link2"]
-RIGHT_FINGERS = ["openarm_right_ee_link1", "openarm_right_ee_link2"]
+MESHES = meshes(OPENARM_V2)
+# OpenArm v2's arms, by their SRDF names: the scenario places the left one, and the right
+# one holds a tool.
+LEFT_ARM = arm(OPENARM_V2, "left_arm")
+RIGHT_ARM = arm(OPENARM_V2, "right_arm")
+LEFT_FINGERS = finger_links(LEFT_ARM)
+RIGHT_FINGERS = finger_links(RIGHT_ARM)
 # The links the placed configurations put in their cases.
 CONTACT_LINK = "openarm_left_link6"
 ALLOWED_LINK = "openarm_left_link5"
@@ -197,7 +208,7 @@ def center_and_size(bounds):
 def main():
     drawn = options(__doc__, 0, DRAWN).parse_args().drawn
     rng = generator(NAME)
-    parsed = robot(URDF)
+    parsed = robot(OPENARM_V2)
 
     box_at = drawn_pose(rng)
     box_size = [rng.uniform(0.05, 0.3) for _ in range(3)]
@@ -213,13 +224,11 @@ def main():
         [rng.uniform(low, high) for low, high in REGION] for _ in range(DRAWN_VOXELS)
     ]
 
-    right_joints = openarm_joints("right")
-    right_limits = [joint_limits(parsed, joint) for joint in right_joints]
-    right_at = dict(zip(right_joints, configurations(rng, right_limits, 1)[-1]))
-    left_joints = openarm_joints("left")
-    left_limits = [joint_limits(parsed, joint) for joint in left_joints]
+    right_limits = [joint_limits(OPENARM_V2, joint) for joint in RIGHT_ARM.joints]
+    right_at = dict(zip(RIGHT_ARM.joints, configurations(rng, right_limits, 1)[-1]))
+    left_limits = [joint_limits(OPENARM_V2, joint) for joint in LEFT_ARM.joints]
     left_configurations = [
-        dict(zip(left_joints, q))
+        dict(zip(LEFT_ARM.joints, q))
         for q in configurations(rng, left_limits, len(PLACED) + drawn)
     ]
     placed_at = dict(zip(PLACED, left_configurations[3:]))
@@ -242,16 +251,16 @@ def main():
 
     # The cap hangs 5 cm past the left grasp point where the lid is detached, 5 mm into
     # the item, which reaches half its height, 4 cm, past the grasp point that holds it.
-    cap_at = pose_by_link(parsed, LEFT_GRASP_LINK, placed_at["detach"], [0.0, 0.0, CAP_AHEAD])
-    item_at = pose_by_link(parsed, LEFT_GRASP_LINK, placed_at["attach"], [0.0, 0.0, 0.0])
+    cap_at = pose_by_link(parsed, LEFT_ARM.grasp_link, placed_at["detach"], [0.0, 0.0, CAP_AHEAD])
+    item_at = pose_by_link(parsed, LEFT_ARM.grasp_link, placed_at["attach"], [0.0, 0.0, 0.0])
     # The post stands at the left grasp point halfway along the run from the zero
     # configuration to the lower limits.
     zero, lower = left_configurations[:2]
-    halfway = {joint: (zero[joint] + lower[joint]) / 2 for joint in left_joints}
-    post_at = pose_by_link(parsed, LEFT_GRASP_LINK, halfway, [0.0, 0.0, 0.0])
+    halfway = {joint: (zero[joint] + lower[joint]) / 2 for joint in LEFT_ARM.joints}
+    post_at = pose_by_link(parsed, LEFT_ARM.grasp_link, halfway, [0.0, 0.0, 0.0])
     clutter_rng = generator(f"{NAME}:clutter")
     drawn_starts = [
-        dict(zip(left_joints, q))
+        dict(zip(LEFT_ARM.joints, q))
         for q in configurations(clutter_rng, left_limits, CLUTTER_PATHS // 3)[3:]
     ]
     starts = [
@@ -308,9 +317,9 @@ def main():
             # The attached objects where the calls leave them: the item and the cap on the
             # left grasp point, at the configuration the cap is attached at, and the tool
             # on the right one.
-            pose_by_link(parsed, LEFT_GRASP_LINK, placed_at["detach"], [0.0, 0.0, 0.0]),
+            pose_by_link(parsed, LEFT_ARM.grasp_link, placed_at["detach"], [0.0, 0.0, 0.0]),
             cap_at,
-            pose_by_link(parsed, RIGHT_GRASP_LINK, right_at, [0.0, 0.0, 0.0]),
+            pose_by_link(parsed, RIGHT_ARM.grasp_link, right_at, [0.0, 0.0, 0.0]),
         ]
         for _ in range(PROBES_PER_OBJECT)
     ]
@@ -387,28 +396,27 @@ def main():
             entry(
                 "add",
                 "tool",
-                pose_by_link(parsed, RIGHT_GRASP_LINK, right_at, [0.0, 0.0, 0.0]),
+                pose_by_link(parsed, RIGHT_ARM.grasp_link, right_at, [0.0, 0.0, 0.0]),
                 [shape("cylinder", TOOL)],
             ),
             entry("add", "cap", cap_at, [shape("box", CAP)]),
         ),
         allow("item", ["table"]),
         mark(item_at),
-        attached("item", "attach", LEFT_GRASP_LINK, placed_at["attach"], LEFT_FINGERS),
+        attached("item", "attach", LEFT_ARM.grasp_link, placed_at["attach"], LEFT_FINGERS),
         allow("item", ["openarm_left_link3"]),
-        attached("lid", "attach", LEFT_GRASP_LINK, placed_at["attach"], LEFT_FINGERS),
-        attached("lid", "detach", LEFT_GRASP_LINK, placed_at["detach"]),
-        attached("tool", "attach", RIGHT_GRASP_LINK, right_at, RIGHT_FINGERS),
+        attached("lid", "attach", LEFT_ARM.grasp_link, placed_at["attach"], LEFT_FINGERS),
+        attached("lid", "detach", LEFT_ARM.grasp_link, placed_at["detach"]),
+        attached("tool", "attach", RIGHT_ARM.grasp_link, right_at, RIGHT_FINGERS),
         allow("cap", ["occupancy_map"]),
-        attached("cap", "attach", LEFT_GRASP_LINK, placed_at["detach"], LEFT_FINGERS),
+        attached("cap", "attach", LEFT_ARM.grasp_link, placed_at["detach"], LEFT_FINGERS),
     ]
     write(
         NAME,
         {
             "kind": "planning_scene",
-            "urdf": URDF,
-            "meshes": MESHES,
-            "tip_link": LEFT_GRASP_LINK,
+            "description": OPENARM_V2,
+            "arm": LEFT_ARM.name,
             "octomap": {
                 "voxel_size": octomap["voxel_size"],
                 "keys": [list(k) for k in octomap["keys"]],

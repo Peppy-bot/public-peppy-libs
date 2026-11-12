@@ -1,18 +1,15 @@
 {
   "kind": "chain_collision",
-  "urdf": "openarm_description/assets/openarm_v20.urdf",
-  "meshes": "openarm_description/assets/meshes_v20",
+  "description": "robot_description/models/openarm_v2",
   "paddings": [
     {"scale":1.0,"offset":0.0},
     {"scale":1.0,"offset":0.03},
     {"scale":1.1,"offset":0.01}
   ],
   "sphere_paddings": [0.0,0.04],
-  "chains": [
+  "arms": [
     {
-      "name": "left",
-      "joints": ["openarm_left_joint1","openarm_left_joint2","openarm_left_joint3","openarm_left_joint4","openarm_left_joint5","openarm_left_joint6","openarm_left_joint7"],
-      "tip_link": "openarm_left_tcp",
+      "name": "left_arm",
       "configurations": [
         {
           "positions": [0.0,0.0,0.0,0.0,0.0,0.0,0.0],
@@ -149,9 +146,7 @@
       ]
     },
     {
-      "name": "right",
-      "joints": ["openarm_right_joint1","openarm_right_joint2","openarm_right_joint3","openarm_right_joint4","openarm_right_joint5","openarm_right_joint6","openarm_right_joint7"],
-      "tip_link": "openarm_right_tcp",
+      "name": "right_arm",
       "configurations": [
         {
           "positions": [0.0,0.0,0.0,0.0,0.0,0.0,0.0],

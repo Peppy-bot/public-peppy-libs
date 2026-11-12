@@ -454,9 +454,9 @@ mod tests {
     /// faces: every mesh point ends up inside.
     #[test]
     fn a_real_collision_mesh_hulls_exactly() {
-        let raw = crate::stl::load_stl(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../openarm_description/assets/meshes/link6_symp.stl"
+        let raw = crate::stl::load_stl(&format!(
+            "{}/link6_symp.stl",
+            crate::test_support::bundled_meshes("openarm_v1")
         ))
         .expect("mesh");
         let pts: Vec<Point3<f64>> = raw

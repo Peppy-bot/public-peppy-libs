@@ -9,21 +9,9 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::ChainGeometry;
 use collision_geometry::hull::exact_hull;
 use collision_geometry::nalgebra::Point3;
-use openarm_description::HardwareVersion;
 
 /// The environment variable under which this binary runs the fits.
 const FITS: &str = "COLLISION_GEOMETRY_RUN_THE_FITS";
-
-/// The arm of OpenArm v2 whose links the child fits.
-const ARM_JOINTS: [&str; 7] = [
-    "openarm_left_joint1",
-    "openarm_left_joint2",
-    "openarm_left_joint3",
-    "openarm_left_joint4",
-    "openarm_left_joint5",
-    "openarm_left_joint6",
-    "openarm_left_joint7",
-];
 
 fn main() {
     if std::env::var_os(FITS).is_some() {
@@ -60,17 +48,20 @@ fn run_the_fits() {
         .collect();
     assert_eq!(exact_hull(&cube).expect("a cube hulls").vertices.len(), 8);
     exact_hull(&flat).expect_err("a flat cloud has no hull");
-    let meshes = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../openarm_description/assets/meshes_v20"
-    );
+    // The first arm of OpenArm v2, whose links the child fits.
+    let model =
+        robot_description::model("openarm_v2").expect("robot_description bundles OpenArm v2");
+    let meshes = model.directory().join("meshes");
+    let description = model.description();
+    let first = &description.arms()[0];
+    let joints: Vec<&str> = first.joints.iter().map(String::as_str).collect();
     let arm = ChainGeometry::<7>::from_urdf(
-        HardwareVersion::V2.urdf(),
-        meshes,
+        description.urdf(),
+        meshes.to_str().expect("the model's directory is UTF-8"),
         &ChainSpec {
             base_link: None,
-            tip_link: "openarm_left_tcp",
-            joints: JointSelection::Named(&ARM_JOINTS),
+            tip_link: &first.grasp_link,
+            joints: JointSelection::Named(&joints),
         },
     )
     .expect("the arm's geometry fits");

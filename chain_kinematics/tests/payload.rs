@@ -59,8 +59,8 @@ fn a_jaw_beside_the_tip_frame_still_rides_on_the_last_joint() {
 
 #[test]
 fn lumps_the_gripper_body_and_fingers_in_the_last_segment_frame() {
-    let robot = urdf_rs::read_from_string(OPENARM).expect("parse OpenArm");
-    let tree = Tree::from_robot(&robot).expect("build tree");
+    let robot = OPENARM.robot();
+    let tree = Tree::from_robot(robot).expect("build tree");
     let link7 = tree.link_index("openarm_left_link7").expect("link7");
     // link7 is both the last segment's link and the tip, and joint7 is the only
     // actuated joint above the bodies below it.
@@ -80,8 +80,10 @@ fn lumps_the_gripper_body_and_fingers_in_the_last_segment_frame() {
     //   hand          0.127 kg           at (0.000001, 0, 0.101951), fixed at the tip
     //   right finger  0.03602545343277134 kg at (0.0064528, -0.01702, 0.0219685)
     //   left finger   same mass              at (0.0064528, +0.01702, 0.0219685)
-    // Both fingers sit on prismatic joints, frozen at zero, offset (0, 0, 0.1025)
-    // from the hand - which is why their z in the segment frame is 0.1025 + 0.0219685.
+    // Both fingers sit on prismatic joints, frozen at zero, the right one offset
+    // (0.000001, -0.0045, 0.1151) and the left one (0.000001, 0.0075, 0.1151) from the
+    // hand, so their z in the segment frame is 0.1151 + 0.0219685 and they stand
+    // mirrored about y = 0.0015.
     // The tcp frame is massless.
     const HAND: f64 = 0.127;
     const FINGER: f64 = 0.036_025_453_432_771_34;
@@ -92,17 +94,17 @@ fn lumps_the_gripper_body_and_fingers_in_the_last_segment_frame() {
     );
     // Mass-weighted average of the three, in the segment frame.
     assert!(
-        (p.com.x - 0.002_336_372_635_248_108_6).abs() < 1e-12,
+        (p.com.x - 0.002_336_734_607_509_376_6).abs() < 1e-12,
         "com.x = {}",
         p.com.x
     );
     assert!(
-        p.com.y.abs() < 1e-12,
-        "com.y = {} (the fingers mirror in y, so it must vanish)",
+        (p.com.y - 0.000_542_958_391_901_820_1).abs() < 1e-12,
+        "com.y = {} (the fingers mirror about y = 0.0015, the hand about y = 0)",
         p.com.y
     );
     assert!(
-        (p.com.z - 0.110_101_710_393_099_5).abs() < 1e-12,
+        (p.com.z - 0.114_662_560_885_074_8).abs() < 1e-12,
         "com.z = {}",
         p.com.z
     );
@@ -112,9 +114,9 @@ fn lumps_the_gripper_body_and_fingers_in_the_last_segment_frame() {
 fn the_payload_reaches_the_last_segment_of_a_built_chain() {
     // Lumping is only useful if a dynamics layer sees it, which means it has to
     // land in the segment's inertial rather than being computed and dropped.
-    let robot = urdf_rs::read_from_string(OPENARM).expect("parse OpenArm");
+    let robot = OPENARM.robot();
     let chain = Chain::<7>::from_urdf(
-        &robot,
+        robot,
         &ChainSpec {
             base_link: Some("openarm_left_link0"),
             tip_link: "openarm_left_link7",
@@ -125,7 +127,7 @@ fn the_payload_reaches_the_last_segment_of_a_built_chain() {
 
     // link7's own inertial mass, read straight from the URDF, versus what the
     // chain reports for that segment: the difference is the hand and two fingers.
-    let tree = Tree::from_robot(&robot).expect("build tree");
+    let tree = Tree::from_robot(robot).expect("build tree");
     let bare = tree
         .link(tree.link_index("openarm_left_link7").unwrap())
         .mass;

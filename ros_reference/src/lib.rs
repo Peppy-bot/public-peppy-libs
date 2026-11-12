@@ -34,10 +34,11 @@ pub mod planning;
 pub mod planning_scene;
 pub mod self_distance;
 
+use robot_description::{Arm, RobotDescription};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The environment variable that names a directory of reference outputs, read in place of
@@ -187,35 +188,140 @@ fn read_input(path: &Path) -> Vec<u8> {
     bytes
 }
 
-/// The text of the URDF at `path`, relative to the repository root, that the scenario
-/// `name` names, after checking it against the digest of the file that the references
-/// read.
-fn read_urdf(name: &str, path: &str) -> String {
-    let path = repository_root().join(path);
-    String::from_utf8(read_input(&path))
-        .unwrap_or_else(|e| panic!("{name}: the URDF {} is not UTF-8: {e}", path.display()))
+/// The robot a scenario poses: the description of the model directory the scenario names,
+/// and the directory of its collision meshes, whose files the URDF names by their file
+/// names.
+#[derive(Debug)]
+pub struct Robot {
+    pub description: RobotDescription,
+    pub meshes: PathBuf,
 }
 
-/// The mesh directory at `path`, relative to the repository root, that the scenario
-/// `name` names, after reading with [`read_input`] each mesh of it that the references
-/// read, as `INPUTS.SHA256SUMS` lists them. A URDF names its collision meshes by their
-/// file names in that directory.
-fn read_mesh_directory(name: &str, path: &str) -> PathBuf {
+/// The robot of the model directory `path`, relative to the repository root, that the
+/// scenario `name` names, each file of it read with [`read_input`] and its mesh directory
+/// with [`read_mesh_directory`].
+fn read_robot(name: &str, path: &str) -> Robot {
+    robot_from(name, path, read_input, |meshes| {
+        read_mesh_directory(name, meshes)
+    })
+}
+
+/// The robot of the model directory `path`, relative to the repository root, that the
+/// scenario `name` names: the description that `<dir>.urdf` and `<dir>.srdf` of it make,
+/// `<dir>` the directory's last part, each read with `read`, and its mesh directory
+/// `meshes/`, given by `meshes`.
+fn robot_from(
+    name: &str,
+    path: &str,
+    read: impl Fn(&Path) -> Vec<u8>,
+    meshes: impl FnOnce(&Path) -> PathBuf,
+) -> Robot {
     let directory = repository_root().join(path);
+    let model = directory
+        .file_name()
+        .and_then(|model| model.to_str())
+        .unwrap_or_else(|| panic!("{name}: the description {path} names a directory"));
+    let text = |extension: &str| {
+        let file = directory.join(format!("{model}.{extension}"));
+        String::from_utf8(read(&file))
+            .unwrap_or_else(|e| panic!("{name}: {} is not UTF-8: {e}", file.display()))
+    };
+    let description = RobotDescription::parse(&text("urdf"), &text("srdf"))
+        .unwrap_or_else(|e| panic!("{name}: the description {path}: {e}"));
+    Robot {
+        description,
+        meshes: meshes(&directory.join("meshes")),
+    }
+}
+
+impl Robot {
+    /// The robot of the model directory `description`, relative to the repository root, as
+    /// its files stand, with no digest checked: what an example reads that answers a
+    /// scenario a tool of the harness draws before the references run on it.
+    pub fn of(description: &str) -> Self {
+        robot_from(description, description, read_bytes, Path::to_owned)
+    }
+
+    /// The arm `arm` of the robot, which the scenario `name` names.
+    pub fn arm(&self, name: &str, arm: &str) -> Arm {
+        self.description
+            .arms()
+            .iter()
+            .find(|candidate| candidate.name == arm)
+            .unwrap_or_else(|| panic!("{name}: the robot has no arm {arm}"))
+            .clone()
+    }
+
+    /// The arms of the group `group` of the robot, which the scenario `name` names, in the
+    /// order a state of the group holds their joints.
+    pub fn group_arms(&self, name: &str, group: &str) -> Vec<Arm> {
+        self.description
+            .group_arms(group)
+            .unwrap_or_else(|| {
+                panic!("{name}: the group {group} is neither an arm nor a group of arms")
+            })
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// The pairs of the robot's own links that a plan of the group `group`, which the
+    /// scenario `name` names, checks, each pair's names in order: where the group holds every
+    /// arm of the robot, each pair of links with collision geometry but those whose
+    /// collisions the SRDF disables, as MoveIt's collision matrix of the SRDF checks them;
+    /// none where it holds some.
+    pub fn checked_pairs(&self, name: &str, group: &str) -> BTreeSet<[String; 2]> {
+        if self.group_arms(name, group).len() < self.description.arms().len() {
+            return BTreeSet::new();
+        }
+        let disabled: BTreeSet<[&str; 2]> = self
+            .description
+            .disabled_pairs()
+            .iter()
+            .map(|pair| ordered([pair.link1.as_str(), pair.link2.as_str()]))
+            .collect();
+        let links: Vec<&str> = self
+            .description
+            .robot()
+            .links
+            .iter()
+            .filter(|link| !link.collision.is_empty())
+            .map(|link| link.name.as_str())
+            .collect();
+        links
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| links[i + 1..].iter().map(move |b| ordered([*a, *b])))
+            .filter(|pair| !disabled.contains(pair))
+            .map(|pair| pair.map(str::to_owned))
+            .collect()
+    }
+}
+
+/// The names `pair`, in order.
+fn ordered([a, b]: [&str; 2]) -> [&str; 2] {
+    if a <= b { [a, b] } else { [b, a] }
+}
+
+/// The mesh directory `directory` that the scenario `name` names, after reading with
+/// [`read_input`] each mesh of it that the references read, as `INPUTS.SHA256SUMS` lists
+/// them.
+fn read_mesh_directory(name: &str, directory: &Path) -> PathBuf {
     let meshes: Vec<PathBuf> = Digests::read(&reference_directory().join(INPUT_DIGEST_FILE))
         .by_file
         .into_keys()
         .map(|file| repository_root().join(file))
-        .filter(|file| file.parent() == Some(directory.as_path()))
+        .filter(|file| file.parent() == Some(directory))
         .collect();
     assert!(
         !meshes.is_empty(),
-        "{name}: the references read no mesh of {path}"
+        "{name}: the references read no mesh of {}",
+        repository_path(directory)
     );
     for mesh in &meshes {
         read_input(mesh);
     }
-    directory
+    directory.to_owned()
 }
 
 fn read_scenario<T: DeserializeOwned>(name: &str) -> T {
@@ -321,7 +427,6 @@ mod tests {
     use super::*;
     use hegel::TestCase;
     use hegel::generators as gs;
-    use std::collections::BTreeSet;
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -501,10 +606,49 @@ mod tests {
         read_input(&repository_root().join("README.md"));
     }
 
+    // A plan of a group that holds every arm of its robot checks each pair of the robot's
+    // links with collision geometry but those the SRDF disables, each pair once, its names
+    // in order; a plan of one arm of two checks none.
+    #[test]
+    fn a_group_of_every_arm_checks_each_pair_the_srdf_leaves_checked() {
+        for (path, every_arm) in [
+            ("robot_description/models/openarm_v2", "both_arms"),
+            ("robot_description/models/so101", "arm"),
+        ] {
+            let robot = Robot::of(path);
+            let description = &robot.description;
+            let checked = robot.checked_pairs(path, every_arm);
+            let links = description
+                .robot()
+                .links
+                .iter()
+                .filter(|link| !link.collision.is_empty())
+                .count();
+            let disabled: BTreeSet<[&str; 2]> = description
+                .disabled_pairs()
+                .iter()
+                .map(|pair| ordered([pair.link1.as_str(), pair.link2.as_str()]))
+                .collect();
+            assert_eq!(
+                checked.len(),
+                links * (links - 1) / 2 - disabled.len(),
+                "{path}"
+            );
+            assert!(
+                checked
+                    .iter()
+                    .all(|[a, b]| a < b && !disabled.contains(&[a.as_str(), b.as_str()])),
+                "{path}"
+            );
+        }
+        let openarm = Robot::of("robot_description/models/openarm_v2");
+        assert!(openarm.checked_pairs("scenario", "left_arm").is_empty());
+    }
+
     #[test]
     #[should_panic(expected = "the references read no mesh of ros_reference/tools")]
     fn a_mesh_directory_that_no_reference_read_is_refused() {
-        read_mesh_directory("scenario", "ros_reference/tools");
+        read_mesh_directory("scenario", &repository_root().join("ros_reference/tools"));
     }
 
     #[test]

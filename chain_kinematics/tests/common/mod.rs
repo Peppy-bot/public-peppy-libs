@@ -1,17 +1,27 @@
-//! The two real robots the integration suites drive: a 5-DOF SO-101 and a
-//! 7-DOF OpenArm, loaded through the public API exactly as a consumer would.
+//! The two real robots the integration suites drive: the 5-DOF SO-101 and the
+//! 7-DOF arms of the OpenArm v1, as robot_description bundles their models,
+//! loaded through the public API exactly as a consumer would.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
+use std::sync::LazyLock;
+
 use chain_kinematics::nalgebra::DMatrix;
 use chain_kinematics::{Chain, ChainSpec, Jacobian, JointSelection};
+use robot_description::RobotDescription;
 
 pub mod properties;
 
-pub const SO101: &str = include_str!("../fixtures/so101_5dof.urdf");
-pub const OPENARM: &str = include_str!("../fixtures/openarm_7dof.urdf");
+pub static SO101: LazyLock<RobotDescription> = LazyLock::new(|| bundled("so101"));
+pub static OPENARM: LazyLock<RobotDescription> = LazyLock::new(|| bundled("openarm_v1"));
+
+fn bundled(model: &str) -> RobotDescription {
+    robot_description::model(model)
+        .unwrap_or_else(|unknown| panic!("{unknown}"))
+        .description()
+}
 
 pub const SO101_JOINTS: [&str; 5] = [
     "shoulder_pan",
@@ -22,9 +32,8 @@ pub const SO101_JOINTS: [&str; 5] = [
 ];
 
 pub fn so101() -> Chain<5> {
-    let robot = urdf_rs::read_from_string(SO101).expect("parse SO-101");
     Chain::<5>::from_urdf(
-        &robot,
+        SO101.robot(),
         &ChainSpec {
             base_link: None,
             tip_link: "gripper_frame_link",
@@ -35,9 +44,8 @@ pub fn so101() -> Chain<5> {
 }
 
 pub fn openarm() -> Chain<7> {
-    let robot = urdf_rs::read_from_string(OPENARM).expect("parse OpenArm");
     Chain::<7>::from_urdf(
-        &robot,
+        OPENARM.robot(),
         &ChainSpec {
             base_link: Some("openarm_left_link0"),
             tip_link: "openarm_left_link7",

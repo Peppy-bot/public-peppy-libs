@@ -12,32 +12,27 @@
 namespace ros_reference {
 
 nlohmann::json forward_kinematics(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto urdf = scenario.at("urdf").get<std::string>();
-  const auto model = scenario.contains("meshes")
-                         ? robot_model_with_meshes(inputs, urdf,
-                                                   scenario.at("meshes").get<std::string>())
-                         : robot_model(inputs.read(urdf));
+  const auto model = description_model(inputs, scenario.at("description").get<std::string>());
   moveit::core::RobotState state(model);
-  auto chains = nlohmann::json::array();
-  for (const auto& chain : scenario.at("chains")) {
-    const auto joints = chain.at("joints").get<std::vector<std::string>>();
+  auto arms = nlohmann::json::array();
+  for (const auto& posed : scenario.at("arms")) {
+    const auto arm = the_arm(*model, posed.at("name").get<std::string>());
     std::vector<std::string> links;
-    for (const auto& joint : joints) {
+    for (const auto& joint : arm.joints) {
       links.push_back(child_link(*model, joint));
     }
-    const auto tip_link = chain.at("tip_link").get<std::string>();
-    require_named_path(*model, tip_link, joints);
-    links.push_back(tip_link);
+    require_named_path(*model, arm.tip_link, arm.joints);
+    links.push_back(arm.tip_link);
     auto configurations = nlohmann::json::array();
-    for (const auto& configuration : chain.at("configurations")) {
+    for (const auto& configuration : posed.at("configurations")) {
       const auto positions = configuration.get<std::vector<double>>();
-      if (positions.size() != joints.size()) {
-        throw std::runtime_error("a configuration of " + chain.at("name").get<std::string>() +
+      if (positions.size() != arm.joints.size()) {
+        throw std::runtime_error("a configuration of " + arm.name +
                                  " does not hold one position per joint");
       }
       state.setToDefaultValues();
-      for (std::size_t i = 0; i < joints.size(); ++i) {
-        state.setVariablePosition(joints[i], positions[i]);
+      for (std::size_t i = 0; i < arm.joints.size(); ++i) {
+        state.setVariablePosition(arm.joints[i], positions[i]);
       }
       state.update();
       auto poses = nlohmann::json::array();
@@ -46,9 +41,9 @@ nlohmann::json forward_kinematics(const nlohmann::json& scenario, Inputs& inputs
       }
       configurations.push_back(poses);
     }
-    chains.push_back({{"name", chain.at("name")}, {"configurations", configurations}});
+    arms.push_back({{"name", arm.name}, {"configurations", configurations}});
   }
-  return {{"kind", "forward_kinematics"}, {"chains", chains}};
+  return {{"kind", "forward_kinematics"}, {"arms", arms}};
 }
 
 }  // namespace ros_reference

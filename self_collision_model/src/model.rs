@@ -6,40 +6,27 @@
 //! piece-pairs; where pieces overlap, EPA recovers the penetration depth, so
 //! the distance is signed and continuous through contact.
 //!
-//! The checked pairs are derived at construction from the URDF: every body
-//! pair except those that cannot inform (two fixed bodies never change
-//! distance) or that touch by construction (bodies of one chain within the robot's
-//! yoked joints of each other), less the robot's never-touching pairs. The hulls
-//! are tight: the reported distance is the true surface clearance, with no safety
-//! margin baked into the geometry. Keeping the bodies apart is the caller's job (a
-//! band over the reported distance).
+//! The checked pairs are every pair of bodies but those whose collisions the robot's
+//! description disables. The hulls are tight: the reported distance is the true
+//! surface clearance, with no safety margin baked into the geometry. Keeping the
+//! bodies apart is the caller's job (a band over the reported distance).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashSet;
 
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
-use chain_kinematics::{Chain, ChainSpec};
+use chain_kinematics::{Chain, ChainSpec, JointSelection};
+use robot_description::{Finger, RobotDescription};
 
 use crate::assemble::fit_bodies;
 use collision_geometry::chain::{CarriedPart, Rider};
-use collision_geometry::clip::ClipRegion;
 use collision_geometry::gjk::{self, Hull, Placed};
 use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
 
-use crate::pairs::PairSpec;
 use crate::{BuildError, CollisionError, FingerError};
 
-/// The joint positions of every chain of a model, in the order its builder names
-/// the chains.
+/// The joint positions of every chain of a model, in the order of its description's
+/// arms.
 pub type Joints<const N: usize, const K: usize> = [[f64; N]; K];
-
-/// A finger a chain link carries on a joint of its own: the finger's link, and the
-/// position of that joint at which the finger is shut. The finger opens toward the
-/// joint's other limit.
-#[derive(Debug, Clone, Copy)]
-pub struct Finger<'a> {
-    pub link: &'a str,
-    pub shut: f64,
-}
 
 /// How a body's hulls reach the world frame.
 #[derive(Clone, Copy)]
@@ -256,8 +243,6 @@ pub struct SelfCollisionModel<const N: usize, const K: usize> {
     chains: [Chain<N>; K],
     bodies: Vec<Body>,
     pairs: Vec<Pair>,
-    /// Pairs dropped by [`Builder::exclude`], kept for the caller to report.
-    excluded: Vec<(String, String)>,
     /// Per-body world pose, refreshed by [`place`](Self::place). Fixed bodies
     /// keep the identity (their hulls are already in world frame).
     world_iso: Vec<Isometry3<f64>>,
@@ -282,188 +267,116 @@ pub struct SelfCollisionModel<const N: usize, const K: usize> {
     opening_levers: [f64; K],
 }
 
-/// Configures and builds a [`SelfCollisionModel`]; start from
-/// [`SelfCollisionModel::builder`]. Every input is data a robot's description holds.
-pub struct Builder<'a, const N: usize, const K: usize> {
-    urdf: &'a str,
-    meshes_dir: &'a str,
-    chains: [ChainSpec<'a>; K],
-    yoked_joints: usize,
-    fingers: Vec<Finger<'a>>,
-    exclude: Vec<PairSpec>,
-    /// The bounds of the clip regions of each body the caller decomposes, in the order
-    /// the caller gives them.
-    supplied: Vec<(String, Vec<[[f64; 3]; 2]>)>,
-}
-
-impl<'a, const N: usize, const K: usize> Builder<'a, N, K> {
-    /// The fingers the chains' links carry, each with the position of its joint at
-    /// which it is shut. Every link on a moving joint off a chain link that has
-    /// collision geometry is a finger and must be named here; naming a link that is
-    /// none, or a shut position that is neither limit of its joint, errors at build.
-    pub fn fingers(mut self, fingers: &[Finger<'a>]) -> Self {
-        self.fingers.extend_from_slice(fingers);
-        self
-    }
-
-    /// Drop these pairs from checking: pairs the robot's joint limits keep apart,
-    /// which the caller proves. Each pair must name two bodies the derived rules check;
-    /// any other pair is refused at build ([`BuildError::NotChecked`]). Dropped pairs
-    /// are reported by [`excluded_pairs`](SelfCollisionModel::excluded_pairs).
-    pub fn exclude(mut self, pairs: &[PairSpec]) -> Self {
-        self.exclude.extend_from_slice(pairs);
-        self
-    }
-
-    /// Decompose a body into clip regions, replacing its auto-fit pieces. Each
-    /// region is its `[min, max]` corners in the body's fit frame (the root frame for
-    /// a world-fixed body), meters, with an infinite bound for an open side. Each
-    /// region's slice of the body's surfaces gets the same fit a link gets, so a
-    /// concave body (a torso) is bound as tightly as the links are, piece by piece.
-    /// The regions must jointly cover the body's surfaces, checked at build; see
-    /// [`ClipRegion`] for the overlap and bound-placement rules. Naming a body that
-    /// does not exist, naming a body twice, or giving bounds that span no volume, errors
-    /// at build.
-    pub fn regions(mut self, body: &str, bounds: &[[[f64; 3]; 2]]) -> Self {
-        self.supplied.push((body.to_string(), bounds.to_vec()));
-        self
-    }
-
-    /// Fit the bodies (supplied regions override the auto-fit), derive the checked
-    /// pairs from the structural rules, and apply the exclusions.
-    pub fn build(self) -> Result<SelfCollisionModel<N, K>, CollisionError> {
-        let named: Vec<(&str, &[[[f64; 3]; 2]])> = self
-            .supplied
+impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
+    /// The self model of the robot `description` describes, its collision meshes read
+    /// from `meshes_dir`: a chain per arm, in the description's order, from the arm's base
+    /// link to its grasp link over the arm's joints; the fingers of each arm's gripper,
+    /// each placed between where the gripper's `closed` and `open` states put it; and
+    /// every pair of bodies checked but those whose collisions the description disables.
+    /// A description of other than `K` arms, or with an arm of other than `N` joints, is
+    /// refused. The model is a pure distance oracle: it reports clearances (and, via
+    /// [`distance_gradient`](Self::distance_gradient), their gradient), and the caller
+    /// decides how to throttle on them.
+    pub fn from_description(
+        description: &RobotDescription,
+        meshes_dir: &str,
+    ) -> Result<Self, CollisionError> {
+        let mut model = Self::assembled(description, meshes_dir)?;
+        let disabled: HashSet<(&str, &str)> = description
+            .disabled_pairs()
             .iter()
-            .map(|(body, bounds)| (body.as_str(), bounds.as_slice()))
-            .collect();
-        let supplied = ClipRegion::by_body(&named).map_err(BuildError::Fit)?;
-        let mut model = SelfCollisionModel::assemble(
-            self.urdf,
-            self.meshes_dir,
-            &self.chains,
-            &self.fingers,
-            &supplied,
-        )?;
-        // Candidate pairs: everything that can inform. Excluded structurally: two
-        // world-fixed bodies (their distance never changes), and two bodies of one
-        // chain, or a world-fixed body and a chain's link, within the robot's yoked
-        // joints of each other: they orbit each other through the joints' whole
-        // range while the link between them blocks contact. Bodies of two chains
-        // are always checked.
-        let lineage: Vec<(String, Lineage)> = model
-            .bodies
-            .iter()
-            .map(|b| {
-                let lineage = match b.placement {
-                    Placement::Chain { chain, segment } => Lineage::Chain {
-                        chain,
-                        depth: segment + 1,
-                    },
-                    Placement::Fixed => self
-                        .chains
-                        .iter()
-                        .position(|spec| spec.base_link == Some(b.name.as_str()))
-                        .map_or(Lineage::Root, |chain| Lineage::Chain { chain, depth: 0 }),
-                };
-                (b.name.clone(), lineage)
+            .flat_map(|pair| {
+                [
+                    (pair.link1.as_str(), pair.link2.as_str()),
+                    (pair.link2.as_str(), pair.link1.as_str()),
+                ]
             })
             .collect();
-        let fixed: Vec<bool> = model
-            .bodies
-            .iter()
-            .map(|b| matches!(b.placement, Placement::Fixed))
+        let bodies = &model.bodies;
+        let checked: Vec<Pair> = (0..bodies.len())
+            .flat_map(|a| (a + 1..bodies.len()).map(move |b| Pair { a, b }))
+            .filter(|pair| {
+                !disabled.contains(&(bodies[pair.a].name.as_str(), bodies[pair.b].name.as_str()))
+            })
             .collect();
-
-        let mut specs = Vec::new();
-        for (i, (a, la)) in lineage.iter().enumerate() {
-            for (j, (b, lb)) in lineage.iter().enumerate().skip(i + 1) {
-                let keep = !(fixed[i] && fixed[j])
-                    && match (la, lb) {
-                        (
-                            Lineage::Chain {
-                                chain: ca,
-                                depth: da,
-                            },
-                            Lineage::Chain {
-                                chain: cb,
-                                depth: db,
-                            },
-                        ) if ca == cb => da.abs_diff(*db) > self.yoked_joints,
-                        (Lineage::Root, Lineage::Chain { depth, .. })
-                        | (Lineage::Chain { depth, .. }, Lineage::Root) => {
-                            *depth > self.yoked_joints
-                        }
-                        (Lineage::Chain { .. }, Lineage::Chain { .. }) => true,
-                        (Lineage::Root, Lineage::Root) => false,
-                    };
-                if keep {
-                    specs.push(PairSpec::new(a.clone(), b.clone()));
-                }
-            }
-        }
-        model.set_pairs(&specs)?;
-        model.exclude_named(&self.exclude)?;
+        model.set_pairs(checked);
         Ok(model)
     }
-}
 
-impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
-    /// Start building the model of a robot from its URDF and collision mesh
-    /// directory: its `K` chains, each of `N` joints, and its yoked joints, the most
-    /// moving joints two bodies of one chain may lie apart and still go unchecked.
-    /// Each chain's base link, where it has collision geometry, is a body of that
-    /// chain at depth 0. Name the fingers its links carry with
-    /// [`fingers`](Builder::fingers). The model is a pure distance oracle: it
-    /// reports clearances (and, via [`distance_gradient`](Self::distance_gradient),
-    /// their gradient), and the caller decides how to throttle on them.
-    pub fn builder<'a>(
-        urdf: &'a str,
-        meshes_dir: &'a str,
-        chains: [ChainSpec<'a>; K],
-        yoked_joints: usize,
-    ) -> Builder<'a, N, K> {
+    /// The bodies of the robot `description` describes, with no checked pairs set yet:
+    /// a chain per arm and the fingers of each arm's gripper, as
+    /// [`from_description`](Self::from_description) builds them.
+    fn assembled(description: &RobotDescription, meshes_dir: &str) -> Result<Self, BuildError> {
+        let fingers: Vec<&Finger> = description
+            .arms()
+            .iter()
+            .flat_map(|arm| &arm.gripper.fingers)
+            .collect();
+        Self::assembled_with_fingers(description, meshes_dir, &fingers)
+    }
+
+    /// The bodies of the robot `description` describes, as [`Self::assembled`] gives
+    /// them, with `fingers` for its grippers' fingers.
+    fn assembled_with_fingers(
+        description: &RobotDescription,
+        meshes_dir: &str,
+        fingers: &[&Finger],
+    ) -> Result<Self, BuildError> {
         const {
             assert!(
                 N > 0 && K > 0,
                 "a model holds at least one chain of one joint"
             )
         };
-        Builder {
-            urdf,
-            meshes_dir,
-            chains,
-            yoked_joints,
-            fingers: Vec::new(),
-            exclude: Vec::new(),
-            supplied: Vec::new(),
-        }
-    }
-
-    /// Fit every collision body (supplied regions override the auto-fit) and place
-    /// them, with no checked pairs set yet.
-    fn assemble(
-        urdf: &str,
-        meshes_dir: &str,
-        specs: &[ChainSpec<'_>; K],
-        fingers: &[Finger<'_>],
-        supplied: &BTreeMap<String, Vec<ClipRegion>>,
-    ) -> Result<Self, BuildError> {
-        if let Some(base) = specs.iter().enumerate().find_map(|(i, spec)| {
-            specs[i + 1..]
-                .iter()
-                .any(|other| other.base_link == spec.base_link)
-                .then_some(spec.base_link)
-        }) {
-            return Err(BuildError::SharedBase {
-                base: base.unwrap_or("the URDF root").to_string(),
+        let arms = description.arms();
+        if arms.len() != K {
+            return Err(BuildError::Arms {
+                expected: K,
+                found: arms.len(),
             });
         }
-        let robot = urdf_rs::read_from_string(urdf)
-            .map_err(|e| BuildError::Geometry(format!("parse URDF: {e}")))?;
+        if let Some(arm) = arms.iter().find(|arm| arm.joints.len() != N) {
+            return Err(BuildError::ArmJoints {
+                arm: arm.name.clone(),
+                expected: N,
+                found: arm.joints.len(),
+            });
+        }
+        if let Some((first, second)) = arms.iter().enumerate().find_map(|(i, arm)| {
+            arms[i + 1..]
+                .iter()
+                .find(|other| other.base_link == arm.base_link)
+                .map(|other| (arm, other))
+        }) {
+            return Err(BuildError::SharedBase {
+                first: first.name.clone(),
+                second: second.name.clone(),
+                base: first.base_link.clone(),
+            });
+        }
+        let joints: Vec<Vec<&str>> = arms
+            .iter()
+            .map(|arm| arm.joints.iter().map(String::as_str).collect())
+            .collect();
+        let specs: [ChainSpec<'_>; K] = std::array::from_fn(|index| ChainSpec {
+            base_link: Some(arms[index].base_link.as_str()),
+            tip_link: arms[index].grasp_link.as_str(),
+            joints: JointSelection::Named(&joints[index]),
+        });
+        Self::assemble(description, meshes_dir, &specs, fingers)
+    }
+
+    /// Fit every collision body of `description` and place them, a chain per spec of
+    /// `specs`, with no checked pairs set yet.
+    fn assemble(
+        description: &RobotDescription,
+        meshes_dir: &str,
+        specs: &[ChainSpec<'_>; K],
+        fingers: &[&Finger],
+    ) -> Result<Self, BuildError> {
         let built: Vec<Chain<N>> = specs
             .iter()
-            .map(|spec| Chain::<N>::from_urdf(&robot, spec))
+            .map(|spec| Chain::<N>::from_urdf(description.robot(), spec))
             .collect::<Result<_, _>>()?;
         let chains: [Chain<N>; K] = built
             .try_into()
@@ -477,8 +390,8 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             })
             .collect();
 
-        let parsed = UrdfCollisions::from_urdf(urdf)?;
-        let fitted = fit_bodies(&parsed, &names, fingers, meshes_dir, supplied)?;
+        let parsed = UrdfCollisions::from_urdf(description.urdf())?;
+        let fitted = fit_bodies(&parsed, &names, fingers, meshes_dir)?;
 
         let mut bodies: Vec<Body> = Vec::new();
         let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), BuildError> {
@@ -549,7 +462,6 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             chains,
             bodies,
             pairs: Vec::new(),
-            excluded: Vec::new(),
             world_iso,
             openings: [1.0; K],
             levers: [[0.0; N]; K],
@@ -557,67 +469,10 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         })
     }
 
-    /// Drop the caller's named exclusions (see [`Builder::exclude`]). Each must name
-    /// a pair the derived rules check.
-    fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), BuildError> {
-        for spec in exclude {
-            let a = self.body_index(&spec.a)?;
-            let b = self.body_index(&spec.b)?;
-            let is_pair = |p: &Pair| (p.a == a && p.b == b) || (p.a == b && p.b == a);
-            let before = self.pairs.len();
-            self.pairs.retain(|p| !is_pair(p));
-            if self.pairs.len() == before {
-                return Err(BuildError::NotChecked {
-                    a: spec.a.clone(),
-                    b: spec.b.clone(),
-                });
-            }
-            self.excluded
-                .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
-        }
+    /// Replace the checked pairs with `pairs`, each of two bodies of the model.
+    fn set_pairs(&mut self, pairs: Vec<Pair>) {
+        self.pairs = pairs;
         self.recompute_levers();
-        Ok(())
-    }
-
-    /// The pairs dropped by [`Builder::exclude`], for the caller to report.
-    pub fn excluded_pairs(&self) -> &[(String, String)] {
-        &self.excluded
-    }
-
-    fn body_index(&self, name: &str) -> Result<usize, BuildError> {
-        self.bodies
-            .iter()
-            .position(|b| b.name == name)
-            .ok_or_else(|| BuildError::UnknownBody {
-                name: name.to_string(),
-            })
-    }
-
-    /// Replace the checked pair list (names resolved against the bodies).
-    fn set_pairs(&mut self, pair_specs: &[PairSpec]) -> Result<(), BuildError> {
-        let index: HashMap<&str, usize> = self
-            .bodies
-            .iter()
-            .enumerate()
-            .map(|(i, b)| (b.name.as_str(), i))
-            .collect();
-        self.pairs = pair_specs
-            .iter()
-            .map(|p| {
-                let a = *index
-                    .get(p.a.as_str())
-                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.a.clone() })?;
-                let b = *index
-                    .get(p.b.as_str())
-                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.b.clone() })?;
-                if a == b {
-                    return Err(BuildError::SelfPair { name: p.a.clone() });
-                }
-                Ok(Pair { a, b })
-            })
-            .collect::<Result<Vec<_>, BuildError>>()?;
-        self.recompute_levers();
-        Ok(())
     }
 
     /// Rebuild the per-chain Lipschitz levers from the checked pairs: for each
@@ -1179,13 +1034,6 @@ fn chain_segment(names: &[Vec<String>], parent: &str) -> Option<Placement> {
     })
 }
 
-/// Where a body sits in the kinematic tree, for the structural pair rules: fixed to
-/// the root, or a chain plus moving-joint depth (the chain's base = 0, link k = k).
-enum Lineage {
-    Root,
-    Chain { chain: usize, depth: usize },
-}
-
 fn link_poses<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> [Isometry3<f64>; N] {
     let posed = chain.at(q);
     std::array::from_fn(|i| posed.link_pose_world(i))
@@ -1248,52 +1096,36 @@ fn ensure_finite<const N: usize, const K: usize>(q: &Joints<N, K>) -> Result<(),
 
 #[cfg(test)]
 impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
-    /// Build the bodies with an explicit checked-pair list and no structural
-    /// derivation, bypassing the safety-relevant pair rules. The public path is
-    /// [`builder`](Self::builder). An empty list builds the bodies with no checked
-    /// pairs.
-    fn with_pairs(
-        urdf: &str,
-        meshes_dir: &str,
-        chains: &[ChainSpec<'_>; K],
-        fingers: &[Finger<'_>],
-        pair_specs: &[PairSpec],
-    ) -> Result<Self, BuildError> {
-        let mut model = Self::assemble(urdf, meshes_dir, chains, fingers, &BTreeMap::new())?;
-        model.set_pairs(pair_specs)?;
-        Ok(model)
+    /// Keep the checked pairs whose two bodies' names `keep` takes, in either order.
+    fn retain_pairs(&mut self, keep: impl Fn(&str, &str) -> bool) {
+        let kept: Vec<Pair> = self
+            .pairs
+            .iter()
+            .filter(|pair| {
+                let (a, b) = (&self.bodies[pair.a].name, &self.bodies[pair.b].name);
+                keep(a, b) || keep(b, a)
+            })
+            .cloned()
+            .collect();
+        self.set_pairs(kept);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
-    use crate::pairs::PairSpec;
     use collision_geometry::GeometryError;
 
-    use crate::fixture::{self, MESHES, URDF, builder, chains, fingers};
+    use crate::fixture::openarm::{ARM_DOF, MODEL, Model, model};
+    use crate::fixture::{description, edited, meshes};
 
-    const ARM_DOF: usize = 7;
-
-    type Model = SelfCollisionModel<ARM_DOF, 2>;
     type Q = [f64; ARM_DOF];
 
-    fn model() -> Model {
-        builder(URDF).build().expect("model")
-    }
-
-    const INF: f64 = f64::INFINITY;
-
-    // Two overlapping z-slabs that jointly cover the torso mesh. Just enough to
-    // exercise the multi-piece decomposition path; the tuned deployment regions
-    // are openarm_description's, exercised by the integration tests.
-    const COVERING_REGIONS: [[[f64; 3]; 2]; 2] = [
-        [[-INF, -INF, -INF], [INF, INF, 0.404]],
-        [[-INF, -INF, 0.396], [INF, INF, INF]],
-    ];
-
-    fn build(pairs: &[PairSpec]) -> Result<Model, BuildError> {
-        SelfCollisionModel::with_pairs(URDF, MESHES, &chains(), &fingers(), pairs)
+    /// The fixture's model built from `description`, or why it is refused.
+    fn built(description: &RobotDescription) -> Result<Model, CollisionError> {
+        SelfCollisionModel::from_description(description, &meshes(MODEL))
     }
 
     /// Check every analytic gradient column (both arms' joints and both opening
@@ -1372,9 +1204,9 @@ mod tests {
         // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
         // unambiguously nearest (a symmetric pose sits on a pair-switch tie where
         // the analytic gradient and a straddling central difference legitimately
-        // disagree). Every config penetrates this model's auto-fit torso hull
-        // (asserted below), covering deep EPA; the companion test below walks
-        // through contact. The last config has a finger body nearest.
+        // disagree). Every config penetrates the model (asserted below), covering
+        // deep EPA; the companion test below walks through contact. The last config
+        // has a finger body nearest.
         let configs: [Joints<ARM_DOF, 2>; 4] = [
             [
                 [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
@@ -1385,8 +1217,8 @@ mod tests {
                 [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0],
             ],
             [
-                [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
-                [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
+                [0.25, -0.1, 1.0, 0.65, 0.0, 0.2, 0.1],
+                [-0.1, 0.05, -1.1, 0.3, 0.0, -0.2, 0.0],
             ],
             [
                 [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
@@ -1411,21 +1243,23 @@ mod tests {
 
     #[test]
     fn distance_gradient_matches_finite_difference_across_contact() {
-        // The default model's auto-fit torso hull swallows every reachable pose,
-        // so the test above only ever sees deep penetration. Restrict the pairs
-        // to cross-arm wrist and finger bodies and walk an asymmetric
+        // The test above sees deep penetration alone. Restrict the pairs to
+        // cross-arm wrist and finger bodies and walk an asymmetric
         // wrists-inward family from clearance through contact into shallow
         // overlap, the regimes where the witness separation reverses sense.
-        let mut cross_pairs = Vec::new();
-        for a in ["link6", "link7", "left_finger", "right_finger"] {
-            for b in ["link6", "link7", "left_finger", "right_finger"] {
-                cross_pairs.push(PairSpec::new(
-                    format!("openarm_left_{a}"),
-                    format!("openarm_right_{b}"),
-                ));
-            }
-        }
-        let mut m = build(&cross_pairs).expect("cross-arm model");
+        let wrist = ["link6", "link7", "left_finger", "right_finger"];
+        let of_the_wrist = |body: &str, arm: &str| {
+            wrist
+                .iter()
+                .any(|link| body == format!("openarm_{arm}_{link}"))
+        };
+        let mut m = model();
+        m.retain_pairs(|a, b| of_the_wrist(a, "left") && of_the_wrist(b, "right"));
+        assert_eq!(
+            m.checked_pairs().len(),
+            wrist.len() * wrist.len(),
+            "setup: every cross-arm pair of the wrists is checked"
+        );
         m.set_gripper_openings(&[0.6, 0.6]);
         let pose_at = |t: f64| -> Joints<ARM_DOF, 2> {
             [
@@ -1459,132 +1293,114 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_pairs_and_querying_with_no_pairs() {
-        assert!(matches!(
-            build(&[PairSpec::new("openarm_left_link1", "no_such_body")]).err(),
-            Some(BuildError::UnknownPairBody { .. })
-        ));
-        let mut empty = build(&[]).expect("bodies build without pairs");
+    fn rejects_querying_with_no_pairs() {
+        let mut empty = model();
+        empty.retain_pairs(|_, _| false);
         assert!(empty.min_distance(&[[0.0; ARM_DOF]; 2]).is_err());
     }
 
     #[test]
-    fn rejects_self_pairs_and_chains_that_share_a_base() {
-        assert!(build(&[PairSpec::new("openarm_left_link7", "openarm_left_link7")]).is_err());
-        let [left, _] = chains();
-        let e = SelfCollisionModel::<ARM_DOF, 2>::builder(
-            URDF,
-            MESHES,
-            [left, left],
-            fixture::VERSION.yoked_joints(),
-        )
-        .fingers(&fingers())
-        .build()
-        .err()
-        .expect("a shared base must fail");
+    fn rejects_chains_that_share_a_base() {
+        let from_the_torso = edited(MODEL, str::to_string, |srdf| {
+            srdf.replace(
+                "openarm_left_link0\" tip_link",
+                "openarm_body_link0\" tip_link",
+            )
+            .replace(
+                "openarm_right_link0\" tip_link",
+                "openarm_body_link0\" tip_link",
+            )
+        })
+        .expect("arms from the torso describe the robot");
+        let e = built(&from_the_torso)
+            .err()
+            .expect("a shared base must fail");
         assert!(
-            matches!(&e, CollisionError::Build(BuildError::SharedBase { base }) if base == "openarm_left_link0"),
+            matches!(
+                &e,
+                CollisionError::Build(BuildError::SharedBase { first, second, base })
+                    if (first.as_str(), second.as_str(), base.as_str())
+                        == ("left_arm", "right_arm", "openarm_body_link0")
+            ),
             "{e}"
+        );
+    }
+
+    // A description of other than the model's arms, or with an arm of other than its
+    // joints, is refused, naming the counts.
+    #[test]
+    fn rejects_a_description_of_another_shape() {
+        let one_arm =
+            SelfCollisionModel::<ARM_DOF, 1>::from_description(&description(MODEL), &meshes(MODEL))
+                .err()
+                .expect("two arms are not one");
+        assert!(
+            matches!(
+                &one_arm,
+                CollisionError::Build(BuildError::Arms {
+                    expected: 1,
+                    found: 2
+                })
+            ),
+            "{one_arm}"
+        );
+        let six = SelfCollisionModel::<6, 2>::from_description(&description(MODEL), &meshes(MODEL))
+            .err()
+            .expect("seven joints are not six");
+        assert!(
+            matches!(&six, CollisionError::Build(BuildError::ArmJoints { arm, expected: 6, found: 7 }) if arm == "left_arm"),
+            "{six}"
         );
     }
 
     // Every link on a moving joint off a chain link that has collision geometry is a
-    // finger the builder names, at a shut position that is a limit of its joint, and
-    // the builder names no other.
+    // finger of its arm's gripper, and the grippers name no other.
     #[test]
-    fn the_fingers_are_named_each_at_a_limit_of_its_joint() {
+    fn the_fingers_are_the_grippers_fingers() {
+        let description = description(MODEL);
+        let all: Vec<Finger> = description
+            .arms()
+            .iter()
+            .flat_map(|arm| arm.gripper.fingers.clone())
+            .collect();
         let refused = |fingers: &[Finger]| {
-            SelfCollisionModel::<ARM_DOF, 2>::builder(
-                URDF,
-                MESHES,
-                chains(),
-                fixture::VERSION.yoked_joints(),
-            )
-            .fingers(fingers)
-            .build()
-            .err()
-            .expect("the fingers are refused")
+            let fingers: Vec<&Finger> = fingers.iter().collect();
+            Model::assembled_with_fingers(&description, &meshes(MODEL), &fingers)
+                .err()
+                .expect("the fingers are refused")
         };
-        let all = fingers();
         let e = refused(&all[..3]);
         assert!(
-            matches!(&e, CollisionError::Build(BuildError::UnnamedFinger { link }) if link == all[3].link),
+            matches!(&e, BuildError::UnnamedFinger { link } if *link == all[3].link),
             "{e}"
         );
         let mut extra = all.clone();
         extra.push(Finger {
-            link: "openarm_left_link7",
-            shut: 0.0,
+            joint: "openarm_left_joint7".to_string(),
+            link: "openarm_left_link7".to_string(),
+            closed: 0.0,
+            open: 1.0,
+            mimic: None,
         });
         let e = refused(&extra);
         assert!(
-            matches!(&e, CollisionError::Build(BuildError::NoSuchFinger { link }) if link == "openarm_left_link7"),
-            "{e}"
-        );
-        let mut off = all.clone();
-        off[0].shut = 0.01;
-        let e = refused(&off);
-        assert!(
-            matches!(&e, CollisionError::Build(BuildError::ShutOffTheLimits { link, .. }) if link == all[0].link),
+            matches!(&e, BuildError::NoSuchFinger { link } if link == "openarm_left_link7"),
             "{e}"
         );
     }
 
     #[test]
-    fn derived_pairs_skip_fixed_pairs_and_adjacency() {
-        let m = model();
-        let checked: Vec<(String, String)> = m
-            .checked_pairs()
-            .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .collect();
-        let has = |a: &str, b: &str| {
-            checked
-                .iter()
-                .any(|(x, y)| (x == a && y == b) || (x == b && y == a))
-        };
-        // Two fixed bodies never change distance; same-side within two joints
-        // is joint-yoked noise.
-        assert!(!has("openarm_left_link0", "openarm_right_link0"));
-        assert!(!has("openarm_body_link0", "openarm_left_link0"));
-        assert!(!has("openarm_left_link0", "openarm_left_link1"));
-        assert!(!has("openarm_left_link3", "openarm_left_link4"));
-        assert!(!has("openarm_body_link0", "openarm_left_link2"));
-        // Beyond the horizon, and cross-arm, are checked.
-        assert!(has("openarm_left_link1", "openarm_left_link7"));
-        assert!(has("openarm_left_link0", "openarm_left_link4"));
-        assert!(has("openarm_body_link0", "openarm_left_link3"));
-        assert!(has("openarm_left_link7", "openarm_right_link7"));
-    }
-
-    // The yoked joints set the horizon: with one, links two joints apart are checked.
-    #[test]
-    fn the_yoked_joints_set_which_links_of_a_chain_go_unchecked() {
-        let one = SelfCollisionModel::<ARM_DOF, 2>::builder(URDF, MESHES, chains(), 1)
-            .fingers(&fingers())
-            .build()
-            .expect("model");
-        let has = |m: &Model, a: &str, b: &str| {
-            m.checked_pairs()
-                .iter()
-                .any(|(x, y)| (*x == a && *y == b) || (*x == b && *y == a))
-        };
-        assert!(has(&one, "openarm_left_link3", "openarm_left_link5"));
-        assert!(!has(&one, "openarm_left_link3", "openarm_left_link4"));
-        assert!(!has(&model(), "openarm_left_link3", "openarm_left_link5"));
-    }
-
-    #[test]
-    fn auto_fit_is_one_hull_per_body() {
+    fn each_collision_element_is_one_piece() {
         let m = model();
         assert_eq!(
             m.local_hulls("openarm_body_link0").expect("torso").len(),
-            1,
-            "auto-fit is a single hull"
+            8,
+            "the torso's eight elements"
         );
         assert_eq!(
             m.local_hulls("openarm_left_link7").expect("gripper").len(),
-            1
+            2,
+            "link7's element and its hand's"
         );
     }
 
@@ -1593,9 +1409,14 @@ mod tests {
         // Each gripper finger is fit as its own single-hull body (in its finger
         // frame); the wrist hull covers only the wrist mesh and fixed children.
         let m = model();
-        for finger in fingers() {
+        let description = description(MODEL);
+        for finger in description
+            .arms()
+            .iter()
+            .flat_map(|arm| &arm.gripper.fingers)
+        {
             assert_eq!(
-                m.local_hulls(finger.link)
+                m.local_hulls(&finger.link)
                     .unwrap_or_else(|| panic!("finger body {} missing", finger.link))
                     .len(),
                 1,
@@ -1638,117 +1459,6 @@ mod tests {
     }
 
     #[test]
-    fn supplied_regions_replace_the_auto_fit() {
-        let m = builder(URDF)
-            .regions("openarm_body_link0", &COVERING_REGIONS)
-            .build()
-            .expect("covering torso regions contain the mesh");
-        assert_eq!(
-            m.local_hulls("openarm_body_link0").expect("torso").len(),
-            2,
-            "torso uses the two supplied region pieces"
-        );
-    }
-
-    #[test]
-    fn rejects_regions_that_leave_mesh_uncovered() {
-        // Only the lower torso is clipped in; the head vertices escape.
-        let lower_only = [[[-INF, -INF, -INF], [INF, INF, 0.3]]];
-        let e = builder(URDF)
-            .regions("openarm_body_link0", &lower_only)
-            .build()
-            .err()
-            .expect("under-covering regions must be rejected");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::Fit(GeometryError::HullMissesMesh { .. }))
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn rejects_a_region_that_clips_nothing() {
-        // The second region floats above the whole robot: its slice of the mesh
-        // is empty, which cannot bound a solid piece.
-        let with_empty = [
-            [[-INF, -INF, -INF], [INF, INF, INF]],
-            [[-INF, -INF, 5.0], [INF, INF, 6.0]],
-        ];
-        let e = builder(URDF)
-            .regions("openarm_body_link0", &with_empty)
-            .build()
-            .err()
-            .expect("an empty slice must be rejected");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::Fit(GeometryError::DegenerateRegion {
-                    index: 1,
-                    ..
-                }))
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn rejects_region_bounds_that_span_no_volume() {
-        let inverted = [COVERING_REGIONS[0], [[0.0, 0.0, 0.5], [0.1, 0.1, 0.4]]];
-        let e = builder(URDF)
-            .regions("openarm_body_link0", &inverted)
-            .build()
-            .err()
-            .expect("an inverted region must be rejected");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::Fit(GeometryError::InvalidRegion {
-                    body,
-                    index: 1,
-                    ..
-                })) if body == "openarm_body_link0"
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn rejects_supplied_regions_for_unknown_body() {
-        let e = builder(URDF)
-            .regions("no_such_body", &COVERING_REGIONS)
-            .build()
-            .err()
-            .expect("unknown body must fail");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::UnknownSuppliedBody { .. })
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn rejects_supplied_regions_for_a_body_named_twice() {
-        let e = builder(URDF)
-            .regions("openarm_body_link0", &COVERING_REGIONS)
-            .regions("openarm_body_link0", &COVERING_REGIONS)
-            .build()
-            .err()
-            .expect("a body named twice must fail");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::Fit(GeometryError::RegionsTwice { body }))
-                    if body == "openarm_body_link0"
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
     fn rejects_a_collision_link_on_a_movable_joint_off_the_body() {
         let flap = r#"<link name="flap">
               <collision><geometry><box size="0.01 0.01 0.01"/></geometry></collision>
@@ -1758,9 +1468,13 @@ mod tests {
               <limit lower="-1" upper="1" effort="1" velocity="1"/>
             </joint>
           </robot>"#;
-        let urdf = URDF.replacen("</robot>", flap, 1);
-        let e = builder(&urdf)
-            .build()
+        let with_a_flap = edited(
+            MODEL,
+            |urdf| urdf.replacen("</robot>", flap, 1),
+            str::to_string,
+        )
+        .expect("the flap describes the robot");
+        let e = built(&with_a_flap)
             .err()
             .expect("a link no chain carries on a movable joint must fail");
         assert!(
@@ -1784,31 +1498,19 @@ mod tests {
               <parent link="openarm_body_link0"/><child link="plate"/>
             </joint>
           </robot>"#;
-        let urdf = URDF.replacen("</robot>", plate, 1);
-        let e = builder(&urdf)
-            .build()
+        let with_a_plate = edited(
+            MODEL,
+            |urdf| urdf.replacen("</robot>", plate, 1),
+            str::to_string,
+        )
+        .expect("the plate describes the robot");
+        let e = built(&with_a_plate)
             .err()
             .expect("a world-fixed link with no mesh to read must fail");
         assert!(
             matches!(
                 &e,
                 CollisionError::Build(BuildError::Fit(GeometryError::Geometry(_)))
-            ),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn rejects_empty_supplied_regions() {
-        let e = builder(URDF)
-            .regions("openarm_body_link0", &[])
-            .build()
-            .err()
-            .expect("an empty region list must fail");
-        assert!(
-            matches!(
-                &e,
-                CollisionError::Build(BuildError::Fit(GeometryError::EmptyRegions { .. }))
             ),
             "{e}"
         );
@@ -1950,60 +1652,6 @@ mod tests {
                 "broadphase {fast:+.6} != brute force {slow:+.6}"
             );
         }
-    }
-
-    fn excluding(pairs: &[PairSpec]) -> Result<Model, CollisionError> {
-        builder(URDF).exclude(pairs).build()
-    }
-
-    #[test]
-    fn excludes_a_named_pair_and_reports_it() {
-        let same = |a: &str, b: &str, x: &str, y: &str| (a == x && b == y) || (a == y && b == x);
-        let m =
-            excluding(&[PairSpec::new("openarm_left_link0", "openarm_left_link3")]).expect("model");
-        assert!(
-            !m.checked_pairs().iter().any(|(a, b)| same(
-                a,
-                b,
-                "openarm_left_link0",
-                "openarm_left_link3"
-            )),
-            "should be dropped"
-        );
-        assert!(
-            m.excluded_pairs().iter().any(|(a, b)| same(
-                a,
-                b,
-                "openarm_left_link0",
-                "openarm_left_link3"
-            )),
-            "should be reported"
-        );
-    }
-
-    #[test]
-    fn rejects_excluding_an_unknown_body() {
-        let e = excluding(&[PairSpec::new("openarm_left_link0", "no_such_link")])
-            .err()
-            .expect("unknown body must fail");
-        assert!(
-            matches!(&e, CollisionError::Build(BuildError::UnknownBody { .. })),
-            "{e}"
-        );
-    }
-
-    // An exclusion names a pair the rules check: a pair they already leave out is
-    // refused, naming it.
-    #[test]
-    fn rejects_excluding_a_pair_the_model_does_not_check() {
-        let e = excluding(&[PairSpec::new("openarm_left_link0", "openarm_left_link1")])
-            .err()
-            .expect("an unchecked pair must fail");
-        assert!(
-            matches!(&e, CollisionError::Build(BuildError::NotChecked { a, b })
-                if a == "openarm_left_link0" && b == "openarm_left_link1"),
-            "{e}"
-        );
     }
 
     #[test]

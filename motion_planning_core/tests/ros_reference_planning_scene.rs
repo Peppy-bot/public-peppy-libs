@@ -41,18 +41,15 @@ use motion_planning_core::{
 };
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{DistanceField, VoxelMap};
-use openarm_description::{ARM_DOF, ARMS, HardwareVersion, Side};
+use robot_description::PerArm;
 use ros_reference::planning_scene::{
     Cases, Measured, MoveItAttached, MoveItObject, MoveItShape, Operation, Path,
 };
 
-use arm_scenes::object_request;
+use arm_scenes::{default_openings, object_request};
 use common::{held_from_its_arm, map, occupied_at};
-use openarm_v2::Robot;
+use openarm_v2::{ARMS, DESCRIPTION, JOINTS, LEFT, RIGHT, Robot};
 
-const JOINTS: usize = ARM_DOF;
-
-const VERSION: HardwareVersion = HardwareVersion::V2;
 /// The difference allowed between this crate's poses and MoveIt's: the rounding of the
 /// same compositions of transforms.
 const POSE_TOLERANCE: f64 = 1e-9;
@@ -81,11 +78,13 @@ fn joint_names(arm: &ChainGeometry<JOINTS>) -> BTreeSet<&str> {
 }
 
 /// OpenArm v2 on the meshes of `cases`: its arms, its body and its self model, the
-/// fingers closed, as the reference stands each finger joint at 0, where OpenArm v2's
-/// fingers close.
+/// fingers where the reference stands them, as MoveIt's default state holds them.
 fn robot_of(cases: &Cases) -> Robot {
-    let mut robot = Robot::new(cases.meshes.to_str().expect("the mesh directory is UTF-8"));
-    robot.self_model.set_gripper_openings(&[0.0; ARMS]);
+    let meshes = cases.robot.meshes.to_str();
+    let mut robot = Robot::new(meshes.expect("the mesh directory is UTF-8"));
+    robot
+        .self_model
+        .set_gripper_openings(&default_openings(&DESCRIPTION));
     robot
 }
 
@@ -103,13 +102,12 @@ fn scenarios() -> Vec<(Cases, Robot)> {
             let robot = robot_of(&cases);
             let name = &cases.name;
             assert!(
-                cases.urdf == VERSION.urdf(),
-                "{name}: the parity test poses OpenArm {VERSION}, whose URDF the scenario \
-                 names"
+                cases.robot.description.urdf() == DESCRIPTION.urdf(),
+                "{name}: the parity test poses OpenArm v2, whose description the scenario names"
             );
             assert_eq!(
-                cases.tip_link,
-                VERSION.tcp_link(Side::Left),
+                cases.arm,
+                *openarm_v2::arm(LEFT),
                 "{name}: the configurations pose the left arm"
             );
             for (index, configuration) in cases.configurations.iter().enumerate() {
@@ -117,7 +115,7 @@ fn scenarios() -> Vec<(Cases, Robot)> {
                     configuration.positions.keys().map(String::as_str).collect();
                 assert_eq!(
                     joints,
-                    joint_names(&robot.arms.left),
+                    joint_names(&robot.arms[LEFT]),
                     "{name} configuration {index}: the joints of the left arm"
                 );
             }
@@ -152,11 +150,10 @@ fn positions_of(arm: &ChainGeometry<JOINTS>, state: &BTreeMap<String, f64>) -> [
 
 /// The arm of `robot` whose grasp link is `link`.
 fn arm_of<'r>(robot: &'r Robot, link: &str) -> &'r ChainGeometry<JOINTS> {
-    let side = Side::BOTH
-        .into_iter()
-        .find(|side| VERSION.tcp_link(*side) == link)
-        .unwrap_or_else(|| panic!("{link} is no grasp link of OpenArm {VERSION}"));
-    &robot.arms[side]
+    let arm = PerArm::<(), ARMS>::ids()
+        .find(|id| openarm_v2::arm(*id).grasp_link == link)
+        .unwrap_or_else(|| panic!("{link} is no grasp link of OpenArm v2"));
+    &robot.arms[arm]
 }
 
 /// The pose of the grasp link `link` in the frame of the URDF root, the arms at `state`.
@@ -264,9 +261,9 @@ fn scene_after(
     robot: &Robot,
     taking: Taking,
 ) -> (PlanningScene, BTreeMap<String, f64>, VoxelMap, ClearedBy) {
-    let tree = robot.arms.left.chain().tree();
+    let tree = robot.arms[LEFT].chain().tree();
     let links = (0..tree.link_count()).map(|i| tree.link(i).name.clone());
-    let grasp_links = Side::BOTH.map(|side| VERSION.tcp_link(side).to_string());
+    let grasp_links = DESCRIPTION.arms().iter().map(|arm| arm.grasp_link.clone());
     let mut scene = PlanningScene::new(RobotLinks::new(links, grasp_links));
     let mut state = default_state(robot);
     let mut voxels = initial_map(cases);
@@ -446,9 +443,7 @@ fn the_snapshot_holds_what_moveits_message_holds() {
 
 /// The links the left arm moves: its chain's, and its fingers'.
 fn moving_links<'a>(robot: &'a Robot, fingers: &[Rider<'a>]) -> BTreeSet<&'a str> {
-    robot
-        .arms
-        .left
+    robot.arms[LEFT]
         .links()
         .iter()
         .map(|link| link.name())
@@ -484,12 +479,11 @@ fn with_the_left_arm<R>(
     state: &BTreeMap<String, f64>,
     read: impl FnOnce(&Arms<JOINTS, JOINTS>, Objects) -> R,
 ) -> R {
-    let left = positions_of(&robot.arms.left, state);
-    let right = positions_of(&robot.arms.right, state);
-    let objects = scene.for_arms(&[VERSION.tcp_link(Side::Left)], |link| {
-        grasp_pose(robot, link, state)
-    });
-    let fingers = robot.fingers(&robot.self_model).left;
+    let left = positions_of(&robot.arms[LEFT], state);
+    let right = positions_of(&robot.arms[RIGHT], state);
+    let left_grasp = openarm_v2::arm(LEFT).grasp_link.as_str();
+    let objects = scene.for_arms(&[left_grasp], |link| grasp_pose(robot, link, state));
+    let fingers = robot.fingers(&robot.self_model)[LEFT].clone();
     let moving = moving_links(robot, &fingers);
     let mut placed = robot.self_model.clone();
     let parts: Vec<RobotPart> = placed
@@ -506,11 +500,11 @@ fn with_the_left_arm<R>(
     let riders: Vec<Rider> = fingers
         .iter()
         .copied()
-        .chain(scene.riders(VERSION.tcp_link(Side::Left), &robot.arms.left))
+        .chain(scene.riders(left_grasp, &robot.arms[LEFT]))
         .collect();
     let arms = Arms::new(
         vec![
-            Arm::new("arm", &robot.arms.left)
+            Arm::new(&openarm_v2::arm(LEFT).name, &robot.arms[LEFT])
                 .riding(&riders)
                 .expect("the fingers and the objects ride the hand"),
         ],
@@ -532,7 +526,7 @@ fn read_pairs(
     with_the_left_arm(robot, scene, state, |arms, objects| {
         let surroundings =
             Surroundings::new(map, field, [EXACT_WITHIN_M; TERMS]).with_objects(objects);
-        least_by_pair(surroundings.readings(arms, &positions_of(&robot.arms.left, state)))
+        least_by_pair(surroundings.readings(arms, &positions_of(&robot.arms[LEFT], state)))
     })
 }
 
@@ -620,7 +614,7 @@ fn assert_the_pairs_bound_fcls(cases: &Cases, robot: &Robot) {
         .into_iter()
         .map(|[a, b]| (a, b))
         .collect();
-    let left_grasp = VERSION.tcp_link(Side::Left);
+    let left_grasp = openarm_v2::arm(LEFT).grasp_link.as_str();
     let carried: BTreeSet<&str> = snapshot
         .attached_objects
         .iter()
@@ -639,7 +633,7 @@ fn assert_the_pairs_bound_fcls(cases: &Cases, robot: &Robot) {
         .filter(|object| object.shapes.len() > 1)
         .map(|object| object.id.as_str())
         .collect();
-    let tree = robot.arms.left.chain().tree();
+    let tree = robot.arms[LEFT].chain().tree();
     let links: BTreeSet<&str> = (0..tree.link_count())
         .map(|i| tree.link(i).name.as_str())
         .collect();
@@ -652,7 +646,7 @@ fn assert_the_pairs_bound_fcls(cases: &Cases, robot: &Robot) {
     let as_moveit_holds_it = (moveit, moveit_field);
     let cleared_field = DistanceField::of(&cleared);
     let as_cleared = (cleared, cleared_field);
-    let fingers = robot.fingers(&robot.self_model).left;
+    let fingers = robot.fingers(&robot.self_model)[LEFT].clone();
     let mut exercised = Exercised::default();
     // The most this crate reads a pair that both read apart nearer than FCL, and the
     // deepest contact FCL measures of a pair this crate reads apart.
@@ -700,10 +694,8 @@ fn assert_the_pairs_bound_fcls(cases: &Cases, robot: &Robot) {
             "{what}: `Surroundings` checks {only_ours:?} alone, and FCL measures {only_fcl:?} \
              alone"
         );
-        let pieces: Vec<(&str, Placed)> = robot
-            .arms
-            .left
-            .place(&positions_of(&robot.arms.left, &state))
+        let pieces: Vec<(&str, Placed)> = robot.arms[LEFT]
+            .place(&positions_of(&robot.arms[LEFT], &state))
             .pieces()
             .collect();
         // Whether the link `link` lies in the open corner of a mesh of `object`.
@@ -967,7 +959,7 @@ impl PathOf {
             .collect();
         let joints = states
             .iter()
-            .map(|state| positions_of(&robot.arms.left, state))
+            .map(|state| positions_of(&robot.arms[LEFT], state))
             .collect();
         Self { states, joints }
     }
@@ -1115,7 +1107,7 @@ fn objects_one_arm_carries_are_never_checked_against_each_other() {
         let readings = with_the_left_arm(robot, &scene, &called, |arms, objects| {
             Surroundings::new(&voxels, &field, [EXACT_WITHIN_M; TERMS])
                 .with_objects(objects)
-                .readings(arms, &positions_of(&robot.arms.left, &called))
+                .readings(arms, &positions_of(&robot.arms[LEFT], &called))
         });
         let read: BTreeSet<NamePair> = least_by_pair(readings).into_keys().collect();
         for pair in &cases.one_link_pairs {
@@ -1186,19 +1178,18 @@ fn the_cut_out_of_the_objects_departs_from_moveits_at_edges_and_meshes_alone() {
         let (scene, called, ..) = scene_after(cases, robot, AS_CALLED);
         // The objects where they stand or another arm holds them, and the objects the left
         // arm carries where the calls leave it: the riders an intake cuts out with them.
-        let objects = scene.for_arms(&[VERSION.tcp_link(Side::Left)], |link| {
-            grasp_pose(robot, link, &called)
-        });
-        let riders = scene.riders(VERSION.tcp_link(Side::Left), &robot.arms.left);
+        let left_grasp = openarm_v2::arm(LEFT).grasp_link.as_str();
+        let objects = scene.for_arms(&[left_grasp], |link| grasp_pose(robot, link, &called));
+        let riders = scene.riders(left_grasp, &robot.arms[LEFT]);
         let arms = Arms::new(
             vec![
-                Arm::new("arm", &robot.arms.left)
+                Arm::new(&openarm_v2::arm(LEFT).name, &robot.arms[LEFT])
                     .riding(&riders)
                     .expect("the objects ride the hand"),
             ],
             None,
         );
-        let bodies = arms.bodies(&positions_of(&robot.arms.left, &called));
+        let bodies = arms.bodies(&positions_of(&robot.arms[LEFT], &called));
         let standing: Vec<&PlacedShape> = objects
             .obstacles()
             .iter()

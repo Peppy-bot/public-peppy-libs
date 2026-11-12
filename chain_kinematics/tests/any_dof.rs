@@ -161,7 +161,7 @@ fn named_selection_fixes_the_joint_order(tc: TestCase) {
 
 #[test]
 fn a_wrong_joint_count_is_refused_at_load() {
-    let robot = urdf_rs::read_from_string(SO101).expect("parse SO-101");
+    let robot = SO101.robot();
     let spec = ChainSpec {
         base_link: None,
         tip_link: "gripper_frame_link",
@@ -169,7 +169,7 @@ fn a_wrong_joint_count_is_refused_at_load() {
     };
     // The SO-101 arm has five actuated joints; asking for seven must fail here,
     // at load, rather than producing a chain that silently ignores `q[5..]`.
-    let err = match Chain::<7>::from_urdf(&robot, &spec) {
+    let err = match Chain::<7>::from_urdf(robot, &spec) {
         Ok(_) => panic!("a five-joint arm must not load as a seven-joint chain"),
         Err(e) => e,
     };

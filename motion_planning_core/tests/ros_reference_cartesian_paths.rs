@@ -15,20 +15,21 @@
 mod arm_scenes;
 mod cartesian_scenes;
 mod common;
+mod openarm_v2;
 
 use chain_kinematics::{CARTESIAN_STEP_M, CARTESIAN_STEP_RAD};
 use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vector3};
-use openarm_description::{HardwareVersion, Side};
 use ros_reference::LinkPose;
 use ros_reference::cartesian_paths::{Case, Ours, PathCase};
 
 #[cfg(target_arch = "x86_64")]
 use arm_scenes::on_the_arms;
-use arm_scenes::{JOINTS, MIN_SCENES, geometry};
+use arm_scenes::{MIN_SCENES, geometry};
 use cartesian_scenes::corners;
 #[cfg(target_arch = "x86_64")]
 use cartesian_scenes::path_answer;
 use common::on_line;
+use openarm_v2::{ARMS, JOINTS, LEFT};
 
 /// The difference allowed between two fractions of the same steps: their rounding.
 const FRACTION_TOLERANCE: f64 = 1e-12;
@@ -124,13 +125,12 @@ impl Compared<'_> {
 
 /// The cases of `case`, each as the tests read it.
 fn compared(case: &Case) -> Vec<Compared<'_>> {
-    let chain = &case.paths.chains[0];
-    let geometry = geometry::<JOINTS>(chain, &case.urdf, &case.meshes);
+    let geometry = geometry::<JOINTS>(&case.arm, &case.robot);
     case.cases
         .iter()
         .enumerate()
         .map(|(index, c)| {
-            let corners = corners(geometry.chain(), &chain.tip_link, &c.request);
+            let corners = corners(geometry.chain(), &case.arm.grasp_link, &c.request);
             Compared {
                 index,
                 case: c,
@@ -156,9 +156,9 @@ fn among_obstacles(c: &PathCase) -> bool {
     !c.request.boxes.is_empty() || !c.request.objects.is_empty()
 }
 
-/// Whether `c` follows the left arm's grasp point, the scenario's chain's tip link.
+/// Whether `c` follows the grasp point of OpenArm v2's left arm, the scenario's arm.
 fn follows_the_grasp_point(c: &PathCase) -> bool {
-    c.request.link == HardwareVersion::V2.tcp_link(Side::Left)
+    c.request.link == openarm_v2::arm(LEFT).grasp_link
 }
 
 /// Whether `c` turns its link in place on each line.
@@ -223,15 +223,14 @@ fn each_scenario_carries_the_paths_this_crate_computes() {
             "{}: the scenario's step is this crate's",
             case.name
         );
-        on_the_arms::<JOINTS, _>(
-            &case.paths.chains,
-            &case.urdf,
-            &case.meshes,
+        on_the_arms::<JOINTS, ARMS, _>(
+            std::slice::from_ref(&case.arm),
+            &case.robot,
             |arms, standing| {
                 assert_eq!(
                     case.checked_pairs,
                     standing.checked_pairs(),
-                    "{}: the scenario's checked pairs are those its paths check",
+                    "{}: the pairs MoveIt's collision matrix checks are those our paths check",
                     case.name
                 );
                 for (k, c) in case.cases.iter().enumerate() {

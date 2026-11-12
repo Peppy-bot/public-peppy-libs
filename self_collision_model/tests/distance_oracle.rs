@@ -16,20 +16,17 @@
 //!
 //! The fan's angular resolution bounds the slack: for hulls inside radius `R`,
 //! a direction within `theta` of the true separating normal underestimates by
-//! at most `2 R (1 - cos theta)`. The fabricated-penetration bug class this
-//! guards against (a stateful support walk plus a degenerate simplex read a
-//! wrist 74 mm clear of a torso slab as 90 mm inside it) sat five orders of
+//! at most `2 R (1 - cos theta)`. A fabricated penetration, such as a wrist
+//! 74 mm clear of a torso piece read as 90 mm inside it, lies five orders of
 //! magnitude outside these brackets.
 
 use self_collision_model::nalgebra::Vector3;
-use self_collision_model::{Joints, OpenArmModel, Placed};
+use self_collision_model::{Joints, Placed};
 
-#[path = "fixtures/openarm.rs"]
-mod openarm;
+#[path = "fixtures/models.rs"]
+mod fixture;
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-
-const ARM_DOF: usize = 7;
+use fixture::openarm::{ARM_DOF, model};
 
 /// Fibonacci-sphere direction count. 2000 directions give ~4.4e-3 sr per cell
 /// (angular radius ~2.2 degrees), so the separation lower bound is tight to
@@ -38,18 +35,6 @@ const DIRECTIONS: usize = 2000;
 
 /// Slack absorbing the direction fan's angular resolution plus float noise.
 const ORACLE_SLACK: f64 = 1.5e-3;
-
-fn model() -> OpenArmModel {
-    let urdf =
-        std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("read fixture urdf");
-    openarm::builder(&urdf)
-        .regions(
-            openarm::VERSION.torso_body(),
-            openarm::VERSION.torso_regions(),
-        )
-        .build()
-        .expect("fixture model")
-}
 
 fn fibonacci_directions() -> Vec<Vector3<f64>> {
     (0..DIRECTIONS)
@@ -238,11 +223,9 @@ fn every_checked_pair_matches_the_oracle_at_a_near_contact_pose() {
     }
 }
 
-/// The exact regression scene from the field: a near-home converging pose read
-/// as deep penetration by a defective query path while the true clearance was
-/// positive. Pin the bracket, not just the sign.
+/// A near-home converging pose reads clear, inside the oracle's bracket.
 #[test]
-fn field_regression_pose_reads_clear_within_oracle_brackets() {
+fn a_near_home_converging_pose_reads_clear_within_oracle_brackets() {
     let mut m = model();
     m.set_gripper_openings(&[0.0, 0.0]);
     let q = [
@@ -267,6 +250,6 @@ fn field_regression_pose_reads_clear_within_oracle_brackets() {
         .fold(f64::NEG_INFINITY, f64::max);
     assert!(
         d > 0.0 && d >= max_sep - ORACLE_SLACK,
-        "field pose must read clear within the oracle bracket, got {d:+.5} (bracket lower {max_sep:+.5})"
+        "the near-home pose must read clear within the oracle bracket, got {d:+.5} (bracket lower {max_sep:+.5})"
     );
 }

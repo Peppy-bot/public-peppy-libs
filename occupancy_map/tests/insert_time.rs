@@ -10,14 +10,15 @@ use std::time::{Duration, Instant};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
+use chain_kinematics::Tree;
 use collision_geometry::chain::Padding;
 use collision_geometry::gjk::Placed;
 use control_core::positive_finite::PositiveFinite;
-use nalgebra::{Isometry3, Point3, Quaternion, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{
     Bounds, Cutout, DistanceField, Frame, RobotCutout, Scan, VoxelMap, depth_points,
 };
-use openarm_description::{ArmPair, HardwareVersion, Side, ready};
+use robot_description::states;
 
 #[path = "common/arms.rs"]
 mod arms;
@@ -25,7 +26,7 @@ mod arms;
 mod pose;
 #[path = "common/slab.rs"]
 mod slab;
-use arms::OPENARM_V2_ARMS;
+use arms::{OPENARM_V2, OPENARM_V2_ARMS, posture};
 use pose::pose_of;
 use slab::box_entry;
 
@@ -46,6 +47,9 @@ const CAMERA: Intrinsics<'static> = Intrinsics {
 
 /// Meters per count of the depth frame.
 const DEPTH_UNIT: f32 = 0.001;
+
+/// The camera the test renders the frame of: OpenArm v2's chest camera.
+const CAMERA_NAME: &str = "chest";
 
 /// The fewest of the frame's points the arms' mask holds: the camera sees both
 /// forearms.
@@ -142,48 +146,52 @@ fn median(mut times: Vec<Duration>) -> Duration {
 #[test]
 #[ignore = "a measurement: it prints the times on the machine that runs it"]
 fn time_one_640x360_frame() {
-    let version = HardwareVersion::V2;
-    let root = Frame::parse("world").expect("a frame name");
-    // The chest camera's optical frame in the URDF root's: its mount, which looks along
-    // its own -Z with +Y up, turned half a turn about X.
-    let mount = version
-        .camera_mounts()
+    let tree = Tree::from_robot(OPENARM_V2.robot()).expect("the URDF is one tree");
+    let root = Frame::parse(&tree.link(tree.root()).name).expect("the URDF root names a frame");
+    // The chest camera's optical frame in the URDF root's, over the fixed joints that
+    // hold it.
+    let chest = OPENARM_V2
+        .cameras()
         .iter()
-        .find(|mount| mount.depth_range.is_some())
-        .expect("the chest camera gives depth");
-    let [w, x, y, z] = mount.quat_wxyz;
-    let camera_in_root = Isometry3::from_parts(
-        Translation3::from(Vector3::from(mount.position)),
-        UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z))
-            * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI),
-    );
+        .find(|camera| camera.name == CAMERA_NAME)
+        .expect("OpenArm v2 carries the chest camera");
+    let [roll, pitch, yaw] = chest.rpy;
+    let camera_in_root = tree
+        .fixed_path_to(tree.root(), &chest.parent_link)
+        .expect("the chest camera is fixed to the root")
+        * Isometry3::from_parts(
+            Translation3::from(chest.xyz),
+            UnitQuaternion::from_euler_angles(roll, pitch, yaw),
+        );
     let optical = pose_of(&camera_in_root);
 
     let arms = &*OPENARM_V2_ARMS;
-    let grasp_point = |side: Side| -> [f64; 3] {
-        let pose = arms[side].chain().at(&ready(side)).ee_pose();
-        pose.translation.vector.into()
-    };
-    let placed = ArmPair::from_fn(|side| arms[side].place(&ready(side)));
+    let ready = posture(states::READY);
+    let placed: Vec<_> = arms
+        .iter()
+        .zip(&ready)
+        .map(|(arm, q)| arm.place(q))
+        .collect();
     let scene = Scene {
         boxes: vec![
             ([0.35, -0.3, 0.0], [0.55, -0.1, 0.15]),
             ([0.45, 0.05, 0.0], [0.6, 0.25, 0.3]),
             ([0.7, -0.15, 0.0], [0.8, 0.15, 0.45]),
         ],
-        balls: Side::BOTH
+        balls: arms
             .iter()
-            .map(|side| (grasp_point(*side), 0.035))
+            .zip(&ready)
+            .map(|(arm, q)| (arm.chain().at(q).ee_pose().translation.vector.into(), 0.035))
             .collect(),
-        pieces: Side::BOTH
+        pieces: placed
             .iter()
-            .flat_map(|side| placed[*side].pieces().map(|(_, piece)| piece))
+            .flat_map(|arm| arm.pieces().map(|(_, piece)| piece))
             .collect(),
     };
     let camera = Pinhole::parse(&CAMERA).expect("a valid model");
     let frame = render(&camera, &camera_in_root, &scene);
-    let masks =
-        ArmPair::from_fn(|side| arms[side].mask(Padding::new(1.0, 0.03).expect("a valid padding")));
+    let padding = Padding::new(1.0, 0.03).expect("a valid padding");
+    let masks: Vec<_> = arms.iter().map(|arm| arm.mask(padding)).collect();
     let empty_map = || {
         VoxelMap::new(
             root.clone(),
@@ -214,9 +222,10 @@ fn time_one_640x360_frame() {
 
         let mut map = empty_map();
         let started = Instant::now();
-        let chains = Side::BOTH
+        let chains = masks
             .iter()
-            .map(|side| masks[*side].at(&ready(*side)))
+            .zip(&ready)
+            .map(|(mask, q)| mask.at(q))
             .collect();
         let robot = RobotCutout::new(&root, at_root, chains);
         map.insert(&scan, &[&robot]).expect("the map's frame");

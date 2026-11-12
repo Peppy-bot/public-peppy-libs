@@ -4,6 +4,7 @@
 //! links above the grasp point, and of a part a link carries.
 
 mod common;
+mod openarm_v2;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
@@ -14,10 +15,10 @@ use motion_planning_core::{
     sample_goals,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
-use openarm_description::{HardwareVersion, Side};
 use srs_model::ArmAnglePolicy;
 
-use common::{JOINTS, LEFT_ARM, branch, positive};
+use common::{LEFT_ARM, branch, left_srs_arm, positive};
+use openarm_v2::JOINTS;
 
 /// The poses drawn.
 const POSES: usize = 200;
@@ -39,11 +40,7 @@ const ORIENTATION_TOLERANCE_RAD: f64 = 0.01;
 // a branch that the scene leaves valid when the branches its seeds lead to are not.
 #[test]
 fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_invalid() {
-    let version = HardwareVersion::V2;
-    let srs = srs_model::Arm::from_urdf(version.urdf(), version.base_link(Side::Left))
-        .expect("an SRS arm")
-        .with_tool_link(version.tcp_link(Side::Left))
-        .expect("its grasp point");
+    let srs = left_srs_arm();
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     let limits = chain.limits();

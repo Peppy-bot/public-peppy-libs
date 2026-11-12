@@ -3,8 +3,9 @@
 //! `Mask` grows each collision element by a padding and tells whether a point lies inside
 //! a grown link or the grown chain. The evidence: at every configuration of every chain
 //! collision scenario of the ROS reference harness, OpenArm v2 dressed in its meshes and
-//! an arm dressed in boxes, cylinders and spheres and a turned wedge, the chain carries
-//! the links that MoveIt's chain carries, each at MoveIt's transform within
+//! an arm dressed in boxes, cylinders and spheres and a turned wedge, the chain of each arm
+//! from the URDF root to its grasp link carries the links that MoveIt's arm carries, each at
+//! MoveIt's transform within
 //! [`FRAME_TOLERANCE`], and for each padding the filter holds to its rule on every probe,
 //! and answers as MoveIt's robot filter outside the band of each body. For each sphere
 //! padding, each link holds the collision spheres that CHOMP's collision checker places
@@ -41,7 +42,7 @@ use collision_geometry::spheres::CollisionSphere;
 use collision_geometry::urdf_collision::{Collision, CollisionGeometry};
 use kinematics_properties::TOLERANCE;
 use ros_reference::LinkPose;
-use ros_reference::chain_collision::{Cases, ChainCase};
+use ros_reference::chain_collision::{ArmCase, Cases};
 
 #[path = "common/growth.rs"]
 mod growth;
@@ -51,7 +52,7 @@ use growth::grown_primitive_excess;
 /// entry: rounding of the same chain of transforms, composed in another order.
 const FRAME_TOLERANCE: f64 = 1e-12;
 
-/// The joint count of every chain that the test poses.
+/// The joint count of every arm that the test poses.
 const CHAIN_JOINTS: usize = 7;
 
 /// The probes inside the bands of each scenario, for each of its paddings in order, by
@@ -252,15 +253,15 @@ fn scenarios() -> Vec<Cases> {
 #[test]
 fn each_chain_carries_moveits_links_at_moveits_frames() {
     for cases in scenarios() {
-        for chain in &cases.chains {
-            let at = format!("{} {}", cases.name, chain.name);
-            let geometry = geometry_of(&cases, chain);
+        for posed in &cases.arms {
+            let at = format!("{} {}", cases.name, posed.arm.name);
+            let geometry = geometry_of(&cases, posed);
             let mut carried: Vec<&str> = geometry.links().iter().map(|link| link.name()).collect();
             carried.sort_unstable();
-            let mut moved: Vec<&str> = chain.links.iter().map(String::as_str).collect();
+            let mut moved: Vec<&str> = posed.links.iter().map(String::as_str).collect();
             moved.sort_unstable();
             assert_eq!(carried, moved, "{at}: the carried links");
-            for (index, configuration) in chain.configurations.iter().enumerate() {
+            for (index, configuration) in posed.configurations.iter().enumerate() {
                 let placed = geometry.place(&positions(&configuration.positions));
                 for pose in &configuration.links {
                     let (ours, theirs) = (pose_of(&placed, &pose.link), moveit_pose(pose));
@@ -286,11 +287,14 @@ fn each_chain_carries_moveits_links_at_moveits_frames() {
 #[test]
 fn each_link_holds_chomps_collision_spheres() {
     for cases in scenarios() {
-        for chain in &cases.chains {
-            let geometry = geometry_of(&cases, chain);
-            for (padding, by_link) in cases.sphere_paddings.iter().zip(&chain.spheres) {
-                for (name, moveits) in chain.links.iter().zip(by_link) {
-                    let at = format!("{} {} {name} padded by {padding}", cases.name, chain.name);
+        for posed in &cases.arms {
+            let geometry = geometry_of(&cases, posed);
+            for (padding, by_link) in cases.sphere_paddings.iter().zip(&posed.spheres) {
+                for (name, moveits) in posed.links.iter().zip(by_link) {
+                    let at = format!(
+                        "{} {} {name} padded by {padding}",
+                        cases.name, posed.arm.name
+                    );
                     let link = geometry
                         .links()
                         .iter()
@@ -321,9 +325,9 @@ fn each_link_holds_chomps_collision_spheres() {
 fn the_robot_filter_holds_to_its_rule_and_answers_as_moveits_outside_the_band() {
     for cases in scenarios() {
         let mut counts = vec![([0_usize; 3], Band::default()); cases.paddings.len()];
-        for chain in &cases.chains {
-            let at = format!("{} {}", cases.name, chain.name);
-            let geometry = geometry_of(&cases, chain);
+        for posed in &cases.arms {
+            let at = format!("{} {}", cases.name, posed.arm.name);
+            let geometry = geometry_of(&cases, posed);
             let paddings: Vec<Padding> = cases
                 .paddings
                 .iter()
@@ -334,7 +338,7 @@ fn the_robot_filter_holds_to_its_rule_and_answers_as_moveits_outside_the_band() 
                 .iter()
                 .enumerate()
                 .flat_map(|(link, geometry)| {
-                    let centers: Vec<Point3<f64>> = chain
+                    let centers: Vec<Point3<f64>> = posed
                         .bodies
                         .iter()
                         .filter(|body| body.link == geometry.name())
@@ -359,7 +363,7 @@ fn the_robot_filter_holds_to_its_rule_and_answers_as_moveits_outside_the_band() 
             for (index, (grown, padding)) in cases.paddings.iter().zip(&paddings).enumerate() {
                 let mask = geometry.mask(*padding);
                 let ([deep, within, far], band) = &mut counts[index];
-                for (configuration_index, configuration) in chain.configurations.iter().enumerate()
+                for (configuration_index, configuration) in posed.configurations.iter().enumerate()
                 {
                     let q = positions(&configuration.positions);
                     let (placed, grown_chain) = (geometry.place(&q), mask.at(&q));
@@ -529,35 +533,37 @@ fn body_of<'a>(
     }))
 }
 
-/// The scenario's mesh directory, or no directory for a scenario whose URDF names no
-/// collision mesh.
+/// The scenario's mesh directory.
 fn mesh_directory(cases: &Cases) -> &str {
-    cases.meshes.as_deref().map_or("", |meshes| {
-        meshes.to_str().expect("the mesh directory is UTF-8")
-    })
+    cases
+        .robot
+        .meshes
+        .to_str()
+        .expect("the mesh directory is UTF-8")
 }
 
-/// The geometry of `chain`, which refuses a chain of another joint count than
-/// [`CHAIN_JOINTS`].
-fn geometry_of(cases: &Cases, chain: &ChainCase) -> ChainGeometry<CHAIN_JOINTS> {
+/// The geometry of the arm of `posed`, the chain from the URDF root to its grasp link,
+/// which refuses an arm of another joint count than [`CHAIN_JOINTS`].
+fn geometry_of(cases: &Cases, posed: &ArmCase) -> ChainGeometry<CHAIN_JOINTS> {
+    let arm = &posed.arm;
     assert_eq!(
-        chain.joints.len(),
+        arm.joints.len(),
         CHAIN_JOINTS,
-        "{} {}: the parity test poses chains of {CHAIN_JOINTS} joints",
+        "{} {}: the parity test poses arms of {CHAIN_JOINTS} joints",
         cases.name,
-        chain.name
+        arm.name
     );
-    let joints: Vec<&str> = chain.joints.iter().map(String::as_str).collect();
+    let joints: Vec<&str> = arm.joints.iter().map(String::as_str).collect();
     ChainGeometry::<CHAIN_JOINTS>::from_urdf(
-        &cases.urdf,
+        cases.robot.description.urdf(),
         mesh_directory(cases),
         &ChainSpec {
             base_link: None,
-            tip_link: &chain.tip_link,
+            tip_link: &arm.grasp_link,
             joints: JointSelection::Named(&joints),
         },
     )
-    .unwrap_or_else(|e| panic!("{} {}: {e}", cases.name, chain.name))
+    .unwrap_or_else(|e| panic!("{} {}: {e}", cases.name, arm.name))
 }
 
 fn positions(positions: &[f64]) -> [f64; CHAIN_JOINTS] {

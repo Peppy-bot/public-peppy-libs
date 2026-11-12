@@ -1,11 +1,19 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes a self distance scenario of the ROS reference harness: OpenArm v2 with both
 arms and both grippers posed at the KEPT configurations of its candidates, or with
 --robot so101, SO-101 with its arm and its jaw posed at SO101_KEPT. A gripper is posed by
-its first finger joint, which the second mimics. Run it from any directory:
+its finger joint that moves of its own, which any other finger joint mimics. Run it from
+any directory:
 
-    python3 ros_reference/tools/draw_self_distance.py
-    python3 ros_reference/tools/draw_self_distance.py --robot so101
-    python3 ros_reference/tools/draw_self_distance.py --drawn 500
+    uv run ros_reference/tools/draw_self_distance.py
+    uv run ros_reference/tools/draw_self_distance.py --robot so101
+    uv run ros_reference/tools/draw_self_distance.py --drawn 500
 
 The candidates are the zero configuration, the lower limits, the upper limits, and
 DRAWN_CONFIGURATIONS configurations drawn uniformly inside the limits. KEPT holds the
@@ -15,9 +23,9 @@ with the count of drawn ones it names, for a local run, which the README describ
 choose KEPT again, write the candidates, run their references locally, and select from
 the output:
 
-    python3 ros_reference/tools/draw_self_distance.py --drawn 30
+    uv run ros_reference/tools/draw_self_distance.py --drawn 30
     ros_reference/run.sh
-    python3 ros_reference/tools/draw_self_distance.py --select \\
+    uv run ros_reference/tools/draw_self_distance.py --select \\
         ros_reference/reference/self_distance_openarm_v2.json
 
 and the same with --robot so101 and its output, self_distance_so101.json.
@@ -27,21 +35,18 @@ import json
 
 from drawing import (
     CONFIGURATIONS_DRAWN,
-    SO101_JOINTS,
-    SO101_MESHES,
-    SO101_URDF,
+    OPENARM_V2,
+    SO101,
+    arms,
     configurations,
     generator,
+    gripper_joint,
     joint_limits,
-    openarm_joints,
     options,
-    robot,
     write,
 )
 
 NAME = "self_distance_openarm_v2"
-URDF = "openarm_description/assets/openarm_v20.urdf"
-MESHES = "openarm_description/assets/meshes_v20"
 DRAWN_CONFIGURATIONS = 30
 # The candidates the scenario keeps, by index: what --select prints for the output of
 # every candidate.
@@ -52,23 +57,24 @@ SO101_KEPT = [0, 2, 12]
 
 
 def scenario(robot_name):
-    """The name, the URDF, the meshes, the joints and the kept candidates of the scenario
-    of `robot_name`."""
-    if robot_name == "so101":
-        return SO101_NAME, SO101_URDF, SO101_MESHES, [*SO101_JOINTS, "gripper"], SO101_KEPT
+    """The name, the model directory, the joints and the kept candidates of the scenario of
+    `robot_name`: the joints of each arm of the robot and the finger joint of its gripper."""
+    name, description, kept = {
+        "so101": (SO101_NAME, SO101, SO101_KEPT),
+        "openarm_v2": (NAME, OPENARM_V2, KEPT),
+    }[robot_name]
     joints = [
         joint
-        for side in ["left", "right"]
-        for joint in openarm_joints(side) + [f"openarm_{side}_finger_joint1"]
+        for arm in arms(description)
+        for joint in [*arm.joints, gripper_joint(description, arm)]
     ]
-    return NAME, URDF, MESHES, joints, KEPT
+    return name, description, joints, kept
 
 
-def candidates(name, urdf, joints, drawn):
-    """Each candidate configuration of the scenario `name` of `urdf`, with `drawn` drawn
-    inside the limits, a position per joint of `joints`."""
-    parsed = robot(urdf)
-    limits = [joint_limits(parsed, joint) for joint in joints]
+def candidates(name, description, joints, drawn):
+    """Each candidate configuration of the scenario `name` of the model directory
+    `description`, with `drawn` drawn inside the limits, a position per joint of `joints`."""
+    limits = [joint_limits(description, joint) for joint in joints]
     poses = configurations(generator(name), limits, drawn)
     return [dict(zip(joints, positions)) for positions in poses]
 
@@ -109,18 +115,17 @@ def main():
     if arguments.select:
         print(select(arguments.select))
         return
-    name, urdf, meshes, joints, kept = scenario(arguments.robot)
+    name, description, joints, kept = scenario(arguments.robot)
     if arguments.drawn is None:
-        every = candidates(name, urdf, joints, DRAWN_CONFIGURATIONS)
+        every = candidates(name, description, joints, DRAWN_CONFIGURATIONS)
         chosen = [every[index] for index in kept]
     else:
-        chosen = candidates(name, urdf, joints, arguments.drawn)
+        chosen = candidates(name, description, joints, arguments.drawn)
     write(
         name,
         {
             "kind": "self_distance",
-            "urdf": urdf,
-            "meshes": meshes,
+            "description": description,
             "configurations": chosen,
         },
     )

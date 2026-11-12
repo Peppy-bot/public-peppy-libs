@@ -707,9 +707,8 @@ nlohmann::json checked_paths(const planning_scene::PlanningScene& scene,
 }  // namespace
 
 nlohmann::json planning_scene(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto model = robot_model_with_meshes(inputs, scenario.at("urdf").get<std::string>(),
-                                             scenario.at("meshes").get<std::string>());
-  const auto tip_link = scenario.at("tip_link").get<std::string>();
+  const auto model = description_model(inputs, scenario.at("description").get<std::string>());
+  const auto tip_link = the_arm(*model, scenario.at("arm").get<std::string>()).tip_link;
   // Owned by a shared pointer, as a child scene of it needs (PlanningScene::diff).
   const auto owned = std::make_shared<planning_scene::PlanningScene>(model);
   auto& scene = *owned;

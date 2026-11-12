@@ -1,10 +1,9 @@
 //! Fitting the convex pieces of one body from its collision surfaces: one
-//! circumscribing fit per surface, which holds it by construction, or, for a concave
-//! body, one fit per clip region, whose union the fit checks holds the surfaces.
+//! circumscribing fit per surface, which holds it by construction, and the check that
+//! pieces together hold a surface they stand in for.
 
 use nalgebra::Point3;
 
-use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull, Vertex};
 use crate::simplify::circumscribe;
 use crate::urdf_collision::UrdfCollisions;
@@ -32,78 +31,53 @@ const FACE_FLOOR: f64 = 1e-3;
 const SLIVER_ALTITUDE: f64 = 1e-4;
 
 /// The pieces of `link`, which fixed joints alone join to the URDF root, in the frame of
-/// the root, as `fit_pieces` fits its collision surfaces with `regions`, the meshes read
-/// from `meshes_dir`. A link a movable joint carries is refused
+/// the root, as `fit_pieces` fits its collision surfaces, the meshes read from
+/// `meshes_dir`. A link a movable joint carries is refused
 /// ([`GeometryError::NotFixedToTheRoot`]).
 pub fn fit_fixed_link(
     collisions: &UrdfCollisions,
     link: &str,
     meshes_dir: &str,
-    regions: Option<&[ClipRegion]>,
 ) -> Result<Vec<Hull>, GeometryError> {
     let surfaces = collisions.fixed_surfaces_in_root(link, meshes_dir)?;
-    fit_pieces(link, &surfaces, regions)
+    fit_pieces(link, &surfaces)
 }
 
 /// The pieces of one body whose collision elements have `surfaces` (each a triangle
-/// soup, every three points a triangle). Without clip regions: one circumscribing fit
-/// of each surface. With clip regions (a concave body): the surfaces together are
-/// clipped to each region and every clipped slice gets the same fit, then the union is
-/// verified to contain the surfaces.
+/// soup, every three points a triangle): one circumscribing fit of each surface.
 ///
 /// The fit's planes support the surface, so each piece contains its own surface by
 /// construction and the pieces carry no inflation radius: a distance to a piece is the
 /// distance to the surface less at most 1 mm.
-pub fn fit_pieces(
-    name: &str,
-    surfaces: &[Vec<Point3<f64>>],
-    regions: Option<&[ClipRegion]>,
-) -> Result<Vec<Hull>, GeometryError> {
-    let Some(regions) = regions else {
-        return surfaces
-            .iter()
-            .map(|surface| {
-                let fit = circumscribe(surface, MAX_DEVIATION_M).map_err(|reason| {
-                    GeometryError::DegenerateBody {
-                        body: name.to_string(),
-                        reason,
-                    }
-                })?;
-                Ok(Hull::new(&fit.hull, 0.0)?)
-            })
-            .collect();
-    };
-    if regions.is_empty() {
-        return Err(GeometryError::EmptyRegions {
-            body: name.to_string(),
-        });
-    }
-    let soup = surfaces.concat();
-    let mut hulls = Vec::with_capacity(regions.len());
-    for (index, region) in regions.iter().enumerate() {
-        let points = region.clip_triangles(&soup);
-        let fit = circumscribe(&points, MAX_DEVIATION_M).map_err(|reason| {
-            GeometryError::DegenerateRegion {
-                body: name.to_string(),
-                index,
-                reason,
-            }
-        })?;
-        hulls.push(Hull::new(&fit.hull, 0.0)?);
-    }
-    verify_contains(name, &hulls, &soup)?;
-    Ok(hulls)
+pub fn fit_pieces(name: &str, surfaces: &[Vec<Point3<f64>>]) -> Result<Vec<Hull>, GeometryError> {
+    surfaces
+        .iter()
+        .map(|surface| {
+            let fit = circumscribe(surface, MAX_DEVIATION_M).map_err(|reason| {
+                GeometryError::DegenerateBody {
+                    body: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(Hull::new(&fit.hull, 0.0)?)
+        })
+        .collect()
 }
 
-/// Error unless the supplied hulls conservatively contain the body's whole mesh
-/// surface, not merely its vertices. `verts` is the mesh triangle soup (every
-/// three a triangle). A vertex-only check passes geometry that leaks: a face can
+/// Error unless `hulls`, the pieces of body `name`, together contain the whole of a
+/// mesh surface they stand in for, not merely its vertices, such as a concave mesh
+/// that a URDF names as the slices of its clip regions. `verts` is the mesh triangle
+/// soup (every three a triangle). A vertex-only check passes geometry that leaks: a face can
 /// slope through the gap between two pieces while its three corners land inside
 /// them (a tapering shoulder against stacked boxes). So every real face is
 /// checked for surface coverage, and every vertex is checked outright (the
 /// latter also covers the corners of degenerate sliver faces, which the face
 /// pass skips because they bound no surface).
-fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<(), GeometryError> {
+pub fn verify_contains(
+    name: &str,
+    hulls: &[Hull],
+    verts: &[Point3<f64>],
+) -> Result<(), GeometryError> {
     for v in verts {
         if !inside_union(hulls, v) {
             return Err(GeometryError::HullMissesMesh {

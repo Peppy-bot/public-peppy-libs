@@ -1,7 +1,6 @@
 {
   "kind": "self_distance",
-  "urdf": "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
-  "meshes": "so101_description/src/so101_description/urdf/collision",
+  "description": "robot_description/models/so101",
   "configurations": [
     {"shoulder_pan":0.0,"shoulder_lift":0.0,"elbow_flex":0.0,"wrist_flex":0.0,"wrist_roll":0.0,"gripper":0.0},
     {"shoulder_pan":1.91986,"shoulder_lift":1.74533,"elbow_flex":1.69,"wrist_flex":1.65806,"wrist_roll":2.84121,"gripper":1.74533},

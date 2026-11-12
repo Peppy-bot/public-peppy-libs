@@ -1,8 +1,7 @@
 {
   "kind": "orientation_constraints",
-  "urdf": "openarm_description/assets/openarm_v20.urdf",
-  "joints": ["openarm_left_joint1","openarm_left_joint2","openarm_left_joint3","openarm_left_joint4","openarm_left_joint5","openarm_left_joint6","openarm_left_joint7"],
-  "link_name": "openarm_left_tcp",
+  "description": "robot_description/models/openarm_v2",
+  "arm": "left_arm",
   "cases": [
     {"positions":[-0.9702792726773688,-1.0742041482753266,0.42129342426606486,1.1223453219615867,1.2830124244824714,0.4042174795236878,1.0047499969629474],"orientation":[0.4112493669030413,-0.1266708668147003,0.6992310750641912,0.5708803319320394],"tolerance_rad":0.05,"free_axis":"none"},
     {"positions":[-2.8978970298247755,0.16857989192327105,0.20679084810317727,2.131454935421055,-1.441258035967408,-0.1450006351926435,0.5720477104577559],"orientation":[0.4920336767038235,-0.38004856129596476,-0.4830874879664605,0.6165163671926637],"tolerance_rad":0.05,"free_axis":"none"},

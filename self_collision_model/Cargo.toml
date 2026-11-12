@@ -12,13 +12,11 @@ description = "Runtime self-collision detection for a robot of serial chains of 
 [dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
 collision_geometry = { path = "../collision_geometry" }
-openarm_description = { path = "../openarm_description" }
-so101_description = { path = "../so101_description" }
+robot_description = { path = "../robot_description" }
 thiserror = "2"
-urdf-rs = "0.10"
 
 [dev-dependencies]
-openarm_description = { path = "../openarm_description", features = ["meshes"] }
+robot_description = { path = "../robot_description", features = ["meshes"] }
 ros_reference = { path = "../ros_reference" }
 serde_json = "1"
 

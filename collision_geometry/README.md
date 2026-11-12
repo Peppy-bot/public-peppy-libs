@@ -7,8 +7,10 @@ or messaging dependencies.
 
 - `fit::fit_pieces` fits the convex pieces of one body to its collision elements: one
   circumscribing polytope per `<collision>` element, which holds its element by
-  construction, or one per `ClipRegion` for a concave body, where the fit checks that
-  the pieces together hold every vertex and every face of the elements.
+  construction. `fit::verify_contains` checks that pieces together hold every vertex and
+  every face of a mesh they stand in for.
+- `clip::ClipRegion::slice` cuts a concave mesh into the slice of an axis-aligned
+  region, which a URDF names as a collision element of its own.
 - `gjk` measures the distance between two convex shapes, signed through contact.
 - `chain::ChainGeometry` holds the pieces of every link that a serial chain's joints
   move, places them at a configuration, each with a bounding sphere, and tests
@@ -65,8 +67,8 @@ for link in grown.links() {
     let on_this_link = link.contains(&point);
 }
 
-// The body fixed around the arms, its torso decomposed into clip regions.
-let body = BodyGeometry::from_urdf(&urdf, &meshes_dir, &[(torso, torso_regions)])?;
+// The body fixed around the arms.
+let body = BodyGeometry::from_urdf(&urdf, &meshes_dir)?;
 let grown_body = body.mask(Padding::new(1.0, 0.03)?);
 let on_the_body = grown_body.placed().contains(&point);
 ```
@@ -85,28 +87,29 @@ faces, a `<cylinder>` the faces of a 64-sided prism whose faces touch it, and a
 `<sphere>` the faces of a polytope of 1024 points whose nearest face touches it, so
 each piece holds its primitive. Each element is moved by its `<origin>`. A
 `<capsule>`, and a primitive whose size is not positive and finite, is refused with an
-error naming its link. `ChainGeometry::with_lower_floor` raises a joint's lower limit as
-`Chain::with_lower_floor` does, so the chain a planner checks keeps the limits a robot's
-controller enforces.
+error naming its link.
 
 ## The body
 
 A body holds the links that fixed joints alone join to the URDF root, the root among
 them, each with collision elements: the parts of the robot that stand where they are
 whatever its joints do, such as a torso and the mounts of its arms. A link has one piece
-per `<collision>` element, in the link's frame, as a chain's link has, or, for a link
-the caller names with its clip regions, one piece per region, fitted to the region's
-slice of the link's elements in the frame of the URDF root, the frame the regions are
-given in, by `fit::fit_fixed_link`, which a self model's fixed bodies are fitted by too.
-Regions that name a link outside the body, or one link twice, are refused.
+per `<collision>` element, in the link's frame, as a chain's link has.
+`fit::fit_fixed_link` fits the same pieces in the frame of the URDF root, as a self
+model's fixed bodies are fitted.
 
 ## The fit
 
 Every collision element is wrapped in a convex polytope. A body fits one polytope per
-element; for a concave body, whose one polytope bulges far past it, the caller names clip
-regions (`ClipRegion::by_body` reads each body's from their corners, and refuses a body
-named twice), each region's slice of the body's elements gets its own fit, and the build
-checks that the pieces jointly contain the elements.
+element. A concave mesh, whose one polytope bulges far past it, is cut into the slices
+of clip regions (`ClipRegion::slice`), which its URDF names as elements of their own, so
+each slice gets its own fit; `fit::verify_contains` checks that the pieces jointly
+contain the mesh. The example `openarm_torso_pieces` cuts the OpenArm torso so, into the
+eight pieces robot_description's OpenArm URDFs name:
+
+```sh
+cargo run --example openarm_torso_pieces
+```
 
 The fit is conservative, so a distance to it is a lower bound on the distance to the
 mesh:
@@ -120,7 +123,7 @@ mesh:
   at that vertex's nearest point, until every vertex lies within 1 mm of the hull.
   Faces land where the surface curves: a flat needs one plane however large it is.
 - The polytope's vertices come from the convex hull of the planes' dual points.
-- For a body fitted in clip regions, the build checks that every mesh vertex lies
+- For a mesh cut into slices, `fit::verify_contains` checks that every mesh vertex lies
   inside a piece and that every face, subdivided down to 1 mm, lies inside a single
   piece, so no face escapes between the pieces.
 
@@ -172,8 +175,8 @@ ROS reference harness, each link's spheres are those CHOMP's checker places, wit
 `Mask` holds every collision element grown by a `Padding`: the element scaled by `scale`
 about its center, and every point within `offset` meters of the scaled element. Placed at
 a configuration, it answers for each link (`PlacedGrownLink::contains`) and for the chain
-(`PlacedMask::contains`, any link). A `BodyMask` grows a body's pieces by the same rule, a
-region's piece as a mesh's piece, and stands where the body stands as a `PlacedMask`
+(`PlacedMask::contains`, any link). A `BodyMask` grows a body's pieces by the same rule
+and stands where the body stands as a `PlacedMask`
 (`BodyMask::placed`). `BodyMask::of` grows parts a caller places, such as the parts that
 ride a chain where they stand, each piece as a mesh's piece. Each piece is a fitted one,
 which carries no rounding, and a rounded piece panics.
@@ -267,9 +270,10 @@ src/
                      Rider, RiderBody, CarriedPart: a body a link of a chain
                      carries;
                      BodyGeometry, BodyMask: the body fixed to the root
-  fit.rs             fit_pieces: one body's pieces, and the containment check
+  fit.rs             fit_pieces, verify_contains: one body's pieces, and the
+                     containment check
   simplify.rs        the supporting-plane fit to a deviation budget
-  clip.rs            ClipRegion and the clipping of a mesh to it
+  clip.rs            ClipRegion and the slice of a mesh it cuts
   hull.rs            the exact convex hull, by Qhull
   hull/report.rs     the stream in memory that Qhull writes its messages to
   gjk.rs             GJK distance, EPA penetration, Hull, Placed and Vertex
@@ -290,10 +294,21 @@ tests/
   common/growth.rs                   MoveIt's growth of a primitive, which the
                                      properties and the MoveIt comparison read
   fixtures/thin_plate.rs             a cloud whose first hull fails on rounding
+  fixtures/openarm_torso.rs          the OpenArm torso's pieces: their clip regions,
+                                     their STLs, their files and the stand's mesh
+                                     they slice
+  assets/body_link0_symp.stl         the OpenArm stand's mesh, Enactic's
   fit_prints_nothing.rs              a fit prints nothing to stdout or stderr
   hull_without_a_free_descriptor.rs  a hull with no file descriptor free
+  openarm_torso_pieces.rs            each OpenArm model's torso elements are the
+                                     pieces, each committed piece is the one the
+                                     example writes, and they hold the stand's
+                                     whole mesh
   ros_reference_chain_collision.rs   link frames, the robot filter and CHOMP's spheres
                                      against MoveIt
+examples/
+  openarm_torso_pieces.rs            writes the OpenArm torso's pieces into the
+                                     meshes of robot_description's OpenArm models
 ```
 
 ## Testing
@@ -350,18 +365,14 @@ The body's properties draw the dressed robots with the mount hung from a new roo
 fixed joint at a drawn placement. The body holds the mount alone, and answers for each
 point that the filter properties draw near a scaled element of the mount, off the grown
 element's surface, as the grown chain that a revolute joint at that placement carries the
-mount on answers at 0. With the mount split into two clip regions across a drawn axis,
-overlapping by 5 mm, the body holds a drawn point inside the hull of a surface of the
-mount, off its boundary, and no point beyond the reach of the grown regions. One case
-places a box at the root, a cylinder on a turned fixed joint and a cube mesh split into
-two regions on a fixed joint above it, and a link a revolute joint moves with a link
-fixed below it: the body holds each element and region to 0.9 of the offset and not to
-1.1, a region scaled by 1.5 about its center, and no point of the moving links. Regions
-for a link the body does not hold, or twice for one link, are refused. A body that takes
-the links a movable joint carries, that stands its links or its regions at the root's
-frame or its regions at their link's, that grows its elements or its regions by no
-offset or its regions by no scale, or that takes regions off the body or twice, fails
-these. A cube of half side 0.1 m, placed turned and moved, holds at no padding a point
+mount on answers at 0. With the mount's surfaces cut into the slices of two clip regions
+across a drawn axis, overlapping by 5 mm, the pieces fitted to the slices hold every
+vertex and face of the surfaces. One case places a box at the root, a cylinder on a
+turned fixed joint and a cube mesh on a fixed joint above it, and a link a revolute joint
+moves with a link fixed below it: the body holds each element to 0.9 of the offset and
+not to 1.1, the cube scaled by 1.5 about its center, and no point of the moving links. A
+body that takes the links a movable joint carries, that stands its links at the root's
+frame, or that grows its elements by no offset or no scale, fails these. A cube of half side 0.1 m, placed turned and moved, holds at no padding a point
 past its middle by 0.09 m along each axis and not by 0.11 m, and scaled by 2, by 0.19 m
 and not 0.21 m; one that does not scale it, or stands the part at the root, fails it. A
 rounded cube is refused.

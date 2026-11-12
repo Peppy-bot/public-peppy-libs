@@ -1,6 +1,6 @@
-// An arm of a scenario's chains in a scene, as MoveIt holds it: what the references of arm
-// planning, of Cartesian paths and of CHOMP refinement share. The robot model whose group
-// holds the chains, its KDL inverse kinematics, the seeds of MoveIt's own random generators,
+// The arms of a scenario's group in a scene, as MoveIt holds them: what the references of
+// arm planning, of Cartesian paths and of CHOMP refinement share. The robot model of the
+// scenario's description, its KDL inverse kinematics, the seeds of MoveIt's own random generators,
 // the planning scene of a scene of the scenario, MoveIt's CHOMP refining a joint path in it,
 // and MoveIt's probe of a joint path in it.
 #pragma once
@@ -28,9 +28,6 @@
 
 namespace ros_reference {
 
-// The planning group of a scenario's chains.
-inline constexpr const char* group = "arm";
-
 // How many of MoveIt's random generators the reference program's constructor has built.
 std::atomic<std::uint64_t>& moveit_generators();
 
@@ -38,16 +35,14 @@ std::atomic<std::uint64_t>& moveit_generators();
 // call drawing from it, and std::rand, from `seed`.
 void seed_moveit(std::uint32_t seed);
 
-// The group "arm" of the scenario's `chains`, each by its `name` from its `base_link` to its
-// `tip_link`.
-ChainGroup chains_of(const nlohmann::json& scenario);
+// The scenario's `group` of `model`'s SRDF and its arms.
+ArmGroup group_of(const moveit::core::RobotModel& model, const nlohmann::json& scenario);
 
-// The robot model of the scenario, whose group "arm" holds its `chains`, its joints the
-// chains' `joints` in their order, each bounded in acceleration.
-moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, const ChainGroup& chains,
-                                      Inputs& inputs);
+// The robot model of the scenario's `description`, the joints of its `group` each bounded in
+// acceleration.
+moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& inputs);
 
-// MoveIt's KDL inverse kinematics on `solver_groups`, a ChainGroup's, which a pose goal's
+// MoveIt's KDL inverse kinematics on `solver_groups`, an ArmGroup's, which a pose goal's
 // constraint sampler reads. It loads as move_group loads a moveit_config's kinematics.yaml
 // that names only the solver: at the search resolution and the timeout that
 // moveit_ros_planning's kinematics_parameters.yaml gives by default (0.1 and 0.05 s), the
@@ -72,13 +67,14 @@ std::vector<double> numbers(const nlohmann::json& values);
 // grasp link has no collision geometry, which setPadding pads alone
 // (collision_env.cpp:127-133), so its padding is 0 (collision_env.cpp:166-176): MoveIt
 // keeps a held object unpadded from the objects. Collisions between the robot's own links
-// are allowed but those of `checked_pairs`, the pairs motion_planning_core's self model
-// checks, and so are those of every link that does not move with the group's joints, the
+// are allowed, but, when `group` holds every arm of the description, those of each pair
+// the SRDF does not disable, the pairs motion_planning_core's self model checks; and so are
+// those of every link that does not move with the group's joints, the
 // body, the arms' bases, the head camera, and an arm outside the group and its gripper,
 // but against an object an arm of the group holds.
 planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& model,
                                          const nlohmann::json& s, double voxel_size,
-                                         const nlohmann::json& checked_pairs, double padding);
+                                         const ArmGroup& group, double padding);
 
 // The joints of each of `waypoints`, an array of arrays of numbers.
 std::vector<Eigen::VectorXd> points_of(const nlohmann::json& waypoints);
@@ -118,6 +114,7 @@ struct HeldTarget {
 // and timed for its measures: its corners at `corner_tolerance`, each joint at its
 // `max_velocity` and `max_acceleration`.
 struct Probing {
+  std::string group;
   std::vector<std::string> tip_links;
   bool self = false;
   double spacing = 0.0;
@@ -131,7 +128,7 @@ struct Probing {
 // chains' tip links hold, at the scenario's `probe_spacing`, rounded at its
 // `corner_tolerance` and timed at the bounds of the group's joints; no self distance and no
 // held orientation, which a reference adds.
-Probing probing_of(const nlohmann::json& scenario, const ChainGroup& chains,
+Probing probing_of(const nlohmann::json& scenario, const ArmGroup& group,
                    const moveit::core::RobotModel& model);
 
 // MoveIt's collision check and distances at the probes of a joint path: to the scene,

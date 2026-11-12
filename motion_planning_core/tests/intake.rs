@@ -6,9 +6,9 @@
 //! scene, or inside an object the left hand holds where the hand stood at the frame's
 //! stamp, marks nothing.
 
+mod common;
 mod openarm_v2;
 
-use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
@@ -17,17 +17,21 @@ use camera_core::pose::Pose;
 use collision_geometry::chain::{BodyMask, Padding, PlacedMask, Rider, RiderBody};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    AttachRequest, DepthCamera, JointHistory, ObjectFields, ObjectRequest, PlanningScene,
+    Arms, AttachRequest, DepthCamera, JointHistory, ObjectFields, ObjectRequest, PlanningScene,
     RobotLinks, RobotMask, ShapeFields, insert_cut_out,
 };
 use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
-use occupancy_map::{Bounds, Frame, Scan, VoxelMap};
-use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side, ready};
+use occupancy_map::{Bounds, Scan, VoxelMap};
+use robot_description::{ArmId, PerArm, states};
 
-use openarm_v2::Robot;
+use common::{MESHES, world};
+use openarm_v2::{ARMS, DESCRIPTION, JOINTS, LEFT, Robot, posture};
+
+/// The joints of both arms.
+const BOTH: usize = ARMS * JOINTS;
 
 /// Both arms' joint positions, the left arm's first.
-type Joints = [f64; 2 * ARM_DOF];
+type Joints = [f64; BOTH];
 
 /// The rendered image's pixels across and down, and its focal length in pixels.
 const WIDTH: u32 = 48;
@@ -48,49 +52,33 @@ const ELBOW_STEP_RAD: f64 = 0.2;
 /// an interval.
 const PADDING_OFFSET_M: f64 = 0.01;
 
-/// OpenArm v2 as the map cuts it out, its meshes written once per test binary.
-static OPENARM_V2: LazyLock<Robot> = LazyLock::new(|| {
-    let meshes: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("intake_openarm_v2");
-    HardwareVersion::V2
-        .write_meshes_to(&meshes)
-        .expect("write the meshes");
-    Robot::new(meshes.to_str().expect("the mesh directory is UTF-8"))
-});
+/// OpenArm v2 as the map cuts it out.
+static OPENARM_V2: LazyLock<Robot> = LazyLock::new(|| Robot::new(&MESHES));
 
 /// The fingers of both arms where the self model hangs them.
-fn fingers() -> ArmPair<Vec<Rider<'static>>> {
+fn fingers() -> PerArm<Vec<Rider<'static>>, ARMS> {
     OPENARM_V2.fingers(&OPENARM_V2.self_model)
 }
 
 /// The robot at `joints`, grown by `padding`.
 fn robot_at<'a>(
     joints: &Joints,
-    riders: &'a ArmPair<Vec<Rider<'a>>>,
+    riders: &'a PerArm<Vec<Rider<'a>>, ARMS>,
     padding: Padding,
-) -> RobotMask<'a, ARM_DOF> {
-    OPENARM_V2.mask(&ArmPair::from_fn(|side| arm(joints, side)), riders, padding)
+) -> RobotMask<'a, JOINTS> {
+    OPENARM_V2.mask(&PerArm::from_fn(|id| arm(joints, id)), riders, padding)
 }
 
-/// The arm on `side` of `joints`.
-fn arm(joints: &Joints, side: Side) -> [f64; ARM_DOF] {
-    let offset = match side {
-        Side::Left => 0,
-        Side::Right => ARM_DOF,
-    };
-    std::array::from_fn(|i| joints[offset + i])
+/// The arm `id` of `joints`.
+fn arm(joints: &Joints, id: ArmId) -> [f64; JOINTS] {
+    Arms::<JOINTS, BOTH>::slice(joints, id.place())
 }
 
 /// Both arms at Ready, the left elbow bent by `bend` from it.
 fn bent(bend: f64) -> Joints {
-    let (mut left, right) = (ready(Side::Left), ready(Side::Right));
-    left[3] += bend;
-    std::array::from_fn(|i| {
-        if i < ARM_DOF {
-            left[i]
-        } else {
-            right[i - ARM_DOF]
-        }
-    })
+    let mut ready = posture(states::READY);
+    ready[LEFT][3] += bend;
+    Arms::<JOINTS, BOTH>::join(&ready.into_array())
 }
 
 /// The instant `ms` milliseconds into the recording.
@@ -142,12 +130,12 @@ fn depth_camera() -> DepthCamera {
 /// renderer places the pieces itself.
 fn frame_of(joints: &Joints) -> Vec<u8> {
     let none = Padding::new(1.0, 0.0).expect("the padding that grows nothing");
-    let chains = Side::BOTH.map(|side| (side, OPENARM_V2.arms[side].mask(none)));
+    let chains = PerArm::<_, ARMS>::from_fn(|id| (id, OPENARM_V2.arms[id].mask(none)));
     let riders = fingers();
     let carried = BodyMask::of(
-        Side::BOTH.into_iter().flat_map(|side| {
-            let posed = OPENARM_V2.arms[side].chain().at(&arm(joints, side));
-            riders[side].iter().map(move |finger| {
+        PerArm::<(), ARMS>::ids().flat_map(|id| {
+            let posed = OPENARM_V2.arms[id].chain().at(&arm(joints, id));
+            riders[id].iter().map(move |finger| {
                 let hand = posed.link_pose_world(finger.segment);
                 let RiderBody::Part(part) = finger.body else {
                     panic!("a finger is a part of the robot");
@@ -160,7 +148,7 @@ fn frame_of(joints: &Joints) -> Vec<u8> {
     let body = OPENARM_V2.body.mask(none);
     let parts: Vec<PlacedMask> = chains
         .iter()
-        .map(|(side, mask)| mask.at(&arm(joints, *side)))
+        .map(|(id, mask)| mask.at(&arm(joints, *id)))
         .chain([carried.placed(), body.placed()])
         .collect();
     let camera = camera_pose();
@@ -211,11 +199,6 @@ fn recording() -> Vec<Event> {
 enum CutAt {
     Stamp,
     Newest,
-}
-
-/// The frame of OpenArm's URDF root, which the maps stand in.
-fn world() -> Frame {
-    Frame::parse("world").expect("a frame name")
 }
 
 /// An empty map of 2.5 cm voxels about the robot and the camera.
@@ -336,14 +319,17 @@ fn occupied(map: &VoxelMap, point: [f64; 3]) -> bool {
 // the first two are hits.
 #[test]
 fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
-    let version = HardwareVersion::V2;
-    let grasp_links = Side::BOTH.map(|side| version.tcp_link(side).to_string());
-    let left_grasp = grasp_links[0].as_str();
+    let grasp_links: Vec<String> = DESCRIPTION
+        .arms()
+        .iter()
+        .map(|arm| arm.grasp_link.clone())
+        .collect();
+    let left_grasp = grasp_links[LEFT.place()].as_str();
     let mut scene = PlanningScene::new(RobotLinks::new(grasp_links.clone(), grasp_links.clone()));
     let mut map = empty_map();
     let (now, then) = (bent(0.0), bent(0.5));
-    let left = &OPENARM_V2.arms.left;
-    let hand_at = |joints: &Joints| left.chain().world_ee_pose(&arm(joints, Side::Left));
+    let left = &OPENARM_V2.arms[LEFT];
+    let hand_at = |joints: &Joints| left.chain().world_ee_pose(&arm(joints, LEFT));
     let held_at = |joints: &Joints| -> [f64; 3] {
         (hand_at(joints) * Point3::new(0.0, 0.0, 0.08))
             .coords
@@ -373,19 +359,16 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .expect("the block attaches to the left hand");
     let points = [table, held_at(&then), held_at(&now)];
     let fingers = fingers();
-    let riders = ArmPair::from_fn(|side| {
-        let held = match side {
-            Side::Left => scene.riders(left_grasp, left),
-            Side::Right => Vec::new(),
+    let riders = PerArm::from_fn(|id| {
+        let held = if id == LEFT {
+            scene.riders(left_grasp, left)
+        } else {
+            Vec::new()
         };
-        fingers[side]
-            .iter()
-            .copied()
-            .chain(held)
-            .collect::<Vec<_>>()
+        fingers[id].iter().copied().chain(held).collect::<Vec<_>>()
     });
     let padding = Padding::new(1.0, 0.0).expect("the padding that grows nothing");
-    let joints = ArmPair::from_fn(|side| arm(&then, side));
+    let joints = PerArm::from_fn(|id| arm(&then, id));
     let with_scene = OPENARM_V2
         .mask(&joints, &riders, padding)
         .with_objects(scene.standing_shapes());
@@ -402,7 +385,7 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         points: &relative,
         max_range_m: PositiveFinite::parse(3.0).expect("a positive range"),
     };
-    let marked = |robot: &RobotMask<ARM_DOF>| {
+    let marked = |robot: &RobotMask<JOINTS>| {
         let mut fresh = empty_map();
         insert_cut_out(&mut fresh, &scan, robot).expect("the scan stands in the map's frame");
         points.map(|point| occupied(&fresh, point))

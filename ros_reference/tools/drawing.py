@@ -1,7 +1,8 @@
 """What the scripts that write the scenarios of the ROS reference harness share: the
-paths, the generator of each scenario's draws, the --drawn option, a parsed URDF, the
-joints, the grasp link and the chain of an arm of OpenArm v2, the URDF, the meshes and the
-arm's joints of SO-101, the joint limits of a URDF,
+paths, the generator of each scenario's draws, the --drawn option, the model directory of
+each robot the scenarios pose, its parsed URDF, its arms and the limits of its joints as
+robot_description_py reads its URDF and SRDF, the links of an arm's chain and of its
+gripper, the finger joint of a gripper that moves of its own,
 the configurations of a chain, the origin of a URDF element, the bounds of a link's
 collision elements, a rotation drawn uniformly, a shape of a collision object as
 motion_planning writes it, a closed box mesh and an L-shaped one, the pose of a link at
@@ -27,8 +28,10 @@ import random
 import re
 import struct
 import subprocess
-import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+from xml.etree import ElementTree
+
+from robot_description_py import RobotDescription
 
 SEED = 20261028
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -50,34 +53,111 @@ def options(doc, drawn, what):
     return parser
 
 
-def robot(urdf):
-    """The parsed URDF at `urdf`, relative to the repository root."""
-    return ElementTree.parse(REPOSITORY / urdf).getroot()
+# The model directories of the robots the scenarios pose, relative to the repository root,
+# each holding `<name>.urdf`, `<name>.srdf` and the collision meshes under `meshes/`, `<name>`
+# the directory's last part: robot_description's layout.
+OPENARM_V2 = "robot_description/models/openarm_v2"
+SO101 = "robot_description/models/so101"
 
 
-def openarm_joints(side):
-    return [f"openarm_{side}_joint{i}" for i in range(1, 8)]
+def model_file(description, extension):
+    """The file `<name>.<extension>` of the model directory `description`."""
+    return f"{description}/{Path(description).name}.{extension}"
 
 
-# SO-101's URDF, the directory of its collision meshes, and its arm's joints, base to wrist.
-SO101_URDF = "so101_description/src/so101_description/urdf/so101_kinematics.urdf"
-SO101_MESHES = "so101_description/src/so101_description/urdf/collision"
-SO101_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
+def meshes(description):
+    """The directory of the collision meshes of the model directory `description`."""
+    return f"{description}/meshes"
 
 
-def grasp_link(side):
-    """The grasp link of the arm on `side`."""
-    return f"openarm_{side}_tcp"
+@functools.cache
+def robot(description):
+    """The parsed URDF of the model directory `description`."""
+    return ElementTree.parse(REPOSITORY / model_file(description, "urdf")).getroot()
 
 
-def chain(side):
-    """The chain of the arm on `side`, by its name, from its base link to its grasp link."""
-    return {
-        "name": f"{side}_arm",
-        "base_link": f"openarm_{side}_base_link",
-        "tip_link": grasp_link(side),
-        "joints": openarm_joints(side),
-    }
+@functools.cache
+def described(description):
+    """The robot the model directory `description` describes, its URDF and its SRDF as
+    robot_description_py reads them."""
+    return RobotDescription.parse(
+        (REPOSITORY / model_file(description, "urdf")).read_text(),
+        (REPOSITORY / model_file(description, "srdf")).read_text(),
+    )
+
+
+def arms(description):
+    """The arms of the model directory `description`, in its SRDF's order: each the SRDF's
+    group of one chain, with its base link, its grasp link, the chain's tip, the joints
+    between them that move of their own, base to tip, and its gripper, with the joint and
+    the link of each finger."""
+    return described(description).arms
+
+
+def arm(description, name):
+    """The arm `name` of the model directory `description`."""
+    by_name = {each.name: each for each in arms(description)}
+    if name not in by_name:
+        raise SystemExit(f"{description} has no arm {name}: its arms are {sorted(by_name)}")
+    return by_name[name]
+
+
+def joint_limits(description, joint):
+    """The position limits of the joint `joint` of the model directory `description`, lower
+    then upper."""
+    limits = described(description).joint_limits(joint)
+    return limits.lower, limits.upper
+
+
+def joint_named(description, name):
+    """The URDF's joint `name` of the model directory `description`."""
+    return next(j for j in robot(description).findall("joint") if j.get("name") == name)
+
+
+def joint_above(description, link):
+    """The URDF's joint of the model directory `description` whose child is `link`."""
+    return next(
+        j for j in robot(description).findall("joint") if j.find("child").get("link") == link
+    )
+
+
+def moved_link(description, joint):
+    """The link the URDF's joint `joint` of the model directory `description` moves: its
+    child."""
+    return joint_named(description, joint).find("child").get("link")
+
+
+def chain_links(description, arm):
+    """The links of the chain of `arm`, an arm of the model directory `description`, past
+    its base link, each the child of a joint of the URDF, base to grasp link."""
+    links = []
+    link = arm.grasp_link
+    while link != arm.base_link:
+        links.insert(0, link)
+        link = joint_above(description, link).find("parent").get("link")
+    return links
+
+
+def finger_links(arm):
+    """The links the fingers of the gripper of `arm` move, in its group's order."""
+    return [finger.link for finger in arm.gripper.fingers]
+
+
+def gripper_links(description, arm):
+    """The links of the gripper of `arm`, an arm of the model directory `description`: the
+    link its fingers hang from, then the links of its fingers."""
+    fingers = finger_links(arm)
+    return [joint_above(description, fingers[0]).find("parent").get("link"), *fingers]
+
+
+def gripper_joint(description, arm):
+    """The finger joint of the gripper of `arm`, an arm of the model directory
+    `description`, that moves of its own: the one the URDF gives no mimic."""
+    return next(
+        finger.joint
+        for finger in arm.gripper.fingers
+        if joint_named(description, finger.joint).find("mimic") is None
+    )
 
 
 def example(name, *arguments):
@@ -103,14 +183,6 @@ def run_example(command, given):
         command, input=json.dumps(given), stdout=subprocess.PIPE, text=True, check=True
     )
     return json.loads(done.stdout)
-
-
-def joint_limits(robot, joint):
-    element = robot.find(f"joint[@name='{joint}']/limit")
-    if element is None:
-        raise SystemExit(f"the URDF gives no limits for {joint}")
-    # A URDF limit without a lower or an upper bound bounds it at 0.
-    return float(element.get("lower", 0)), float(element.get("upper", 0))
 
 
 def configuration(rng, limits):

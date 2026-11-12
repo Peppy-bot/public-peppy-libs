@@ -3,7 +3,8 @@
 //! configuration keeps a target within a tolerance small enough to lie inside a contract's
 //! `tolerance_rad`, and within one large enough to hold all of it.
 
-use crate::{Kind, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{Kind, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::Deserialize;
 
 /// The `kind` of an orientation constraints scenario and of its reference output, which
@@ -14,19 +15,19 @@ enum ThisKind {
     OrientationConstraints,
 }
 
-/// A robot, the joints that pose a link of it, and the cases to decide.
+/// A robot, the arm whose joints pose its grasp link, and the cases to decide.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    urdf: String,
-    joints: Vec<String>,
-    link_name: String,
+    /// The robot's model directory, relative to the repository root.
+    description: String,
+    arm: String,
     cases: Vec<DrawnCase>,
 }
 
-/// A configuration of the joints and a target of the link, as a contract states it.
+/// A configuration of the arm's joints and a target of its grasp link, as a contract
+/// states it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DrawnCase {
@@ -57,10 +58,9 @@ struct Verdicts {
 pub struct Cases {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    pub joints: Vec<String>,
-    pub link_name: String,
+    pub robot: Robot,
+    /// The arm whose joints the cases set, and whose grasp link they hold to a target.
+    pub arm: Arm,
     pub cases: Vec<Case>,
 }
 
@@ -91,11 +91,12 @@ impl Cases {
     fn load(name: String) -> Self {
         let Scenario {
             kind: ThisKind::OrientationConstraints,
-            urdf,
-            joints,
-            link_name,
+            description,
+            arm,
             cases,
         } = read_scenario(&name);
+        let robot = read_robot(&name, &description);
+        let arm = robot.arm(&name, &arm);
         let Reference {
             kind: ThisKind::OrientationConstraints,
             cases: verdicts,
@@ -105,7 +106,6 @@ impl Cases {
             verdicts.len(),
             "{name}: one pair of verdicts per case"
         );
-        let urdf = read_urdf(&name, &urdf);
         let cases = cases
             .into_iter()
             .zip(verdicts)
@@ -120,9 +120,8 @@ impl Cases {
             .collect();
         Cases {
             name,
-            urdf,
-            joints,
-            link_name,
+            robot,
+            arm,
             cases,
         }
     }

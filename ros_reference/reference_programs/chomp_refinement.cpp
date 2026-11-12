@@ -42,7 +42,7 @@ robot_trajectory::RobotTrajectoryPtr trajectory_of(const moveit::core::RobotStat
                                                    const moveit::core::JointModelGroup& arm,
                                                    const std::vector<Eigen::VectorXd>& points) {
   auto trajectory =
-      std::make_shared<robot_trajectory::RobotTrajectory>(start.getRobotModel(), group);
+      std::make_shared<robot_trajectory::RobotTrajectory>(start.getRobotModel(), arm.getName());
   for (const auto& q : points) {
     moveit::core::RobotState state(start);
     state.setJointGroupPositions(&arm, q);
@@ -55,20 +55,18 @@ robot_trajectory::RobotTrajectoryPtr trajectory_of(const moveit::core::RobotStat
 }  // namespace
 
 nlohmann::json chomp_refinement(const nlohmann::json& scenario, Inputs& inputs) {
-  const ChainGroup chains = chains_of(scenario);
-  const auto model = arm_model(scenario, chains, inputs);
-  const auto& arm = *model->getJointModelGroup(group);
-  const Probing probing = probing_of(scenario, chains, *model);
+  const auto model = arm_model(scenario, inputs);
+  const ArmGroup group = group_of(*model, scenario);
+  const auto& arm = *model->getJointModelGroup(group.name);
+  const Probing probing = probing_of(scenario, group, *model);
   const double voxel_size = scenario.at("voxel_size").get<double>();
   // MoveIt's collision check keeps the scenario's clearance as the padding of the robot's
   // links.
   const double padding = scenario.at("min_clearance").get<double>();
-  // The arm's links meet each other unchecked, as a plan of one arm checks no pair of them.
-  const auto checked_pairs = nlohmann::json::array();
 
   auto answers = nlohmann::json::array();
   for (const auto& s : scenario.at("scenes")) {
-    const auto scene = scene_of(model, s, voxel_size, checked_pairs, padding);
+    const auto scene = scene_of(model, s, voxel_size, group, padding);
     const moveit::core::RobotState start(scene->getCurrentState());
     const auto points = input_path(s);
     const auto refined =

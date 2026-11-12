@@ -2,10 +2,9 @@
 //! configuration of the robot, it gives the signed distance between the collision meshes
 //! of each pair of links, negative where they overlap.
 
-use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{Kind, Robot, read_reference, read_robot, read_scenario, scenario_names};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 /// The `kind` of a self distance scenario and of its reference output, which refuses every
 /// other kind.
@@ -20,11 +19,8 @@ enum ThisKind {
 #[serde(deny_unknown_fields)]
 struct Scenario {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    urdf: String,
-    /// The directory of the collision meshes, which the URDF names by their file names,
-    /// relative to the repository root.
-    meshes: String,
+    /// The robot's model directory, relative to the repository root.
+    description: String,
     configurations: Vec<BTreeMap<String, f64>>,
 }
 
@@ -50,10 +46,7 @@ struct Row {
 pub struct Cases {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    /// The directory of the collision meshes.
-    pub meshes: PathBuf,
+    pub robot: Robot,
     pub configurations: Vec<Configuration>,
 }
 
@@ -92,18 +85,17 @@ impl Cases {
     fn load(name: String) -> Self {
         let Scenario {
             kind: ThisKind::SelfDistance,
-            urdf,
-            meshes,
+            description,
             configurations,
         } = read_scenario(&name);
+        let robot = read_robot(&name, &description);
         let Reference {
             kind: ThisKind::SelfDistance,
             pairs,
             configurations: rows,
         } = read_reference(&name);
         Cases {
-            urdf: read_urdf(&name, &urdf),
-            meshes: read_mesh_directory(&name, &meshes),
+            robot,
             configurations: pair(&name, &pairs, configurations, rows),
             name,
         }

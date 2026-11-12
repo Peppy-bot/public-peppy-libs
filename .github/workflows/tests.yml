@@ -153,7 +153,7 @@ jobs:
       # Every crate runs even after one fails, so a red run names every
       # failing crate. `--all-features` because a feature of a library crate
       # is an interface a consumer compiles (the openarm nodes take
-      # openarm_description's `meshes`), and one no suite builds is one
+      # robot_description's `meshes`), and one no suite builds is one
       # nothing holds to compiling.
       - name: Run every Rust crate's suite
         run: |

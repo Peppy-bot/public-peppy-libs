@@ -1,8 +1,7 @@
 {
   "kind": "planning_scene",
-  "urdf": "openarm_description/assets/openarm_v20.urdf",
-  "meshes": "openarm_description/assets/meshes_v20",
-  "tip_link": "openarm_left_tcp",
+  "description": "robot_description/models/openarm_v2",
+  "arm": "left_arm",
   "octomap": {
     "voxel_size": 0.04,
     "keys": [

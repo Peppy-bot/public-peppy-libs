@@ -8,13 +8,12 @@
 //! octomap and of its collision objects where the case avoids collisions: the fraction of
 //! each path, and the link's pose and the joints at each of its states.
 
-use crate::arm_planning::{ArmChain, Held, VoxelBox};
+use crate::arm_planning::{Held, VoxelBox};
 use crate::planning_scene::Object;
-use crate::{
-    Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
-};
+use crate::{Kind, LinkPose, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::BTreeSet;
 
 /// The `kind` of a Cartesian paths scenario and of its reference output, which refuses every
 /// other kind.
@@ -24,24 +23,17 @@ enum ThisKind {
     CartesianPaths,
 }
 
-/// The arm, the map and the step of a scenario, and its cases. A scenario that
-/// `tools/draw_cartesian_paths.py` has drawn holds no checked pairs, no step and no answer of
+/// The robot, the arm, the map and the step of a scenario, and its cases. A scenario that
+/// `tools/draw_cartesian_paths.py` has drawn holds no step and no answer of
 /// motion_planning_core yet; the example `cartesian_scenes` reads it so.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Paths {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    pub urdf: String,
-    /// The directory of the collision meshes, which the URDF names by their file names,
-    /// relative to the repository root.
-    pub meshes: String,
-    /// The arm the paths move.
-    pub chains: [ArmChain; 1],
-    /// The pairs of the robot's own links, by their names, that motion_planning_core's self
-    /// model checks and MoveIt's collision matrix checks too; empty where the paths check no
-    /// such pair, MoveIt's matrix allowing each.
-    pub checked_pairs: Option<Vec<[String; 2]>>,
+    /// The robot's model directory, relative to the repository root.
+    pub description: String,
+    /// The SRDF group the paths move: one arm.
+    pub group: String,
     pub voxel_size: f64,
     /// The half side of the cube about the robot's origin that motion_planning_core's map
     /// covers.
@@ -74,8 +66,7 @@ pub struct Offset {
 #[serde(deny_unknown_fields)]
 pub struct PathRequest<O = Option<Ours>> {
     pub start: Vec<f64>,
-    /// The chain's tip link, the grasp link, or a link fixed to the tip link that the chain's
-    /// last joint moves.
+    /// The arm's grasp link, or a link fixed to the link that the arm's last joint moves.
     pub link: String,
     /// The pose each line ends at, in turn.
     pub offsets: Vec<Offset>,
@@ -168,13 +159,12 @@ pub struct PathCase {
 pub struct Case {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    /// The scenario's mesh directory.
-    pub meshes: PathBuf,
+    pub robot: Robot,
+    /// The arm of the scenario's group.
+    pub arm: Arm,
     pub paths: Paths,
-    /// The scenario's checked pairs.
-    pub checked_pairs: Vec<[String; 2]>,
+    /// The pairs of the robot's own links the paths check, each pair's names in order.
+    pub checked_pairs: BTreeSet<[String; 2]>,
     /// The scenario's step.
     pub step: f64,
     pub cases: Vec<PathCase>,
@@ -190,28 +180,35 @@ impl Case {
             .into_iter()
             .map(|name| {
                 let paths: Paths = read_scenario(&name);
-                let urdf = read_urdf(&name, &paths.urdf);
-                let meshes = read_mesh_directory(&name, &paths.meshes);
-                let reference = read_reference(&name);
-                pair(name, urdf, meshes, paths, reference)
+                let robot = read_robot(&name, &paths.description);
+                let arm = robot.arm(&name, &paths.group);
+                let checked_pairs = robot.checked_pairs(&name, &paths.group);
+                let (step, cases) = pair(&name, &paths, read_reference(&name));
+                Case {
+                    name,
+                    robot,
+                    arm,
+                    paths,
+                    checked_pairs,
+                    step,
+                    cases,
+                }
             })
             .collect()
     }
 }
 
-fn pair(name: String, urdf: String, meshes: PathBuf, paths: Paths, reference: Reference) -> Case {
+/// The step of `paths`, the scenario `name`, and each of its cases paired with its answer
+/// of `reference`.
+fn pair(name: &str, paths: &Paths, reference: Reference) -> (f64, Vec<PathCase>) {
     let Paths {
         kind: ThisKind::CartesianPaths,
         ..
-    } = &paths;
+    } = paths;
     let Reference {
         kind: ThisKind::CartesianPaths,
         cases: answers,
     } = reference;
-    let checked_pairs = paths
-        .checked_pairs
-        .clone()
-        .unwrap_or_else(|| panic!("{name}: the scenario's checked pairs"));
     let step = paths
         .step
         .unwrap_or_else(|| panic!("{name}: the scenario's step"));
@@ -247,15 +244,7 @@ fn pair(name: String, urdf: String, meshes: PathBuf, paths: Paths, reference: Re
             }
         })
         .collect();
-    Case {
-        name,
-        urdf,
-        meshes,
-        paths,
-        checked_pairs,
-        step,
-        cases,
-    }
+    (step, cases)
 }
 
 #[cfg(test)]
@@ -265,12 +254,11 @@ mod tests {
     const PATH: &str = r#"{"fraction": 0.5, "waypoints": [[1.0]]}"#;
     const FAILURE: &str = r#"{"failure": "start_in_collision"}"#;
 
-    /// The text of a scenario of the kind `kind`, whose one member `chains` holds, and of one
-    /// case, our answer to it `ours`.
-    fn scenario(kind: &str, chains: &str, ours: &str) -> String {
+    /// The text of a scenario of the kind `kind` and of one case, our answer to it `ours`.
+    fn scenario(kind: &str, ours: &str) -> String {
         format!(
-            r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes", "chains": [{chains}],
-                "checked_pairs": [], "voxel_size": 0.04, "map_half_side": 1.6,
+            r#"{{"kind": "{kind}", "description": "d", "group": "arm",
+                "voxel_size": 0.04, "map_half_side": 1.6,
                 "min_clearance": 0.0, "step": 0.01,
                 "cases": [{{"start": [0.0], "link": "tip",
                             "offsets": [{{"translation": [0.0, 0.0, 0.1],
@@ -281,11 +269,8 @@ mod tests {
         )
     }
 
-    const CHAIN: &str =
-        r#"{"name": "arm", "base_link": "base", "tip_link": "tip", "joints": ["j"]}"#;
-
     fn paths(ours: &str) -> Paths {
-        serde_json::from_str(&scenario("cartesian_paths", CHAIN, ours)).expect("parses")
+        serde_json::from_str(&scenario("cartesian_paths", ours)).expect("parses")
     }
 
     /// The output of one case: MoveIt's fraction, its poses of `link` and its states.
@@ -300,35 +285,21 @@ mod tests {
         .expect("parses")
     }
 
-    fn paired(ours: &str, link: &str, states: &str) -> Case {
-        pair(
-            "scenario".into(),
-            String::new(),
-            PathBuf::new(),
-            paths(ours),
-            reference(link, states),
-        )
+    fn paired(ours: &str, link: &str, states: &str) -> (f64, Vec<PathCase>) {
+        pair("scenario", &paths(ours), reference(link, states))
     }
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
-        let of_kind = |kind| serde_json::from_str::<Paths>(&scenario(kind, CHAIN, PATH));
+        let of_kind = |kind| serde_json::from_str::<Paths>(&scenario(kind, PATH));
         assert!(of_kind("arm_planning").is_err());
         assert!(of_kind("cartesian_paths").is_ok());
     }
 
     #[test]
-    fn a_scenario_of_two_chains_is_refused() {
-        let chains = format!("{CHAIN}, {CHAIN}");
-        assert!(
-            serde_json::from_str::<Paths>(&scenario("cartesian_paths", &chains, PATH)).is_err()
-        );
-    }
-
-    #[test]
     fn a_case_pairs_with_moveits_path_from_its_start() {
-        let case = paired(PATH, "tip", "[[0.0]]");
-        let path = &case.cases[0];
+        let (step, cases) = paired(PATH, "tip", "[[0.0]]");
+        let path = &cases[0];
         assert_eq!(
             path.request.ours,
             Ours::Path {
@@ -337,10 +308,10 @@ mod tests {
             }
         );
         assert_eq!(path.moveit.fraction, 1.0);
-        assert_eq!(case.step, 0.01);
-        let refused = paired(FAILURE, "tip", "[[0.0]]");
+        assert_eq!(step, 0.01);
+        let (_, refused) = paired(FAILURE, "tip", "[[0.0]]");
         assert_eq!(
-            refused.cases[0].request.ours,
+            refused[0].request.ours,
             Ours::Failure {
                 failure: "start_in_collision".into(),
             }

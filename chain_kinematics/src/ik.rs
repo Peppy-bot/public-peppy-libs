@@ -74,10 +74,10 @@ const JACOBI_PRECISION: f64 = 2.0 * f64::EPSILON;
 /// (kdl_kinematics_plugin.cpp:493-494); per goal, 0.05 s holds 7750 to 10361 passes.
 pub const SEARCH_ITERATIONS: usize = 9274;
 /// The weight of the orientation rows of a solve that aims at [`Aims::PositionFirst`], KDL's
-/// `orientation_vs_position`: the position's rows at 1. The 1e-4 on the squared orientation
-/// error of so101_description's solver, on a row. Measured on SO-101's five joints, through
-/// the goal sampler at a plan's attempts, of 100 goals at 1 mm: at 0.01 it meets 100 held at
-/// 0.02 rad and 100 tilted 0.05 rad and held within 0.1 rad, and at 1 it meets 99 and 87.
+/// `orientation_vs_position`: the position's rows at 1. Measured on SO-101's five joints,
+/// through the goal sampler at a plan's attempts, of 100 goals at 1 mm: at 0.01 it meets 100
+/// held at 0.02 rad and 100 tilted 0.05 rad and held within 0.1 rad, and at 1 it meets 99
+/// and 87.
 const POSITION_FIRST_ORIENTATION_WEIGHT: f64 = 0.01;
 
 /// Where a search draws its numbers: the configurations it restarts from and its steps off
@@ -495,7 +495,6 @@ fn turn_columns(matrix: &mut Matrix6<f64>, p: usize, q: usize, (cosine, sine): (
 #[cfg(test)]
 mod tests {
     use nalgebra::{Quaternion, Translation3, UnitQuaternion};
-    use openarm_description::{HardwareVersion, Side};
 
     use super::*;
     use crate::{ChainSpec, JointSelection};
@@ -521,14 +520,21 @@ mod tests {
         }
     }
 
-    /// OpenArm v2's left arm from its base to its grasp point.
+    /// OpenArm v2's left arm, as robot_description bundles it, from its base to its grasp
+    /// point: the first of its arms, `left_arm`, the second `right_arm`.
     fn left_arm() -> Chain<7> {
-        let version = HardwareVersion::V2;
+        let description = robot_description::model("openarm_v2")
+            .expect("robot_description bundles OpenArm v2")
+            .description();
+        let [left, right] = description.arms() else {
+            panic!("OpenArm v2 has two arms");
+        };
+        assert_eq!([&left.name, &right.name], ["left_arm", "right_arm"]);
         Chain::from_urdf(
-            &urdf_rs::read_from_string(version.urdf()).expect("the URDF parses"),
+            description.robot(),
             &ChainSpec {
-                base_link: Some(version.base_link(Side::Left)),
-                tip_link: version.tcp_link(Side::Left),
+                base_link: Some(&left.base_link),
+                tip_link: &left.grasp_link,
                 joints: JointSelection::PathOrder,
             },
         )
