@@ -885,12 +885,41 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         &mut self,
         q: &Joints<N, K>,
     ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
+        self.placed_pieces(q, |_| true)
+    }
+
+    /// [`world_pieces`](Self::world_pieces) of the bodies that ride chain `chain`, its fingers
+    /// included: what a motion of that chain moves. Panics on a chain past the model's `K`.
+    pub fn world_pieces_of_chain(
+        &mut self,
+        chain: usize,
+        q: &Joints<N, K>,
+    ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
+        assert!(chain < K, "chain {chain} of a model of {K}");
+        self.placed_pieces(q, |body| body.placement.chain() == Some(chain))
+    }
+
+    /// [`world_pieces`](Self::world_pieces) of the bodies no chain moves: a torso, a base, a
+    /// mount.
+    pub fn fixed_world_pieces(&mut self) -> Vec<(&str, Vec<Placed<'_>>)> {
+        let still = [[0.0; N]; K];
+        self.placed_pieces(&still, |body| body.placement.chain().is_none())
+            .expect("a configuration of zeros is finite")
+    }
+
+    /// The world-frame hull pieces at `q` of each body `keeps` keeps, paired with its name.
+    fn placed_pieces(
+        &mut self,
+        q: &Joints<N, K>,
+        keeps: impl Fn(&Body) -> bool,
+    ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
         ensure_finite(q)?;
         self.place(q);
         Ok(self
             .bodies
             .iter()
             .zip(&self.world_iso)
+            .filter(|(b, _)| keeps(b))
             .map(|(b, iso)| {
                 let pieces = b.local.iter().map(|h| Placed::new(h, *iso)).collect();
                 (b.name.as_str(), pieces)
@@ -1386,6 +1415,49 @@ mod tests {
         assert!(
             matches!(&e, BuildError::NoSuchFinger { link } if link == "openarm_left_link7"),
             "{e}"
+        );
+    }
+
+    #[test]
+    fn the_pieces_of_a_chain_are_those_of_the_bodies_it_moves() {
+        let mut m = model();
+        let q = crate::fixture::posture(&description(MODEL), robot_description::states::HOME);
+        let named = |pieces: Vec<(&str, Vec<Placed<'_>>)>| -> Vec<String> {
+            pieces
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect()
+        };
+        let fixed = named(m.fixed_world_pieces());
+        let every = named(m.world_pieces(&q).expect("finite"));
+        for (chain, side) in [(0, "openarm_left_"), (1, "openarm_right_")] {
+            let ridden = named(m.world_pieces_of_chain(chain, &q).expect("finite"));
+            let of_the_side: Vec<String> = every
+                .iter()
+                .filter(|name| name.starts_with(side) && !fixed.contains(name))
+                .cloned()
+                .collect();
+            assert!(!ridden.is_empty());
+            assert_eq!(ridden, of_the_side, "chain {chain}");
+        }
+    }
+
+    #[test]
+    fn the_fixed_pieces_are_those_of_the_bodies_no_chain_moves() {
+        let mut m = model();
+        let mut fixed: Vec<String> = m
+            .fixed_world_pieces()
+            .into_iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        fixed.sort();
+        assert_eq!(
+            fixed,
+            [
+                "openarm_body_link0",
+                "openarm_left_link0",
+                "openarm_right_link0"
+            ]
         );
     }
 

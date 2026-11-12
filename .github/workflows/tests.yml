@@ -206,6 +206,11 @@ jobs:
       # For the libs that build a Rust extension module when uv installs them.
       - uses: ./.github/actions/rust-toolchain
 
+      # workspace_core_py builds collision_geometry, whose Qhull bindings
+      # bindgen generates against libclang at build time.
+      - name: Install the system libraries the libs build against
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev
+
       # uv is pinned: it resolves and installs everything the suites run
       # against, so its version is part of what a green run attests.
       - name: Install uv

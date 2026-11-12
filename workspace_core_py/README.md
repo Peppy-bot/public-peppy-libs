@@ -4,18 +4,22 @@ The Python bindings of [`workspace_core`](../workspace_core), for a robot's
 backbone in Python. They give what the backbone needs to give the
 `workspace:v1` answer of a robot without a perception camera, around the reach
 its own solver gives: the limits, the grasp directions, the parsing of a
-request, the grid targets of a surface, the reach memo, and the answers with
-their messages. The definitions are those of `workspace_core` (see its
-README), and the answers and their messages are the same as those of a
-backbone in Rust, byte for byte.
+request, the grid targets of a surface, the reach rule over its solver
+(`reach`, `Solves`), the clearance of its arms over a surface (`ArmBodies`),
+the reach memo, and the answers with their messages. The definitions are
+those of `workspace_core` (see its README), and the answers and their
+messages are the same as those of a backbone in Rust, byte for byte.
 
 ## Build and install
 
 The package is a PyO3 extension module that maturin builds for the stable ABI
 of Python 3.12 (`abi3`): one build loads on every Python from 3.12. An install
 compiles the module from the committed `Cargo.lock` exactly (`locked`), so the
-host needs a Rust toolchain (`cargo`). The module does not link libpython: the
-Python that loads it supplies the Python API.
+host needs a Rust toolchain (`cargo`), a C compiler and libclang
+(`libclang-dev` on Debian and Ubuntu): the arm bodies build
+`collision_geometry`, whose Qhull is C with bindings that bindgen generates at
+build time. The module does not link libpython: the Python that loads it
+supplies the Python API.
 
 A consumer pins a commit of this repository:
 

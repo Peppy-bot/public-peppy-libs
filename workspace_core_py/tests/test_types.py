@@ -46,10 +46,12 @@ def sets_hash_to_none(statement: ast.stmt) -> bool:
 def test_the_types_say_which_classes_hash_as_the_module_does():
     # stubtest does not compare __hash__. A class that compares by value
     # without a hash does not hash; another class hashes.
+    # A private class of the types, a protocol of what the module takes, is
+    # none of the module's classes.
     classes = [
         node
         for node in ast.parse(STUB.read_text()).body
-        if isinstance(node, ast.ClassDef)
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
     ]
     typed = {
         node.name: not any(sets_hash_to_none(statement) for statement in node.body)
