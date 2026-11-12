@@ -50,7 +50,10 @@ pub fn openarm() -> Chain<7> {
 /// The singular values of `j`, from the eigenvalues of whichever Gram matrix is
 /// the smaller: `Jᵀ J` below six joints, one value per joint, and `J Jᵀ` from
 /// six up, six values. nalgebra 0.35's SVD misreports some rank-deficient
-/// Jacobians, and its symmetric eigen-decomposition reads them right.
+/// Jacobians, and its symmetric eigen-decomposition reads them right once the
+/// Gram matrix is divided by its largest entry: its rotations underflow to
+/// infinities on entries near 1e-170, which a drawn chain of coaxial joints
+/// gives.
 pub fn singular_values<const N: usize>(j: &Jacobian<N>) -> Vec<f64> {
     let j = DMatrix::from_iterator(6, N, j.iter().copied());
     let gram = if N < 6 {
@@ -58,9 +61,14 @@ pub fn singular_values<const N: usize>(j: &Jacobian<N>) -> Vec<f64> {
     } else {
         &j * j.transpose()
     };
-    gram.symmetric_eigen()
+    let scale = gram.amax();
+    if scale == 0.0 {
+        return vec![0.0; gram.nrows()];
+    }
+    (gram / scale)
+        .symmetric_eigen()
         .eigenvalues
         .iter()
-        .map(|&value| value.max(0.0).sqrt())
+        .map(|&value| (value.max(0.0) * scale).sqrt())
         .collect()
 }

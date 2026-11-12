@@ -35,7 +35,7 @@
 //! which weighs them (kdl_kinematics_plugin.cpp:344-350, :442-443), and which ends a search
 //! offers ([`Ends`]) is `return_approximate_solution` (:389).
 
-use nalgebra::{Isometry3, Point3, SMatrix, SVector, SymmetricEigen, Vector3, Vector6};
+use nalgebra::{Isometry3, Matrix6, Point3, SMatrix, SVector, Vector3, Vector6};
 
 use crate::{Chain, JointKind, Limit, Posed};
 
@@ -59,6 +59,10 @@ const WIGGLE: f64 = 0.1;
 /// (kdl_kinematics_plugin.cpp:358), and Eigen 3's `rank` keeps the singular values at or
 /// above it times the largest (SVDBase.h:148-157).
 const SVD_THRESHOLD: f64 = 1e-3;
+/// The off-diagonal entry, as a share of the largest diagonal entry, at or under which a
+/// Jacobi sweep leaves a pair unturned: the precision at which Eigen 3.4.0's `JacobiSVD`
+/// stops (JacobiSVD.h:671-673).
+const JACOBI_PRECISION: f64 = 2.0 * f64::EPSILON;
 /// The passes of KDL's `CartToJnt` loop after which a search starts no descent: KDL's
 /// 0.05 s over the mean time of a pass in the reference image, 5.39 µs. Measured on
 /// jarednm (Intel Core Ultra 9 290HX Plus, amd64, glibc hwcaps masked as run.sh runs the
@@ -195,7 +199,8 @@ impl<'a, const N: usize> IkSolver<'a, N> {
     /// descent from a configuration drawn inside the limits, until the descents have made
     /// `iterations` passes, as KDL's `searchPositionIK` re-seeds after its first attempt and
     /// starts no descent once its time is out (kdl_kinematics_plugin.cpp:369-409), handing
-    /// each configuration it finds to its caller's callback (:389-400).
+    /// each configuration it finds to its caller's callback (:389-400). None for a seed or a
+    /// target that is not finite: the search starts no descent.
     pub fn search(
         &self,
         seed: [f64; N],
@@ -204,6 +209,12 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         accept: &dyn Fn(&[f64; N]) -> bool,
         iterations: usize,
     ) -> Option<[f64; N]> {
+        let finite = seed.iter().all(|v| v.is_finite())
+            && target.translation.vector.iter().all(|v| v.is_finite())
+            && target.rotation.coords.iter().all(|v| v.is_finite());
+        if !finite {
+            return None;
+        }
         let mut from = seed;
         let mut passes = 0;
         loop {
@@ -248,6 +259,14 @@ impl<'a, const N: usize> IkSolver<'a, N> {
             }
             if error >= last_error {
                 let cut = step_size * STEP_CUT.min(last_error / error);
+                if cut == 0.0 {
+                    // Cut to nothing: no step from `before` lowers the error.
+                    return Descent {
+                        end: before,
+                        converged: false,
+                        passes: pass + 1,
+                    };
+                }
                 step *= cut / step_size;
                 step_size = cut;
                 q = before;
@@ -312,10 +331,12 @@ impl<'a, const N: usize> IkSolver<'a, N> {
     /// kdl_kinematics_parameters.yaml:36-46, :344-350), and [`Aims::PositionFirst`] weighs
     /// the orientation's rows of the miss and of the Jacobian at
     /// `POSITION_FIRST_ORIENTATION_WEIGHT` (chainiksolver_vel_mimic_svd.cpp:106-112). The step
-    /// is the SVD's, taken from
-    /// the eigenvectors of the Jacobian times its transpose, whose eigenvalues are the
-    /// squares of the singular values: each kept singular direction `u` with eigenvalue
-    /// `λ` adds the Jacobian's transpose times `u (u · miss) / λ`.
+    /// is the SVD's, taken from the eigenvectors (`jacobi_eigen`) of the Jacobian times its
+    /// transpose, the Jacobian divided by its largest entry as Eigen's `JacobiSVD` divides
+    /// the matrix it decomposes (Eigen 3.4.0 JacobiSVD.h:678-697): the eigenvalues are the
+    /// squares of the singular values, each kept singular direction `u` with eigenvalue `λ`
+    /// adds the divided Jacobian's transpose times `u (u · miss) / λ`, and the sum is
+    /// divided by that entry.
     fn velocity_step(
         &self,
         posed: &Posed<N>,
@@ -331,17 +352,22 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         let jacobian = SMatrix::<f64, 6, N>::from_fn(|row, column| {
             columns[column][row] * weights[column] * row_weight(row)
         });
-        let eigen = SymmetricEigen::new(jacobian * jacobian.transpose());
-        let floor = eigen.eigenvalues.max() * SVD_THRESHOLD * SVD_THRESHOLD;
-        let inner = eigen
-            .eigenvalues
+        let largest = jacobian.amax();
+        let scale = if largest > 0.0 { largest } else { 1.0 };
+        let scaled = jacobian / scale;
+        // The Jacobian times its transpose, each entry the dot product of two of its rows,
+        // whose products commute, so the matrix is symmetric to the bit.
+        let gram = Matrix6::from_fn(|i, j| scaled.row(i).dot(&scaled.row(j)));
+        let (eigenvalues, eigenvectors) = jacobi_eigen(gram);
+        let floor = eigenvalues.max() * SVD_THRESHOLD * SVD_THRESHOLD;
+        let inner = eigenvalues
             .iter()
-            .zip(eigen.eigenvectors.column_iter())
+            .zip(eigenvectors.column_iter())
             .filter(|(value, _)| **value > 0.0 && **value >= floor)
             .fold(Vector6::zeros(), |sum, (value, u)| {
                 sum + u * (u.dot(&miss) / value)
             });
-        (jacobian.transpose() * inner).component_mul(weights)
+        (scaled.transpose() * inner / scale).component_mul(weights)
     }
 
     /// The Jacobian of the frame in `posed`, in the world frame about the frame's origin,
@@ -388,6 +414,81 @@ impl<'a, const N: usize> IkSolver<'a, N> {
             SVector::from_fn(|j, _| clip(j).0),
             SVector::from_fn(|j, _| clip(j).1),
         )
+    }
+}
+
+/// The eigenvalues of the symmetric `matrix` and its eigenvectors, the columns of the
+/// second, by cyclic Jacobi sweeps in the order and to the stop of Eigen's `JacobiSVD`
+/// (Eigen 3.4.0 JacobiSVD.h:673-676, :704-745): each sweep turns every pair whose
+/// off-diagonal entry is over `JACOBI_PRECISION` times the largest diagonal entry, or over
+/// the least positive normal number where that is more, by the rotation that zeroes the
+/// entry, until a sweep turns none. The rotation's tangent and cosine take their square
+/// roots as Eigen's `makeJacobi` takes them (Jacobi.h:109, :120). A turned entry is over
+/// `JACOBI_PRECISION` times the diagonal entries, so `tau` is under `1 / JACOBI_PRECISION`
+/// in size and its square is finite, and the tangent is within [-1, 1].
+fn jacobi_eigen(matrix: Matrix6<f64>) -> (Vector6<f64>, Matrix6<f64>) {
+    assert!(
+        matrix.iter().all(|value| value.is_finite()),
+        "the Jacobian of a finite configuration is finite"
+    );
+    assert_eq!(matrix, matrix.transpose(), "the matrix is symmetric");
+    let mut diagonalized = matrix;
+    let mut eigenvectors = Matrix6::identity();
+    let mut largest_diagonal = matrix.diagonal().amax();
+    loop {
+        let mut turned = false;
+        for p in 1..6 {
+            for q in 0..p {
+                let off = diagonalized[(p, q)];
+                if off.abs() <= f64::MIN_POSITIVE.max(JACOBI_PRECISION * largest_diagonal) {
+                    continue;
+                }
+                turned = true;
+                let tau = (diagonalized[(q, q)] - diagonalized[(p, p)]) / (2.0 * off);
+                let tangent = tau.signum() / (tau.abs() + (tau * tau + 1.0).sqrt());
+                let cosine = 1.0 / (tangent * tangent + 1.0).sqrt();
+                let rotation = (cosine, tangent * cosine);
+                turn_symmetric(&mut diagonalized, p, q, rotation);
+                turn_columns(&mut eigenvectors, p, q, rotation);
+                largest_diagonal = largest_diagonal
+                    .max(diagonalized[(p, p)].abs())
+                    .max(diagonalized[(q, q)].abs());
+            }
+        }
+        if !turned {
+            return (diagonalized.diagonal(), eigenvectors);
+        }
+    }
+}
+
+/// The symmetric `matrix` turned by the rotation of `(cosine, sine)` in the plane of `p`
+/// and `q` on both sides, the rotation's transpose times it times the rotation, with the
+/// entry at `p` and `q` that the rotation zeroes set to 0. The entries outside the rows and
+/// columns of `p` and `q` stand, and the matrix stays symmetric.
+fn turn_symmetric(matrix: &mut Matrix6<f64>, p: usize, q: usize, (cosine, sine): (f64, f64)) {
+    for i in (0..6).filter(|&i| i != p && i != q) {
+        let (at_p, at_q) = (matrix[(i, p)], matrix[(i, q)]);
+        let (turned_p, turned_q) = (at_p * cosine - at_q * sine, at_p * sine + at_q * cosine);
+        matrix[(i, p)] = turned_p;
+        matrix[(p, i)] = turned_p;
+        matrix[(i, q)] = turned_q;
+        matrix[(q, i)] = turned_q;
+    }
+    let (pp, pq, qq) = (matrix[(p, p)], matrix[(p, q)], matrix[(q, q)]);
+    let (column_pp, column_qp) = (pp * cosine - pq * sine, pq * cosine - qq * sine);
+    let (column_pq, column_qq) = (pp * sine + pq * cosine, pq * sine + qq * cosine);
+    matrix[(p, p)] = column_pp * cosine - column_qp * sine;
+    matrix[(q, q)] = column_pq * sine + column_qq * cosine;
+    matrix[(p, q)] = 0.0;
+    matrix[(q, p)] = 0.0;
+}
+
+/// `matrix` times the rotation of `(cosine, sine)` in the plane of columns `p` and `q`.
+fn turn_columns(matrix: &mut Matrix6<f64>, p: usize, q: usize, (cosine, sine): (f64, f64)) {
+    for i in 0..6 {
+        let (at_p, at_q) = (matrix[(i, p)], matrix[(i, q)]);
+        matrix[(i, p)] = at_p * cosine - at_q * sine;
+        matrix[(i, q)] = at_p * sine + at_q * cosine;
     }
 }
 

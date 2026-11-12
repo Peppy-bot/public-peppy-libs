@@ -197,6 +197,72 @@ fn a_target_past_the_reach_gets_an_approximate_end_alone(tc: TestCase) {
     on_a_drawn_robot::<PastReach>(&tc);
 }
 
+/// Two revolute joints on one axis through the origin, the second's axis off the first's by
+/// 2.8e-87 rad, and a tip 1.7e-38 m off that axis: a chain the property above drew, whose
+/// Jacobian times its transpose holds entries near 1e-174.
+const COAXIAL: &str = r#"<?xml version="1.0"?><robot name="coaxial">
+  <link name="link_0"/>
+  <link name="link_1"/>
+  <link name="link_2"/>
+  <link name="tip"/>
+  <joint name="joint_1" type="revolute">
+    <parent link="link_0"/><child link="link_1"/><origin rpy="0 -1 0"/><axis xyz="1 0 0"/>
+    <limit lower="0" upper="0.16276632848842995" effort="1" velocity="1"/>
+  </joint>
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/><child link="link_2"/><axis xyz="1 2.7876072247466116e-87 0"/>
+    <limit lower="0" upper="0.25" effort="1" velocity="1"/>
+  </joint>
+  <joint name="tip_joint" type="fixed">
+    <parent link="link_2"/><child link="tip"/><origin xyz="0 1.690656078170689e-38 0" rpy="0 0 -1"/>
+  </joint>
+</robot>"#;
+
+// A descent on two coaxial joints whose tip stands on their axis, toward a target a
+// millimeter from the tip, ends inside the limits.
+#[test]
+fn a_descent_on_coaxial_joints_ends_inside_the_limits() {
+    let robot = urdf_rs::read_from_string(COAXIAL).expect("parse the coaxial chain");
+    let chain = chain_of::<2>(&robot);
+    let end = IkSolver::new(
+        &chain,
+        ChainFrame::EndEffector,
+        Aims::Both,
+        Ends::Approximate,
+    )
+    .search(
+        [0.0, 0.0],
+        &Isometry3::translation(0.001, 0.0, 0.0),
+        &mut Draws::new(DRAWS),
+        &|_| true,
+        ONE_DESCENT,
+    )
+    .expect("the end of the search's one descent");
+    assert!(inside(&chain.limits(), &end), "{end:?}");
+}
+
+#[test]
+fn a_seed_or_a_target_that_is_not_finite_finds_no_configuration() {
+    let robot = urdf_rs::read_from_string(COAXIAL).expect("parse the coaxial chain");
+    let chain = chain_of::<2>(&robot);
+    let solver = IkSolver::new(
+        &chain,
+        ChainFrame::EndEffector,
+        Aims::Both,
+        Ends::Approximate,
+    );
+    let reached = Isometry3::translation(0.001, 0.0, 0.0);
+    for (seed, target) in [
+        ([0.0, 0.0], Isometry3::translation(f64::NAN, 0.0, 0.0)),
+        ([0.0, 0.0], Isometry3::translation(0.0, f64::INFINITY, 0.0)),
+        ([f64::NAN, 0.0], reached),
+        ([0.0, f64::NEG_INFINITY], reached),
+    ] {
+        let found = solver.search(seed, &target, &mut Draws::new(DRAWS), &|_| true, ITERATIONS);
+        assert_eq!(found, None, "{seed:?} toward {target:?}");
+    }
+}
+
 // A descent aims at what its solver names and leaves the rest free: a seed whose end
 // effector stands at the target's position, with any orientation, ends a descent aiming at
 // the position, and one at the target's orientation, anywhere, ends one aiming at the
