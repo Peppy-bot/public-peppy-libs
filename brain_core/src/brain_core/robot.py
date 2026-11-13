@@ -227,6 +227,45 @@ class PlanningScene:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class CollisionShape:
+    """A shape the brain gives a scene object, centred on the object's pose:
+    "box" with its full sides along the object's x, y and z, or "sphere"
+    with its radius (m)."""
+
+    kind: str
+    dimensions: tuple[float, ...]
+
+
+IDENTITY: Quat = (0.0, 0.0, 0.0, 1.0)
+
+
+@dataclass(frozen=True)
+class ObjectOperation:
+    """One operation of apply_collision_objects: an add places the object
+    with its shapes at its pose, in the robot frame, replacing one of the
+    same id; a move reads the id and the pose alone; a remove reads the id
+    alone."""
+
+    id: str
+    operation: str
+    position: Vec3 = (0.0, 0.0, 0.0)
+    orientation: Quat = IDENTITY
+    shapes: tuple[CollisionShape, ...] = ()
+
+    @classmethod
+    def add(cls, object_id: str, position: Vec3, orientation: Quat, shapes: Sequence[CollisionShape]) -> "ObjectOperation":
+        return cls(object_id, "add", position, orientation, tuple(shapes))
+
+    @classmethod
+    def move(cls, object_id: str, position: Vec3, orientation: Quat) -> "ObjectOperation":
+        return cls(object_id, "move", position, orientation)
+
+    @classmethod
+    def remove(cls, object_id: str) -> "ObjectOperation":
+        return cls(object_id, "remove")
+
+
 class Robot:
     """`move_arm`, `move_gripper` and `check_arm_move` are the node's
     generated limb_motion modules, and `planner` its modules of the motion
@@ -496,6 +535,47 @@ class Robot:
                 for found in data.attached_objects
             ),
         )
+
+    async def apply_collision_objects(self, operations: Sequence[ObjectOperation]) -> str:
+        """Adds, moves or removes objects of the planning scene, in order,
+        all or none. Returns "" once done, or why not: an error reply with
+        its kind, or no answer."""
+        module = self._modules().apply_collision_objects
+        request = module.Request(objects=[
+            module.RequestObjectsItem(
+                id=operation.id,
+                operation=operation.operation,
+                position=list(operation.position),
+                orientation=list(operation.orientation),
+                shapes=[
+                    module.RequestObjectsItemShapesItem(
+                        kind=shape.kind, dimensions=list(shape.dimensions), mesh_vertices=[], mesh_triangles=[],
+                        position=[0.0, 0.0, 0.0], orientation=list(IDENTITY),
+                    )
+                    for shape in operation.shapes
+                ],
+            )
+            for operation in operations
+        ])
+        _, reason = await self._poll(module, request)
+        return reason
+
+    async def apply_attached_collision_object(self, object_id: str, link: str, touch_links: Sequence[str], operation: str) -> str:
+        """Attaches the scene object `object_id` to `link` where it stands,
+        `touch_links` the links that may touch it, for the operation
+        "attach", or detaches it where it stands, for "detach". Returns ""
+        once done, or why not."""
+        module = self._modules().apply_attached_collision_object
+        request = module.Request(object_id=object_id, link_name=link, touch_links=list(touch_links), operation=operation)
+        _, reason = await self._poll(module, request)
+        return reason
+
+    async def set_allowed_collision(self, name: str, other_names: Sequence[str], allowed: bool) -> str:
+        """Lets the scene object `name` touch each of `other_names`, or
+        stops it. Returns "" once done, or why not."""
+        module = self._modules().set_allowed_collision
+        _, reason = await self._poll(module, module.Request(name=name, other_names=list(other_names), allowed=allowed))
+        return reason
 
     @property
     def moves_in_flight(self) -> int:

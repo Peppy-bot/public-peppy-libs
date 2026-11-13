@@ -6,8 +6,12 @@ from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
+from fake_peppygen import CollisionShape as CollisionShapeRequest
 from fake_peppygen import (
+    ApplyAttachedCollisionObjectRequest,
+    ApplyCollisionObjectsRequest,
     CheckArmMoveRequest,
+    CollisionObject,
     ExecuteJointPathArm,
     ExecuteJointPathRequest,
     ExecuteJointPathWaypoint,
@@ -22,6 +26,7 @@ from fake_peppygen import (
     PlanCartesianPathWaypoint,
     PlanJointPathRequest,
     ResultStatus,
+    SetAllowedCollisionRequest,
     fake_bindings,
     fake_planner,
     planner_bindings,
@@ -32,11 +37,13 @@ from brain_core.robot import (
     ArmDescription,
     ArmDescriptions,
     CartesianPath,
+    CollisionShape,
     GripResult,
     JointPlan,
     MoveCheck,
     MoveEnd,
     MoveResult,
+    ObjectOperation,
     PathResult,
     PlannerModules,
     PlanningScene,
@@ -583,3 +590,53 @@ async def test_the_planning_scene_gives_its_free_and_attached_objects():
         ),
         attached_objects=(SceneObject("brain/apple_1-t0", (0.0, 0.0, -0.01), (0.0, 0.0, 0.0, 1.0), "openarm_left_tcp"),),
     )
+
+
+# The three writes of the planning scene.
+
+LIME = "brain/lime_1-t0"
+
+
+async def test_an_add_a_move_and_a_remove_are_sent_in_order_with_their_shapes():
+    robot, planner = planned()
+    reason = await robot.apply_collision_objects([
+        ObjectOperation.add(LIME, (0.3, -0.2, 0.405), (0.0, 0.0, 0.38, 0.92), [CollisionShape("box", (0.086, 0.084, 0.071))]),
+        ObjectOperation.move(LIME, (0.3, -0.2, 0.48), (0.0, 0.0, 0.38, 0.92)),
+        ObjectOperation.remove("brain/apple_1-t0"),
+        ObjectOperation.add("brain/item_1-t0", (0.5, 0.1, 0.7), (0.0, 0.0, 0.0, 1.0), [CollisionShape("sphere", (0.05,))]),
+    ])
+    assert reason == ""
+    box = CollisionShapeRequest("box", [0.086, 0.084, 0.071], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    sphere = CollisionShapeRequest("sphere", [0.05], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    assert planner.apply_collision_objects.polled == [ApplyCollisionObjectsRequest(objects=[
+        CollisionObject(LIME, "add", [0.3, -0.2, 0.405], [0.0, 0.0, 0.38, 0.92], [box]),
+        CollisionObject(LIME, "move", [0.3, -0.2, 0.48], [0.0, 0.0, 0.38, 0.92], []),
+        CollisionObject("brain/apple_1-t0", "remove", [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], []),
+        CollisionObject("brain/item_1-t0", "add", [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0], [sphere]),
+    ])]
+
+
+async def test_an_attach_a_detach_and_an_allowed_pair_name_their_links():
+    robot, planner = planned()
+    assert await robot.apply_attached_collision_object(LIME, "openarm_left_tcp", LEFT_GRIPPER_LINKS, "attach") == ""
+    assert await robot.apply_attached_collision_object(LIME, "openarm_left_tcp", (), "detach") == ""
+    assert planner.apply_attached_collision_object.polled == [
+        ApplyAttachedCollisionObjectRequest(LIME, "openarm_left_tcp", LEFT_GRIPPER_LINKS, "attach"),
+        ApplyAttachedCollisionObjectRequest(LIME, "openarm_left_tcp", [], "detach"),
+    ]
+    assert await robot.set_allowed_collision(LIME, LEFT_GRIPPER_LINKS, True) == ""
+    assert planner.set_allowed_collision.polled == [SetAllowedCollisionRequest(LIME, LEFT_GRIPPER_LINKS, True)]
+
+
+async def test_a_scene_write_that_fails_says_why():
+    robot, planner = planned()
+    planner.apply_collision_objects.enqueue(planner.apply_collision_objects.Failure("rejected", "unknown object 'brain/x' for remove"))
+    planner.apply_attached_collision_object.enqueue(planner.apply_attached_collision_object.Failure("precondition_failed", "no joints measured yet"))
+    planner.set_allowed_collision.enqueue(TimeoutError("no reply"))
+    assert await robot.apply_collision_objects([ObjectOperation.remove("brain/x")]) == (
+        "apply_collision_objects failed with rejected: unknown object 'brain/x' for remove"
+    )
+    assert await robot.apply_attached_collision_object(LIME, "openarm_left_tcp", LEFT_GRIPPER_LINKS, "attach") == (
+        "apply_attached_collision_object failed with precondition_failed: no joints measured yet"
+    )
+    assert await robot.set_allowed_collision(LIME, LEFT_GRIPPER_LINKS, True) == "set_allowed_collision gave no answer: TimeoutError('no reply')"
