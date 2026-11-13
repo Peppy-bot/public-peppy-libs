@@ -80,7 +80,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Awaitable, Callable, Optional, Sequence
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
@@ -162,6 +162,18 @@ class _Checks:
 
     def __str__(self) -> str:
         return f"{self.count} check{'' if self.count == 1 else 's'}, {1000 * self.seconds:.0f} ms"
+
+
+@dataclass(frozen=True)
+class _Reach:
+    """The first orientation of a grasp whose moves reach, as `_transit`
+    finds it: the orientation, the points of its moves in order, the pre
+    point first, and `go`, the transit, the move that takes the arm to the
+    pre point."""
+
+    orientation: Quat
+    points: tuple[Vec3, ...]
+    go: Callable[[CancelToken], Awaitable[object]]
 
 
 class ScriptedManipulator:
@@ -266,14 +278,15 @@ class ScriptedManipulator:
             if reason:
                 raise _Failed(f"no alignment: {reason}")
         grasp = self._propose(item)
-        orientation, (pre, point, lift) = await self._first_reach(
+        reach = await self._transit(
             gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True
         )
+        orientation, (pre, point, lift) = reach.orientation, reach.points
         opening = self._approach_opening(item)
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
-        await self._move(gripper.arm, pre, orientation, cancel)
+        await reach.go(cancel)
         if self.aligner is not None:
             pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
         try:
@@ -398,8 +411,9 @@ class ScriptedManipulator:
             raise _Failed(str(error)) from None
         target = f"the pose {_numbers(pose.position)}"
         notes: list[str] = []
-        orientation, (pre, point) = await self._place_reach(gripper, Grasp(pose.position, orientations), target, cancel, notes)
-        await self._move(gripper.arm, pre, orientation, cancel)
+        reach = await self._place_reach(gripper, Grasp(pose.position, orientations), target, cancel, notes)
+        orientation, (pre, point) = reach.orientation, reach.points
+        await reach.go(cancel)
         if self.aligner is not None:
             request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=pose.position)
             pre, point, _lift, orientation = await self._run_alignment(request, cancel, notes)
@@ -429,19 +443,29 @@ class ScriptedManipulator:
         except ValueError as error:
             raise _Failed(f"no grasp for item '{item.item_id}': {error}") from None
 
-    async def _place_reach(
-        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str]
-    ) -> tuple[Quat, tuple[Vec3, ...]]:
-        """The orientation and the points of a place: the pre-place point
-        `clearance_m` and `held_item_depth_m` above the pose when the backbone
-        has a plan that high, else `clearance_m` above it, which `notes`
-        says."""
+    async def _place_reach(self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str]) -> _Reach:
+        """The transit of a place: to the pre-place point `clearance_m` and
+        `held_item_depth_m` above the pose when the backbone has a plan that
+        high, else `clearance_m` above it, which `notes` says."""
         high = self.clearance_m + self.held_item_depth_m
         try:
-            return await self._first_reach(gripper, grasp, target, cancel, [], clearance_m=high)
+            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=high)
         except _Failed:
             notes.append(f"no plan {100 * high:.1f} cm above the pose: the pre-place point stands {100 * self.clearance_m:.1f} cm above it")
-            return await self._first_reach(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
+            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
+
+    async def _transit(
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
+        clearance_m: float, with_lift: bool = False,
+    ) -> _Reach:
+        """The first orientation of `grasp` whose moves reach, as
+        `_first_reach` finds it, with its transit: the move_arm line from
+        where the arm is commanded now to the pre point. A failure that no
+        orientation reaches is raised before anything moves."""
+        orientation, points = await self._first_reach(
+            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift
+        )
+        return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel))
 
     async def _first_reach(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
