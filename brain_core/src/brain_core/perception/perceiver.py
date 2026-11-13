@@ -13,6 +13,13 @@ detector can search is the detector's own answer
 (`Detector.why_unavailable`), which the brain asks first (`Brain.look`).
 A search past its deadline fails with `timeout`.
 
+The depth points of an item (`item_points`) are the readings inside its
+box, in the robot frame, less the surface it stands on, and of the rest the
+group that holds the reading nearest the box's centre. The surface is the
+height of the readings on the border of the box: a box holds its item and
+some of what is around it, and in doubt the rule keeps fewer points, since
+a shape too big hides a neighbour from the motion planner.
+
 A search awaits the detector's `detect`. A detector whose model blocks
 runs its compute through `in_daemon_thread`, a daemon thread of its own
 rather than the event loop's executor: the executor's threads are joined
@@ -29,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -50,6 +58,16 @@ DUPLICATE_IOU = 0.5
 TOP_WINDOW = 0.6
 TOP_SAMPLES = 24
 TOP_QUANTILE = 0.9
+# The points of an item: the depth readings inside its box, at most
+# SHAPE_GRID along each side. The surface under the item is the
+# SURFACE_QUANTILE quantile of the heights of the readings on the border of
+# the box, and a reading belongs to the surface up to SURFACE_MARGIN_M above
+# it. Two readings next to each other in the depth image are of one group
+# when they stand at most GROUP_GAP_M apart.
+SHAPE_GRID = 64
+SURFACE_QUANTILE = 0.5
+SURFACE_MARGIN_M = 0.005
+GROUP_GAP_M = 0.015
 
 
 async def in_daemon_thread(function: Callable, *args):
@@ -261,6 +279,91 @@ def top_height(depth_m: np.ndarray, box: Box, color_width: int, color_height: in
         return None
     points = camera.deproject_points(columns[read], rows[read], depths[read], color_width, color_height)
     return float(np.quantile(points[:, 2], TOP_QUANTILE))
+
+
+@dataclass(frozen=True)
+class ItemPoints:
+    """The depth points of one item in the robot frame, one row of x, y, z
+    each, and the height of the surface it stands on."""
+
+    points: np.ndarray
+    surface_z: float
+
+
+def item_points(depth_m: np.ndarray, box: Box, color_width: int, color_height: int, camera: CameraModel) -> Optional[ItemPoints]:
+    """The depth points of the item in `box`, a box of a colour picture of
+    `color_width` x `color_height`:
+
+    1. the readings of `depth_m` inside the box, at most SHAPE_GRID along
+       each side, in the robot frame;
+    2. less the points of the surface the item stands on: the surface is the
+       SURFACE_QUANTILE quantile of the heights of the readings on the
+       border of the box, and a point up to SURFACE_MARGIN_M above it is of
+       the surface;
+    3. of the rest, the group that holds the point nearest the centre of the
+       box: points next to each other in the depth image at most
+       GROUP_GAP_M apart are of one group, so a neighbour inside the box
+       that no such chain joins is not part of the item.
+
+    None when the box holds no reading on its border or none above the
+    surface."""
+    height, width = depth_m.shape
+    x0, y0 = (int(value) for value in depth_pixel(depth_m, box.x0, box.y0, color_width, color_height))
+    x1, y1 = (int(value) for value in depth_pixel(depth_m, box.x1, box.y1, color_width, color_height))
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    stride = max(1, math.ceil(max(x1 - x0, y1 - y0) / SHAPE_GRID))
+    rows, columns = np.arange(y0, y1, stride), np.arange(x0, x1, stride)
+    depths = depth_m[np.ix_(rows, columns)]
+    read = depths > 0.0
+    grid_rows, grid_columns = np.meshgrid(rows, columns, indexing="ij")
+    points = np.full((*depths.shape, 3), np.nan)
+    if read.any():
+        # The colour pixel under the centre of each reading, pixel centres
+        # scaled as Intrinsics.scaled_to scales them; depth_pixel maps it back
+        # to the reading.
+        us = (grid_columns[read] + 0.5) * color_width / width - 0.5
+        vs = (grid_rows[read] + 0.5) * color_height / height - 0.5
+        points[read] = camera.deproject_points(us, vs, depths[read], color_width, color_height)
+    border = np.zeros(depths.shape, dtype=bool)
+    border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
+    if not (border & read).any():
+        return None
+    surface_z = float(np.quantile(points[border & read][:, 2], SURFACE_QUANTILE))
+    above = read & (np.nan_to_num(points[..., 2], nan=-np.inf) > surface_z + SURFACE_MARGIN_M)
+    if not above.any():
+        return None
+    candidates = np.argwhere(above)
+    centre = (np.array(depths.shape) - 1) / 2.0
+    seed = tuple(candidates[np.argmin(((candidates - centre) ** 2).sum(axis=1))])
+    group = _group_of(points, above, seed)
+    return ItemPoints(points[group], surface_z)
+
+
+def _group_of(points: np.ndarray, kept: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
+    """The cells of the grid `kept` joined to `seed` by chains of cells next
+    to each other (above, below, left, right) whose points stand at most
+    GROUP_GAP_M apart."""
+    down = kept[1:, :] & kept[:-1, :] & (np.linalg.norm(points[1:, :] - points[:-1, :], axis=-1) <= GROUP_GAP_M)
+    right = kept[:, 1:] & kept[:, :-1] & (np.linalg.norm(points[:, 1:] - points[:, :-1], axis=-1) <= GROUP_GAP_M)
+    group = np.zeros(kept.shape, dtype=bool)
+    group[seed] = True
+    queue = deque([seed])
+    rows, columns = kept.shape
+    while queue:
+        row, column = queue.popleft()
+        steps = (
+            (row + 1, column, row < rows - 1 and down[row, column]),
+            (row - 1, column, row > 0 and down[row - 1, column]),
+            (row, column + 1, column < columns - 1 and right[row, column]),
+            (row, column - 1, column > 0 and right[row, column - 1]),
+        )
+        for next_row, next_column, joined in steps:
+            if joined and not group[next_row, next_column]:
+                group[next_row, next_column] = True
+                queue.append((next_row, next_column))
+    return group
 
 
 def merge_duplicates(boxes: Sequence[Box]) -> tuple[list[Box], list[Box]]:
