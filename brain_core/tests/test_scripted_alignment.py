@@ -159,8 +159,10 @@ def _token() -> CancelToken:
 PLACE_Q = (0.0, 1.0, 0.0, 0.0)
 PLACE_POINT = (0.6, 0.0, 0.75)
 PLACE_ABOVE = (0.6, 0.0, 0.75 + (0.075 + 0.075))
+# The line down ends 5 cm above the place point.
+PLACE_RELEASE = lifted(PLACE_POINT, 0.05)
 ALIGNED_PLACE_ABOVE = (0.61, -0.02, PLACE_ABOVE[2])
-ALIGNED_PLACE_POINT = (0.61, -0.02, PLACE_POINT[2])
+ALIGNED_PLACE_POINT = (0.61, -0.02, PLACE_RELEASE[2])
 
 
 async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(caplog):
@@ -171,7 +173,7 @@ async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(c
     assert outcome == Outcome(True, "", ALIGNED_PLACE_POINT)
     (request,) = aligner.requests
     assert request.item is None and request.target == PLACE_POINT and request.is_place
-    assert (request.pre, request.point, request.orientation) == (PLACE_ABOVE, PLACE_POINT, PLACE_Q)
+    assert (request.pre, request.point, request.orientation) == (PLACE_ABOVE, PLACE_RELEASE, PLACE_Q)
     assert [call for call in robot.calls if call[0] != "check"] == [
         ("move", PLACE_ABOVE, PLACE_Q),
         ("move", ALIGNED_PLACE_POINT, PLACE_Q),

@@ -69,22 +69,25 @@ the close; the two openings it judged; and the retreat.
 A drop opens the gripper where it is. A place first reads the gripper's
 opening from the latest snapshot: jaws below `hold_opening_min` stand
 closed on air, the item slipped since the grab, and the place fails
-before any move, naming it. It then carries the held item to the
+before any move, naming it. It then carries the held item above the
 pose, through its pre-place point, `clearance_m` and `held_item_depth_m`
 above the pose so the held item clears what it is set on until the
 descent, or `clearance_m` alone above it where the backbone has no plan
 that high; in the pose's orientation alone when it has one, else from
 above at each roll; with an `aligner`, the model then
 corrects the held item's place above the spot as it does above an item in
-a grab; the place opens there and climbs back to the pre-place point. An
-arm that stops short on its way down to the pose does not settle, so its
-move fails with `timeout`; when limb_states puts its grasp point anywhere
-from the pre-place point down and within `RELEASE_OFF_LINE_M` of the line
-down, the arm has set the item on what is under it, the rim or the floor
-of a container included: the place opens there and logs it. It reports
-where the grasp point stood when the jaws opened. A climb that fails is
-logged, and the place still succeeds: the jaws are open and the item is
-down.
+a grab. The line down ends at the release point, `release_height_m` above
+the pose, so the arm does not press the item on what it is set on, and the
+place opens there and climbs back to the pre-place point; the item falls
+the last part. Each check of the line down (the reach test and the
+aligner's) uses the release point. An arm that stops short on its way down
+does not settle, so its move fails with `timeout`; when limb_states puts
+its grasp point anywhere from the pre-place point down and within
+`RELEASE_OFF_LINE_M` of the line down, the arm has set the item on what is
+under it above the release point, the rim or the floor of a container
+included: the place opens there and logs it. It reports where the grasp
+point stood when the jaws opened. A climb that fails is logged, and the
+place still succeeds: the jaws are open and the item is down.
 
 The manipulator keeps nothing between goals: ids and held flags live in
 `State`.
@@ -154,6 +157,12 @@ FULL_REACH = 1.0 - 1e-9
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
 SETTLE_TIMED_OUT = "timeout"
+# Where the line down of a place ends and the jaws open: this far above the
+# pose, so the arm does not press the item on what it is set on. The item
+# falls the last part, and the brain records it where the jaws opened. An
+# item that hangs more than this below the grasp point meets its support
+# first, and the arm stops short there.
+RELEASE_HEIGHT_M = 0.05
 # How far from the line down an arm that stops short on its way down may
 # stand for a place to open there: pushed further aside, it has not set
 # the item down where it was going. An item whose bottom meets the floor
@@ -237,10 +246,15 @@ class ScriptedManipulator:
         grip_settle_timeout_s: float = GRIP_SETTLE_TIMEOUT_S,
         jaw_travel_m: float = JAW_TRAVEL_M,
         approach_margin_m: float = APPROACH_MARGIN_M,
+        release_height_m: float = RELEASE_HEIGHT_M,
         allowed_planning_time_s: float = ALLOWED_PLANNING_TIME_S,
         aligner: Optional[Aligner] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if not 0.0 <= release_height_m < clearance_m:
+            raise ValueError(
+                f"release_height_m must be at least 0 and below clearance_m, the lower pre-place point: got {release_height_m} and {clearance_m}"
+            )
         self.proposer = proposer
         # The model that corrects the gripper above the item before the
         # descent; none for the grab with no model.
@@ -257,6 +271,7 @@ class ScriptedManipulator:
         self.grip_settle_timeout_s = grip_settle_timeout_s
         self.jaw_travel_m = jaw_travel_m
         self.approach_margin_m = approach_margin_m
+        self.release_height_m = release_height_m
         self.allowed_planning_time_s = allowed_planning_time_s
         # The brain's monotonic clock, for the checks' time in the log line.
         self._clock = clock
@@ -492,17 +507,19 @@ class ScriptedManipulator:
     async def _place_reach(self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str]) -> _Reach:
         """The transit of a place: to the pre-place point `clearance_m` and
         `held_item_depth_m` above the pose when the backbone has a plan that
-        high, else `clearance_m` above it, which `notes` says."""
+        high, else `clearance_m` above it, which `notes` says. Its points are
+        the pre-place point and the release point."""
         high = self.clearance_m + self.held_item_depth_m
+        release = self.release_height_m
         try:
-            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=high)
+            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=high, release_height_m=release)
         except _NoReach:
             notes.append(f"no plan {100 * high:.1f} cm above the pose: the pre-place point stands {100 * self.clearance_m:.1f} cm above it")
-            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
+            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m, release_height_m=release)
 
     async def _transit(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
-        clearance_m: float, with_lift: bool = False,
+        clearance_m: float, with_lift: bool = False, release_height_m: float = 0.0,
     ) -> _Reach:
         """The first orientation of `grasp` whose moves reach, as
         `_first_reach` finds it, with its transit. The only place that asks
@@ -514,13 +531,13 @@ class ScriptedManipulator:
         anything moves."""
         if not self._robot.has_planner:
             orientation, points, _ = await self._first_reach(
-                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
                 test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
             )
             return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel))
         arm = await self._planner_arm(gripper)
         orientation, points, plan = await self._first_reach(
-            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
             test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
         )
         return _Reach(orientation, points, go=lambda cancel: self._run_plan(gripper.arm, plan, cancel))
@@ -599,21 +616,22 @@ class ScriptedManipulator:
 
     async def _first_reach(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
-        clearance_m: float, with_lift: bool = False,
+        clearance_m: float, with_lift: bool = False, release_height_m: float = 0.0,
         test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[tuple[int, str] | None, object]]],
     ) -> tuple[Quat, tuple[Vec3, ...], object]:
         """The first orientation of `grasp` whose moves all pass `test`, with
-        the points of those moves in order (the pre point, `clearance_m`
-        back along the approach, the grasp point, and the lifted point when
-        `with_lift`: a grab; else a place, whose grasp point is the place
-        point) and what `test` gave for them. With none, the failure names
+        the points of those moves in order and what `test` gave for them.
+        The points: the pre point, `clearance_m` back along the approach from
+        the grasp point; then for a grab (`with_lift`) the grasp point and the
+        lifted point, and for a place the release point, `release_height_m`
+        above the pose that is its grasp point. With none, the failure names
         the last orientation tried, its point that does not pass and the
         words for it."""
-        names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "place point")
+        names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "release point")
         last_refusal = ""
         checks = _Checks()
         for index, orientation in enumerate(grasp.orientations):
-            points = (pre_grasp(grasp.point, orientation, clearance_m), grasp.point)
+            points = (pre_grasp(grasp.point, orientation, clearance_m), lifted(grasp.point, release_height_m))
             if with_lift:
                 points += (lifted(grasp.point, self.lift_m),)
             refused, found = await test(points, orientation, checks)
@@ -670,10 +688,10 @@ class ScriptedManipulator:
     async def _lower_to_release(
         self, gripper: Gripper, pre: Vec3, point: Vec3, orientation: Quat, cancel: CancelToken
     ) -> Optional[Vec3]:
-        """Lowers the held item from `pre` to `point` and returns where the
-        grasp point stands for the release: at `point`, or where the arm
-        stopped short on the way down, the item set on what is under it. An
-        arm that stops short does not settle, so its move fails with
+        """Lowers the held item from `pre` to the release point `point` and
+        returns where the grasp point stands for the release: at `point`, or
+        where the arm stopped short on the way down, the item set on what is
+        under it. An arm that stops short does not settle, so its move fails with
         `timeout`; where it stopped is the grasp point of the latest
         limb_states snapshot, since a failed move gives no result. A move a
         stop ended, one that failed for another reason, or one that stopped
@@ -687,7 +705,7 @@ class ScriptedManipulator:
         if not _short_on_the_way_down(pre, point, at, RELEASE_OFF_LINE_M):
             raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
         logger.info(
-            "place with gripper '%s' stopped %.1f cm short of the place point on the way down (%s): it releases there",
+            "place with gripper '%s' stopped %.1f cm short of the release point on the way down (%s): it releases there",
             gripper.name, 100 * math.dist(at, point), moved.message,
         )
         return at

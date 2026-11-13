@@ -346,10 +346,10 @@ its moves carries the bars of every arm move. It ends `Aligned` with the
 points the grab goes on with, `GaveUp`, `OutOfSteps` or `Stopped` when a
 stop ended a move; the last three fail the grab there, before the descent.
 A place runs the same step above the spot the held item goes to, measured
-from the target point, and then lowers the item until it rests or the point
-is reached: an arm the backbone stops short anywhere from the pre-place
-point down, within 5 cm of the line down, has set the item on what is under
-it, and the place opens there.
+from the target point, and then lowers the item until it rests or the
+release point 5 cm above the target is reached: an arm the backbone stops
+short anywhere from the pre-place point down, within 5 cm of the line down,
+has set the item on what is under it, and the place opens there.
 
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
@@ -430,17 +430,22 @@ carries the item to the pose through its pre-place point,
 `clearance_m` and `held_item_depth_m` (7.5 cm, how far a held item may
 reach below the grasp point) above the pose, so the item clears the floor of
 a container and what already stands in it until the descent, or `clearance_m`
-alone above it where the backbone has no plan that high; it opens there and
-climbs back to the pre-place point. With the motion planner bound, the
+alone above it where the backbone has no plan that high. The line down ends
+at the release point, `release_height_m` (5 cm) above the pose, so the arm
+does not press the item on what it is set on: the place opens there and
+climbs back to the pre-place point, and the item falls the last part. The
+reach test of the line down and the aligner's checks use the release point,
+and the result reports where the jaws opened, up to 5 cm above where the item
+rests. With the motion planner bound, the
 transit to the pre-place point is planned as a grab's is: each orientation
 planned to the high pre-place point with the reach of the line down tested
 from the end of the plan, then each to the low one; only a place that no
 orientation reaches at the high point tries the low one. An arm that stops
 short on its way down does not settle, so its move fails with `timeout`. When the latest
 limb_states snapshot puts its grasp point anywhere from the pre-place point
-down and within 5 cm (`RELEASE_OFF_LINE_M`) of the line down, the arm has
-set the item on what is under it, the rim or the floor of a container or the
-items already in it included (an item slides off a round top by a few
+down to the release point and within 5 cm (`RELEASE_OFF_LINE_M`) of the line
+down, the arm has set the item on what is under it, the rim or the floor of a
+container or the items already in it included (an item slides off a round top by a few
 centimetres before it rests): the place opens there,
 logs how far short it stopped, and reports that point. A stop of the
 descent, or an arm stopped more than 5 cm above the pre-place point or off
