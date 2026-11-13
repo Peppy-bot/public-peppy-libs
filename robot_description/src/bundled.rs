@@ -38,6 +38,12 @@ pub fn models() -> impl Iterator<Item = &'static Model> {
     MODELS.iter()
 }
 
+/// The bundled models that have an arm, in the order of their ids: the ones a node of
+/// arms drives ([`crate::NodeArms`]) and a planner plans for.
+pub fn models_with_arms() -> impl Iterator<Item = &'static Model> {
+    models().filter(|model| !model.description().arms().is_empty())
+}
+
 /// The bundled model of the id `id`, as robot_identity gives it.
 pub fn model(id: &str) -> Result<&'static Model, UnknownModel> {
     models()
@@ -188,11 +194,19 @@ mod tests {
         );
     }
 
+    // The models with arms are every bundled model but the botshare base, which has none.
     #[test]
-    fn every_model_has_its_arms_ready_home_and_start_postures_and_gripper_ends_at_joint_limits() {
+    fn the_models_with_arms_are_every_model_but_the_armless_base() {
+        let all: Vec<&str> = models().map(Model::id).collect();
+        let with_arms: Vec<&str> = models_with_arms().map(Model::id).collect();
+        assert_eq!(all, ["botshare_base", "openarm_v1", "openarm_v2", "so101"]);
+        assert_eq!(with_arms, ["openarm_v1", "openarm_v2", "so101"]);
+    }
+
+    #[test]
+    fn every_arm_has_its_ready_home_and_start_postures_and_gripper_ends_at_joint_limits() {
         for bundled in models() {
             let description = bundled.description();
-            assert!(!description.arms().is_empty(), "{}: arms", bundled.id());
             for arm in description.arms() {
                 assert!(
                     !arm.joints.is_empty(),

@@ -2,7 +2,7 @@
 name = "robot_description"
 version = "0.1.0"
 edition = "2024"
-description = "A robot's description as its URDF and its SRDF, read together and held to each other: its arms as chains to their grasp points, their grippers and where each finger shuts and opens, its named postures, the pairs of links whose collisions are disabled, and the optical frames of its cameras with the depths each depth camera measures. Bundles the description of each robot model of this repository, by model id, with a digest of its files and, behind the `meshes` feature, its collision meshes. No hardware or messaging deps."
+description = "A robot's description as its URDF and its SRDF, read together and held to each other: its arms as chains to their grasp points, their grippers and where each finger shuts and opens, its named postures, the pairs of links whose collisions are disabled, the optical frames of its cameras with the depths each depth camera measures, and the wheels of a differential base with their radii and separation. Bundles the description of each robot model of this repository, by model id, with a digest of its files and, behind the `meshes` feature, its collision meshes. No hardware or messaging deps."
 
 [workspace]
 
