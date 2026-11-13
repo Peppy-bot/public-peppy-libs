@@ -228,7 +228,7 @@ impl<const N: usize, const K: usize> NodeArms<N, K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::states;
+    use crate::{models_with_arms, states};
 
     /// The description of a robot of an arm for each count of `joints`, each arm of that
     /// many revolute joints from its base to its grasp point, with a gripper that moves no
@@ -399,12 +399,12 @@ mod tests {
         }
     }
 
-    // Each bundled model drives a node compiled for its own arms, which names its arms and
-    // grippers and reads their limits and states as the description gives them, and
-    // refuses a model of other arms, naming both and the models that fit.
+    // Each bundled model with arms drives a node compiled for its own arms, which names its
+    // arms and grippers and reads their limits and states as the description gives them,
+    // and refuses a model of other arms, naming both and the models that fit.
     #[test]
-    fn each_bundled_model_drives_a_node_of_its_own_arms() {
-        for model in models() {
+    fn each_bundled_model_with_arms_drives_a_node_of_its_own_arms() {
+        for model in models_with_arms() {
             on_shape(&model.description(), DrivesANodeOfItsArms(model))
                 .unwrap_or_else(|error| panic!("{}: {error}", model.id()));
         }

@@ -28,6 +28,10 @@
 //!   each link stands in its parent link, a [`LinkTransform`] per joint, the fixed joints'
 //!   for the life of the robot and the moving joints' at their positions; and
 //!   [`LinkTransform::frame_transform`]: the transform as the transforms contract carries it.
+//! - [`RobotDescription::differential_base`]: the two wheels of a differential base, the
+//!   continuous joints on a link that fixed joints alone join to the root link that no
+//!   group of the SRDF holds, each with its radius and the width of its tire, and their
+//!   separation.
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal
@@ -43,7 +47,8 @@
 //! model id, the id robot_identity carries: its files, the [`Model::directory`] the build
 //! bundled them from, the [`Model::digest`] of them all and, behind the `meshes` feature,
 //! the collision meshes the URDF names, which [`write_meshes`] writes where a builder of
-//! the URDF's collision geometry reads them.
+//! the URDF's collision geometry reads them. [`models_with_arms`] gives the bundled models
+//! that have an arm.
 //!
 //! [`on_shape`] runs code compiled for the shapes of a robot's arms, its arm count and
 //! its arms' joint count, at the shape of a description's arms. [`NodeArms`] holds a
@@ -54,6 +59,7 @@
 #![deny(unsafe_code)]
 
 mod arms;
+mod base;
 mod bundled;
 mod description;
 #[cfg(all(test, feature = "meshes"))]
@@ -67,7 +73,8 @@ mod transforms;
 mod xml;
 
 pub use arms::{ArmId, PerArm};
-pub use bundled::{Model, UnknownModel, model, models, write_meshes};
+pub use base::{DifferentialBase, NoDifferentialBase, Wheel};
+pub use bundled::{Model, UnknownModel, model, models, models_with_arms, write_meshes};
 pub use description::{
     Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
     RobotDescription, mesh_name,

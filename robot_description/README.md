@@ -10,11 +10,12 @@ carries.
 ## The models
 
 Each directory of `models/` is one model, named by its model id, and holds
-`<id>.urdf`, `<id>.srdf` and the collision meshes the URDF names under
-`meshes/`:
+`<id>.urdf`, `<id>.srdf` and, where the URDF names collision meshes, those
+meshes under `meshes/`:
 
 | Model id | Robot |
 |---|---|
+| `botshare_base` | botshare.ai's OpenAMRobot 2.0 base, a differential base of two driven hub-motor wheels and four casters, with an Orbbec Gemini 336L depth camera at its front and an RPLIDAR S3 2-D lidar |
 | `openarm_v1` | OpenArm v1.0, two seven-joint arms with a parallel gripper each |
 | `openarm_v2` | OpenArm v2.0, two seven-joint arms with a two-finger revolute gripper each, two wrist cameras and a chest camera |
 | `so101` | SO-101, one five-joint arm with a one-jaw gripper and a wrist camera |
@@ -23,8 +24,12 @@ The OpenArm URDFs are Enactic's (`openarm_description`), and their SRDFs start
 from Enactic's `openarm_bimanual_moveit_config`, both Apache-2.0. The SO-101
 URDF is TheRobotStudio's `so101_new_calib.urdf` (Apache-2.0), with the convex
 hull of each part's mesh as its collision mesh, which
-`tools/so101_collision_hulls.py` writes. Each file says what it adds to its
-upstream or changes in it, such as the optical frame of each camera. The
+`tools/so101_collision_hulls.py` writes. The botshare base's URDF is the
+expansion of botshare's `openamrobot_description` (MIT) at a pinned commit, and
+its SRDF disables each pair of its links, both written by
+`tools/botshare_base.py`, whose `--check` fails unless the two files are what it
+writes. Each file says what it adds to its upstream or changes in it, such as
+the optical frame of each camera. The
 OpenArm torso collides as eight pieces, each a collision element of the torso
 link: the slices of the stand's mesh that collision_geometry's example
 `openarm_torso_pieces` writes into both OpenArm models.
@@ -57,6 +62,17 @@ the farthest depths it measures, meters along its view ([`DepthRange`]):
   </sensor>
 </gazebo>
 ```
+
+A differential base's wheels, as `RobotDescription::differential_base` reads them, are
+the URDF's two continuous joints on a link that fixed joints alone join to the root link
+that no group of the SRDF holds, so a continuous joint below a joint that moves, and an
+arm's on the base such as Kinova Gen3's `joint_1`, are no wheels.
+Each turns about +y in the root link's frame, both on one axle (the same x and z) whose
+midpoint stands at the root link's origin in x and y. Each wheel's link holds one
+collision cylinder about its joint's axis and centered on it, whose radius is the
+wheel's and whose length is the width of its tire, each above 0, and carries no other
+link: a link that a wheel carries, such as a hub cap, turns with the wheel, so it hangs
+on a link that does not turn.
 
 ## Reading a description
 
@@ -126,7 +142,7 @@ name that is not one file's.
 ## Adding a robot
 
 1. Put its files in `models/<id>/`: `<id>.urdf`, `<id>.srdf` and the collision
-   meshes the URDF names under `meshes/`. A description holds its meshes by
+   meshes the URDF names, if any, under `meshes/`. A description holds its meshes by
    file name, so two collision meshes of one file name from different paths
    are refused.
 2. The URDF is one tree: its links and its joints are each named once, each
@@ -147,7 +163,9 @@ name that is not one file's.
    naming none of them.
 5. The generic suites take it with no edit when its arms are one or two of
    five, six or seven joints each, all of one joint count, the shapes
-   [`on_shape`] runs at. self_collision_model's `tests/models.rs` builds its
+   [`on_shape`] runs at. They check [`models_with_arms`], the bundled models
+   with an arm; a model of no arm, such as `botshare_base`, drives no node
+   of arms and has no self model. self_collision_model's `tests/models.rs` builds its
    self model, which stands clear at home and checks every pair of bodies but
    the disabled ones, and holds each `Never` pair apart over a grid of the
    joints between the pair's two bodies, which walks a pair of at most three
@@ -171,12 +189,12 @@ cargo test --all-features
 cargo test
 ```
 
-The tests hold every bundled model to the rules above: its arms with their
-`ready`, `home` and `start` states, each finger's `closed` and `open` positions at its
+The tests hold every bundled model to the rules above: each of its arms with
+its `ready`, `home` and `start` states, each finger's `closed` and `open` positions at its
 joint's limits, the origin of each gripper link with collision geometry at -z
 of its grasp frame, its digest, its meshes the ones its URDF names, and its
-files in its directory; each bundled model drives a node compiled for its own
-arms, and a node's table of the models it drives gives each listed model. They
+files in its directory; each bundled model with arms drives a node compiled for its
+own arms, and a node's table of the models it drives gives each listed model. They
 run each shape [`on_shape`] names at its counts, read each disabled pair's
 reason back from its name, read each camera's depth range from its depth
 sensor, and refuse, by name, every element and attribute the reader does not
