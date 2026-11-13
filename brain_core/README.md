@@ -418,7 +418,14 @@ A grab whose orientations all fail ends before the arm moves, with the last
 one's words, the planner's kind first (`start_in_collision: ...`): no line
 takes the place of a plan. The descent, the lift and the retreat stay
 `move_arm` lines. The log line counts the plans and the reach tests, and
-each planned transit that ran logs a line of its own.
+each planned transit that ran logs a line of its own. Before it plans, the
+grab adds the item's object, `brain/<item_id>`, to the planning scene at the
+item's place (the box its look measured, or a 5 cm sphere at its position
+for an item no look measured) and lets the gripper's links touch it: the add
+clears the item's cubes from the planner's map, so none stay under the hand
+after the lift. Each way the grab fails or stops removes the object, after
+the retreat when there is one; a grab that holds leaves it, and the brain
+moves it to the hand and attaches it (`Brain.hold`).
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the

@@ -44,7 +44,13 @@ first orientation that passes both runs its plan with execute_joint_path,
 the plan's start as the expected start. A plan that fails, such as one
 from a start in collision, gives the planner's kind and words, and no line
 replaces it. The descent, the lift, the retreat and the climb stay move_arm
-lines either way.
+lines either way. Before a grab plans, it adds the item's object,
+`brain/<item_id>`, to the planning scene at the item's place, the box its
+look measured or a sphere for an item no look measured, and lets the
+gripper's links touch it; the add clears the item's cubes from the
+planner's map, so none stay under the hand after the lift. Each way a grab
+fails or stops removes the object; a grab that holds leaves it for the
+brain to attach.
 
 Each step that fails ends the grab with the backbone's own words. A grab
 or a place that no orientation plans names the last orientation it tried,
@@ -103,7 +109,7 @@ from typing import Awaitable, Callable, Optional, Sequence
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
-from ...robot import ArmDescription, JointPlan, MoveResult
+from ...robot import ArmDescription, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
 from ...waiting import until
 from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps
 from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
@@ -219,12 +225,19 @@ class _Checks:
 class _Reach:
     """The first orientation of a grasp whose moves reach, as `_transit`
     finds it: the orientation, the points of its moves in order, the pre
-    point first, and `go`, the transit, the move that takes the arm to the
-    pre point."""
+    point first, `go`, the transit, the move that takes the arm to the pre
+    point, and `abandon`."""
 
     orientation: Quat
     points: tuple[Vec3, ...]
     go: Callable[[CancelToken], Awaitable[object]]
+    # What a grab that fails or stops undoes of the transit: the item's
+    # object it added to the planning scene, nothing with no planner.
+    abandon: Callable[[], Awaitable[None]]
+
+
+async def _nothing() -> None:
+    return None
 
 
 class ScriptedManipulator:
@@ -344,8 +357,20 @@ class ScriptedManipulator:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
         reach = await self._transit(
-            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True
+            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True, item=item,
         )
+        try:
+            return await self._run_grab(item, gripper, max_effort, reach, cancel, notes)
+        except (_Failed, Cancelled):
+            await reach.abandon()
+            raise
+
+    async def _run_grab(
+        self, item: Item, gripper: Gripper, max_effort: float, reach: _Reach, cancel: CancelToken, notes: list[str]
+    ) -> Outcome:
+        """The grab from its transit on: the transit, the alignment, then the
+        descent, the close and the lift, with the retreat after a step from
+        the descent on that fails."""
         orientation, (pre, point, lift) = reach.orientation, reach.points
         await reach.go(cancel)
         if self.aligner is not None:
@@ -521,28 +546,71 @@ class ScriptedManipulator:
 
     async def _transit(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
-        clearance_m: float, with_lift: bool = False, release_height_m: float = 0.0,
+        clearance_m: float, with_lift: bool = False, release_height_m: float = 0.0, item: Optional[Item] = None,
     ) -> _Reach:
         """The first orientation of `grasp` whose moves reach, as
         `_first_reach` finds it, with its transit. The only place that asks
         whether the motion planner is bound. Without it, each point is
         checked with check_arm_move and the transit is the move_arm line
-        from where the arm is commanded now to the pre point. With it, each
-        orientation is planned (`_planned_reach`) and the transit runs the
-        plan. A failure that no orientation reaches is raised before
-        anything moves."""
+        from where the arm is commanded now to the pre point. With it, a
+        grab's `item` first gets its object in the planning scene, each
+        orientation is planned (`_planned_reach`), and the transit runs the
+        plan; abandoning the reach removes the object. A failure that no
+        orientation reaches is raised before anything moves, the object
+        removed."""
         if not self._robot.has_planner:
             orientation, points, _ = await self._first_reach(
                 gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
                 test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
             )
-            return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel))
+            return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel), abandon=_nothing)
         arm = await self._planner_arm(gripper)
-        orientation, points, plan = await self._first_reach(
-            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
-            test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
+        object_id = await self._add_item_object(item, arm) if item is not None else None
+        try:
+            orientation, points, plan = await self._first_reach(
+                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
+                test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
+            )
+        except (_Failed, Cancelled):
+            await self._remove_item_object(object_id)
+            raise
+        return _Reach(
+            orientation, points,
+            go=lambda cancel: self._run_plan(gripper.arm, plan, cancel),
+            abandon=lambda: self._remove_item_object(object_id),
         )
-        return _Reach(orientation, points, go=lambda cancel: self._run_plan(gripper.arm, plan, cancel))
+
+    async def _add_item_object(self, item: Item, arm: ArmDescription) -> Optional[str]:
+        """Adds the object of `item` to the planning scene at its place, the
+        box its look measured or a sphere at its position for an item no look
+        measured, and lets the links of the gripper of `arm` touch it.
+        Returns its id, or none when the add failed: the failure is logged,
+        the grab goes on, and the hold puts the object at the hand."""
+        object_id = brain_object_id(item.item_id)
+        centre = item.shape.centre if item.shape is not None else item.position
+        reason = await self._robot.apply_collision_objects([item_object(item.item_id, item.shape, centre)])
+        if reason:
+            logger.warning("planning scene: add %s at the item failed: %s", object_id, reason)
+            return None
+        what = "its box" if item.shape is not None else "a sphere, no look measured it"
+        logger.info("planning scene: add %s at the item, %s, at %s", object_id, what, _numbers(centre))
+        reason = await self._robot.set_allowed_collision(object_id, arm.gripper_links, True)
+        if reason:
+            logger.warning("planning scene: let the gripper links of %s touch %s failed: %s", arm.name, object_id, reason)
+        else:
+            logger.info("planning scene: let the gripper links of %s touch %s", arm.name, object_id)
+        return object_id
+
+    async def _remove_item_object(self, object_id: Optional[str]) -> None:
+        """Removes the object a grab added, after the grab failed or
+        stopped; nothing when it added none."""
+        if object_id is None:
+            return
+        reason = await self._robot.apply_collision_objects([ObjectOperation.remove(object_id)])
+        if reason:
+            logger.warning("planning scene: remove %s after the grab failed: %s", object_id, reason)
+        else:
+            logger.info("planning scene: remove %s, the grab did not hold it", object_id)
 
     async def _planner_arm(self, gripper: Gripper) -> ArmDescription:
         """The planner's description of the arm of `gripper`: its grasp link

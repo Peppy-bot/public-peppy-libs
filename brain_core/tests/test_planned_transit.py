@@ -26,7 +26,7 @@ from brain_core.manipulators.scripted.manipulator import (
 )
 from brain_core.manipulators.scripted.grasp import lifted
 from brain_core.manipulators.scripted.manipulator import CLEARANCE_M, HELD_ITEM_DEPTH_M, RELEASE_HEIGHT_M
-from brain_core.ports import Cancelled, CancelToken, Gripper, Outcome, Pose, Senses
+from brain_core.ports import Cancelled, CancelToken, Gripper, Item, ItemShape, Outcome, Pose, Senses
 from brain_core.robot import (
     ArmDescription,
     ArmDescriptions,
@@ -68,9 +68,11 @@ class FakePlannerRobot(FakeRobot):
     left arm; a plan reaches its pose, a reach test covers its lines and a
     run completes, unless the test queued another answer. Each is recorded
     in `calls` beside the backbone's: ("describe",), ("plan", position,
-    orientation), ("line", positions, orientation, avoid_collisions, start)
-    and ("run", start, waypoint joints), and the bars of each plan and run
-    in `bars`."""
+    orientation), ("line", positions, orientation, avoid_collisions, start),
+    ("run", start, waypoint joints), and the scene writes ("add", id,
+    position, shape kind, dimensions), ("allow", id, links) and ("remove",
+    id), each done unless the test queued a failure in `scene_failures`;
+    and the bars of each plan and run in `bars`."""
 
     has_planner = True
 
@@ -80,6 +82,7 @@ class FakePlannerRobot(FakeRobot):
         self.plans: deque = deque()
         self.lines: deque = deque()
         self.runs: deque = deque()
+        self.scene_failures: deque = deque()
 
     def is_lift(self, call: tuple) -> bool:
         """With the planner the transit is a run, so a grab's lift is its
@@ -105,6 +108,22 @@ class FakePlannerRobot(FakeRobot):
         assert len(orientations) == 1
         self._record(("line", tuple(position for position, _ in poses), orientations.pop(), avoid_collisions, tuple(start_joint_positions)))
         return self.lines.popleft() if self.lines else reached()
+
+    async def apply_collision_objects(self, operations) -> str:
+        await asyncio.sleep(0)
+        for operation in operations:
+            if operation.operation == "add":
+                [shape] = operation.shapes
+                self._record(("add", operation.id, operation.position, shape.kind, shape.dimensions))
+            else:
+                self._record((operation.operation, operation.id))
+        return self.scene_failures.popleft() if self.scene_failures else ""
+
+    async def set_allowed_collision(self, name, other_names, allowed) -> str:
+        assert allowed
+        await asyncio.sleep(0)
+        self._record(("allow", name, tuple(other_names)))
+        return ""
 
     async def execute_joint_path(self, arm, plan, **bars) -> PathResult:
         assert arm == "left_arm"
@@ -135,6 +154,10 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     assert robot.calls == [
         ("grip", "left_gripper", 1.0, 0.0),
         ("describe",),
+        # The item's object at its place before the plan: a sphere at its
+        # position, since no look measured it, the gripper links let touch it.
+        ("add", "brain/cup_1-t0", cup().position, "sphere", (0.05,)),
+        ("allow", "brain/cup_1-t0", GRIPPER_LINKS),
         ("plan", PRE, q),
         # The reach of the descent and of the lift, from the end of the plan,
         # with no collision check.
@@ -151,7 +174,9 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     assert ("plan", plan_bars) in robot.bars
     assert ("run", dict(duration_s=0.0, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=SETTLE_TIMEOUT_S)) in robot.bars
     assert SETTLE_JOINT_RAD == 0.05
-    ran, grab = [record.getMessage() for record in log.records]
+    added, allowed, ran, grab = [record.getMessage() for record in log.records]
+    assert added == "planning scene: add brain/cup_1-t0 at the item, a sphere, no look measured it, at [0.500, 0.100, 0.720]"
+    assert allowed == "planning scene: let the gripper links of left_arm touch brain/cup_1-t0"
     assert ran == "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.500, 0.100, 0.770]"
     assert grab.startswith(
         "grab of item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 8 planned, [0.000, 1.000, 0.000, 0.000] "
@@ -186,8 +211,9 @@ async def test_no_orientation_with_a_plan_fails_with_the_planners_kind_and_words
         "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 8 of 8, "
         f"[-0.383, 0.924, 0.000, 0.000], has no plan to its pre-grasp point [0.500, 0.100, 0.770]: start_in_collision: {STARTS_IN_COLLISION}",
     )
-    # No line as a fallback, and no move: the jaws stand open as they opened.
-    assert robot.kinds() == ["grip", "describe"] + ["plan"] * len(DOWN)
+    # No line as a fallback, and no move: the jaws stand open as they opened,
+    # and the item's object goes.
+    assert robot.kinds() == ["grip", "describe", "add", "allow"] + ["plan"] * len(DOWN) + ["remove"]
 
 
 async def test_an_orientation_whose_descent_or_lift_does_not_reach_gives_way_and_names_that_point():
@@ -198,7 +224,7 @@ async def test_an_orientation_whose_descent_or_lift_does_not_reach_gives_way_and
     assert outcome.message.endswith(
         "has no plan to its lifted point [0.500, 0.100, 0.770]: plan_cartesian_path reaches 0.60 of the lines from the end of the plan"
     )
-    assert robot.kinds() == ["grip", "describe"] + ["plan", "line"] * len(DOWN)
+    assert robot.kinds() == ["grip", "describe", "add", "allow"] + ["plan", "line"] * len(DOWN) + ["remove"]
     robot.calls.clear()
     robot.lines.append(CartesianPath(MoveEnd.FAILED, "the start stands in collision", "start_in_collision"))
     robot.lines.extend([reached(0.38)] * (len(DOWN) - 1))
@@ -213,7 +239,7 @@ async def test_a_run_of_the_plan_that_fails_ends_the_grab_with_its_words_and_not
     robot.runs.append(PathResult(MoveEnd.FAILED, "left_arm stands 0.08 rad from the expected start at joint 2", "precondition_failed"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "left_arm stands 0.08 rad from the expected start at joint 2")
-    assert robot.calls[-1] == THE_RUN
+    assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/cup_1-t0")]
 
 
 async def test_a_run_a_stop_ended_retreats_from_nothing():
@@ -221,7 +247,7 @@ async def test_a_run_a_stop_ended_retreats_from_nothing():
     robot.runs.append(PathResult(MoveEnd.CANCELLED, "stopped: the operator asked"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "stopped: the operator asked")
-    assert robot.calls[-1] == THE_RUN
+    assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/cup_1-t0")]
 
 
 async def test_a_cancel_during_a_plan_raises_cancelled_before_the_arm_moves():
@@ -231,7 +257,7 @@ async def test_a_cancel_during_a_plan_raises_cancelled_before_the_arm_moves():
     robot.plans.append(JointPlan(MoveEnd.CANCELLED, "aborted: operator"))
     with pytest.raises(Cancelled):
         await manipulator.grab(cup(), LEFT, 0.0, cancel)
-    assert robot.kinds() == ["grip", "describe", "plan"]
+    assert robot.kinds() == ["grip", "describe", "add", "allow", "plan", "remove"]
 
 
 async def test_a_plan_the_brain_did_not_cancel_that_ends_cancelled_ends_the_grab_as_stopped():
@@ -239,7 +265,7 @@ async def test_a_plan_the_brain_did_not_cancel_that_ends_cancelled_ends_the_grab
     robot.plans.append(JointPlan(MoveEnd.CANCELLED, "the planner shuts down"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the planner shuts down")
-    assert robot.kinds() == ["grip", "describe", "plan"]
+    assert robot.kinds() == ["grip", "describe", "add", "allow", "plan", "remove"]
 
 
 async def test_a_planner_that_does_not_describe_the_arm_fails_the_grab_before_any_plan():
@@ -340,3 +366,74 @@ async def test_a_place_whose_run_fails_fails_with_its_words_and_the_jaws_stay_cl
     outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
     assert outcome == Outcome(False, "the guard would hold the path short at waypoint 1")
     assert robot.calls[-1] == THE_RUN and "grip" not in robot.kinds()
+
+
+# The item's object before the grab: added at the item's place with the
+# gripper links let touch it, removed at each way a grab fails or stops.
+
+LIME_SHAPE = ItemShape((0.5, 0.1, 0.68), (0.082, 0.071, 0.086), 0.4)
+
+
+def a_lime() -> Item:
+    return Item("lime_1-t0", "lime", (0.5, 0.1, 0.72), None, 0.9, 1, shape=LIME_SHAPE)
+
+
+async def test_a_grab_adds_the_box_its_look_measured_and_leaves_it_when_it_holds(caplog):
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        assert await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken()) == HELD
+    assert robot.calls[2:4] == [("add", "brain/lime_1-t0", LIME_SHAPE.centre, "box", LIME_SHAPE.sides), ("allow", "brain/lime_1-t0", GRIPPER_LINKS)]
+    assert "remove" not in robot.kinds()
+    lines = [record.getMessage() for record in log.records]
+    assert lines[:2] == [
+        "planning scene: add brain/lime_1-t0 at the item, its box, at [0.500, 0.100, 0.680]",
+        "planning scene: let the gripper links of left_arm touch brain/lime_1-t0",
+    ]
+
+
+async def test_a_grab_that_closes_on_nothing_retreats_then_removes_the_object():
+    manipulator, robot, store = await started()
+    holding(robot, store, closed=0.01)
+    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "gripper 'left_gripper' closed on nothing")
+    assert robot.calls[-3:] == [("grip", "left_gripper", 1.0, 0.0), ("move", PRE, DOWN[0]), ("remove", "brain/lime_1-t0")]
+
+
+async def test_a_grab_stopped_during_its_descent_removes_the_object_and_retreats_from_nothing():
+    manipulator, robot, store = await started()
+    cancel = CancelToken()
+    robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "move" else None
+    with pytest.raises(Cancelled):
+        await manipulator.grab(a_lime(), LEFT, 0.0, cancel)
+    assert robot.calls[-2:] == [("move", GRASP, DOWN[0]), ("remove", "brain/lime_1-t0")]
+
+
+async def test_a_grab_whose_alignment_gives_up_removes_the_object():
+    from test_scripted_alignment import FakeAligner
+
+    from brain_core.manipulators.scripted.aligning import GaveUp
+
+    manipulator, robot, store = await started(aligner=FakeAligner(GaveUp(steps=2)))
+    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "the model gave up after 2 steps")
+    assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/lime_1-t0")]
+
+
+async def test_an_add_that_fails_is_logged_and_the_grab_goes_on_with_nothing_to_remove(caplog):
+    manipulator, robot, store = await started()
+    robot.scene_failures.append("apply_collision_objects gave no answer: TimeoutError('no reply')")
+    robot.plans.extend([no_plan("no_path", "no path")] * len(DOWN))
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+    assert not outcome.success
+    assert robot.kinds() == ["grip", "describe", "add"] + ["plan"] * len(DOWN)
+    assert log.records[0].getMessage() == (
+        "planning scene: add brain/lime_1-t0 at the item failed: apply_collision_objects gave no answer: TimeoutError('no reply')"
+    )
+
+
+async def test_a_place_adds_no_object():
+    manipulator, robot, _ = await started()
+    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
+    assert not {"add", "allow", "remove"} & set(robot.kinds())
