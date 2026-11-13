@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pytest
 from fake_peppygen import (
     CheckArmMoveRequest,
+    ExecuteJointPathArm,
+    ExecuteJointPathRequest,
+    ExecuteJointPathWaypoint,
     FakeConsumedAction,
     FakeConsumedService,
     MoveArmRequest,
@@ -25,7 +28,18 @@ from fake_peppygen import (
 )
 
 from brain_core.bindings import PLANNER_MODULES
-from brain_core.robot import CartesianPath, GripResult, JointPlan, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot, Waypoint
+from brain_core.robot import (
+    CartesianPath,
+    GripResult,
+    JointPlan,
+    MoveCheck,
+    MoveEnd,
+    MoveResult,
+    PathResult,
+    PlannerModules,
+    Robot,
+    Waypoint,
+)
 
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
@@ -431,3 +445,72 @@ async def test_a_stop_cancels_a_cartesian_path_in_flight():
     goal.complete_cancelled("cancelled by its caller", None)
     await asyncio.wait_for(stop, WAIT)
     assert await asyncio.wait_for(path, WAIT) == CartesianPath(MoveEnd.CANCELLED, "cancelled by its caller")
+
+
+# The run of a plan through the backbone's execute_joint_path.
+
+A_PLAN = JointPlan(
+    MoveEnd.COMPLETED,
+    start_joint_positions=tuple(JOINTS),
+    waypoints=(Waypoint(tuple(PLANNED), POSITION, ORIENTATION), Waypoint(tuple(JOINTS), POSITION, ORIENTATION)),
+)
+RUN_BARS = dict(duration_s=0.0, settle_tolerance_rad=0.05, settle_timeout_s=2.0)
+
+
+def path_ran(arm="left_arm", joints=JOINTS):
+    return SimpleNamespace(arms=[SimpleNamespace(arm_name=arm, final_joint_positions=list(joints))], action_time=2.1)
+
+
+async def test_a_run_sends_the_plans_waypoints_with_its_start_as_the_expected_start():
+    robot, planner = planned()
+    run = asyncio.create_task(robot.execute_joint_path("left_arm", A_PLAN, **RUN_BARS))
+    goal = await asyncio.wait_for(planner.execute_joint_path.next_goal(), WAIT)
+    assert goal.request == ExecuteJointPathRequest(
+        arms=[
+            ExecuteJointPathArm(
+                arm_name="left_arm",
+                waypoints=[ExecuteJointPathWaypoint(joint_positions=PLANNED), ExecuteJointPathWaypoint(joint_positions=JOINTS)],
+                expected_start_joint_positions=JOINTS,
+                settle_tolerances_rad=[0.05] * 7,
+            )
+        ],
+        duration_s=0.0,
+        settle_timeout_s=2.0,
+    )
+    goal.complete(path_ran())
+    assert await asyncio.wait_for(run, WAIT) == PathResult(MoveEnd.COMPLETED, final_joint_positions=tuple(JOINTS))
+
+
+@pytest.mark.parametrize("kind, message", [
+    ("precondition_failed", "left_arm stands 0.08 rad from the expected start at joint 2"),
+    ("unreachable", "the guard would hold the path short at waypoint 1"),
+    ("timeout", "joint 4 still 0.07 rad from its target, 2.0 s after the planned end"),
+])
+async def test_a_run_that_fails_says_why_with_its_kind(kind, message):
+    robot, planner = planned()
+    run = asyncio.create_task(robot.execute_joint_path("left_arm", A_PLAN, **RUN_BARS))
+    goal = await asyncio.wait_for(planner.execute_joint_path.next_goal(), WAIT)
+    goal.fail(kind, message)
+    assert await asyncio.wait_for(run, WAIT) == PathResult(MoveEnd.FAILED, message, kind)
+
+
+async def test_a_stop_cancels_a_run_in_flight_and_gives_where_the_joints_stopped():
+    robot, planner = planned()
+    run = asyncio.create_task(robot.execute_joint_path("left_arm", A_PLAN, **RUN_BARS))
+    goal = await asyncio.wait_for(planner.execute_joint_path.next_goal(), WAIT)
+    await asyncio.wait_for(in_flight(robot), WAIT)
+    stop = asyncio.create_task(robot.stop())
+    await asyncio.wait_for(goal.cancel_asked.wait(), WAIT)
+    goal.complete_cancelled("aborted: operator", path_ran(joints=PLANNED))
+    await asyncio.wait_for(stop, WAIT)
+    result = await asyncio.wait_for(run, WAIT)
+    assert result == PathResult(MoveEnd.CANCELLED, "aborted: operator", "", tuple(PLANNED))
+    assert result.cancelled
+
+
+async def test_a_refused_run_says_why():
+    robot, planner = planned()
+    planner.execute_joint_path.refuse_next("leader_streaming", "a leader streams left_arm")
+    assert await robot.execute_joint_path("left_arm", A_PLAN, **RUN_BARS) == PathResult(
+        MoveEnd.REFUSED, "a leader streams left_arm", "leader_streaming"
+    )

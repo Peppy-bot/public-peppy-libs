@@ -100,6 +100,14 @@ class GripResult(Moved):
 
 
 @dataclass(frozen=True)
+class PathResult(Moved):
+    """A run of a planned path's end, and where the arm's joints stood when
+    it ended: for a completed or a cancelled run."""
+
+    final_joint_positions: Optional[tuple[float, ...]] = None
+
+
+@dataclass(frozen=True)
 class Waypoint:
     """One state of a planned path: the arm's joint positions in its joint
     order of limb_state, and where its grasp point stands there."""
@@ -286,6 +294,43 @@ class Robot:
             return MoveCheck(False, f"check_arm_move gave no answer: {error!r}")
         data = answer.data
         return MoveCheck(bool(data.reachable), data.reason, float(data.duration_s))
+
+    async def execute_joint_path(
+        self,
+        arm: str,
+        plan: JointPlan,
+        *,
+        duration_s: float,
+        settle_tolerance_rad: float,
+        settle_timeout_s: float,
+    ) -> PathResult:
+        """Runs the completed `plan` of `arm` through limb_motion's
+        execute_joint_path, its start as the expected start, so the backbone
+        refuses it with `precondition_failed` unless the arm still stands
+        within its start tolerance of where the plan began. Waits for each
+        joint to settle within `settle_tolerance_rad` of the last waypoint,
+        or for the move to fail `settle_timeout_s` after its planned end. A
+        duration of 0 is the fastest the joint limits allow. A stop cancels
+        it as it cancels any move."""
+        module = self._modules().execute_joint_path
+        joints = len(plan.start_joint_positions)
+        request = module.GoalRequest(
+            arms=[
+                module.GoalRequestArmsItem(
+                    arm_name=arm,
+                    waypoints=[module.GoalRequestArmsItemWaypointsItem(joint_positions=list(w.joint_positions)) for w in plan.waypoints],
+                    expected_start_joint_positions=list(plan.start_joint_positions),
+                    settle_tolerances_rad=[settle_tolerance_rad] * joints,
+                )
+            ],
+            duration_s=duration_s,
+            settle_timeout_s=settle_timeout_s,
+        )
+        moved, data = await self._run(module, request)
+        ran = next((found for found in data.arms if found.arm_name == arm), None) if data is not None else None
+        if ran is None:
+            return PathResult(moved.end, moved.message, moved.failure_kind)
+        return PathResult(moved.end, moved.message, moved.failure_kind, _joints(ran.final_joint_positions))
 
     async def plan_joint_path(
         self,
