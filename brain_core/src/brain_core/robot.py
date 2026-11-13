@@ -122,6 +122,19 @@ class JointPlan(Moved):
 
 
 @dataclass(frozen=True)
+class CartesianPath(Moved):
+    """plan_cartesian_path's answer: how it ended, and for a completed one
+    the start it used, the waypoints of the part of the requested lines
+    that is valid (none when not even the first step is), and `fraction`,
+    the share of the lines that part covers, 0 to 1, each line counting
+    equally. Nothing moved, whatever the end."""
+
+    start_joint_positions: tuple[float, ...] = ()
+    waypoints: tuple[Waypoint, ...] = ()
+    fraction: float = 0.0
+
+
+@dataclass(frozen=True)
 class MoveCheck:
     """check_arm_move's answer: whether a move_arm goal with the same
     fields has a plan from where the arm is commanded now, why it has none,
@@ -323,6 +336,40 @@ class Robot:
             MoveEnd.COMPLETED,
             start_joint_positions=_joints(planned.start_joint_positions),
             waypoints=tuple(_waypoint(waypoint) for waypoint in planned.waypoints),
+        )
+
+    async def plan_cartesian_path(
+        self,
+        arm: str,
+        link: str,
+        poses: Sequence[tuple[Vec3, Quat]],
+        *,
+        avoid_collisions: bool,
+        start_joint_positions: Sequence[float] = (),
+    ) -> CartesianPath:
+        """Asks the planner for the joint path along which `link` of `arm`
+        follows straight lines through `poses`, each a (position,
+        orientation), from where the arm stands, or from
+        `start_joint_positions`. With `avoid_collisions` false nothing is
+        checked but the reach and the precision, as a reach test; with it
+        true the path ends before the first collision. Nothing moves. The
+        call is a goal in flight like a move, so a stop cancels it."""
+        module = self._modules().plan_cartesian_path
+        request = module.GoalRequest(
+            arm_name=arm,
+            start_joint_positions=[float(v) for v in start_joint_positions],
+            link_name=link,
+            waypoints=[module.GoalRequestWaypointsItem(position=list(position), orientation=list(orientation)) for position, orientation in poses],
+            avoid_collisions=avoid_collisions,
+        )
+        moved, data = await self._run(module, request)
+        if not moved.completed:
+            return CartesianPath(moved.end, moved.message, moved.failure_kind)
+        return CartesianPath(
+            MoveEnd.COMPLETED,
+            start_joint_positions=_joints(data.start_joint_positions),
+            waypoints=tuple(_waypoint(waypoint) for waypoint in data.waypoints),
+            fraction=float(data.fraction),
         )
 
     @property

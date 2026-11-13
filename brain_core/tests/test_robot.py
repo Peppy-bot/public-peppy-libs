@@ -15,6 +15,8 @@ from fake_peppygen import (
     PlanJointPathArm,
     PlanJointPathOrientationConstraint,
     PlanJointPathPositionConstraint,
+    PlanCartesianPathRequest,
+    PlanCartesianPathWaypoint,
     PlanJointPathRequest,
     ResultStatus,
     fake_bindings,
@@ -23,7 +25,7 @@ from fake_peppygen import (
 )
 
 from brain_core.bindings import PLANNER_MODULES
-from brain_core.robot import GripResult, JointPlan, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot, Waypoint
+from brain_core.robot import CartesianPath, GripResult, JointPlan, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot, Waypoint
 
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
@@ -353,3 +355,79 @@ async def test_a_planner_member_called_without_the_planner_is_a_fault():
     robot, _, _ = backbone()
     with pytest.raises(RuntimeError, match="does not consume the motion planner"):
         await robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS)
+
+
+GRASP = (0.5, 0.1, 0.625)
+LIFTED = (0.5, 0.1, 0.775)
+
+
+def cartesian_result(waypoints=(PLANNED,), fraction=1.0, start=JOINTS):
+    return SimpleNamespace(
+        start_joint_positions=list(start), waypoints=[path_waypoint(w) for w in waypoints], fraction=fraction, map_stamp=None,
+    )
+
+
+async def test_a_cartesian_path_asks_for_the_lines_through_the_poses_and_reads_how_far_it_goes():
+    robot, planner = planned()
+    path = asyncio.create_task(
+        robot.plan_cartesian_path("left_arm", LINK, [(GRASP, ORIENTATION), (LIFTED, ORIENTATION)], avoid_collisions=False, start_joint_positions=PLANNED)
+    )
+    goal = await asyncio.wait_for(planner.plan_cartesian_path.next_goal(), WAIT)
+    assert goal.request == PlanCartesianPathRequest(
+        arm_name="left_arm",
+        start_joint_positions=PLANNED,
+        link_name=LINK,
+        waypoints=[
+            PlanCartesianPathWaypoint(position=[0.5, 0.1, 0.625], orientation=[0.0, 0.0, 0.0, 1.0]),
+            PlanCartesianPathWaypoint(position=[0.5, 0.1, 0.775], orientation=[0.0, 0.0, 0.0, 1.0]),
+        ],
+        avoid_collisions=False,
+    )
+    goal.complete(cartesian_result(waypoints=(JOINTS, PLANNED), fraction=1.0, start=PLANNED))
+    answer = await asyncio.wait_for(path, WAIT)
+    assert answer == CartesianPath(
+        MoveEnd.COMPLETED,
+        start_joint_positions=tuple(PLANNED),
+        waypoints=(Waypoint(tuple(JOINTS), POSITION, ORIENTATION), Waypoint(tuple(PLANNED), POSITION, ORIENTATION)),
+        fraction=1.0,
+    )
+    assert robot.moves_in_flight == 0
+
+
+async def test_a_checked_cartesian_path_from_where_the_arm_stands_that_stops_short_gives_its_fraction():
+    robot, planner = planned()
+    path = asyncio.create_task(robot.plan_cartesian_path("left_arm", LINK, [(GRASP, ORIENTATION)], avoid_collisions=True))
+    goal = await asyncio.wait_for(planner.plan_cartesian_path.next_goal(), WAIT)
+    assert goal.request.avoid_collisions and goal.request.start_joint_positions == []
+    goal.complete(cartesian_result(fraction=0.38))
+    answer = await asyncio.wait_for(path, WAIT)
+    assert answer.completed and answer.fraction == 0.38
+    # Not even the first step valid: a completed answer with no waypoints.
+    path = asyncio.create_task(robot.plan_cartesian_path("left_arm", LINK, [(GRASP, ORIENTATION)], avoid_collisions=True))
+    goal = await asyncio.wait_for(planner.plan_cartesian_path.next_goal(), WAIT)
+    goal.complete(cartesian_result(waypoints=(), fraction=0.0))
+    assert await asyncio.wait_for(path, WAIT) == CartesianPath(MoveEnd.COMPLETED, start_joint_positions=tuple(JOINTS))
+
+
+async def test_a_cartesian_path_from_a_start_in_collision_fails_with_the_planners_words():
+    robot, planner = planned()
+    path = asyncio.create_task(robot.plan_cartesian_path("left_arm", LINK, [(GRASP, ORIENTATION)], avoid_collisions=True))
+    goal = await asyncio.wait_for(planner.plan_cartesian_path.next_goal(), WAIT)
+    goal.fail("start_in_collision", "openarm_left_ee_link2 stands 0.0239 m from the map")
+    answer = await asyncio.wait_for(path, WAIT)
+    assert answer == CartesianPath(MoveEnd.FAILED, "openarm_left_ee_link2 stands 0.0239 m from the map", "start_in_collision")
+    planner.plan_cartesian_path.refuse_next("rejected", "no waypoints")
+    refused = await robot.plan_cartesian_path("left_arm", LINK, [], avoid_collisions=False)
+    assert refused == CartesianPath(MoveEnd.REFUSED, "no waypoints", "rejected")
+
+
+async def test_a_stop_cancels_a_cartesian_path_in_flight():
+    robot, planner = planned()
+    path = asyncio.create_task(robot.plan_cartesian_path("left_arm", LINK, [(GRASP, ORIENTATION)], avoid_collisions=True))
+    goal = await asyncio.wait_for(planner.plan_cartesian_path.next_goal(), WAIT)
+    await asyncio.wait_for(in_flight(robot), WAIT)
+    stop = asyncio.create_task(robot.stop())
+    await asyncio.wait_for(goal.cancel_asked.wait(), WAIT)
+    goal.complete_cancelled("cancelled by its caller", None)
+    await asyncio.wait_for(stop, WAIT)
+    assert await asyncio.wait_for(path, WAIT) == CartesianPath(MoveEnd.CANCELLED, "cancelled by its caller")

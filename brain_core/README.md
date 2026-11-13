@@ -70,7 +70,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, and `plan_joint_path`, a goal in flight like a move that a stop cancels and that moves nothing |
+| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, and `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
 | `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
@@ -219,6 +219,7 @@ classDiagram
         set_gripper()
         check_arm_move()
         plan_joint_path()
+        plan_cartesian_path()
         stop()
     }
     class LimbStateStore {
