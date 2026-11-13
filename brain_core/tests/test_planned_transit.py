@@ -163,6 +163,8 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
         # with no collision check.
         ("line", (GRASP, LIFT), q, False, AT_PRE),
         THE_RUN,
+        # The checked descent and lift from where the arm stands, log only.
+        ("line", (GRASP, LIFT), q, True, ()),
         ("move", GRASP, q),
         ("grip", "left_gripper", 0.0, 12.0),
         ("move", LIFT, q),
@@ -174,7 +176,11 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     assert ("plan", plan_bars) in robot.bars
     assert ("run", dict(duration_s=0.0, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=SETTLE_TIMEOUT_S)) in robot.bars
     assert SETTLE_JOINT_RAD == 0.05
-    added, allowed, ran, grab = [record.getMessage() for record in log.records]
+    added, allowed, ran, checked, grab = [record.getMessage() for record in log.records]
+    assert checked == (
+        "checked descent of item 'cup_1-t0' with arm 'left_arm' (log only, the grab descends by lines): "
+        "the descent and the lift from where the arm stands cover 1.00 of their lines"
+    )
     assert added == "planning scene: add brain/cup_1-t0 at the item, a sphere, no look measured it, at [0.500, 0.100, 0.720]"
     assert allowed == "planning scene: let the gripper links of left_arm touch brain/cup_1-t0"
     assert ran == "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.500, 0.100, 0.770]"
@@ -417,6 +423,7 @@ async def test_a_grab_whose_alignment_gives_up_removes_the_object():
     manipulator, robot, store = await started(aligner=FakeAligner(GaveUp(steps=2)))
     outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the model gave up after 2 steps")
+    # The model gave up before the descent: no checked descent is asked.
     assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/lime_1-t0")]
 
 
@@ -437,3 +444,45 @@ async def test_a_place_adds_no_object():
     manipulator, robot, _ = await started()
     assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
     assert not {"add", "allow", "remove"} & set(robot.kinds())
+
+
+# The checked descent of stage 1: asked after the aligner, from where the
+# arm stands, with the points the descent runs; logged, and never in the
+# way of the grab.
+
+
+async def test_the_checked_descent_is_asked_after_the_alignment_with_the_aligned_points(caplog):
+    from test_scripted_alignment import ALIGNED_LIFT, ALIGNED_POINT, ALIGNED_PRE, TURNED, FakeAligner
+
+    from brain_core.manipulators.scripted.aligning import Aligned
+
+    manipulator, robot, store = await started(aligner=FakeAligner(Aligned(ALIGNED_PRE, ALIGNED_POINT, ALIGNED_LIFT, TURNED, steps=1)))
+    holding(robot, store)
+    robot.lines.extend([reached(), CartesianPath(MoveEnd.COMPLETED, fraction=0.38)])
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+    lines = [call for call in robot.calls if call[0] == "line"]
+    assert lines[1] == ("line", (ALIGNED_POINT, ALIGNED_LIFT), TURNED, True, ())
+    assert robot.calls.index(lines[1]) == robot.calls.index(("move", ALIGNED_POINT, TURNED)) - 1
+    assert any(record.getMessage().endswith("from where the arm stands cover 0.38 of their lines") for record in log.records)
+
+
+async def test_a_checked_descent_with_no_answer_is_logged_and_the_grab_goes_on(caplog):
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    robot.lines.extend([reached(), CartesianPath(MoveEnd.FAILED, "openarm_left_ee_link2 stands 0.0239 m from the map", "start_in_collision")])
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+    assert any(
+        record.getMessage().endswith("have no answer: start_in_collision: openarm_left_ee_link2 stands 0.0239 m from the map")
+        for record in log.records
+    )
+
+
+async def test_a_cancel_during_the_checked_descent_stops_the_grab_before_it_descends():
+    manipulator, robot, store = await started()
+    cancel = CancelToken()
+    robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "line" and call[3] else None
+    with pytest.raises(Cancelled):
+        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+    assert robot.calls[-2:] == [("line", (GRASP, LIFT), DOWN[0], True, ()), ("remove", "brain/cup_1-t0")]

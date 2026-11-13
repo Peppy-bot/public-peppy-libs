@@ -50,7 +50,11 @@ look measured or a sphere for an item no look measured, and lets the
 gripper's links touch it; the add clears the item's cubes from the
 planner's map, so none stay under the hand after the lift. Each way a grab
 fails or stops removes the object; a grab that holds leaves it for the
-brain to attach.
+brain to attach. Just before the descent, after the aligner, a grab with
+the planner asks it what a checked descent would answer: a
+plan_cartesian_path with the collision check from where the arm stands
+through the grasp and lifted points. It logs the share of the lines that
+path covers and moves by the lines of today either way.
 
 Each step that fails ends the grab with the backbone's own words. A grab
 or a place that no orientation plans names the last orientation it tried,
@@ -226,7 +230,7 @@ class _Reach:
     """The first orientation of a grasp whose moves reach, as `_transit`
     finds it: the orientation, the points of its moves in order, the pre
     point first, `go`, the transit, the move that takes the arm to the pre
-    point, and `abandon`."""
+    point, `abandon` and `log_descent`."""
 
     orientation: Quat
     points: tuple[Vec3, ...]
@@ -234,9 +238,13 @@ class _Reach:
     # What a grab that fails or stops undoes of the transit: the item's
     # object it added to the planning scene, nothing with no planner.
     abandon: Callable[[], Awaitable[None]]
+    # The log of what a checked descent from where the arm stands would
+    # answer, given the grasp point, the lifted point and the orientation;
+    # nothing with no planner.
+    log_descent: Callable[[Vec3, Vec3, Quat, CancelToken], Awaitable[None]]
 
 
-async def _nothing() -> None:
+async def _nothing(*_) -> None:
     return None
 
 
@@ -375,6 +383,7 @@ class ScriptedManipulator:
         await reach.go(cancel)
         if self.aligner is not None:
             pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
+        await reach.log_descent(point, lift, orientation, cancel)
         try:
             return await self._descend_close_lift(item, gripper, max_effort, orientation, point, lift, cancel, notes)
         except _Failed as failure:
@@ -563,7 +572,10 @@ class ScriptedManipulator:
                 gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift, release_height_m=release_height_m,
                 test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
             )
-            return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel), abandon=_nothing)
+            return _Reach(
+                orientation, points,
+                go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel), abandon=_nothing, log_descent=_nothing,
+            )
         arm = await self._planner_arm(gripper)
         object_id = await self._add_item_object(item, arm) if item is not None else None
         try:
@@ -578,6 +590,27 @@ class ScriptedManipulator:
             orientation, points,
             go=lambda cancel: self._run_plan(gripper.arm, plan, cancel),
             abandon=lambda: self._remove_item_object(object_id),
+            log_descent=lambda point, lift, orientation, cancel: self._log_checked_descent(arm, target, point, lift, orientation, cancel),
+        )
+
+    async def _log_checked_descent(
+        self, arm: ArmDescription, target: str, point: Vec3, lift: Vec3, orientation: Quat, cancel: CancelToken
+    ) -> None:
+        """Logs what a checked descent would answer: the share of the lines
+        from where the arm stands down to `point` and up to `lift` that a
+        plan_cartesian_path with the collision check covers. Log only: the
+        grab descends by its lines whatever the answer."""
+        checked = await self._robot.plan_cartesian_path(
+            arm.name, arm.grasp_link, [(point, orientation), (lift, orientation)], avoid_collisions=True,
+        )
+        cancel.check()
+        if checked.completed:
+            answer = f"cover {checked.fraction:.2f} of their lines"
+        else:
+            answer = f"have no answer: {checked.words or 'plan_cartesian_path gave none'}"
+        logger.info(
+            "checked descent of %s with arm '%s' (log only, the grab descends by lines): the descent and the lift from where the arm stands %s",
+            target, arm.name, answer,
         )
 
     async def _add_item_object(self, item: Item, arm: ArmDescription) -> Optional[str]:

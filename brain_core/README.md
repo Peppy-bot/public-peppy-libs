@@ -425,7 +425,12 @@ for an item no look measured) and lets the gripper's links touch it: the add
 clears the item's cubes from the planner's map, so none stay under the hand
 after the lift. Each way the grab fails or stops removes the object, after
 the retreat when there is one; a grab that holds leaves it, and the brain
-moves it to the hand and attaches it (`Brain.hold`).
+moves it to the hand and attaches it (`Brain.hold`). Just before the descent,
+after the aligner, the grab asks the planner what a checked descent would
+answer: a `plan_cartesian_path` with the collision check from where the arm
+stands through the grasp and lifted points. It logs the share of the lines
+that path covers (`checked descent of item ...`) and descends by its lines
+whatever the answer.
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
