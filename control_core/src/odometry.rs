@@ -2,7 +2,11 @@
 //! drive controller integrates it from wheel positions
 //! (diff_drive_controller/src/odometry.cpp: `Odometry::update_from_pos`,
 //! `update_from_vel` and `integrate`, with the rolling mean of rcpputils'
-//! `RollingMeanAccumulator`).
+//! `RollingMeanAccumulator`), and the wheel setpoints that drive the base:
+//! the wheel rates of a body velocity, as the controller mixes them
+//! (diff_drive_controller/src/diff_drive_controller.cpp:
+//! `update_and_write_commands`), and each wheel's angle, anchored by
+//! [`WheelSetpoint::next`].
 //!
 //! Each update takes the two wheel angles (rad) and the time since the last
 //! update (s): the wheel rates are the angle changes over that time, the base
@@ -21,6 +25,7 @@ use std::num::NonZeroUsize;
 
 use crate::not_finite::NotFinite;
 use crate::positive_finite::PositiveFinite;
+use crate::twist::PlanarTwist;
 
 /// The shortest time (s) an update integrates over, as odometry.cpp's
 /// updates compare it.
@@ -79,6 +84,92 @@ pub struct WheelGeometry {
     pub left_wheel_radius_m: PositiveFinite,
     /// The right wheel's radius, in meters (`right_wheel_radius`).
     pub right_wheel_radius_m: PositiveFinite,
+}
+
+impl WheelGeometry {
+    /// The wheel rates (rad/s), [left, right], that drive the base at
+    /// `velocity`, as the diff drive controller mixes them: the inverse of
+    /// the odometry's mix. A differential base executes no linear_y.
+    pub fn wheel_rates(&self, velocity: PlanarTwist) -> [f64; 2] {
+        let half_track = velocity.angular_z() * self.wheel_separation_m.get() / 2.0;
+        [
+            (velocity.linear_x() - half_track) / self.left_wheel_radius_m.get(),
+            (velocity.linear_x() + half_track) / self.right_wheel_radius_m.get(),
+        ]
+    }
+
+    /// The fastest a wheel turns (rad/s) while the base drives at forward
+    /// speeds up to |`linear`| (m/s) and turn rates up to |`angular`|
+    /// (rad/s), both at once: the outer wheel at both, on the smaller radius.
+    pub fn fastest_wheel_rate(&self, linear: f64, angular: f64) -> f64 {
+        let radius = self
+            .left_wheel_radius_m
+            .get()
+            .min(self.right_wheel_radius_m.get());
+        (linear.abs() + angular.abs() * self.wheel_separation_m.get() / 2.0) / radius
+    }
+
+    /// The turn rate (rad/s) the odometry reads when each wheel moves at
+    /// `wheel_speed` (m/s) along the floor in opposite directions, the left
+    /// one backward: their difference over the wheel separation, twice the
+    /// speed over the separation, counterclockwise for a positive speed.
+    pub fn turn_rate_at_opposite_wheel_speeds(&self, wheel_speed: f64) -> f64 {
+        2.0 * wheel_speed / self.wheel_separation_m.get()
+    }
+}
+
+/// A wheel setpoint as sent: each wheel's angle (rad) and its rate (rad/s),
+/// [left, right].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelSetpoint {
+    pub positions: [f64; 2],
+    pub rates: [f64; 2],
+}
+
+impl WheelSetpoint {
+    /// The setpoint that drives the wheels at `rates` (rad/s) over the next
+    /// `dt` (s): each wheel's anchor plus its rate over `dt`, the rate its
+    /// feedforward velocity. A wheel anchors on its `measured` angle (rad)
+    /// when no setpoint was `sent` before this one; at a rate of zero, on
+    /// the measured angle when it was sent moving and on the last setpoint
+    /// when it was sent at zero; moving, on the last setpoint when it was
+    /// sent moving the same way, keeps or gains speed and its measured angle
+    /// lies within `bound` (rad) of that setpoint, and on the measured angle
+    /// otherwise, a wheel that starts from rest or reverses among them. Anchored on its
+    /// own setpoints, a moving wheel runs at its rate; the measured angle
+    /// bounds what a wheel held back, as by a wall, winds up, and stops a
+    /// slowing wheel without pulling it back past where it stands.
+    pub fn next(
+        sent: Option<WheelSetpoint>,
+        measured: [f64; 2],
+        rates: [f64; 2],
+        bound: f64,
+        dt: f64,
+    ) -> WheelSetpoint {
+        let positions = std::array::from_fn(|wheel| {
+            let last = sent.map(|sent| (sent.positions[wheel], sent.rates[wheel]));
+            wheel_anchor(last, measured[wheel], rates[wheel], bound) + rates[wheel] * dt
+        });
+        WheelSetpoint { positions, rates }
+    }
+}
+
+/// Where one wheel's next setpoint starts from, its rate becoming `rate`,
+/// by [`WheelSetpoint::next`]'s rule: `sent` is the wheel's last setpoint
+/// and its rate.
+fn wheel_anchor(sent: Option<(f64, f64)>, measured: f64, rate: f64, bound: f64) -> f64 {
+    let Some((last, last_rate)) = sent else {
+        return measured;
+    };
+    if rate == 0.0 {
+        return if last_rate == 0.0 { last } else { measured };
+    }
+    let keeps_speed = rate * last_rate > 0.0 && rate.abs() >= last_rate.abs();
+    if keeps_speed && (last - measured).abs() <= bound {
+        last
+    } else {
+        measured
+    }
 }
 
 /// The robot frame in the odometry frame, from the wheels.

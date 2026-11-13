@@ -51,7 +51,10 @@
 //!   the setpoints stop.
 //! - [`odometry`]: the wheel odometry of a differential base, the robot frame
 //!   in the odometry frame integrated from the wheel positions as
-//!   ros2_controllers 6.9.0's diff drive controller integrates it.
+//!   ros2_controllers 6.9.0's diff drive controller integrates it; the wheel
+//!   rates of a body velocity, as that controller mixes them; and the wheel
+//!   setpoints that drive the base, each wheel's angle anchored by
+//!   [`odometry::WheelSetpoint::next`].
 //! - [`non_negative_finite`]: a finite float of at least zero, carried as proof it was
 //!   checked.
 //! - [`not_finite`]: the refusal of values of which one or more is not finite,
