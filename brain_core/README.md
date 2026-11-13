@@ -346,7 +346,8 @@ its pose and settles within `settle_position_m` (2 cm) and
 `settle_orientation_rad` (0.15 rad), the settle the robots' endpoint gives for
 the OpenArm v2, or fails with `timeout` `settle_timeout_s` (2 s) after
 its planned end, with the backbone's words, such as `still 8.0 mm / 0.02 rad
-from the target, 2.0 s after the planned end`. A check asks with the same
+from the target, 2.0 s after the planned end`. Every arm move names the
+contract's `contact_gap_m` as 0, no contact check. A check asks with the same
 pose and duration. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
 jaws to stand still.
 

@@ -139,6 +139,7 @@ async def test_the_aligners_moves_go_through_the_manipulator_with_its_bars():
     assert kind == "move" and set(bars) == {
         "duration_s",
         "settle_position_tolerance_m", "settle_orientation_tolerance_rad", "settle_timeout_s",
+        "contact_gap_m",
     }
 
 

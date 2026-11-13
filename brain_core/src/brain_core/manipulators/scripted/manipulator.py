@@ -119,6 +119,9 @@ MOVE_DURATION_S = 0.0
 SETTLE_POSITION_M = 0.02
 SETTLE_ORIENTATION_RAD = 0.15
 SETTLE_TIMEOUT_S = 2.0
+# The contact gap every arm move names: limb_motion's 0, no contact check, so
+# a move ends by its settle alone.
+NO_CONTACT_CHECK_M = 0.0
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
 SETTLE_TIMED_OUT = "timeout"
@@ -541,7 +544,7 @@ class ScriptedManipulator:
         return await self._robot.move_arm(
             arm, point, orientation, duration_s=MOVE_DURATION_S,
             settle_position_tolerance_m=self.settle_position_m, settle_orientation_tolerance_rad=self.settle_orientation_rad,
-            settle_timeout_s=self.settle_timeout_s,
+            settle_timeout_s=self.settle_timeout_s, contact_gap_m=NO_CONTACT_CHECK_M,
         )
 
     async def _grip(self, gripper: str, opening: float, max_effort: float, cancel: CancelToken) -> float:
