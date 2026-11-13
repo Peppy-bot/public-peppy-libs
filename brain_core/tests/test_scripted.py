@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 import pytest
 from conftest import records_of
-from fake_peppygen import limb_states_message
+from fake_peppygen import LEFT_AT_REST, limb_states_message
 from hypothesis import event, given, settings
 from hypothesis import strategies as st
 
@@ -42,6 +42,9 @@ PRE = (GRASP[0], GRASP[1], GRASP[2] + CLEARANCE_M)
 LIFT = (GRASP[0], GRASP[1], GRASP[2] + LIFT_M)
 # A grab's third move is its lift.
 LIFT_MOVE = 3
+# A grab that held, the jaws closed with the left grasp point where the
+# fake limb_states put it.
+HELD = Outcome(True, closed_at=LEFT_AT_REST[0])
 # What a check, an arm move and a gripper move name besides the pose.
 CHECK_BARS = dict(duration_s=MOVE_DURATION_S)
 MOVE_BARS = dict(
@@ -182,7 +185,8 @@ async def test_a_hold_opens_then_checks_the_three_moves_reaches_closes_and_lifts
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.grab(cup(), LEFT, 12.0, CancelToken())
-    assert outcome == Outcome(True)
+    # A hold reports where limb_states put the grasp point at the close.
+    assert outcome == HELD and HELD.closed_at == (0.4, 0.2, 0.9)
     q = DOWN[0]
     assert robot.calls == [
         ("grip", "left_gripper", 1.0, 0.0),
@@ -204,7 +208,7 @@ async def test_a_hold_opens_then_checks_the_three_moves_reaches_closes_and_lifts
 async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     manipulator, robot, store = await started()
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
     assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
     # Settle within 2 cm and 0.15 rad, 2 s after the planned end at most; the
@@ -220,7 +224,7 @@ async def test_a_grab_opens_the_jaws_to_the_items_width_and_a_margin_each_side(c
     manipulator, robot, store = await started()
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken()) == Outcome(True)
+        assert await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken()) == HELD
     # 6 cm and 1.5 cm on each side, of the jaws' 14.8 cm span.
     [opened] = [call for call in robot.calls if call[0] == "grip"][:1]
     assert opened == ("grip", "left_gripper", pytest.approx(0.09 / 0.148), 0.0)
@@ -230,7 +234,7 @@ async def test_a_grab_opens_the_jaws_to_the_items_width_and_a_margin_each_side(c
 async def test_an_item_wider_than_the_jaws_less_their_margins_gets_them_fully_open():
     manipulator, robot, store = await started()
     holding(robot, store)
-    assert await manipulator.grab(cup(width_m=0.14), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(width_m=0.14), LEFT, 0.0, CancelToken()) == HELD
     assert [call for call in robot.calls if call[0] == "grip"][0] == ("grip", "left_gripper", 1.0, 0.0)
 
 
@@ -245,7 +249,7 @@ async def test_the_log_line_gives_where_the_descent_settled_against_the_grasp_po
     holding(robot, store)
     landing_log(robot)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
     [line] = [record.getMessage() for record in log.records]
     assert "landed [-0.3, +0.2, -0.1] cm from the grasp point" in line
 
@@ -314,7 +318,7 @@ async def test_jaws_that_squeeze_a_little_further_during_the_lift_still_hold():
     manipulator, robot, store = await started()
     # The lemon of the same runs fell from 0.331 to 0.327 and stayed held.
     holding(robot, store, closed=0.331, after=0.327)
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
 
 
 async def test_the_most_the_opening_may_fall_during_the_lift_is_a_setting():
@@ -393,14 +397,14 @@ async def test_a_snapshot_after_the_lift_is_waited_for():
     # The grab is now waiting for a snapshot newer than the first one.
     store.add(limb_states_message(1.0, left_gripper=0.0))
     store.add(limb_states_message(2.0, left_gripper=0.3))
-    assert await asyncio.wait_for(grab, 10.0) == Outcome(True)
+    assert await asyncio.wait_for(grab, 10.0) == HELD
 
 
 async def test_the_first_orientation_whose_three_checks_plan_is_the_one_moved_in():
     manipulator, robot, store = await started()
     holding(robot, store)
     robot.checks.extend([MoveCheck(True, ""), MoveCheck(False, "goal pose not planned")])
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
     checks = [call for call in robot.calls if call[0] == "check"]
     assert [call[2] for call in checks] == [DOWN[0], DOWN[0], DOWN[1], DOWN[1], DOWN[1]]
     assert {call[2] for call in robot.calls if call[0] == "move"} == {DOWN[1]}

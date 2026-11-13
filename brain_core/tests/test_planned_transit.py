@@ -10,7 +10,7 @@ from collections import deque
 import pytest
 from conftest import records_of
 from fake_peppygen import limb_states_message
-from test_scripted import DOWN, GRASP, LIFT, PRE, FakeClock, FakeRobot, cup, holding
+from test_scripted import DOWN, GRASP, HELD, LIFT, PRE, FakeClock, FakeRobot, cup, holding
 
 from brain_core.limb_state import LimbStateStore
 from brain_core.manipulators.scripted.centre_proposer import CentreProposer
@@ -130,7 +130,7 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.grab(cup(), LEFT, 12.0, CancelToken())
-    assert outcome == Outcome(True)
+    assert outcome == HELD
     q = DOWN[0]
     assert robot.calls == [
         ("grip", "left_gripper", 1.0, 0.0),
@@ -162,7 +162,7 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
 async def test_the_planning_time_is_a_setting():
     manipulator, robot, store = await started(allowed_planning_time_s=1.5)
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
     [plan_bars] = [bars for kind, bars in robot.bars if kind == "plan"]
     assert plan_bars["allowed_planning_time_s"] == 1.5
 
@@ -171,7 +171,7 @@ async def test_an_orientation_with_no_plan_gives_way_to_the_next():
     manipulator, robot, store = await started()
     holding(robot, store)
     robot.plans.append(no_plan("unreachable", "no joint positions meet the goal without a collision in 0.5 s"))
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
     plans = [call for call in robot.calls if call[0] == "plan"]
     assert [call[2] for call in plans] == [DOWN[0], DOWN[1]]
     assert {call[2] for call in robot.calls if call[0] == "move"} == {DOWN[1]}

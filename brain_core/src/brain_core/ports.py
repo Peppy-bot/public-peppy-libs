@@ -306,11 +306,13 @@ class Gripper:
 @dataclass(frozen=True)
 class Outcome:
     """What a manipulation backend reports when a sequence ends. The
-    measured grasp-point position when the jaws opened, for place_item."""
+    measured grasp-point position when the jaws opened, for place_item, and
+    when the jaws closed on the item, for a grab_item that held it."""
 
     success: bool
     message: str = ""
     final_position: Optional[Vec3] = None
+    closed_at: Optional[Vec3] = None
 
 
 @dataclass(frozen=True)

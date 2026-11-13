@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import records_of
 from fake_peppygen import limb_states_message
-from test_scripted import DOWN, GRASP, LIFT, LIFT_MOVE, PRE, FakeClock, FakeRobot, cup, gripped, holding
+from test_scripted import DOWN, GRASP, HELD, LIFT, LIFT_MOVE, PRE, FakeClock, FakeRobot, cup, gripped, holding
 
 from brain_core.limb_state import LimbStateStore
 from brain_core.manipulators.scripted.aligning import Aligned, AlignmentFailed, GaveUp, OutOfSteps, Stopped
@@ -70,7 +70,7 @@ async def test_the_alignment_runs_above_the_item_and_the_descent_lift_and_hold_u
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
-    assert outcome == Outcome(True)
+    assert outcome == HELD
     (request,) = aligner.requests
     assert (request.pre, request.point, request.orientation) == (PRE, GRASP, DOWN[0])
     assert request.item.item_id == "cup_1-t0" and request.gripper is LEFT
@@ -145,7 +145,7 @@ async def test_the_aligners_moves_go_through_the_manipulator_with_its_bars():
 async def test_without_an_aligner_the_grab_is_the_stage_1_sequence():
     manipulator, robot, store, _ = await started(None)
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 0.0, _token()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, _token()) == HELD
     assert robot.kinds().count("move") == LIFT_MOVE
 
 

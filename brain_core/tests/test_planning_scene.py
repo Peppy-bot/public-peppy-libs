@@ -5,9 +5,11 @@ to the flags, in order, and every way a call of the planner fails."""
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_brain, records_of
+from conftest import FakeCtx, FakeManipulator, make_brain, records_of
 from fake_peppygen import LEFT_AT_REST, fake_bindings, fake_planner, limb_states_message, planner_bindings
+from fake_peppygen import grab_item as grab_action
 
+from brain_core.handlers import grab_item
 from brain_core.ports import Coverage, Detection, ItemShape
 
 LEFT_TCP, RIGHT_TCP = "openarm_left_tcp", "openarm_right_tcp"
@@ -60,10 +62,10 @@ def writes(planner) -> list[tuple]:
     return said
 
 
-async def planner_brain(*, planner=None):
+async def planner_brain(*, planner=None, manipulator=None):
     """A brain whose planner slot is bound, the left grasp point at rest."""
     planner = planner or fake_planner()
-    brain = await make_brain(bindings=fake_bindings(**planner_bindings(planner)))
+    brain = await make_brain(manipulator=manipulator, bindings=fake_bindings(**planner_bindings(planner)))
     brain.limb_states.add(limb_states_message(1.0, left_gripper=0.3, right_gripper=1.0))
     return brain, planner
 
@@ -202,3 +204,61 @@ async def test_a_held_item_of_an_arm_the_planner_does_not_describe_or_with_no_gr
     assert [record.getMessage() for record in log.records] == [
         f"planning scene: brain/{item_id} not attached: the motion planner does not describe arm 'left_arm'"
     ]
+
+
+# The changes of a held flag, each through its method of Brain: the flag,
+# then the scene.
+
+
+def grab_goal(**overrides) -> FakeCtx:
+    goal = dict(gripper_name="", item_id="", position=[0.0, 0.0, 0.0], orientation=None, max_effort=0.0)
+    goal.update(overrides)
+    return FakeCtx(grab_action, **goal)
+
+
+def seen_lime(brain, shape=LIME_SHAPE) -> str:
+    [lime] = brain.state.remember([Detection("lime", (0.3, 0.2, 0.45), 0.9, shape=shape)], 1, coverage=Coverage(every_label=True))
+    return lime.item_id
+
+
+async def test_a_grab_that_holds_sets_the_flag_then_moves_the_items_object_with_the_hand_and_attaches_it():
+    closed = (LEFT_AT_REST[0][0], LEFT_AT_REST[0][1], LEFT_AT_REST[0][2] - 0.075)
+    brain, planner = await planner_brain(manipulator=FakeManipulator(closed_at=closed))
+    item_id = seen_lime(brain)
+    answers(planner, objects=[scene_object(f"brain/{item_id}", (0.3, 0.2, 0.413))])
+    ctx = grab_goal(gripper_name="left_gripper", item_id=item_id)
+    await grab_item.run(brain, ctx)
+    assert ctx.completed["success"] is True
+    assert brain.state.grippers["left_gripper"].held_item_id == item_id
+    assert writes(planner) == [
+        ("move", f"brain/{item_id}", pytest.approx((0.3, 0.2, 0.488))),
+        ("attach", f"brain/{item_id}", LEFT_TCP, tuple(LEFT_FINGERS)),
+    ]
+
+
+async def test_a_hold_whose_scene_calls_fail_keeps_the_flag_and_the_grab_succeeds(caplog):
+    brain, planner = await planner_brain(manipulator=FakeManipulator(closed_at=(0.4, 0.2, 0.825)))
+    item_id = seen_lime(brain)
+    answers(planner)
+    planner.apply_collision_objects.enqueue(TimeoutError("no reply"))
+    planner.apply_attached_collision_object.enqueue(planner.apply_attached_collision_object.Failure("rejected", f"no object 'brain/{item_id}'"))
+    ctx = grab_goal(gripper_name="left_gripper", item_id=item_id)
+    with records_of(caplog, "brain_core.brain") as log:
+        await grab_item.run(brain, ctx)
+    assert ctx.completed["success"] is True
+    assert brain.state.grippers["left_gripper"].held_item_id == item_id
+    assert [record.getMessage() for record in log.records if "planning scene" in record.getMessage()] == [
+        f"planning scene: add brain/{item_id} at the hand of arm 'left_arm', [0.400, 0.200, 0.900] failed: "
+        "apply_collision_objects gave no answer: TimeoutError('no reply')",
+        f"planning scene: attach brain/{item_id} to {LEFT_TCP} failed: apply_attached_collision_object failed with rejected: no object 'brain/{item_id}'",
+    ]
+
+
+async def test_a_grab_that_fails_changes_no_flag_and_no_scene():
+    brain, planner = await planner_brain(manipulator=FakeManipulator(fail="gripper 'left_gripper' closed on nothing"))
+    item_id = seen_lime(brain)
+    ctx = grab_goal(gripper_name="left_gripper", item_id=item_id)
+    await grab_item.run(brain, ctx)
+    assert ctx.completed["success"] is False
+    assert not brain.state.grippers["left_gripper"].holding
+    assert planner.get_planning_scene.polled == [] and writes(planner) == []

@@ -367,11 +367,13 @@ class ScriptedManipulator:
         cancel: CancelToken, notes: list[str],
     ) -> Outcome:
         """The grab from its descent on: down to `point`, close, judge, lift
-        to `lift`, judge again."""
+        to `lift`, judge again. A hold reports where limb_states put the
+        grasp point when the jaws closed."""
         landed = await self._move(gripper.arm, point, orientation, cancel)
         notes.append(f"landed {_offset_cm(landed.final_position, point)} from the grasp point")
         closed = await self._grip(gripper.name, CLOSED, max_effort, cancel)
-        notes.append(f"limb_state at the close {_offset_cm(self._arm_position(gripper.arm), point)} from it")
+        closed_at = self._arm_position(gripper.arm)
+        notes.append(f"limb_state at the close {_offset_cm(closed_at, point)} from it")
         notes.append(f"closed at {closed:.3f}")
         if closed < self.hold_opening_min:
             raise _Failed(f"gripper '{gripper.name}' closed on nothing")
@@ -382,7 +384,7 @@ class ScriptedManipulator:
         if self._slipped(closed, opening):
             raise _Failed(f"item '{item.item_id}' slipped while lifting")
         notes.append("held")
-        return Outcome(True)
+        return Outcome(True, closed_at=closed_at)
 
     async def _align(
         self, item: Item, gripper: Gripper, pre: Vec3, point: Vec3, orientation: Quat, cancel: CancelToken, notes: list[str]

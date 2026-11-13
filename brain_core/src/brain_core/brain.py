@@ -19,7 +19,9 @@ end, whatever the outcome. It is also where each goal leaves its one line
 in the log, so a search that found nothing says there what it looked at.
 
 The planning scene of the motion planner follows the held flags of
-`State`: `make_scene_follow_holds` makes the scene equal to them. Each
+`State`. One method of `Brain` stands for each change of a flag (`hold`)
+and writes the flag, then the scene; `make_scene_follow_holds` makes the
+scene equal to the flags. Each
 item a gripper holds has its object, `brain/<item_id>`, attached to the
 grasp link of its arm, and no other object of the brain stays. With the
 planner slot vacant it does nothing.
@@ -42,7 +44,7 @@ from .perception.none import NoneDetector
 from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
 from .models import Models
-from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, ModelSource, Refusal, Role, Senses, Vec3
+from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Refusal, Role, Senses, Vec3
 from .robot import ObjectOperation, PlannerModules, Robot, brain_object_id, item_object, item_of_object
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
 from .state import State, new_run_token
@@ -285,6 +287,14 @@ class Brain:
         if reason:
             raise Refusal(FailureKind.PRECONDITION_FAILED, reason)
         return manipulator
+
+    async def hold(self, gripper: Gripper, item_id: str, closed_at: Optional[Vec3]) -> None:
+        """A grab held `item_id` in `gripper`: the held flag in `State`, then
+        the planning scene made to follow it, the item's object moved from
+        the table by what the grasp point moved since the jaws closed at
+        `closed_at`."""
+        self.state.set_held(gripper, item_id)
+        await self.make_scene_follow_holds({item_id: closed_at} if closed_at is not None else None)
 
     async def make_scene_follow_holds(self, closed_at: Optional[Mapping[str, Vec3]] = None) -> None:
         """Makes the planning scene equal to the held flags, from what

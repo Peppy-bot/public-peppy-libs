@@ -27,7 +27,7 @@ async def run(brain, ctx) -> None:
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the grasp failed")
-        state.set_held(gripper, item.item_id)
+        await brain.hold(gripper, item.item_id, outcome.closed_at)
         return dict(gripper_name=gripper.name, item_id=item.item_id)
 
     await brain.run_guarded(ctx, Role.MANIPULATION, "grab_item", body, ZERO, ends=RESULT_ENDS)
