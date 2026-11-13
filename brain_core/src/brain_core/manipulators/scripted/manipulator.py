@@ -6,13 +6,13 @@ the node's shutdown stop it as they stop any manipulator.
 A grab:
 
 1. asks the proposer for the grasp point and the orientations to try;
-2. takes the first orientation for which the backbone has a plan to the
+2. opens the gripper as wide as the item and `approach_margin_m` on each
+   side, fully for an item of no known width, so the fingers come down
+   beside the item and not on what stands next to it;
+3. takes the first orientation for which the backbone has a plan to the
    pre-grasp point (`clearance_m` back along the approach), to the grasp
    point and to the lifted point (`lift_m` above it), each checked with
-   check_arm_move from where the arm is commanded now;
-3. opens the gripper as wide as the item and `approach_margin_m` on each
-   side, fully for an item of no known width, so the fingers come down
-   beside the item and not on what stands next to it; then moves to the
+   check_arm_move from where the arm is commanded now; then moves to the
    pre-grasp point; with an `aligner` (its port is `aligning.py`), a model then looks
    through the wrist and chest cameras and corrects the gripper's place
    and turn above the item, and the pre-grasp, grasp and lifted points
@@ -42,7 +42,9 @@ point, so the jaws let go of what they touch and the next look sees the
 item. A retreat that stops short adds why to the failure. A step whose
 goal a stop ended (the brain's stop or the backbone's stop service)
 retreats from nothing: the arm stays where the stop left it. A step that
-fails before the descent leaves the arm where the backbone stopped it.
+fails before the descent leaves the arm where the backbone stopped it; a
+grab that no orientation reaches leaves the jaws open, since a grab takes
+a gripper that holds nothing.
 
 Each grab leaves one log line: the orientation that planned, with how many
 check_arm_move calls ran and their total time; how wide the jaws opened for
@@ -278,14 +280,16 @@ class ScriptedManipulator:
             if reason:
                 raise _Failed(f"no alignment: {reason}")
         grasp = self._propose(item)
-        reach = await self._transit(
-            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True
-        )
-        orientation, (pre, point, lift) = reach.orientation, reach.points
+        # The jaws open before the checks or the plan: a plan uses the
+        # openings measured when it is asked.
         opening = self._approach_opening(item)
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
+        reach = await self._transit(
+            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True
+        )
+        orientation, (pre, point, lift) = reach.orientation, reach.points
         await reach.go(cancel)
         if self.aligner is not None:
             pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)

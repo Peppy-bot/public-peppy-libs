@@ -371,11 +371,11 @@ sequenceDiagram
     H->>SM: grab(item, gripper, max_effort, cancel)
     SM->>P: propose(item)
     P-->>SM: Grasp: the point, the orientations to try
+    SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
     loop each orientation, until one plans
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
-    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>"
-    SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
+    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws open
     SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
@@ -391,13 +391,15 @@ sequenceDiagram
     end
 ```
 
-Before the descent the jaws open only as wide as the item and 1.5 cm on each
+Before the checks the jaws open only as wide as the item and 1.5 cm on each
 side (`approach_margin_m`), as a fraction of their 14.8 cm span
 (`jaw_travel_m`, the OpenArm v2's in Waldo), so the fingers come down beside
 the item and not on what stands next to it. The width is the one the look that
 last saw the item measured: the box's left and right edges at the depth of its
 seen point. An item of no known width, one addressed by pose or put down by
-place_item, gets the jaws fully open.
+place_item, gets the jaws fully open. A grab that no orientation reaches ends
+with the jaws open: a grab takes a gripper that holds nothing, so open jaws
+drop nothing.
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
