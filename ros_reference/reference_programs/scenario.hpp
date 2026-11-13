@@ -27,10 +27,30 @@ class Inputs {
   // Appends the path of each input, one a line, to the file at `list`.
   void append_to(const std::filesystem::path& list) const;
 
+  // The path of the file `path` of the dataset `name`, which `ros_reference/datasets.txt`
+  // lists by its SHA-256 and which run.sh extracted under the directory that the
+  // environment variable ROS_REFERENCE_DATASETS names, at `<SHA-256>/extracted/<path>`.
+  // Reading datasets.txt makes it an input, and the dataset file joins `datasets_read`
+  // as `<name>/<path>`.
+  std::filesystem::path dataset(const std::string& name, const std::string& path);
+
+  const std::filesystem::path& repository_root() const { return repository_root_; }
+
+  // The path of each input, in the order of the reads.
+  const std::vector<std::string>& paths() const { return paths_; }
+
+  // Each dataset file that `dataset` gave, as `<name>/<path>`, in order.
+  const std::vector<std::string>& datasets_read() const { return datasets_read_; }
+
  private:
   std::filesystem::path repository_root_;
   std::vector<std::string> paths_;
+  std::vector<std::string> datasets_read_;
 };
+
+// The directory that the environment variable `variable` names. Throws when it names
+// none.
+std::filesystem::path directory_named_by(const char* variable);
 
 // Writes `document` to `path`, with a final newline. A scalar, an array of scalars and a
 // record, an object whose members are each a scalar or an array of scalars, go on one

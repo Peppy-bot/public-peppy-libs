@@ -3,7 +3,8 @@
 // reference that the scenario's kind names, writes the reference output to argv[2], and
 // appends the path of each file it read, the scenario among them, to the list at argv[4].
 // The scenario's path and the paths inside it are relative to the repository root,
-// argv[3].
+// argv[3]. Run as `ros_reference room_dataset_run ...`, it runs one run of a room dataset
+// scenario, which room_dataset.hpp describes.
 
 #include <cstdlib>
 #include <exception>
@@ -24,6 +25,7 @@
 #include "path_timing.hpp"
 #include "planning.hpp"
 #include "planning_scene.hpp"
+#include "room_dataset.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
 
@@ -42,12 +44,16 @@ const std::map<std::string, Reference> references = {
     {"path_timing", ros_reference::path_timing},
     {"planning", ros_reference::planning},
     {"planning_scene", ros_reference::planning_scene},
+    {"room_dataset", ros_reference::room_dataset},
     {"self_distance", ros_reference::self_distance},
 };
 
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string(argv[1]) == ros_reference::room_dataset_run_command) {
+    return ros_reference::room_dataset_run(argc, argv);
+  }
   if (argc != 5) {
     std::cerr << "usage: ros_reference <scenario.json> <output.json> <repository root> "
                  "<inputs list>\n";

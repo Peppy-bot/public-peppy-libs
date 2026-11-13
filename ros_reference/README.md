@@ -26,6 +26,7 @@ change of the reference, which `run.sh --check` proves.
 | `orientation_constraints` | MoveIt's kinematic constraint under rotation-vector tolerances about the axes of the target: whether a link at each configuration keeps each target within a box of tolerances inside a contract's `tolerance_rad` and within one around it (`tools/draw_orientation_constraints.py` writes it) | `motion_planning_core/tests/ros_reference_orientation_constraints.rs` |
 | `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with MoveIt's KDL as the inverse kinematics, its search ended by passes (rule 2), on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the step and the search budget of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
 | `chomp_refinement` | MoveIt's CHOMP optimizer (`chomp::ChompPlanner` of chomp_motion_planner) at the parameters MoveIt's CHOMP plugin loads by default, its initial trajectory the scene's input path (`fillTrajectory`), in a diff of the scene in MoveIt's hybrid collision environment, as the plugin plans, on scenes of an arm of OpenArm v2 among boxes of voxels as an octomap: CHOMP's error code, its path of 101 waypoints where its optimizer ran, and MoveIt's collision check, the robot's links padded by the scenario's clearance, smallest distance to the scene and length along CHOMP's path and along the input path, each straight between its waypoints, and along `motion_planning_core`'s CHOMP refinement of it with its corners rounded as MoveIt's time-optimal trajectory generation rounds them, with each path's turning, bending and duration as arm planning measures them, the input path the one `motion_planning_core`'s RRTConnect plans through the scene, which the scenario carries with our refinement (`tools/draw_chomp_refinement.py` writes it, with the paths and the probe spacing of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_chomp_refinement.rs` |
+| `room_dataset` | slam_toolbox, which maps a room in synchronous mode and localizes in the saved map, and Nav2's AMCL, which localizes globally in it, on the 2-D scans that pointcloud_to_laserscan projects from the depth frames of a TUM RGB-D sequence, with odometry made from its ground truth and seeded noise: the statistics of each seed's run, scored by `ros_reference::metrics`. A local-only kind | `ros_reference::room_dataset::Statistics` reads the committed statistics of each seed |
 
 ## Layout
 
@@ -33,25 +34,40 @@ change of the reference, which `run.sh --check` proves.
 |---|---|
 | `scenarios/` | One JSON file per scenario. Its `kind` names the reference that runs on it. |
 | `robots/` | The model directories of the robots that the tools draw for scenarios, each in robot_description's layout, its URDF, its SRDF and its meshes: `primitive_arm/`, an arm of 7 joints dressed in boxes, cylinders and spheres and in `meshes/wedge.stl`, turned about its origin. A scenario that poses a robot names its model directory as its `description`: `robot_description/models/<model id>` for a robot model of the repository, or a directory of `robots/`. |
-| `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is a JSON number, the shortest decimal that reads back to the reference's own bits. |
+| `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that an output depends on, by its path from the repository root: each scenario and the files it names, which the reference program lists as it reads them, and the sources of each local-only kind, which the statistics program adds. Every number of an output is a JSON number, the shortest decimal that reads back to the reference's own bits. |
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
-| `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario; and its plugins of MoveIt's base classes, which `moveit_plugins.xml` names to pluginlib, in the package that `package.xml` names. |
+| `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario; and its plugins of MoveIt's base classes, which `moveit_plugins.xml` names to pluginlib, in the package that `package.xml` names. `amcl_map_cspace.cpp` is a changed copy of a file of Nav2's AMCL, under the GPL-3.0-or-later, as section 3 of AMCL's LGPL-2.1-or-later lets code copied into a program be; the copy carries the upstream notice, changed to name the GPL, with the notice of its changes, and `LICENSE-GPL-3.0` holds the GPL's text. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
 | `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, each run as `uv run ros_reference/tools/<script>.py`, which builds this repository's `robot_description_py` into the script's environment, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, the model directory of each robot the scenarios pose, its parsed URDF, its arms and the limits of its joints as `robot_description_py` reads its URDF and SRDF, the links of an arm's chain and of its gripper, the finger joint of a gripper that moves of its own, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program and its plugins in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
+| `datasets.txt`, `NOTICE`, `LICENSE-GPL-3.0` | The datasets that the local-only kinds read, one archive a line: its SHA-256, its address and the name by which a scenario names it; the attribution of their data and the notice of `reference_programs/amcl_map_cspace.cpp`; and the text of that file's license. |
 
 ## Running the references
 
 ```sh
-ros_reference/run.sh          # writes what the reference image gives
-ros_reference/run.sh --check  # fails when that differs from the committed files
+ros_reference/run.sh             # writes what the reference image gives
+ros_reference/run.sh --check     # fails when that differs from the committed files
+ros_reference/run.sh --datasets  # runs the local-only kinds too, in either mode
 ```
 
 The script builds the reference image for the architecture of the host, and runs the
 reference program on each scenario in it. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
-the images of earlier builds. On a host without the base image, the build fetches about
+the images of earlier builds. It names each container that it starts
+`ros_reference-<checkout>-<digest>-<step>`: the checkout's path, each character outside
+letters, digits, `_`, `.` and `-` written as `-` and its leading dashes dropped; the first
+12 hexadecimal digits of the SHA-256 of that path, which tell apart paths that the
+rewriting makes alike; and the step, `references` or `digests`. A run holds an flock on
+`target/run.lock` of the harness from start to end, through a descriptor that the
+processes it starts inherit, and refuses to start while another run holds it or a
+container of either name exists; the kernel releases the lock when the run and those
+processes end, however they end. When it starts, it takes the digest of each file of the
+checkout outside `.git` and the `target/` directories: `INPUTS.SHA256SUMS` holds those
+digests of the files that the outputs it writes depend on, and the run fails, naming the
+file, when one of them differs from its digest at the end. When it exits, on an error or
+on SIGTERM as well, it removes the containers that it started and its scratch directory.
+On a host without the base image, the build fetches about
 751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB; and 355 MB of
 packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the image takes
 about 3.7 GB of disk on amd64 and 2.6 GB on arm64.
@@ -65,20 +81,25 @@ its legacy builder; or Podman, rootful or rootless, which names itself in
 outputs as the user who runs the script. Both mounts carry `:z`, so on a host with SELinux
 the host relabels the whole checkout for containers to share, and the checkout must be
 one that the user lets containers read. On arm64, the host runs cargo too, and builds
-each crate that holds a parity test with the system libraries that its README names.
+each crate that holds a parity test with the system libraries that its README names. The
+host also runs flock and sha256sum, which hold the run's locks and take the digests of the
+checkout. With `--datasets`, it also runs curl and tar, which fetch and extract the
+datasets, and cargo, which scores the runs of the local-only kinds.
 
 On an amd64 host, `run.sh` writes `reference/`, with its `SHA256SUMS` and
 `INPUTS.SHA256SUMS`, and `packages-amd64.txt`, and `run.sh --check` fails when a file
-differs from what the image gives, and prints each differing line. The reference outputs
-reproduce bit for bit on every amd64 host. Of the libraries that the reference program
-loads, libc and libm alone hold IFUNCs, the functions that glibc resolves by CPU feature,
-and the selectors of glibc 2.43's math functions read FMA, FMA4, AVX, AVX2 and SSE4_1
-(libm) and SSE4_1, FMA, AVX2, AVX512F and AVX512DQ (libmvec). `run.sh` runs the reference
-program with `GLIBC_TUNABLES=glibc.cpu.hwcaps=` set to mask all of them, with SSSE3,
-SSE4_2, POPCNT, BMI1, BMI2, LZCNT, MOVBE and AVX512BW, CD, VL, ER and PF, so glibc runs
-the SSE2 variants of the math functions, of baseline instructions alone, on every amd64
-host. glibc 2.43 also masks CMOV, CX8, SSE2, HTT, IBT, SHSTK, RTM, ERMS, XSAVE, XSAVEC
-and OSXSAVE by name; no math selector reads them, and the mask leaves them.
+differs from what the image gives, and prints each differing line. The outputs of the
+image reproduce bit for bit on every amd64 host; the statistics of the local-only kinds,
+which the host computes, can change with the host's glibc, as rule 3 says. Of the
+libraries that the reference program loads, libc and libm alone hold IFUNCs, the functions
+that glibc resolves by CPU feature, and the selectors of glibc 2.43's math functions read
+FMA, FMA4, AVX, AVX2 and SSE4_1 (libm) and SSE4_1, FMA, AVX2, AVX512F and AVX512DQ
+(libmvec). `run.sh` runs the reference program with `GLIBC_TUNABLES=glibc.cpu.hwcaps=` set
+to mask all of them, with SSSE3, SSE4_2, POPCNT, BMI1, BMI2, LZCNT, MOVBE and AVX512BW,
+CD, VL, ER and PF, so glibc runs the SSE2 variants of the math functions, of baseline
+instructions alone, on every amd64 host. glibc 2.43 also masks CMOV, CX8, SSE2, HTT, IBT,
+SHSTK, RTM, ERMS, XSAVE, XSAVEC and OSXSAVE by name; no math selector reads them, and the
+mask leaves them.
 
 On an arm64 host, `run.sh` writes `packages-arm64.txt`, and `run.sh --check` fails when it
 differs from what the image gives. After the write or the check, both run each parity
@@ -129,10 +150,21 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    gives it an empty one (chomp_planning_context.cpp:55-58). So the references call
    `ChompPlanner::solve` with a response that holds the input path, at the parameters of
    the plugin's `loadParams` (chomp_interface.cpp:55-88), on a diff of the scene in the
-   hybrid collision environment, as the plugin builds it (chomp_plugin.cpp:94-95).
+   hybrid collision environment, as the plugin builds it (chomp_plugin.cpp:94-95). The
+   references run the packaged ROS code with one function replaced: the program carries its
+   own copy of `map_update_cspace` of Nav2 1.5.2's AMCL
+   (`reference_programs/amcl_map_cspace.cpp`), which sets the distance of each occupied
+   cell that the packaged function queues and leaves unset. The packaged function orders
+   its queue by that uninitialized memory, which is undefined behavior; the copy orders it
+   by the map alone.
 2. A reference gives the same output on every run: the container has no network and one
-   OpenMP thread, every random generator of a reference is seeded from its scenario, and a
-   search ends on an iteration bound that the scenario gives. MoveIt's samplers draw from
+   OpenMP thread, OpenBLAS runs the kernels of the architecture's baseline CPU
+   (`OPENBLAS_CORETYPE`), every random generator of a reference is seeded from its
+   scenario, and a search ends on an iteration bound that the scenario gives. A reference
+   whose nodes run threads of their own runs each run in a process of its own and calls
+   the nodes' callbacks on its own thread, with no executor spinning a node of the
+   reference, each node's clock set to each input's stamp, its transforms put in its tf
+   buffer at those stamps, and its solver on one thread. MoveIt's samplers draw from
    generators of random_numbers that they construct by its default constructor, which
    random_numbers seeds from the clock; the reference program defines that constructor and
    exports it, so MoveIt's libraries construct their generators through it, and the arm
@@ -245,7 +277,22 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    paths with collisions checked that end within one step of MoveIt's, and refuses a set
    as small as the committed one. The committed cases of such
    a kind compare bit for bit, as every other output does: the arm planning scenario plans
-   `rrt_connect`, refined by `none`, on its iterations.
+   `rrt_connect`, refined by `none`, on its iterations. A reference whose runs are seeded
+   over a fixed recording, as the room dataset kind runs slam_toolbox and AMCL, runs over
+   the seeds that its scenario lists, and its committed output holds the statistics of
+   each seed. The crate's `statistics` program computes them on the host from the runs
+   that the image gives, through the host's libm, on amd64 under the container's
+   `glibc.cpu.hwcaps` mask: they change when the image's runs change, and they can change
+   with the host's glibc. Each output of the room dataset kind lists among its inputs the
+   kind's sources, `reference_programs/room_dataset*.cpp` and `.hpp`,
+   `reference_programs/amcl_map_cspace.cpp` and `.hpp`, `src/room_dataset.rs`,
+   `src/metrics.rs` and `src/bin/statistics.rs`, so `INPUTS.SHA256SUMS` holds their
+   digests, and a change to one fails the routine tests until `run.sh --datasets` writes
+   the outputs again. The kind's sources are its own files: a change to another file that
+   the statistics depend on, such as the build in `CMakeLists.txt`, the image's packages,
+   the container's settings in `run.sh`, `Inputs::dataset` in `scenario.cpp` or the
+   crate's `write_json`, passes the routine tests, and `run.sh --check --datasets` alone
+   checks it.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of an
    output reads back to the bits that the reference computed, so a test compares with the
@@ -273,15 +320,16 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    each a scalar or an array of scalars; every other array or object spreads over lines,
    one member a line, indented by two spaces. So a forward kinematics scenario holds one
    configuration a line, and its output one link pose a line. The reference program
-   writes every output by it through `write_json`, and every scenario tool writes every
-   scenario by it through `write` of `tools/drawing.py`. A number goes as the shortest
-   decimal that reads back to its double: `write_json` writes each float through
-   `shortest_decimal`, as `std::to_chars` writes it, and refuses a NaN and an infinity,
-   which JSON has no number for; Python's `json` writes each float of a scenario as
-   `repr` does. On each run, before its reference, the reference program checks with
-   `check_shortest_decimals` that `shortest_decimal` writes the doubles at the edges of
-   the format as the reader test of `src/lib.rs` reads them, and writes a seeded draw of
-   bit patterns as JSON numbers that read back to their bits.
+   writes every output by it through `write_json`, the crate's `statistics` program the
+   outputs of the local-only kinds through the crate's `write_json`, and every scenario
+   tool writes every scenario by it through `write` of `tools/drawing.py`. A number goes
+   as the shortest decimal that reads back to its double: each `write_json` writes each
+   float through its `shortest_decimal`, as `std::to_chars` writes it, and refuses a NaN
+   and an infinity, which JSON has no number for; Python's `json` writes each float of a
+   scenario as `repr` does. On each run, before its reference, the reference program
+   checks with `check_shortest_decimals` that `shortest_decimal` writes the doubles at the
+   edges of the format as the reader test of `src/lib.rs` reads them, and writes a seeded
+   draw of bit patterns as JSON numbers that read back to their bits.
 6. A kind commits only the few cases that exercise its behaviors: for forward kinematics,
    eight configurations a chain, all joints at zero, at their lower limits, at their upper
    limits, and five drawn inside them; for chain collision, four configurations a chain,
@@ -349,7 +397,10 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    of MoveIt's, which checks no start, the parity test prints; for CHOMP refinement, among
    boxes of voxels, of the first 40 scenes that `tools/draw_chomp_refinement.py` draws,
    the first four whose input path turns at a waypoint and the first whose path is
-   straight. A large drawn set runs
+   straight; for room datasets, pioneer_slam and pioneer_360, the TUM sequences of a
+   Pioneer whose drives hold loops, which map, and pioneer_slam2 and pioneer_slam3, which
+   share pioneer_slam's motion capture frame and localize in the map of its first seed,
+   each over ten seeds. A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
    `uv run ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
@@ -371,6 +422,42 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    clearance of the robot's launch (`--min-clearance`), each plan of this crate sampling the
    launch's goals (its fragment's `goal_samples`). The pull request states which modes its
    tally covers.
+
+## Datasets
+
+`datasets.txt` lists each archive that a local-only kind reads, by its SHA-256, its
+address and its name. `run.sh --datasets` fetches each archive with curl into
+`${XDG_CACHE_HOME:-$HOME/.cache}/peppy-ros-reference/<SHA-256>/`, unless the cache holds
+it, and fails, naming the archive, when it does not have its SHA-256. It extracts the
+files that the references read into `extracted/` beside the archive, with
+`extracted.SHA256SUMS`, the digest of each file it extracted, and extracts them again when
+`extracted/` holds another file or a file of another digest. It mounts the cache read-only
+in the container, whose network stays off. The repository holds none of the
+data; `NOTICE` gives its attribution. The four room dataset sequences take 4.9 GB of
+archives and 1.2 GB extracted.
+
+## Local-only kinds
+
+`room_dataset` reads the dataset cache, so it runs on a developer's machine alone, with
+`run.sh --datasets`. The reference program writes the prepared inputs of each scenario
+(the kept scans with their ground truth, and each seed's odometry) and the poses of each
+run under `target/results/<scenario>/` of the harness, in either mode, so each checkout
+holds the runs of its own files; `run.sh` then runs the crate's `statistics`
+program, which scores each run with `ros_reference::metrics`, the one implementation of
+the metrics, and writes the statistics of each seed as the scenario's reference output.
+The scenarios and those statistics are committed, small and digest-checked like every
+output, and the routine tests read them. Without `--datasets`, `run.sh` skips the
+local-only kinds and keeps their committed outputs, with the committed digests of the
+repository files that each output lists under `inputs`, so a developer who checks a drawn
+kind fetches nothing, and a scenario or a source of a local-only kind that differs from its
+digest fails the routine tests until `run.sh --datasets` writes its output again. A room
+dataset scenario that localizes names the scenario whose map it localizes in, whose name
+sorts before its own, so `run.sh` maps before it localizes.
+
+A run with `--datasets` holds an flock on the cache's `cache.lock` until it ends: shared
+while it reads the cache, and exclusive while it fetches or extracts a dataset, which it
+does only when no other run holds that lock; it refuses otherwise, and a run that finds
+the lock held exclusive refuses to start, each naming the command to run again.
 
 ## Pins
 
@@ -470,3 +557,7 @@ differs from its digest.
    `tests/ros_reference_<kind>.rs`, that loads every scenario of the kind with its
    reference output and compares, by the rules above. Add the kind to the table at the top
    of this file.
+6. A kind whose reference reads a dataset lists the dataset in `datasets.txt`, reads its
+   files through `Inputs::dataset`, joins `local_only_kinds` in `run.sh`, and gives its
+   output an `inputs` member that lists the repository files it depends on: those its
+   reference read and the kind's sources.

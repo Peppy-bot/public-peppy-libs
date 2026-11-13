@@ -1,0 +1,28 @@
+The room dataset scenarios of the ROS reference harness read sequences of the TUM RGB-D
+benchmark, which ros_reference/datasets.txt lists by address and SHA-256:
+rgbd_dataset_freiburg2_pioneer_360, rgbd_dataset_freiburg2_pioneer_slam,
+rgbd_dataset_freiburg2_pioneer_slam2 and rgbd_dataset_freiburg2_pioneer_slam3. The
+repository holds none of their data. run.sh --datasets fetches them from
+https://cvg.cit.tum.de/data/datasets/rgbd-dataset into the dataset cache of the host.
+
+The TUM RGB-D dataset is the work of the Computer Vision Group of the Technical University
+of Munich and is licensed under the Creative Commons Attribution 4.0 International License
+(CC BY 4.0), https://creativecommons.org/licenses/by/4.0/. Its authors ask that work which
+uses it cite:
+
+  J. Sturm, N. Engelhard, F. Endres, W. Burgard and D. Cremers. A Benchmark for the
+  Evaluation of RGB-D SLAM Systems. Proceedings of the International Conference on
+  Intelligent Robot Systems (IROS), October 2012.
+
+The harness reads the depth frames and the ground truth of each sequence, keeps one depth
+frame each scan period, and projects each kept frame to a 2-D scan; the committed
+reference outputs hold statistics of the runs on those scans, never the data.
+
+reference_programs/amcl_map_cspace.cpp is a changed copy of
+nav2_amcl/src/map/map_cspace.cpp of Nav2 1.5.2, Copyright (C) 2000 Brian Gerkey and Kasper
+Stoy, which Nav2 licenses under the GNU Lesser General Public License, version 2.1 or any
+later version. Under section 3 of that license, the copy is under the GNU General Public
+License, version 3 or any later version, whose text LICENSE-GPL-3.0 holds, and so is the
+reference program that the image builds from it, as a whole. The copy carries the upstream
+notice, changed to name the GNU General Public License, with the notice of its changes and
+their dates.
