@@ -414,7 +414,7 @@ A grab whose orientations all fail ends before the arm moves, with the last
 one's words, the planner's kind first (`start_in_collision: ...`): no line
 takes the place of a plan. The descent, the lift and the retreat stay
 `move_arm` lines. The log line counts the plans and the reach tests, and
-says that the planned transit ran.
+each planned transit that ran logs a line of its own.
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
@@ -431,8 +431,12 @@ carries the item to the pose through its pre-place point,
 reach below the grasp point) above the pose, so the item clears the floor of
 a container and what already stands in it until the descent, or `clearance_m`
 alone above it where the backbone has no plan that high; it opens there and
-climbs back to the pre-place point. An arm that stops short on its way down
-does not settle, so its move fails with `timeout`. When the latest
+climbs back to the pre-place point. With the motion planner bound, the
+transit to the pre-place point is planned as a grab's is: each orientation
+planned to the high pre-place point with the reach of the line down tested
+from the end of the plan, then each to the low one; only a place that no
+orientation reaches at the high point tries the low one. An arm that stops
+short on its way down does not settle, so its move fails with `timeout`. When the latest
 limb_states snapshot puts its grasp point anywhere from the pre-place point
 down and within 5 cm (`RELEASE_OFF_LINE_M`) of the line down, the arm has
 set the item on what is under it, the rim or the floor of a container or the

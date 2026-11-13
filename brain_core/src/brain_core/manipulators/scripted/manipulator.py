@@ -185,6 +185,11 @@ class _Failed(Exception):
         self.stopped = stopped
 
 
+class _NoReach(_Failed):
+    """No orientation of a grasp reaches: nothing moved, and a place tries
+    its lower pre-place point."""
+
+
 @dataclass
 class _Checks:
     """The calls of a reach: how many check_arm_move calls, plans and reach
@@ -491,7 +496,7 @@ class ScriptedManipulator:
         high = self.clearance_m + self.held_item_depth_m
         try:
             return await self._transit(gripper, grasp, target, cancel, [], clearance_m=high)
-        except _Failed:
+        except _NoReach:
             notes.append(f"no plan {100 * high:.1f} cm above the pose: the pre-place point stands {100 * self.clearance_m:.1f} cm above it")
             return await self._transit(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
 
@@ -518,7 +523,7 @@ class ScriptedManipulator:
             gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
             test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
         )
-        return _Reach(orientation, points, go=lambda cancel: self._run_plan(gripper.arm, plan, cancel, notes))
+        return _Reach(orientation, points, go=lambda cancel: self._run_plan(gripper.arm, plan, cancel))
 
     async def _planner_arm(self, gripper: Gripper) -> ArmDescription:
         """The planner's description of the arm of `gripper`: its grasp link
@@ -576,16 +581,21 @@ class ScriptedManipulator:
             return (short, f"plan_cartesian_path reaches {line.fraction:.2f} of the lines from the end of the plan"), None
         return None, plan
 
-    async def _run_plan(self, arm: str, plan: JointPlan, cancel: CancelToken, notes: list[str]) -> None:
+    async def _run_plan(self, arm: str, plan: JointPlan, cancel: CancelToken) -> None:
         """Runs the planned transit `plan` of `arm`; the result comes once
-        each joint has settled at the plan's last waypoint."""
+        each joint has settled at the plan's last waypoint. A transit that
+        ran logs its own line, for a grab and for a place."""
         ran = await self._robot.execute_joint_path(
             arm, plan, duration_s=MOVE_DURATION_S, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=self.settle_timeout_s,
         )
         cancel.check()
         if not ran.completed:
             raise _Failed(ran.message or "execute_joint_path failed", stopped=ran.cancelled)
-        notes.append(f"ran the planned transit of {len(plan.waypoints)} waypoint{'' if len(plan.waypoints) == 1 else 's'}")
+        end = plan.waypoints[-1]
+        logger.info(
+            "planned transit of arm '%s' ran: %d waypoint%s to the grasp point %s", arm, len(plan.waypoints),
+            "" if len(plan.waypoints) == 1 else "s", _numbers(end.position) if end.position is not None else "unknown",
+        )
 
     async def _first_reach(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
@@ -616,7 +626,7 @@ class ScriptedManipulator:
                 f"{tried}, {_numbers(orientation)}, has no plan to its {names[point]} "
                 f"{_numbers(points[point])}: {words}"
             )
-        raise _Failed(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}")
+        raise _NoReach(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}")
 
     async def _first_refusal(
         self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks

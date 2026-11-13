@@ -1,7 +1,8 @@
 """The scripted manipulator with the motion planner bound: the planned
 transit of a grab (each orientation planned to the pre-grasp point, the
 reach of the descent and the lift tested from the end of the plan, the plan
-run), and every way it ends before the arm moves on."""
+run) and of a place (the high pre-place point, then the low one, the reach
+of the line down tested), and every way each ends before the arm moves on."""
 
 import asyncio
 from collections import deque
@@ -23,7 +24,8 @@ from brain_core.manipulators.scripted.manipulator import (
     SETTLE_TIMEOUT_S,
     ScriptedManipulator,
 )
-from brain_core.ports import Cancelled, CancelToken, Gripper, Outcome, Senses
+from brain_core.manipulators.scripted.manipulator import CLEARANCE_M, HELD_ITEM_DEPTH_M
+from brain_core.ports import Cancelled, CancelToken, Gripper, Outcome, Pose, Senses
 from brain_core.robot import (
     ArmDescription,
     ArmDescriptions,
@@ -148,10 +150,11 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     assert ("plan", plan_bars) in robot.bars
     assert ("run", dict(duration_s=0.0, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=SETTLE_TIMEOUT_S)) in robot.bars
     assert SETTLE_JOINT_RAD == 0.05
-    [line] = [record.getMessage() for record in log.records]
-    assert line.startswith(
+    ran, grab = [record.getMessage() for record in log.records]
+    assert ran == "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.500, 0.100, 0.770]"
+    assert grab.startswith(
         "grab of item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 8 planned, [0.000, 1.000, 0.000, 0.000] "
-        "(1 plan, 1 reach test, 0 ms); ran the planned transit of 2 waypoints; landed"
+        "(1 plan, 1 reach test, 0 ms); landed"
     )
 
 
@@ -247,3 +250,91 @@ async def test_a_planner_that_does_not_describe_the_arm_fails_the_grab_before_an
     robot.described = ArmDescriptions((ArmDescription("right_arm", "right_gripper", (), "openarm_right_tcp", ()),))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the motion planner does not describe arm 'left_arm': it names no such arm")
+
+
+# The planned transit of a place: to the pre-place point 15 cm above the
+# pose, else 7.5 cm above it, the reach of the line down tested from the end
+# of each plan.
+
+PLACE_Q = DOWN[0]
+PLACE_POINT = (0.6, 0.0, 0.75)
+HIGH = (0.6, 0.0, 0.75 + (CLEARANCE_M + HELD_ITEM_DEPTH_M))
+LOW = (0.6, 0.0, 0.75 + CLEARANCE_M)
+
+
+async def test_a_planned_place_plans_to_the_high_pre_place_point_tests_the_line_down_runs_the_plan_and_moves_by_lines(caplog):
+    manipulator, robot, _ = await started()
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(True, "", PLACE_POINT)
+    assert robot.calls == [
+        ("describe",),
+        ("plan", HIGH, PLACE_Q),
+        ("line", (PLACE_POINT,), PLACE_Q, False, AT_PRE),
+        THE_RUN,
+        ("move", PLACE_POINT, PLACE_Q),
+        ("grip", "left_gripper", 1.0, 0.0),
+        ("move", HIGH, PLACE_Q),
+    ]
+    assert [record.getMessage() for record in log.records] == [
+        "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.600, 0.000, 0.900]"
+    ]
+
+
+async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplog):
+    manipulator, robot, _ = await started()
+    robot.plans.append(no_plan("no_path", "no path joined the goal in 0.5 s"))
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(True, "", PLACE_POINT)
+    assert [call for call in robot.calls if call[0] in ("plan", "move")] == [
+        ("plan", HIGH, PLACE_Q), ("plan", LOW, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("move", LOW, PLACE_Q),
+    ]
+    assert "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it" in [
+        record.getMessage() for record in log.records
+    ]
+
+
+async def test_a_place_whose_line_down_does_not_reach_from_the_high_point_tries_the_low_one():
+    manipulator, robot, _ = await started()
+    robot.lines.append(reached(0.4))
+    assert await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken()) == Outcome(True, "", PLACE_POINT)
+    assert [call[1] for call in robot.calls if call[0] == "plan"] == [HIGH, LOW]
+
+
+async def test_a_place_with_no_plan_at_either_height_fails_with_the_planners_words_and_nothing_moves():
+    manipulator, robot, _ = await started()
+    robot.plans.extend([no_plan("start_in_collision", STARTS_IN_COLLISION)] * 2)
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(
+        False,
+        "no plan reaches the pose [0.600, 0.000, 0.750] with gripper 'left_gripper': orientation 1 of 1, "
+        f"[0.000, 1.000, 0.000, 0.000], has no plan to its pre-place point [0.600, 0.000, 0.825]: start_in_collision: {STARTS_IN_COLLISION}",
+    )
+    assert robot.kinds() == ["describe", "plan", "describe", "plan"]
+
+
+async def test_a_place_without_an_orientation_plans_each_roll_high_then_each_roll_low():
+    manipulator, robot, _ = await started()
+    robot.plans.extend([no_plan("no_path", "no path")] * (2 * len(DOWN)))
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT), CancelToken())
+    assert not outcome.success
+    plans = [call for call in robot.calls if call[0] == "plan"]
+    assert [call[2] for call in plans] == list(DOWN) + list(DOWN)
+    assert [round(call[1][2], 6) for call in plans] == [0.9] * len(DOWN) + [0.825] * len(DOWN)
+
+
+async def test_a_place_the_planner_cannot_describe_fails_at_once_with_no_try_of_the_low_point():
+    manipulator, robot, _ = await started()
+    robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(False, "the motion planner does not describe arm 'left_arm': describe_arms gave no answer: TimeoutError('no reply')")
+    assert robot.kinds() == ["describe"]
+
+
+async def test_a_place_whose_run_fails_fails_with_its_words_and_the_jaws_stay_closed():
+    manipulator, robot, _ = await started()
+    robot.runs.append(PathResult(MoveEnd.FAILED, "the guard would hold the path short at waypoint 1", "unreachable"))
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(False, "the guard would hold the path short at waypoint 1")
+    assert robot.calls[-1] == THE_RUN and "grip" not in robot.kinds()
