@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeCtx, FakeManipulator, make_brain, records_of
 from fake_peppygen import LEFT_AT_REST, fake_bindings, fake_planner, limb_states_message, planner_bindings
+from fake_peppygen import drop_item as drop_action
 from fake_peppygen import grab_item as grab_action
+from fake_peppygen import place_item as place_action
 
-from brain_core.handlers import grab_item
+from brain_core.handlers import drop_item, grab_item, place_item
 from brain_core.ports import Coverage, Detection, ItemShape
 
 LEFT_TCP, RIGHT_TCP = "openarm_left_tcp", "openarm_right_tcp"
@@ -261,4 +263,37 @@ async def test_a_grab_that_fails_changes_no_flag_and_no_scene():
     await grab_item.run(brain, ctx)
     assert ctx.completed["success"] is False
     assert not brain.state.grippers["left_gripper"].holding
+    assert planner.get_planning_scene.polled == [] and writes(planner) == []
+
+
+@pytest.mark.parametrize("release", ["place", "drop"])
+async def test_a_place_or_a_drop_that_lets_go_clears_the_flag_then_detaches_and_removes_the_items_object(release):
+    brain, planner = await planner_brain(manipulator=FakeManipulator())
+    item_id = holds_lime(brain)
+    answers(planner, attached=[scene_object(f"brain/{item_id}", (0.0, 0.0, -0.01), LEFT_TCP)])
+    if release == "place":
+        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+        await place_item.run(brain, ctx)
+    else:
+        ctx = FakeCtx(drop_action, gripper_name="left_gripper")
+        await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is True
+    assert not brain.state.grippers["left_gripper"].holding
+    assert writes(planner) == [("detach", f"brain/{item_id}", LEFT_TCP, ()), ("remove", f"brain/{item_id}")]
+    # A place keeps the item where it set it down; a drop forgets it.
+    assert (item_id in brain.state.items) == (release == "place")
+
+
+@pytest.mark.parametrize("release", ["place", "drop"])
+async def test_a_place_or_a_drop_that_fails_keeps_the_flag_and_the_attached_object(release):
+    brain, planner = await planner_brain(manipulator=FakeManipulator(fail="the jaws did not open"))
+    item_id = holds_lime(brain)
+    if release == "place":
+        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+        await place_item.run(brain, ctx)
+    else:
+        ctx = FakeCtx(drop_action, gripper_name="left_gripper")
+        await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is False
+    assert brain.state.grippers["left_gripper"].held_item_id == item_id
     assert planner.get_planning_scene.polled == [] and writes(planner) == []

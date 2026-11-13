@@ -19,8 +19,8 @@ end, whatever the outcome. It is also where each goal leaves its one line
 in the log, so a search that found nothing says there what it looked at.
 
 The planning scene of the motion planner follows the held flags of
-`State`. One method of `Brain` stands for each change of a flag (`hold`)
-and writes the flag, then the scene; `make_scene_follow_holds` makes the
+`State`. One method of `Brain` stands for each change of a flag (`hold`,
+`release_placed`, `release_dropped`) and writes the flag, then the scene; `make_scene_follow_holds` makes the
 scene equal to the flags. Each
 item a gripper holds has its object, `brain/<item_id>`, attached to the
 grasp link of its arm, and no other object of the brain stays. With the
@@ -44,7 +44,7 @@ from .perception.none import NoneDetector
 from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
 from .models import Models
-from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Refusal, Role, Senses, Vec3
+from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Quat, Refusal, Role, Senses, Vec3
 from .robot import ObjectOperation, PlannerModules, Robot, brain_object_id, item_object, item_of_object
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
 from .state import State, new_run_token
@@ -295,6 +295,21 @@ class Brain:
         `closed_at`."""
         self.state.set_held(gripper, item_id)
         await self.make_scene_follow_holds({item_id: closed_at} if closed_at is not None else None)
+
+    async def release_placed(self, gripper: Gripper, item_id: str, position: Vec3, orientation: Optional[Quat]) -> None:
+        """A place set `item_id` down at `position`: the held flag cleared in
+        `State`, the item at that pose, then the planning scene made to
+        follow, the item's object detached and removed. The next depth frame
+        marks the item in the planner's map."""
+        self.state.clear_held_placed(gripper, item_id, position, orientation)
+        await self.make_scene_follow_holds()
+
+    async def release_dropped(self, gripper: Gripper, item_id: str) -> None:
+        """A drop let `item_id` go: the held flag cleared and the item
+        forgotten in `State`, then the planning scene made to follow, the
+        item's object detached and removed."""
+        self.state.forget_dropped(gripper, item_id)
+        await self.make_scene_follow_holds()
 
     async def make_scene_follow_holds(self, closed_at: Optional[Mapping[str, Vec3]] = None) -> None:
         """Makes the planning scene equal to the held flags, from what

@@ -73,7 +73,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing, `execute_joint_path`, which runs a plan from its start, and the planner's `describe_arms`, `get_planning_scene` and three scene writes (`apply_collision_objects`, `apply_attached_collision_object`, `set_allowed_collision`), service calls like `check_arm_move` that say why when they give no answer |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
-| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, the held flag of a grab and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
+| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, `release_placed` and `release_dropped`, each the held flag of a result and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
 | `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
@@ -151,6 +151,8 @@ classDiagram
         look(job, detector, phrases, timeout_s) Look
         manipulator_or_refuse(manipulator)
         hold(gripper, item_id, closed_at)
+        release_placed(gripper, item_id, position, orientation)
+        release_dropped(gripper, item_id)
         make_scene_follow_holds(closed_at)
     }
     class State {
