@@ -358,15 +358,20 @@ class FakeConsumedService:
     empty it answers `default` when one is given. An answer of none is the
     reply of a service with no response fields. `producer` is what its slot
     is bound to, none for a vacant slot, and `item_types` the dataclasses
-    of the objects inside its request, by their generated names."""
+    of the objects inside its request, by their generated names. Services
+    that share a `journal` list each add (their name, the request) to it,
+    so a test reads their calls in one order."""
 
-    def __init__(self, name: str, request_type, *, producer: Optional[str] = "backbone", default=_NO_DEFAULT, **item_types) -> None:
+    def __init__(
+        self, name: str, request_type, *, producer: Optional[str] = "backbone", default=_NO_DEFAULT, journal: Optional[list] = None, **item_types
+    ) -> None:
         self.SERVICE_NAME = name
         self.Request = request_type
         for type_name, item_type in item_types.items():
             setattr(self, type_name, item_type)
         self.FailureKind, self.Failure = failure_types(name, *CONSUMED_KINDS[name])
         self.polled: list = []
+        self.journal = journal if journal is not None else []
         self._producer = producer
         self._default = default
         self._answers: deque = deque()
@@ -379,6 +384,7 @@ class FakeConsumedService:
 
     async def poll(self, node_runner, producer, request, timeout):
         self.polled.append(request)
+        self.journal.append((self.SERVICE_NAME, request))
         return self._answer()
 
     def _answer(self):
@@ -529,8 +535,10 @@ class SetAllowedCollisionRequest:
 def fake_planner(producer: Optional[str] = "planner") -> PlannerModules:
     """The motion planner's generated modules, its slot bound to `producer`,
     or vacant when that is none, and execute_joint_path on the backbone.
-    The three scene writes succeed unless the test enqueues a failure;
-    describe_arms and get_planning_scene answer what the test enqueues."""
+    The three scene writes succeed unless the test enqueues a failure, and
+    share one `journal`; describe_arms and get_planning_scene answer what
+    the test enqueues."""
+    writes: list = []
     return PlannerModules(
         execute_joint_path=FakeConsumedAction(
             "execute_joint_path", ExecuteJointPathRequest,
@@ -551,14 +559,14 @@ def fake_planner(producer: Optional[str] = "planner") -> PlannerModules:
         describe_arms=FakeServiceWithoutRequest("describe_arms", producer=producer),
         get_planning_scene=FakeServiceWithoutRequest("get_planning_scene", producer=producer),
         apply_collision_objects=FakeConsumedService(
-            "apply_collision_objects", ApplyCollisionObjectsRequest, producer=producer, default=None,
+            "apply_collision_objects", ApplyCollisionObjectsRequest, producer=producer, default=None, journal=writes,
             RequestObjectsItem=CollisionObject, RequestObjectsItemShapesItem=CollisionShape,
         ),
         apply_attached_collision_object=FakeConsumedService(
-            "apply_attached_collision_object", ApplyAttachedCollisionObjectRequest, producer=producer, default=None,
+            "apply_attached_collision_object", ApplyAttachedCollisionObjectRequest, producer=producer, default=None, journal=writes,
         ),
         set_allowed_collision=FakeConsumedService(
-            "set_allowed_collision", SetAllowedCollisionRequest, producer=producer, default=None,
+            "set_allowed_collision", SetAllowedCollisionRequest, producer=producer, default=None, journal=writes,
         ),
     )
 

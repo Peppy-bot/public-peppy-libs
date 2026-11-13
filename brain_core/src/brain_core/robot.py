@@ -18,11 +18,12 @@ keep going unwatched.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Any, Optional, Sequence
 
-from .ports import Quat, Vec3
+from .ports import ItemShape, Quat, Vec3
 
 GOAL_TIMEOUT_S = 5.0
 # The longest a move may take, the longest duration and settle timeout the
@@ -264,6 +265,36 @@ class ObjectOperation:
     @classmethod
     def remove(cls, object_id: str) -> "ObjectOperation":
         return cls(object_id, "remove")
+
+
+# The objects the brain puts in the planning scene are named after the items
+# they stand for: "brain/<item_id>".
+BRAIN_OBJECT_PREFIX = "brain/"
+# The shape of an item no look measured, such as one a grab names by its
+# position alone: a sphere of this radius at its position.
+UNMEASURED_ITEM_RADIUS_M = 0.05
+
+
+def brain_object_id(item_id: str) -> str:
+    """The id of the planning scene's object of the item `item_id`."""
+    return f"{BRAIN_OBJECT_PREFIX}{item_id}"
+
+
+def item_of_object(object_id: str) -> Optional[str]:
+    """The item a planning scene object stands for, or none for an object
+    the brain did not name."""
+    return object_id[len(BRAIN_OBJECT_PREFIX):] if object_id.startswith(BRAIN_OBJECT_PREFIX) else None
+
+
+def item_object(item_id: str, shape: Optional[ItemShape], centre: Vec3) -> ObjectOperation:
+    """The add of the planning scene's object of an item, centred on
+    `centre`: the box of its `shape`, turned as the shape is, or a sphere of
+    UNMEASURED_ITEM_RADIUS_M for an item with no shape."""
+    if shape is None:
+        return ObjectOperation.add(brain_object_id(item_id), centre, IDENTITY, [CollisionShape("sphere", (UNMEASURED_ITEM_RADIUS_M,))])
+    half = shape.yaw_rad / 2.0
+    turn = (0.0, 0.0, math.sin(half), math.cos(half))
+    return ObjectOperation.add(brain_object_id(item_id), centre, turn, [CollisionShape("box", tuple(shape.sides))])
 
 
 class Robot:
