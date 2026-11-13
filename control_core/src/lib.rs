@@ -5,9 +5,9 @@
 //! setpoint stream, the service, receive and ask loops, the fault that ends a
 //! node, the model a component is configured for, latched failure logging, a
 //! node's wall or simulation clock, a robot's tree of frames with the lookups
-//! that wait on that clock, waiting and locking from synchronous code, and the
-//! arms a request names, for robot nodes and the kinematics crates that plan
-//! their moves.
+//! that wait on that clock, waiting and locking from synchronous code, the
+//! reason a robot stop gives each move it ends, and the arms a request names,
+//! for robot nodes and the kinematics crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -81,6 +81,8 @@
 //!   a success.
 //! - [`sync`]: waiting on a future and taking a lock from synchronous code
 //!   inside the runtime.
+//! - [`stop_reason`]: the reason a robot stop gives each move it ends, the
+//!   stop and the reason of the stop request.
 //! - [`requested_arms`]: the arms a request names, their places among the robot's arms in
 //!   the request's order, the place of an arm or a gripper it names by name, the limb a
 //!   node's parameter names by its place, and the waypoints every arm of a joint path
@@ -114,6 +116,7 @@ pub mod requested_arms;
 pub mod robot_tree;
 pub mod serving;
 pub mod setpoint_stream;
+pub mod stop_reason;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
