@@ -125,20 +125,31 @@ class Look:
     def describe(self, search_started_ns: int) -> str:
         """The look in a few words for the log: the frame, when the camera
         took it against the start of the search, and every box of the
-        detector with its confidence, the placed ones first, then the
+        detector with its confidence, the placed ones first, each with the
+        shape fitted around its depth points when it has one, then the
         duplicates and the boxes with no depth, each marked so."""
         age_s = search_started_ns / 1e9 - self.frame_timestamp
         if age_s >= 0.0:
             taken = f"{age_s:.2f} s before the search"
         else:
             taken = f"{-age_s:.2f} s after the search began"
-        boxes = [f"{detection.label} {detection.confidence:.2f}" for detection in self.detections]
+        boxes = [f"{detection.label} {detection.confidence:.2f}{_shape_words(detection.shape)}" for detection in self.detections]
         boxes += [f"{box.label} {box.confidence:.2f} (duplicate)" for box in self.duplicates]
         boxes += [f"{box.label} {box.confidence:.2f} (no depth)" for box in self.unplaced]
         if not boxes:
             return f"frame {self.frame_id} taken {taken}, no box"
         count = "1 box" if len(boxes) == 1 else f"{len(boxes)} boxes"
         return f"frame {self.frame_id} taken {taken}, {count}: {', '.join(boxes)}"
+
+
+def _shape_words(shape: Optional[ItemShape]) -> str:
+    """An item's shape for the log: its sides in centimetres, its centre and
+    its turn; nothing for an item with none."""
+    if shape is None:
+        return ""
+    length, width, height = (100 * side for side in shape.sides)
+    x, y, z = shape.centre
+    return f" (box {length:.1f} x {width:.1f} x {height:.1f} cm at [{x:.3f}, {y:.3f}, {z:.3f}], {math.degrees(shape.yaw_rad):.0f} deg)"
 
 
 @dataclass
@@ -236,6 +247,7 @@ class Perceiver:
             position = self.camera.deproject(u, v, depth, width, height)
             # The box's left and right edges at the depth of its centre.
             width_m = math.dist(self.camera.deproject(box.x0, v, depth, width, height), self.camera.deproject(box.x1, v, depth, width, height))
+            found = item_points(depth_m, box, width, height, self.camera)
             detections.append(
                 Detection(
                     label=box.label,
@@ -244,6 +256,7 @@ class Perceiver:
                     region=box.xyxy,
                     width_m=width_m,
                     top_z=top_height(depth_m, box, width, height, self.camera),
+                    shape=item_box(found) if found is not None else None,
                 )
             )
         return Look(

@@ -50,6 +50,9 @@ Rules written down here because the code depends on them:
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
   picture would be reported against the new one.
+- Shapes. An item carries the shape the look that last saw it fitted
+  around its depth points, for the motion planner. A place_item clears it
+  with the top: the item moved, and no look measured it where it stands.
 - Grasp points. An item's position is a grasp point, where the gripper
   closes, when a grab_item goal addressed it by pose or a place_item put
   it down (`Item.position_is_grasp_point`); a look that sees it again
@@ -193,6 +196,7 @@ class State:
             item.orientation = orientation
             item.position_is_grasp_point = True
             item.top_z = None
+            item.shape = None
 
     def forget(self) -> list[str]:
         """Forgets every known item and every hold, and returns the ids of
@@ -258,6 +262,7 @@ class State:
                 item.region = detection.region
                 item.width_m = detection.width_m
                 item.top_z = detection.top_z
+                item.shape = detection.shape
             else:
                 _refresh(item, detection, now_ns, coverage)
             claimed.add(item.item_id)
@@ -330,6 +335,7 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.region = detection.region
     item.width_m = detection.width_m
     item.top_z = detection.top_z
+    item.shape = detection.shape
     if coverage.covers(detection.label):
         item.label = detection.label
 

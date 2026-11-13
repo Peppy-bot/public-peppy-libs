@@ -224,9 +224,11 @@ class Detection:
     """A box turned into the world: the label, where the item is, how sure
     the detector was, the box itself, where the item is in the picture the
     look used, the item's width across that picture at the depth of its
-    seen point (m), and the height of the item's top in the robot frame (m;
-    see `top_height`). Orientation is set only by a backend that resolves
-    it; the contracts make it optional for that reason."""
+    seen point (m), the height of the item's top in the robot frame (m;
+    see `top_height`), and the item's shape from its depth points (see
+    `item_points` and `item_box`), none when the box gave no points above
+    the surface. Orientation is set only by a backend that resolves it; the
+    contracts make it optional for that reason."""
 
     label: str
     position: Vec3
@@ -235,6 +237,7 @@ class Detection:
     region: Optional[Region] = None
     width_m: Optional[float] = None
     top_z: Optional[float] = None
+    shape: Optional[ItemShape] = None
 
 
 @dataclass(frozen=True)
@@ -259,10 +262,11 @@ class Item:
     `region` is where the look that last saw it found it in the picture;
     none for an item the last look did not see, or one addressed by
     pose. `width_m` is its width across the picture of the last look that
-    saw it, at the depth of its seen point, and `top_z` the height of its
-    top in the robot frame that look measured. `width_m` is none for an
-    item no look saw; `top_z` is none for it too, and for an item that
-    place_item put down since.
+    saw it, at the depth of its seen point, `top_z` the height of its top in
+    the robot frame that look measured, and `shape` the box around its
+    depth points that look fitted, for the motion planner. `width_m` is none
+    for an item no look saw; `top_z` and `shape` are none for it too, and
+    for an item that place_item put down since.
 
     `position_is_grasp_point` says what `position` and `orientation` are.
     False for an item a look saw: the position is the point the camera saw
@@ -282,6 +286,7 @@ class Item:
     position_is_grasp_point: bool = False
     width_m: Optional[float] = None
     top_z: Optional[float] = None
+    shape: Optional[ItemShape] = None
 
 
 @dataclass

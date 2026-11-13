@@ -5,13 +5,18 @@ of the plan: a pen at 0, 45 and 90 degrees, a cube, a ball, an item beside
 a neighbour, an item in a bowl, a box with no depth."""
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import synthetic_depth as sd
+from conftest import FakeDetector, rgb_frame
 
-from brain_core.perception.perceiver import MIN_SIDE_M, SURFACE_MARGIN_M, ItemPoints, item_box, item_points
-from brain_core.ports import Box, ItemShape
+from brain_core.limbs import parse_limbs
+from brain_core.perception.frames import FrameStore, decode_depth
+from brain_core.perception.perceiver import MIN_SIDE_M, SURFACE_MARGIN_M, ItemPoints, Look, Perceiver, item_box, item_points
+from brain_core.ports import Box, CancelToken, Coverage, Detection, ItemShape
+from brain_core.state import State
 
 LIME = sd.Sphere((0.30, -0.20, 0.413), 0.043)
 CUBE = sd.UprightBox((0.32, 0.05, 0.395), (0.05, 0.05, 0.05), 30.0)
@@ -195,3 +200,54 @@ def test_the_box_of_a_single_point_has_the_least_side():
     shape = item_box(ItemPoints(np.array([[0.3, 0.1, 0.4]]), 0.37))
     assert shape.sides == pytest.approx((MIN_SIDE_M, MIN_SIDE_M, 0.03))
     assert shape.centre == pytest.approx((0.3, 0.1, 0.385)) and shape.yaw_rad == 0.0
+
+
+# The shape on the detections of a scan, on the items, and in the log.
+
+
+def z16(depth_m: np.ndarray, frame_id: int = 3):
+    """The depth_stream message of `depth_m`, in millimetres."""
+    return SimpleNamespace(
+        header=SimpleNamespace(timestamp=1.0, frame_id=frame_id, align_mode="depth_to_color"),
+        encoding="z16", width=depth_m.shape[1], height=depth_m.shape[0],
+        frame=np.round(depth_m / 0.001).astype("<u2").tobytes(),
+    )
+
+
+async def test_a_scan_gives_each_detection_the_box_around_its_depth_points():
+    scene = sd.render([LIME])
+    frames = FrameStore()
+    frames.add_color(rgb_frame(sd.WIDTH, sd.HEIGHT, frame_id=3))
+    frames.add_depth(z16(scene.depth_m))
+    frames.depth_unit = 0.001
+    perceiver = Perceiver(frames, sd.CHEST)
+    box = scene.box(0, label="lime")
+    look = await perceiver.scan(FakeDetector([box]), ["lime"], CancelToken(), timeout_s=0.0)
+    [lime] = look.detections
+    read = decode_depth(z16(scene.depth_m), 0.001)
+    assert lime.shape == item_box(item_points(read, box, sd.WIDTH, sd.HEIGHT, sd.CHEST))
+    assert lime.shape.centre[2] + lime.shape.sides[2] / 2 == pytest.approx(0.456, abs=0.002)
+    assert "lime 0.90 (box " in look.describe(1_000_000_000)
+
+
+def test_the_log_of_a_look_names_the_shape_of_each_item_that_has_one():
+    shape = ItemShape((0.3, -0.2, 0.413), (0.082, 0.071, 0.086), math.radians(67.0))
+    look = Look([Detection("lime", (0.3, -0.2, 0.45), 0.9, shape=shape), Detection("bowl", (0.27, 0.07, 0.4), 0.8)], 320, 180, 1.0, 3, [], [])
+    assert look.describe(1_000_000_000) == (
+        "frame 3 taken 0.00 s before the search, 2 boxes: lime 0.90 (box 8.2 x 7.1 x 8.6 cm at [0.300, -0.200, 0.413], 67 deg), bowl 0.80"
+    )
+
+
+def test_an_item_keeps_the_shape_of_the_look_that_last_saw_it_and_a_place_clears_it():
+    state = State(parse_limbs("left_arm:left_gripper"), "t0")
+    first = ItemShape((0.3, -0.2, 0.413), (0.08, 0.07, 0.086), 0.0)
+    second = ItemShape((0.31, -0.2, 0.413), (0.081, 0.07, 0.086), 0.1)
+    [item] = state.remember([Detection("lime", (0.3, -0.2, 0.45), 0.9, shape=first)], 1, coverage=Coverage(every_label=True))
+    assert item.shape == first
+    [again] = state.remember([Detection("lime", (0.31, -0.2, 0.45), 0.9, shape=second)], 2, coverage=Coverage(every_label=True))
+    assert again is item and item.shape == second
+    gripper = state.grippers["left_gripper"]
+    state.set_held(gripper, item.item_id)
+    state.clear_held_placed(gripper, item.item_id, (0.4, 0.1, 0.5), None)
+    assert item.shape is None
+    assert state.mint_from_pose((0.5, 0.1, 0.7), None, 3).shape is None
