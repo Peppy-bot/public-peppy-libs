@@ -2,12 +2,24 @@
 move ends, from the goal the brain fires to the outcome it reads."""
 
 import asyncio
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
-from fake_peppygen import CheckArmMoveRequest, FakeLimbAction, FakeService, MoveArmRequest, MoveGripperRequest, ResultStatus
+from fake_peppygen import (
+    CheckArmMoveRequest,
+    FakeConsumedAction,
+    FakeConsumedService,
+    MoveArmRequest,
+    MoveGripperRequest,
+    ResultStatus,
+    fake_bindings,
+    fake_planner,
+    planner_bindings,
+)
 
-from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult, Robot
+from brain_core.bindings import PLANNER_MODULES
+from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot
 
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
@@ -31,9 +43,9 @@ def backbone(**kwargs):
 
 def backbone_with_check(**kwargs):
     """A Robot on scripted limb_motion clients, and the three clients."""
-    move_arm = FakeLimbAction("move_arm", MoveArmRequest)
-    move_gripper = FakeLimbAction("move_gripper", MoveGripperRequest)
-    check_arm_move = FakeService("check_arm_move", CheckArmMoveRequest)
+    move_arm = FakeConsumedAction("move_arm", MoveArmRequest)
+    move_gripper = FakeConsumedAction("move_gripper", MoveGripperRequest)
+    check_arm_move = FakeConsumedService("check_arm_move", CheckArmMoveRequest)
     robot = Robot("runner", move_arm, move_gripper, check_arm_move, **kwargs)
     return robot, move_arm, move_gripper, check_arm_move
 
@@ -197,3 +209,24 @@ async def test_a_check_with_no_answer_is_reported_as_having_none():
     check.enqueue(TimeoutError("no reply"))
     lost = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
     assert lost == MoveCheck(False, "check_arm_move gave no answer: TimeoutError('no reply')", 0.0)
+
+
+def test_the_planner_modules_are_the_planner_fields_of_the_bindings():
+    assert {field.name for field in fields(PlannerModules)} == set(PLANNER_MODULES)
+    planner = fake_planner()
+    assert PlannerModules.from_bindings(fake_bindings(**planner_bindings(planner))) == planner
+
+
+def test_bindings_that_lack_a_planner_module_give_no_planner_modules():
+    assert PlannerModules.from_bindings(fake_bindings()) is None
+    lacking = {**planner_bindings(fake_planner()), "set_allowed_collision": None}
+    assert PlannerModules.from_bindings(fake_bindings(**lacking)) is None
+
+
+def test_a_robot_has_the_planner_only_with_its_modules_and_its_slot_bound():
+    robot, _, _ = backbone()
+    assert not robot.has_planner
+    robot, _, _ = backbone(planner=fake_planner(producer=None))
+    assert not robot.has_planner
+    robot, _, _ = backbone(planner=fake_planner())
+    assert robot.has_planner

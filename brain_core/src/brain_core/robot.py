@@ -1,8 +1,12 @@
-"""The only part of the brain that talks to the backbone. One call per
-limb_motion move, each returning how the move ended, and the goals in
-flight remembered so a stop can cancel them whatever backend asked for
-them. `check_arm_move` asks whether a move has a plan and moves nothing,
-so a stop has nothing of it to cancel.
+"""The only part of the brain that talks to the backbone and to the motion
+planner. One call per limb_motion move, each returning how the move ended,
+and the goals in flight remembered so a stop can cancel them whatever
+backend asked for them. `check_arm_move` asks whether a move has a plan and
+moves nothing, so a stop has nothing of it to cancel.
+
+The motion planner is optional: `has_planner` says whether the brain
+consumes it and the launcher bound its slot. Without it the brain moves by
+move_arm lines alone.
 
 The backbone plans and governs every move, so nothing here checks
 collisions or limits: a target the backbone cannot reach comes back as a
@@ -14,9 +18,9 @@ keep going unwatched.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional
 
 from .ports import Quat, Vec3
 
@@ -101,19 +105,62 @@ class MoveCheck:
     duration_s: float = 0.0
 
 
+@dataclass(frozen=True)
+class PlannerModules:
+    """The node's generated modules of the motion planner, motion_planning:v1
+    on its `motion_planning` slot, with limb_motion's execute_joint_path,
+    which runs a plan. Each field is named as its field of `Bindings`."""
+
+    execute_joint_path: Any
+    plan_joint_path: Any
+    plan_cartesian_path: Any
+    describe_arms: Any
+    get_planning_scene: Any
+    apply_collision_objects: Any
+    apply_attached_collision_object: Any
+    set_allowed_collision: Any
+
+    @classmethod
+    def from_bindings(cls, bindings) -> Optional["PlannerModules"]:
+        """The planner modules of `bindings`, or None for a brain whose
+        manifest lacks any of them."""
+        modules = {field.name: getattr(bindings, field.name) for field in fields(cls)}
+        if any(module is None for module in modules.values()):
+            return None
+        return cls(**modules)
+
+
 class Robot:
     """`move_arm`, `move_gripper` and `check_arm_move` are the node's
-    generated limb_motion modules."""
+    generated limb_motion modules, and `planner` its modules of the motion
+    planner, none for a brain that does not consume it."""
 
     def __init__(
-        self, node_runner, move_arm, move_gripper, check_arm_move, *, result_timeout_s: float = RESULT_TIMEOUT_S
+        self,
+        node_runner,
+        move_arm,
+        move_gripper,
+        check_arm_move,
+        *,
+        planner: Optional[PlannerModules] = None,
+        result_timeout_s: float = RESULT_TIMEOUT_S,
     ) -> None:
         self._node_runner = node_runner
         self._move_arm = move_arm
         self._move_gripper = move_gripper
         self._check_arm_move = check_arm_move
+        self._planner = planner
         self._result_timeout_s = result_timeout_s
         self._live: set = set()
+
+    @property
+    def has_planner(self) -> bool:
+        """Whether the planner slot is bound: the brain consumes the motion
+        planner, and the launcher bound its slot to a producer. The binding
+        is fixed when the node starts."""
+        if self._planner is None:
+            return False
+        return self._planner.plan_joint_path.bound_producer(self._node_runner) is not None
 
     async def move_arm(
         self,

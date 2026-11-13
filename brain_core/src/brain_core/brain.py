@@ -37,7 +37,7 @@ from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
 from .models import Models
 from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, ModelSource, Refusal, Role, Senses
-from .robot import Robot
+from .robot import PlannerModules, Robot
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
 from .state import State, new_run_token
 
@@ -143,7 +143,10 @@ class Brain:
         self.bindings = bindings
         limbs = parse_limbs(params.limbs)
         self.state = State(limbs, new_run_token() if run_token is None else run_token)
-        self.robot = Robot(node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move)
+        self.robot = Robot(
+            node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move,
+            planner=PlannerModules.from_bindings(bindings),
+        )
         # The robot's measured limbs, which a manipulator reads.
         self.limb_states = LimbStateStore()
         # The perceiver alone holds the frames and the camera model: the

@@ -35,7 +35,9 @@ Its entry point builds `Bindings` from its peppygen package and hands them to
 for each role. `Bindings.from_generated` finds each module where every
 brain's peppygen puts it, so the node's manifest names its slots
 `limb_motion`, `limb_state`, `camera`, `geometry` and `camera_mounts`, as both
-brains do:
+brains do. A brain that consumes the motion planner names its slot
+`motion_planning` and also consumes limb_motion's `execute_joint_path`; the
+modules of a brain that does not are none:
 
 ```python
 import peppygen
@@ -68,7 +70,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
+| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, and `has_planner`, whether the brain consumes the motion planner and its slot is bound |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
 | `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
