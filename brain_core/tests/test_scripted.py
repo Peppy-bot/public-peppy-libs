@@ -94,12 +94,14 @@ class FakeRobot:
     in `bars`. A check plans, a move lands on its target, a grip stops at
     its target, unless the test queued another answer for that kind.
     `on_call` runs once each call is recorded, before it answers: a test
-    hooks the lift or a cancel there.
+    hooks the lift or a cancel there. Its planner slot is vacant.
 
     Each call yields to the loop once before it is recorded, as a call to
     the backbone does, so what an earlier call scheduled has happened by
     then; it answers with no yield after `on_call`, so what `on_call`
     schedules happens after the caller has read the answer."""
+
+    has_planner = False
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []

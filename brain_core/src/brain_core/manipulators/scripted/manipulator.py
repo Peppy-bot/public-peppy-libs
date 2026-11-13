@@ -32,6 +32,20 @@ the measured grasp point stands within `settle_position_m` and
 planned end; a gripper move waits up to `grip_settle_timeout_s` for the
 jaws to stand still. A check asks with the arm move's pose and duration.
 
+The transit, the move to the pre-grasp point and to the pre-place point,
+is the one step that depends on the motion planner (`_transit`). Without
+it, the transit is the move_arm line of today, and each point is checked
+with check_arm_move. With it (`Robot.has_planner`), each orientation is
+asked for a plan_joint_path to the pre point, the grasp link within 1 mm
+and 0.01 rad, `rrt_connect` with no refiner, in `allowed_planning_time_s`,
+and then for a plan_cartesian_path with no collision check from the end of
+that plan through the points that follow, a test of their reach alone; the
+first orientation that passes both runs its plan with execute_joint_path,
+the plan's start as the expected start. A plan that fails, such as one
+from a start in collision, gives the planner's kind and words, and no line
+replaces it. The descent, the lift, the retreat and the climb stay move_arm
+lines either way.
+
 Each step that fails ends the grab with the backbone's own words. A grab
 or a place that no orientation plans names the last orientation it tried,
 the point of it that has no plan and the backbone's words for it. A step
@@ -86,7 +100,7 @@ from typing import Awaitable, Callable, Optional, Sequence
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
-from ...robot import MoveResult
+from ...robot import ArmDescription, JointPlan, MoveResult
 from ...waiting import until
 from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps
 from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
@@ -121,6 +135,22 @@ MOVE_DURATION_S = 0.0
 SETTLE_POSITION_M = 0.02
 SETTLE_ORIENTATION_RAD = 0.15
 SETTLE_TIMEOUT_S = 2.0
+# The goal of a planned transit: the grasp link within 1 mm and 0.01 rad of
+# the pre point, as move_arm plans, by RRTConnect with no refiner.
+PLAN_POSITION_TOLERANCE_M = 0.001
+PLAN_ORIENTATION_TOLERANCE_RAD = 0.01
+PLANNER = "rrt_connect"
+REFINER = "none"
+# The time each plan of a transit may take. A plan that exists took 0.03 to
+# 0.42 s on the VLA box, and a goal with no plan takes the whole time: at
+# most 4 s for the 8 rolls of a grab (the spike of 2026-11-13).
+ALLOWED_PLANNING_TIME_S = 0.5
+# How far each joint of a planned transit may stand from the plan's last
+# waypoint when the run completes: the start tolerance of the backbone and
+# of the planner.
+SETTLE_JOINT_RAD = 0.05
+# A reach test passes when its lines are covered to within this share.
+FULL_REACH = 1.0 - 1e-9
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
 SETTLE_TIMED_OUT = "timeout"
@@ -157,13 +187,18 @@ class _Failed(Exception):
 
 @dataclass
 class _Checks:
-    """The check_arm_move calls of a reach: how many, and their total time."""
+    """The calls of a reach: how many check_arm_move calls, plans and reach
+    tests of the planner ran, and their total time."""
 
     count: int = 0
+    plans: int = 0
+    lines: int = 0
     seconds: float = 0.0
 
     def __str__(self) -> str:
-        return f"{self.count} check{'' if self.count == 1 else 's'}, {1000 * self.seconds:.0f} ms"
+        counted = [(self.count, "check"), (self.plans, "plan"), (self.lines, "reach test")]
+        parts = [f"{number} {word}{'' if number == 1 else 's'}" for number, word in counted if number]
+        return ", ".join([*parts, f"{1000 * self.seconds:.0f} ms"])
 
 
 @dataclass(frozen=True)
@@ -197,6 +232,7 @@ class ScriptedManipulator:
         grip_settle_timeout_s: float = GRIP_SETTLE_TIMEOUT_S,
         jaw_travel_m: float = JAW_TRAVEL_M,
         approach_margin_m: float = APPROACH_MARGIN_M,
+        allowed_planning_time_s: float = ALLOWED_PLANNING_TIME_S,
         aligner: Optional[Aligner] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -216,6 +252,7 @@ class ScriptedManipulator:
         self.grip_settle_timeout_s = grip_settle_timeout_s
         self.jaw_travel_m = jaw_travel_m
         self.approach_margin_m = approach_margin_m
+        self.allowed_planning_time_s = allowed_planning_time_s
         # The brain's monotonic clock, for the checks' time in the log line.
         self._clock = clock
         self._robot = None
@@ -463,24 +500,105 @@ class ScriptedManipulator:
         clearance_m: float, with_lift: bool = False,
     ) -> _Reach:
         """The first orientation of `grasp` whose moves reach, as
-        `_first_reach` finds it, with its transit: the move_arm line from
-        where the arm is commanded now to the pre point. A failure that no
-        orientation reaches is raised before anything moves."""
-        orientation, points = await self._first_reach(
-            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift
+        `_first_reach` finds it, with its transit. The only place that asks
+        whether the motion planner is bound. Without it, each point is
+        checked with check_arm_move and the transit is the move_arm line
+        from where the arm is commanded now to the pre point. With it, each
+        orientation is planned (`_planned_reach`) and the transit runs the
+        plan. A failure that no orientation reaches is raised before
+        anything moves."""
+        if not self._robot.has_planner:
+            orientation, points, _ = await self._first_reach(
+                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+                test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
+            )
+            return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel))
+        arm = await self._planner_arm(gripper)
+        orientation, points, plan = await self._first_reach(
+            gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+            test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
         )
-        return _Reach(orientation, points, go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel))
+        return _Reach(orientation, points, go=lambda cancel: self._run_plan(gripper.arm, plan, cancel, notes))
+
+    async def _planner_arm(self, gripper: Gripper) -> ArmDescription:
+        """The planner's description of the arm of `gripper`: its grasp link
+        and its gripper links."""
+        described = await self._robot.describe_arms()
+        arm = described.arm(gripper.arm)
+        if arm is None:
+            why = described.reason or "it names no such arm"
+            raise _Failed(f"the motion planner does not describe arm '{gripper.arm}': {why}")
+        return arm
+
+    async def _checked_reach(
+        self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
+    ) -> tuple[tuple[int, str] | None, None]:
+        """The reach test of an orientation with no planner: check_arm_move
+        of each point, the first that has no plan with its words."""
+        return await self._first_refused_point(arm, points, orientation, cancel, checks), None
+
+    async def _planned_reach(
+        self, arm: ArmDescription, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
+    ) -> tuple[tuple[int, str] | None, Optional[JointPlan]]:
+        """The reach test of an orientation with the planner: a plan of the
+        transit to the pre point, then the reach of the lines through the
+        points that follow it, from the end of that plan, with no collision
+        check. The index of the first point that does not pass with the
+        planner's words, or none and the plan."""
+        started = self._clock()
+        plan = await self._robot.plan_joint_path(
+            arm.name, arm.grasp_link, points[0], orientation,
+            position_tolerance_m=PLAN_POSITION_TOLERANCE_M, orientation_tolerance_rad=PLAN_ORIENTATION_TOLERANCE_RAD,
+            planner=PLANNER, refiner=REFINER, allowed_planning_time_s=self.allowed_planning_time_s,
+        )
+        checks.plans += 1
+        checks.seconds += self._clock() - started
+        cancel.check()
+        if plan.cancelled:
+            raise _Failed(plan.message or "plan_joint_path was cancelled", stopped=True)
+        if not plan.completed:
+            return (0, plan.words or "plan_joint_path found no path"), None
+        started = self._clock()
+        line = await self._robot.plan_cartesian_path(
+            arm.name, arm.grasp_link, [(point, orientation) for point in points[1:]],
+            avoid_collisions=False, start_joint_positions=plan.waypoints[-1].joint_positions,
+        )
+        checks.lines += 1
+        checks.seconds += self._clock() - started
+        cancel.check()
+        if line.cancelled:
+            raise _Failed(line.message or "plan_cartesian_path was cancelled", stopped=True)
+        if not line.completed:
+            return (1, line.words or "plan_cartesian_path gave no path"), None
+        if line.fraction < FULL_REACH:
+            lines = len(points) - 1
+            short = min(lines, 1 + int(line.fraction * lines))
+            return (short, f"plan_cartesian_path reaches {line.fraction:.2f} of the lines from the end of the plan"), None
+        return None, plan
+
+    async def _run_plan(self, arm: str, plan: JointPlan, cancel: CancelToken, notes: list[str]) -> None:
+        """Runs the planned transit `plan` of `arm`; the result comes once
+        each joint has settled at the plan's last waypoint."""
+        ran = await self._robot.execute_joint_path(
+            arm, plan, duration_s=MOVE_DURATION_S, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=self.settle_timeout_s,
+        )
+        cancel.check()
+        if not ran.completed:
+            raise _Failed(ran.message or "execute_joint_path failed", stopped=ran.cancelled)
+        notes.append(f"ran the planned transit of {len(plan.waypoints)} waypoint{'' if len(plan.waypoints) == 1 else 's'}")
 
     async def _first_reach(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
         clearance_m: float, with_lift: bool = False,
-    ) -> tuple[Quat, tuple[Vec3, ...]]:
-        """The first orientation of `grasp` whose moves all plan, with the
-        points of those moves in order: the pre point, `clearance_m` back
-        along the approach, the grasp point, and the lifted point when
-        `with_lift` (a grab; else a place, whose grasp point is the place
-        point). With none, the failure names the last orientation tried, its
-        point that has no plan and the backbone's words for it."""
+        test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[tuple[int, str] | None, object]]],
+    ) -> tuple[Quat, tuple[Vec3, ...], object]:
+        """The first orientation of `grasp` whose moves all pass `test`, with
+        the points of those moves in order (the pre point, `clearance_m`
+        back along the approach, the grasp point, and the lifted point when
+        `with_lift`: a grab; else a place, whose grasp point is the place
+        point) and what `test` gave for them. With none, the failure names
+        the last orientation tried, its point that does not pass and the
+        words for it."""
         names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "place point")
         last_refusal = ""
         checks = _Checks()
@@ -488,11 +606,11 @@ class ScriptedManipulator:
             points = (pre_grasp(grasp.point, orientation, clearance_m), grasp.point)
             if with_lift:
                 points += (lifted(grasp.point, self.lift_m),)
-            refused = await self._first_refused_point(gripper.arm, points, orientation, cancel, checks)
+            refused, found = await test(points, orientation, checks)
             tried = f"orientation {index + 1} of {len(grasp.orientations)}"
             if refused is None:
                 notes.append(f"{tried} planned, {_numbers(orientation)} ({checks})")
-                return orientation, points
+                return orientation, points, found
             point, words = refused
             last_refusal = (
                 f"{tried}, {_numbers(orientation)}, has no plan to its {names[point]} "

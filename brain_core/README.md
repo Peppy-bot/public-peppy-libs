@@ -401,6 +401,21 @@ place_item, gets the jaws fully open. A grab that no orientation reaches ends
 with the jaws open: a grab takes a gripper that holds nothing, so open jaws
 drop nothing.
 
+With the motion planner bound (`Robot.has_planner`), the transit to the
+pre-grasp point is planned, and `ScriptedManipulator._transit` is the one
+step that asks. For each orientation, a `plan_joint_path` brings the grasp
+link to the pre-grasp point (within 1 mm and 0.01 rad, `rrt_connect`, no
+refiner, in `allowed_planning_time_s`, 0.5 s), and a `plan_cartesian_path`
+with no collision check, from the end of that plan through the grasp and
+lifted points, tests the reach of the descent and the lift. The first
+orientation that passes both runs its plan with `execute_joint_path`, the
+plan's start as the expected start, each joint within 0.05 rad at the end.
+A grab whose orientations all fail ends before the arm moves, with the last
+one's words, the planner's kind first (`start_in_collision: ...`): no line
+takes the place of a plan. The descent, the lift and the retreat stay
+`move_arm` lines. The log line counts the plans and the reach tests, and
+says that the planned transit ran.
+
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
 item's width; where the descent's result put the
