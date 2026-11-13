@@ -206,6 +206,20 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 @dataclass(frozen=True)
+class ItemShape:
+    """The shape of an item for the motion planner: an upright box, its
+    centre in the robot frame, its full sides along its own x, y and z (m),
+    and its turn `yaw_rad` about the vertical, from 0 up to a quarter turn.
+    Its bottom stands at the surface under the item and its top at the
+    item's highest point; seen from above it is the smallest rectangle
+    around the item's depth points."""
+
+    centre: Vec3
+    sides: Vec3
+    yaw_rad: float
+
+
+@dataclass(frozen=True)
 class Detection:
     """A box turned into the world: the label, where the item is, how sure
     the detector was, the box itself, where the item is in the picture the

@@ -42,7 +42,7 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
+from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, ItemShape, Refusal, SearchTimeout, iou
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at, depth_pixel
 
@@ -68,6 +68,11 @@ SHAPE_GRID = 64
 SURFACE_QUANTILE = 0.5
 SURFACE_MARGIN_M = 0.005
 GROUP_GAP_M = 0.015
+# The box around an item's points tries each turn about the vertical in
+# steps of YAW_STEP_DEG, and none of its sides is shorter than MIN_SIDE_M,
+# so the planner gets a solid even for a single point.
+YAW_STEP_DEG = 1
+MIN_SIDE_M = 0.01
 
 
 async def in_daemon_thread(function: Callable, *args):
@@ -339,6 +344,36 @@ def item_points(depth_m: np.ndarray, box: Box, color_width: int, color_height: i
     seed = tuple(candidates[np.argmin(((candidates - centre) ** 2).sum(axis=1))])
     group = _group_of(points, above, seed)
     return ItemPoints(points[group], surface_z)
+
+
+def item_box(found: ItemPoints) -> ItemShape:
+    """The box around an item's points: upright, turned about the vertical
+    to the angle, in steps of YAW_STEP_DEG from 0 up to a quarter turn, that
+    gives the smallest rectangle around the points seen from above; its
+    bottom at the surface under the item, its top at the highest point. No
+    side is shorter than MIN_SIDE_M."""
+    xy = found.points[:, :2]
+    angles = np.radians(np.arange(0, 90, YAW_STEP_DEG))
+    cosines, sines = np.cos(angles), np.sin(angles)
+    along = xy[:, :1] * cosines + xy[:, 1:] * sines
+    across = -xy[:, :1] * sines + xy[:, 1:] * cosines
+    lengths = along.max(axis=0) - along.min(axis=0)
+    widths = across.max(axis=0) - across.min(axis=0)
+    best = int(np.argmin(lengths * widths))
+    yaw = float(angles[best])
+    middle_along = (along[:, best].max() + along[:, best].min()) / 2.0
+    middle_across = (across[:, best].max() + across[:, best].min()) / 2.0
+    top = float(found.points[:, 2].max())
+    bottom = found.surface_z
+    return ItemShape(
+        centre=(
+            float(middle_along * math.cos(yaw) - middle_across * math.sin(yaw)),
+            float(middle_along * math.sin(yaw) + middle_across * math.cos(yaw)),
+            (top + bottom) / 2.0,
+        ),
+        sides=(max(MIN_SIDE_M, float(lengths[best])), max(MIN_SIDE_M, float(widths[best])), max(MIN_SIDE_M, top - bottom)),
+        yaw_rad=yaw,
+    )
 
 
 def _group_of(points: np.ndarray, kept: np.ndarray, seed: tuple[int, int]) -> np.ndarray:

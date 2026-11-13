@@ -1,15 +1,17 @@
 """The shape of an item from the chest camera's depth readings, on
 synthetic depth images (synthetic_depth.py): which readings are the
-item's (`item_points`) for each case of the plan: a pen at 0, 45 and 90
-degrees, a cube, a ball, an item beside a neighbour, an item in a bowl, a
-box with no depth."""
+item's (`item_points`) and the box around them (`item_box`), for each case
+of the plan: a pen at 0, 45 and 90 degrees, a cube, a ball, an item beside
+a neighbour, an item in a bowl, a box with no depth."""
+
+import math
 
 import numpy as np
 import pytest
 import synthetic_depth as sd
 
-from brain_core.perception.perceiver import SURFACE_MARGIN_M, item_points
-from brain_core.ports import Box
+from brain_core.perception.perceiver import MIN_SIDE_M, SURFACE_MARGIN_M, ItemPoints, item_box, item_points
+from brain_core.ports import Box, ItemShape
 
 LIME = sd.Sphere((0.30, -0.20, 0.413), 0.043)
 CUBE = sd.UprightBox((0.32, 0.05, 0.395), (0.05, 0.05, 0.05), 30.0)
@@ -125,3 +127,71 @@ def test_a_box_of_a_colour_picture_larger_than_the_depth_image_reads_the_same_po
     camera = sd.CHEST.with_intrinsics(sd.CHEST.intrinsics.scaled_to(4 * sd.WIDTH, 4 * sd.HEIGHT))
     big = item_points(scene.depth_m, scaled, 4 * sd.WIDTH, 4 * sd.HEIGHT, camera)
     assert big.points.shape == found.points.shape and np.allclose(big.points, found.points, atol=1e-6)
+
+
+# The box around the points: upright, turned to the smallest rectangle from
+# above, from the surface to the highest point.
+
+
+def box_of(solids, index=0, **render):
+    scene = sd.render(solids, **render)
+    found = points_of(scene, index)
+    return found, item_box(found)
+
+
+def long_axis_deg(shape: ItemShape) -> float:
+    """The direction of the box's longer side from above, 0 to 180 degrees."""
+    yaw = math.degrees(shape.yaw_rad)
+    return (yaw if shape.sides[0] >= shape.sides[1] else yaw + 90.0) % 180.0
+
+
+def holds(shape: ItemShape, points: np.ndarray) -> bool:
+    """Whether every point lies inside the box, to a micrometre."""
+    c, s = math.cos(shape.yaw_rad), math.sin(shape.yaw_rad)
+    offset = points - np.array(shape.centre)
+    local = np.stack([c * offset[:, 0] + s * offset[:, 1], -s * offset[:, 0] + c * offset[:, 1], offset[:, 2]], axis=1)
+    return bool(np.all(np.abs(local) <= np.array(shape.sides) / 2.0 + 1e-6))
+
+
+@pytest.mark.parametrize("yaw_deg", [0.0, 45.0, 90.0])
+def test_the_box_of_a_pen_lies_along_it_at_any_turn(yaw_deg):
+    pen = sd.UprightBox((0.30, 0.0, 0.375), (0.14, 0.01, 0.01), yaw_deg)
+    found, shape = box_of([pen])
+    assert max(shape.sides[:2]) == pytest.approx(0.14, abs=0.005)
+    assert min(shape.sides[:2]) == pytest.approx(0.01, abs=0.004)
+    assert shape.sides[2] == pytest.approx(0.01, abs=1e-6)
+    assert abs((long_axis_deg(shape) - yaw_deg + 90.0) % 180.0 - 90.0) <= 1.0
+    assert shape.centre == pytest.approx((0.30, 0.0, 0.375), abs=0.004)
+    assert holds(shape, found.points)
+
+
+def test_the_box_of_a_turned_cube_is_the_cube():
+    found, shape = box_of([CUBE])
+    assert shape.sides == pytest.approx((0.05, 0.05, 0.05), abs=0.002)
+    assert math.degrees(shape.yaw_rad) % 90.0 == pytest.approx(30.0, abs=1.0)
+    assert shape.centre == pytest.approx(CUBE.centre, abs=0.002)
+    assert holds(shape, found.points)
+
+
+@pytest.mark.parametrize("sphere", [LIME, BALL], ids=["lime", "ball"])
+def test_the_box_of_a_round_item_stands_on_the_table_and_reaches_its_top_and_no_further_than_its_side(sphere):
+    """The camera sees the near half of a round item: its box reaches the
+    top and the sides, and is shorter than the item towards the camera."""
+    found, shape = box_of([sphere])
+    top = sphere.centre[2] + sphere.radius
+    assert shape.centre[2] - shape.sides[2] / 2 == pytest.approx(sd.TABLE_Z, abs=1e-6)
+    assert shape.centre[2] + shape.sides[2] / 2 == pytest.approx(top, abs=1e-3)
+    assert max(shape.sides[:2]) <= 2 * sphere.radius + 1e-3
+    assert holds(shape, found.points)
+
+
+def test_the_box_of_an_item_in_a_bowl_starts_at_the_bowl_wall_around_it():
+    found, shape = box_of([BOWL, APPLE_IN_THE_BOWL], index=1)
+    assert shape.centre[2] - shape.sides[2] / 2 == pytest.approx(found.surface_z)
+    assert shape.centre[2] + shape.sides[2] / 2 == pytest.approx(APPLE_IN_THE_BOWL.centre[2] + APPLE_IN_THE_BOWL.radius, abs=1e-3)
+
+
+def test_the_box_of_a_single_point_has_the_least_side():
+    shape = item_box(ItemPoints(np.array([[0.3, 0.1, 0.4]]), 0.37))
+    assert shape.sides == pytest.approx((MIN_SIDE_M, MIN_SIDE_M, 0.03))
+    assert shape.centre == pytest.approx((0.3, 0.1, 0.385)) and shape.yaw_rad == 0.0
