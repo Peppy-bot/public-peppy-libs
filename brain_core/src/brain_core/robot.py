@@ -30,6 +30,8 @@ GOAL_TIMEOUT_S = 5.0
 RESULT_TIMEOUT_S = 125.0
 CANCEL_TIMEOUT_S = 3.0
 CHECK_TIMEOUT_S = 5.0
+# The time each service of the planner gets to answer.
+PLANNER_SERVICE_TIMEOUT_S = 5.0
 
 
 class MoveEnd(StrEnum):
@@ -177,6 +179,52 @@ class PlannerModules:
         if any(module is None for module in modules.values()):
             return None
         return cls(**modules)
+
+
+@dataclass(frozen=True)
+class ArmDescription:
+    """One arm as the planner names it: its limb name, its gripper's limb
+    name, its joints in limb_state's order, the link at its grasp point,
+    and the links of its gripper, which a held object may touch."""
+
+    name: str
+    gripper_name: str
+    joint_names: tuple[str, ...]
+    grasp_link: str
+    gripper_links: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ArmDescriptions:
+    """describe_arms's answer: each arm, or, when it gave none, why."""
+
+    arms: tuple[ArmDescription, ...] = ()
+    reason: str = ""
+
+    def arm(self, name: str) -> Optional[ArmDescription]:
+        return next((arm for arm in self.arms if arm.name == name), None)
+
+
+@dataclass(frozen=True)
+class SceneObject:
+    """An object of the planning scene: its id, and its pose, in the robot
+    frame for an object no link carries and in the frame of `link_name`
+    for an attached one."""
+
+    id: str
+    position: Vec3
+    orientation: Quat
+    link_name: str = ""
+
+
+@dataclass(frozen=True)
+class PlanningScene:
+    """get_planning_scene's answer: the objects no link carries, the
+    attached ones, each sorted by id; or, when it gave none, why."""
+
+    objects: tuple[SceneObject, ...] = ()
+    attached_objects: tuple[SceneObject, ...] = ()
+    reason: str = ""
 
 
 class Robot:
@@ -417,6 +465,38 @@ class Robot:
             fraction=float(data.fraction),
         )
 
+    async def describe_arms(self) -> ArmDescriptions:
+        """Each arm's joints and links, by the names the planner's
+        constraints and its scene use; a call that fails or gets no answer
+        within `PLANNER_SERVICE_TIMEOUT_S` gives no arm and says why."""
+        data, reason = await self._poll(self._modules().describe_arms)
+        if reason:
+            return ArmDescriptions(reason=reason)
+        return ArmDescriptions(tuple(
+            ArmDescription(
+                name=arm.name,
+                gripper_name=arm.gripper_name,
+                joint_names=tuple(arm.joint_names),
+                grasp_link=arm.grasp_link,
+                gripper_links=tuple(arm.gripper_links),
+            )
+            for arm in data.arms
+        ))
+
+    async def get_planning_scene(self) -> PlanningScene:
+        """The objects the planning scene holds, free and attached; a call
+        that fails or gets no answer gives none and says why."""
+        data, reason = await self._poll(self._modules().get_planning_scene)
+        if reason:
+            return PlanningScene(reason=reason)
+        return PlanningScene(
+            objects=tuple(SceneObject(found.id, _vec3(found.position), _quat(found.orientation)) for found in data.objects),
+            attached_objects=tuple(
+                SceneObject(found.id, _vec3(found.position), _quat(found.orientation), found.link_name)
+                for found in data.attached_objects
+            ),
+        )
+
     @property
     def moves_in_flight(self) -> int:
         """How many goals the backbone has accepted and not yet ended."""
@@ -434,6 +514,24 @@ class Robot:
         if self._planner is None:
             raise RuntimeError("this brain does not consume the motion planner")
         return self._planner
+
+    async def _poll(self, module, request=None) -> tuple[object, str]:
+        """One call of a service of the planner: its response's data and an
+        empty reason, or none and why it gave none, an error reply with its
+        kind or no answer within `PLANNER_SERVICE_TIMEOUT_S`. A service
+        whose request has no fields takes no `request`, and one whose
+        response has none gives no data."""
+        producer = module.bound_producer(self._node_runner)
+        try:
+            if request is None:
+                answer = await module.poll(self._node_runner, producer, PLANNER_SERVICE_TIMEOUT_S)
+            else:
+                answer = await module.poll(self._node_runner, producer, request, PLANNER_SERVICE_TIMEOUT_S)
+        except module.Failure as failure:
+            return None, f"{module.SERVICE_NAME} failed with {failure.kind.value}: {failure.message}"
+        except Exception as error:
+            return None, f"{module.SERVICE_NAME} gave no answer: {error!r}"
+        return (answer.data if answer is not None else None), ""
 
     async def _run(self, module, request) -> tuple[Moved, object]:
         """Fires one goal of `module` at the bound producer, keeps its

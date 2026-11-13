@@ -29,6 +29,8 @@ from fake_peppygen import (
 
 from brain_core.bindings import PLANNER_MODULES
 from brain_core.robot import (
+    ArmDescription,
+    ArmDescriptions,
     CartesianPath,
     GripResult,
     JointPlan,
@@ -37,7 +39,9 @@ from brain_core.robot import (
     MoveResult,
     PathResult,
     PlannerModules,
+    PlanningScene,
     Robot,
+    SceneObject,
     Waypoint,
 )
 
@@ -513,4 +517,69 @@ async def test_a_refused_run_says_why():
     planner.execute_joint_path.refuse_next("leader_streaming", "a leader streams left_arm")
     assert await robot.execute_joint_path("left_arm", A_PLAN, **RUN_BARS) == PathResult(
         MoveEnd.REFUSED, "a leader streams left_arm", "leader_streaming"
+    )
+
+
+# The planner's two services that give an answer: the arms and the scene.
+
+LEFT_GRIPPER_LINKS = ["openarm_left_ee_base_link", "openarm_left_ee_link1", "openarm_left_ee_link2"]
+
+
+def described_arm(side="left"):
+    return SimpleNamespace(
+        name=f"{side}_arm", gripper_name=f"{side}_gripper", joint_names=[f"openarm_{side}_joint{i}" for i in range(1, 8)],
+        joint_lower_limits=[-1.0] * 7, joint_upper_limits=[1.0] * 7, link_names=[f"openarm_{side}_link{i}" for i in range(8)],
+        grasp_link=f"openarm_{side}_tcp", approach_axis="+z", closing_axis="+y",
+        gripper_links=[f"openarm_{side}_ee_base_link", f"openarm_{side}_ee_link1", f"openarm_{side}_ee_link2"],
+    )
+
+
+async def test_the_arms_are_read_by_their_limb_names():
+    robot, planner = planned()
+    planner.describe_arms.enqueue(SimpleNamespace(arms=[described_arm("left"), described_arm("right")], body_link_names=["openarm_body"]))
+    described = await robot.describe_arms()
+    left = ArmDescription(
+        name="left_arm", gripper_name="left_gripper", joint_names=tuple(f"openarm_left_joint{i}" for i in range(1, 8)),
+        grasp_link="openarm_left_tcp", gripper_links=tuple(LEFT_GRIPPER_LINKS),
+    )
+    assert described.arm("left_arm") == left and described.arm("right_arm").grasp_link == "openarm_right_tcp"
+    assert described.arm("third_arm") is None and described.reason == ""
+    assert planner.describe_arms.polled == [None]
+
+
+async def test_a_service_of_the_planner_that_fails_or_does_not_answer_says_why():
+    robot, planner = planned()
+    planner.describe_arms.enqueue(planner.describe_arms.Failure("resource_unavailable", "the robot model is not loaded"))
+    planner.describe_arms.enqueue(TimeoutError("no reply"))
+    assert await robot.describe_arms() == ArmDescriptions(reason="describe_arms failed with resource_unavailable: the robot model is not loaded")
+    assert await robot.describe_arms() == ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
+    planner.get_planning_scene.enqueue(TimeoutError("no reply"))
+    assert await robot.get_planning_scene() == PlanningScene(reason="get_planning_scene gave no answer: TimeoutError('no reply')")
+
+
+def scene_object(object_id, position=(0.3, -0.2, 0.41), link_name=None):
+    found = SimpleNamespace(
+        id=object_id, position=list(position), orientation=[0.0, 0.0, 0.0, 1.0],
+        shapes=[SimpleNamespace(kind="box", dimensions=[0.08, 0.08, 0.07], mesh_vertices=[], mesh_triangles=[],
+                                position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0, 1.0])],
+    )
+    if link_name is not None:
+        found.link_name, found.touch_links = link_name, LEFT_GRIPPER_LINKS
+    return found
+
+
+async def test_the_planning_scene_gives_its_free_and_attached_objects():
+    robot, planner = planned()
+    planner.get_planning_scene.enqueue(SimpleNamespace(
+        objects=[scene_object("brain/lime_1-t0"), scene_object("table")],
+        attached_objects=[scene_object("brain/apple_1-t0", (0.0, 0.0, -0.01), "openarm_left_tcp")],
+        allowed_pairs=[SimpleNamespace(name_a="brain/lime_1-t0", name_b="openarm_left_ee_link1")],
+        clearance_m=0.04, voxel_size_m=0.02,
+    ))
+    assert await robot.get_planning_scene() == PlanningScene(
+        objects=(
+            SceneObject("brain/lime_1-t0", (0.3, -0.2, 0.41), (0.0, 0.0, 0.0, 1.0)),
+            SceneObject("table", (0.3, -0.2, 0.41), (0.0, 0.0, 0.0, 1.0)),
+        ),
+        attached_objects=(SceneObject("brain/apple_1-t0", (0.0, 0.0, -0.01), (0.0, 0.0, 0.0, 1.0), "openarm_left_tcp"),),
     )
