@@ -23,6 +23,10 @@ async def run(brain, ctx) -> None:
         if item is None:
             orientation = tuple(goal.orientation) if goal.orientation is not None else None
             item = state.mint_from_pose(tuple(goal.position), orientation, brain.now())
+        # The scene equal to the held flags before the manipulator plans: a
+        # brain or a planner that restarted, a failed scene call or a forget
+        # left it otherwise.
+        await brain.make_scene_follow_holds()
         outcome = await manipulator.grab(item, gripper, goal.max_effort, job.cancel)
         job.cancel.check()
         if not outcome.success:

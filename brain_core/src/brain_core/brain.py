@@ -20,11 +20,13 @@ in the log, so a search that found nothing says there what it looked at.
 
 The planning scene of the motion planner follows the held flags of
 `State`. One method of `Brain` stands for each change of a flag (`hold`,
-`release_placed`, `release_dropped`) and writes the flag, then the scene; `make_scene_follow_holds` makes the
-scene equal to the flags. Each
-item a gripper holds has its object, `brain/<item_id>`, attached to the
-grasp link of its arm, and no other object of the brain stays. With the
-planner slot vacant it does nothing.
+`release_placed`, `release_dropped`) and writes the flag, then the scene.
+`make_scene_follow_holds` makes the scene equal to the flags, after each of
+those methods and at the start of each grab and each place: each item a
+gripper holds has its object, `brain/<item_id>`, attached to the grasp link
+of its arm, and no other object of the brain stays. `forget` writes the
+flags alone, and the next grab or place corrects the scene. With the
+planner slot vacant the scene is left alone.
 """
 
 from __future__ import annotations

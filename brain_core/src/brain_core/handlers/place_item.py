@@ -20,6 +20,9 @@ async def run(brain, ctx) -> None:
         brain.manipulator_or_refuse(manipulator)
         orientation = tuple(goal.orientation) if goal.orientation is not None else None
         pose = Pose(tuple(goal.position), orientation)
+        # The scene equal to the held flags before the manipulator plans, so
+        # the held item rides attached to the arm.
+        await brain.make_scene_follow_holds()
         outcome = await manipulator.place(gripper, pose, job.cancel)
         job.cancel.check()
         if not outcome.success:

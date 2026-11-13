@@ -11,7 +11,7 @@ from fake_peppygen import drop_item as drop_action
 from fake_peppygen import grab_item as grab_action
 from fake_peppygen import place_item as place_action
 
-from brain_core.handlers import drop_item, grab_item, place_item
+from brain_core.handlers import drop_item, forget, grab_item, place_item
 from brain_core.ports import Coverage, Detection, ItemShape
 
 LEFT_TCP, RIGHT_TCP = "openarm_left_tcp", "openarm_right_tcp"
@@ -227,6 +227,8 @@ async def test_a_grab_that_holds_sets_the_flag_then_moves_the_items_object_with_
     closed = (LEFT_AT_REST[0][0], LEFT_AT_REST[0][1], LEFT_AT_REST[0][2] - 0.075)
     brain, planner = await planner_brain(manipulator=FakeManipulator(closed_at=closed))
     item_id = seen_lime(brain)
+    # The scene at the start of the grab, then at the hold.
+    answers(planner)
     answers(planner, objects=[scene_object(f"brain/{item_id}", (0.3, 0.2, 0.413))])
     ctx = grab_goal(gripper_name="left_gripper", item_id=item_id)
     await grab_item.run(brain, ctx)
@@ -241,6 +243,7 @@ async def test_a_grab_that_holds_sets_the_flag_then_moves_the_items_object_with_
 async def test_a_hold_whose_scene_calls_fail_keeps_the_flag_and_the_grab_succeeds(caplog):
     brain, planner = await planner_brain(manipulator=FakeManipulator(closed_at=(0.4, 0.2, 0.825)))
     item_id = seen_lime(brain)
+    answers(planner)
     answers(planner)
     planner.apply_collision_objects.enqueue(TimeoutError("no reply"))
     planner.apply_attached_collision_object.enqueue(planner.apply_attached_collision_object.Failure("rejected", f"no object 'brain/{item_id}'"))
@@ -259,22 +262,28 @@ async def test_a_hold_whose_scene_calls_fail_keeps_the_flag_and_the_grab_succeed
 async def test_a_grab_that_fails_changes_no_flag_and_no_scene():
     brain, planner = await planner_brain(manipulator=FakeManipulator(fail="gripper 'left_gripper' closed on nothing"))
     item_id = seen_lime(brain)
+    answers(planner)
     ctx = grab_goal(gripper_name="left_gripper", item_id=item_id)
     await grab_item.run(brain, ctx)
     assert ctx.completed["success"] is False
     assert not brain.state.grippers["left_gripper"].holding
-    assert planner.get_planning_scene.polled == [] and writes(planner) == []
+    # The scene was asked at the start of the grab alone, and needed nothing.
+    assert len(planner.get_planning_scene.polled) == 1 and writes(planner) == []
 
 
 @pytest.mark.parametrize("release", ["place", "drop"])
 async def test_a_place_or_a_drop_that_lets_go_clears_the_flag_then_detaches_and_removes_the_items_object(release):
     brain, planner = await planner_brain(manipulator=FakeManipulator())
     item_id = holds_lime(brain)
-    answers(planner, attached=[scene_object(f"brain/{item_id}", (0.0, 0.0, -0.01), LEFT_TCP)])
+    attached = [scene_object(f"brain/{item_id}", (0.0, 0.0, -0.01), LEFT_TCP)]
     if release == "place":
+        # The scene at the start of the place, then at the release.
+        answers(planner, attached=attached)
+        answers(planner, attached=attached)
         ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
         await place_item.run(brain, ctx)
     else:
+        answers(planner, attached=attached)
         ctx = FakeCtx(drop_action, gripper_name="left_gripper")
         await drop_item.run(brain, ctx)
     assert ctx.completed["success"] is True
@@ -288,6 +297,8 @@ async def test_a_place_or_a_drop_that_lets_go_clears_the_flag_then_detaches_and_
 async def test_a_place_or_a_drop_that_fails_keeps_the_flag_and_the_attached_object(release):
     brain, planner = await planner_brain(manipulator=FakeManipulator(fail="the jaws did not open"))
     item_id = holds_lime(brain)
+    attached = [scene_object(f"brain/{item_id}", (0.0, 0.0, -0.01), LEFT_TCP)]
+    answers(planner, attached=attached)
     if release == "place":
         ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
         await place_item.run(brain, ctx)
@@ -296,4 +307,69 @@ async def test_a_place_or_a_drop_that_fails_keeps_the_flag_and_the_attached_obje
         await drop_item.run(brain, ctx)
     assert ctx.completed["success"] is False
     assert brain.state.grippers["left_gripper"].held_item_id == item_id
+    # A place asks the scene at its start, and finds it right; a drop plans
+    # nothing and asks nothing.
+    assert len(planner.get_planning_scene.polled) == (1 if release == "place" else 0) and writes(planner) == []
+
+
+# The scene made equal to the flags at the start of each grab and each place,
+# before the manipulator plans.
+
+
+class SceneWatchingManipulator(FakeManipulator):
+    """Records the scene writes made before each of its sequences began."""
+
+    def __init__(self, planner, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.planner = planner
+        self.writes_before: list = []
+
+    async def grab(self, item, gripper, max_effort, cancel):
+        self.writes_before.append(writes(self.planner))
+        return await super().grab(item, gripper, max_effort, cancel)
+
+    async def place(self, gripper, pose, cancel):
+        self.writes_before.append(writes(self.planner))
+        return await super().place(gripper, pose, cancel)
+
+
+async def test_a_grab_first_removes_the_objects_of_a_brain_that_restarted():
+    planner = fake_planner()
+    manipulator = SceneWatchingManipulator(planner, fail="no plan reaches item")
+    brain, _ = await planner_brain(planner=planner, manipulator=manipulator)
+    item_id = seen_lime(brain)
+    answers(planner, objects=[scene_object("brain/lime_1-old")])
+    await grab_item.run(brain, grab_goal(gripper_name="left_gripper", item_id=item_id))
+    assert manipulator.writes_before == [[("remove", "brain/lime_1-old")]]
+
+
+async def test_a_place_first_attaches_the_held_items_object_when_the_scene_lost_it():
+    """A planner that restarted while the gripper held the item: the place
+    starts with the item's object at the hand, so the item rides with the
+    arm in the plan."""
+    planner = fake_planner()
+    manipulator = SceneWatchingManipulator(planner)
+    brain, _ = await planner_brain(planner=planner, manipulator=manipulator)
+    item_id = holds_lime(brain)
+    answers(planner)
+    answers(planner, attached=[scene_object(f"brain/{item_id}", (0.0, 0.0, 0.0), LEFT_TCP)])
+    ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+    await place_item.run(brain, ctx)
+    assert ctx.completed["success"] is True
+    [before] = manipulator.writes_before
+    assert [said[:2] for said in before] == [("add", f"brain/{item_id}"), ("attach", f"brain/{item_id}")]
+    # Then the release after the place.
+    assert [said[:2] for said in writes(planner)[2:]] == [("detach", f"brain/{item_id}"), ("remove", f"brain/{item_id}")]
+
+
+async def test_a_forget_writes_the_flags_alone_and_the_next_grab_corrects_the_scene():
+    planner = fake_planner()
+    manipulator = SceneWatchingManipulator(planner, fail="no plan reaches item")
+    brain, _ = await planner_brain(planner=planner, manipulator=manipulator)
+    item_id = holds_lime(brain)
+    forget.handle(brain, None)
     assert planner.get_planning_scene.polled == [] and writes(planner) == []
+    other = seen_lime(brain)
+    answers(planner, attached=[scene_object(f"brain/{item_id}", (0.0, 0.0, 0.0), LEFT_TCP)])
+    await grab_item.run(brain, grab_goal(gripper_name="left_gripper", item_id=other))
+    assert manipulator.writes_before == [[("detach", f"brain/{item_id}", LEFT_TCP, ()), ("remove", f"brain/{item_id}")]]
