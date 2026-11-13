@@ -12,6 +12,10 @@ from fake_peppygen import (
     FakeConsumedService,
     MoveArmRequest,
     MoveGripperRequest,
+    PlanJointPathArm,
+    PlanJointPathOrientationConstraint,
+    PlanJointPathPositionConstraint,
+    PlanJointPathRequest,
     ResultStatus,
     fake_bindings,
     fake_planner,
@@ -19,7 +23,7 @@ from fake_peppygen import (
 )
 
 from brain_core.bindings import PLANNER_MODULES
-from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot
+from brain_core.robot import GripResult, JointPlan, MoveCheck, MoveEnd, MoveResult, PlannerModules, Robot, Waypoint
 
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
@@ -230,3 +234,122 @@ def test_a_robot_has_the_planner_only_with_its_modules_and_its_slot_bound():
     assert not robot.has_planner
     robot, _, _ = backbone(planner=fake_planner())
     assert robot.has_planner
+
+
+# The planner's members, on a robot whose planner slot is bound. A plan is a
+# goal in flight like a move: every way it ends, and a stop during it.
+
+JOINTS = [0.1, -0.2, 0.3, 1.4, 0.5, -0.6, 0.7]
+PLANNED = [0.2, -0.1, 0.35, 1.3, 0.4, -0.5, 0.8]
+LINK = "openarm_left_tcp"
+# What a transit plan names besides the arm, the link and the pose.
+PLAN_BARS = dict(position_tolerance_m=0.001, orientation_tolerance_rad=0.01, planner="rrt_connect", refiner="none", allowed_planning_time_s=0.5)
+
+
+def planned():
+    """A Robot whose planner slot is bound, and the planner's modules."""
+    planner = fake_planner()
+    robot, _, _ = backbone(planner=planner)
+    return robot, planner
+
+
+def path_waypoint(joints, position=POSITION, orientation=ORIENTATION):
+    return SimpleNamespace(joint_positions=list(joints), position=list(position), orientation=list(orientation))
+
+
+def joint_plan_result(arm="left_arm", start=JOINTS, waypoints=(PLANNED,)):
+    return SimpleNamespace(
+        arms=[SimpleNamespace(arm_name=arm, start_joint_positions=list(start), waypoints=[path_waypoint(w) for w in waypoints])],
+        map_stamp=3.5,
+    )
+
+
+async def test_a_plan_asks_for_the_link_at_the_pose_and_reads_its_start_and_waypoints():
+    robot, planner = planned()
+    plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS))
+    goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+    assert goal.request == PlanJointPathRequest(
+        arms=[PlanJointPathArm(arm_name="left_arm", start_joint_positions=[])],
+        goal_joint_constraints=[],
+        goal_position_constraints=[PlanJointPathPositionConstraint(link_name=LINK, position=[0.5, 0.1, 0.7], tolerance_m=0.001)],
+        goal_orientation_constraints=[
+            PlanJointPathOrientationConstraint(link_name=LINK, orientation=[0.0, 0.0, 0.0, 1.0], tolerance_rad=0.01, free_axis="none")
+        ],
+        path_orientation_constraints=[],
+        planner="rrt_connect",
+        refiner="none",
+        allowed_planning_time_s=0.5,
+    )
+    goal.complete(joint_plan_result(waypoints=(JOINTS, PLANNED)))
+    answer = await asyncio.wait_for(plan, WAIT)
+    assert answer == JointPlan(
+        MoveEnd.COMPLETED,
+        start_joint_positions=tuple(JOINTS),
+        waypoints=(Waypoint(tuple(JOINTS), POSITION, ORIENTATION), Waypoint(tuple(PLANNED), POSITION, ORIENTATION)),
+    )
+    assert answer.completed and robot.moves_in_flight == 0
+
+
+async def test_a_plan_from_a_given_start_names_it():
+    robot, planner = planned()
+    plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, start_joint_positions=JOINTS, **PLAN_BARS))
+    goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+    assert goal.request.arms == [PlanJointPathArm(arm_name="left_arm", start_joint_positions=JOINTS)]
+    goal.complete(joint_plan_result())
+    assert (await asyncio.wait_for(plan, WAIT)).completed
+
+
+@pytest.mark.parametrize("kind, message", [
+    ("start_in_collision", "openarm_left_ee_link1 stands 0.0388 m from the map, nearer than the clearance 0.0400 m"),
+    ("no_path", "no path joined the goal in 0.5 s"),
+    ("unreachable", "no joint positions meet the goal without a collision in 0.5 s"),
+])
+async def test_a_failed_plan_gives_the_planners_kind_and_words_and_no_path(kind, message):
+    robot, planner = planned()
+    plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS))
+    goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+    goal.fail(kind, message)
+    answer = await asyncio.wait_for(plan, WAIT)
+    assert answer == JointPlan(MoveEnd.FAILED, message, kind)
+    assert answer.words == f"{kind}: {message}" and answer.waypoints == ()
+
+
+async def test_a_refused_plan_says_why_with_its_kind():
+    robot, planner = planned()
+    planner.plan_joint_path.refuse_next("rejected", "no link 'tcp' on arm 'left_arm'")
+    answer = await robot.plan_joint_path("left_arm", "tcp", POSITION, ORIENTATION, **PLAN_BARS)
+    assert answer == JointPlan(MoveEnd.REFUSED, "no link 'tcp' on arm 'left_arm'", "rejected")
+    assert answer.words == "rejected: no link 'tcp' on arm 'left_arm'"
+
+
+async def test_a_stop_cancels_a_plan_in_flight():
+    robot, planner = planned()
+    plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS))
+    goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+    await asyncio.wait_for(in_flight(robot), WAIT)
+    stop = asyncio.create_task(robot.stop())
+    await asyncio.wait_for(goal.cancel_asked.wait(), WAIT)
+    goal.complete_cancelled("aborted: operator", None)
+    await asyncio.wait_for(stop, WAIT)
+    answer = await asyncio.wait_for(plan, WAIT)
+    assert answer == JointPlan(MoveEnd.CANCELLED, "aborted: operator")
+    assert answer.cancelled and robot.moves_in_flight == 0
+
+
+async def test_a_plan_with_no_result_or_no_waypoints_for_the_arm_is_lost():
+    robot, planner = planned()
+    plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS))
+    goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+    goal.lose_result(TimeoutError("no result"))
+    assert await asyncio.wait_for(plan, WAIT) == JointPlan(MoveEnd.LOST, "plan_joint_path gave no result: TimeoutError('no result')")
+    for result in (joint_plan_result(arm="right_arm"), joint_plan_result(waypoints=())):
+        plan = asyncio.create_task(robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS))
+        goal = await asyncio.wait_for(planner.plan_joint_path.next_goal(), WAIT)
+        goal.complete(result)
+        assert await asyncio.wait_for(plan, WAIT) == JointPlan(MoveEnd.LOST, "plan_joint_path answered no waypoints for arm 'left_arm'")
+
+
+async def test_a_planner_member_called_without_the_planner_is_a_fault():
+    robot, _, _ = backbone()
+    with pytest.raises(RuntimeError, match="does not consume the motion planner"):
+        await robot.plan_joint_path("left_arm", LINK, POSITION, ORIENTATION, **PLAN_BARS)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .ports import Quat, Vec3
 
@@ -73,6 +73,12 @@ class Moved:
         service."""
         return self.end is MoveEnd.CANCELLED
 
+    @property
+    def words(self) -> str:
+        """Why the goal did not complete, with its failure kind first when
+        it has one: "start_in_collision: <the producer's message>"."""
+        return f"{self.failure_kind}: {self.message}" if self.failure_kind else self.message
+
 
 @dataclass(frozen=True)
 class MoveResult(Moved):
@@ -91,6 +97,28 @@ class GripResult(Moved):
 
     settled: Optional[bool] = None
     final_opening: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class Waypoint:
+    """One state of a planned path: the arm's joint positions in its joint
+    order of limb_state, and where its grasp point stands there."""
+
+    joint_positions: tuple[float, ...]
+    position: Vec3
+    orientation: Quat
+
+
+@dataclass(frozen=True)
+class JointPlan(Moved):
+    """plan_joint_path's answer for one arm: how the plan ended, and for a
+    completed plan the start it used and its waypoints after the start, at
+    least one, the last one at the goal. Nothing moved, whatever the end. A
+    failed plan's kind is one of motion_planning's, such as
+    `start_in_collision`, and its message the planner's words."""
+
+    start_joint_positions: tuple[float, ...] = ()
+    waypoints: tuple[Waypoint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,6 +274,57 @@ class Robot:
         data = answer.data
         return MoveCheck(bool(data.reachable), data.reason, float(data.duration_s))
 
+    async def plan_joint_path(
+        self,
+        arm: str,
+        link: str,
+        position: Vec3,
+        orientation: Quat,
+        *,
+        position_tolerance_m: float,
+        orientation_tolerance_rad: float,
+        planner: str,
+        refiner: str,
+        allowed_planning_time_s: float,
+        start_joint_positions: Sequence[float] = (),
+    ) -> JointPlan:
+        """Plans a joint path of `arm` around what the planning scene and
+        the planner's map hold, from where the arm stands, or from
+        `start_joint_positions`, to a state where the origin of `link`
+        stands within `position_tolerance_m` of `position` and its
+        orientation within `orientation_tolerance_rad` of `orientation`.
+        The caller names the planner, the refiner and the time the plan may
+        take, as motion_planning has them. Nothing moves. The plan is a goal
+        in flight like a move, so a stop cancels it."""
+        module = self._modules().plan_joint_path
+        request = module.GoalRequest(
+            arms=[module.GoalRequestArmsItem(arm_name=arm, start_joint_positions=[float(v) for v in start_joint_positions])],
+            goal_joint_constraints=[],
+            goal_position_constraints=[
+                module.GoalRequestGoalPositionConstraintsItem(link_name=link, position=list(position), tolerance_m=position_tolerance_m)
+            ],
+            goal_orientation_constraints=[
+                module.GoalRequestGoalOrientationConstraintsItem(
+                    link_name=link, orientation=list(orientation), tolerance_rad=orientation_tolerance_rad, free_axis="none",
+                )
+            ],
+            path_orientation_constraints=[],
+            planner=planner,
+            refiner=refiner,
+            allowed_planning_time_s=allowed_planning_time_s,
+        )
+        moved, data = await self._run(module, request)
+        if not moved.completed:
+            return JointPlan(moved.end, moved.message, moved.failure_kind)
+        planned = next((found for found in data.arms if found.arm_name == arm), None)
+        if planned is None or not planned.waypoints:
+            return JointPlan(MoveEnd.LOST, f"plan_joint_path answered no waypoints for arm '{arm}'")
+        return JointPlan(
+            MoveEnd.COMPLETED,
+            start_joint_positions=_joints(planned.start_joint_positions),
+            waypoints=tuple(_waypoint(waypoint) for waypoint in planned.waypoints),
+        )
+
     @property
     def moves_in_flight(self) -> int:
         """How many goals the backbone has accepted and not yet ended."""
@@ -256,6 +335,13 @@ class Robot:
         cancelled outcome once the backbone has brought the limb to rest."""
         for handle in list(self._live):
             await _cancel(handle)
+
+    def _modules(self) -> PlannerModules:
+        """The planner's modules; a call of a planner member by a brain that
+        does not consume the planner is a fault of its caller."""
+        if self._planner is None:
+            raise RuntimeError("this brain does not consume the motion planner")
+        return self._planner
 
     async def _run(self, module, request) -> tuple[Moved, object]:
         """Fires one goal of `module` at the bound producer, keeps its
@@ -302,6 +388,15 @@ def _arm_move_fields(
         orientation=list(orientation),
         duration_s=duration_s,
     )
+
+
+def _joints(values) -> tuple[float, ...]:
+    return tuple(float(value) for value in values)
+
+
+def _waypoint(waypoint) -> Waypoint:
+    """A waypoint of a plan or a path, as motion_planning gives it."""
+    return Waypoint(_joints(waypoint.joint_positions), _vec3(waypoint.position), _quat(waypoint.orientation))
 
 
 async def _cancel(handle) -> None:
