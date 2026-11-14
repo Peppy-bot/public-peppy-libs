@@ -23,11 +23,15 @@ async def run(brain, ctx) -> None:
         if item is None:
             orientation = tuple(goal.orientation) if goal.orientation is not None else None
             item = state.mint_from_pose(tuple(goal.position), orientation, brain.now())
+        # The scene equal to the held flags before the manipulator plans: a
+        # brain or a planner that restarted, a failed scene call or a forget
+        # left it otherwise.
+        await brain.make_scene_follow_holds()
         outcome = await manipulator.grab(item, gripper, goal.max_effort, job.cancel)
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the grasp failed")
-        state.set_held(gripper, item.item_id)
+        await brain.hold(gripper, item.item_id, outcome.closed_at)
         return dict(gripper_name=gripper.name, item_id=item.item_id)
 
     await brain.run_guarded(ctx, Role.MANIPULATION, "grab_item", body, ZERO, ends=RESULT_ENDS)

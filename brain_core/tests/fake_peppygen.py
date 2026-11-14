@@ -8,22 +8,25 @@ its `FailureKind` and `Failure`, which refuse an undeclared kind as the
 generated ones do, and its `GoalDecision`. `ActionHandle.expose` gives an
 action that never receives a goal, and `handle_requests` a service
 that never receives a request, for a node that boots and stops. The
-limb_motion clients are scripted by the test (`FakeLimbAction` for a
-move, `FakeService` for check_arm_move), and so is the limb_states topic
-(`FakeTopic`). Any other consumed service answers what the test's `poll`
-gives (`consumed_service`).
+limb_motion and motion_planning clients are scripted by the test
+(`FakeConsumedAction` for a move or a plan, `FakeConsumedService` and
+`FakeServiceWithoutRequest` for check_arm_move and the planner's services,
+`fake_planner` for the planner's modules together), and so is the
+limb_states topic (`FakeTopic`). Any other consumed service answers what
+the test's `poll` gives (`consumed_service`).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum, IntEnum
 from types import SimpleNamespace
 from typing import Callable, Optional
 
 from brain_core.bindings import Bindings
+from brain_core.robot import PlannerModules
 
 # The kinds of peppy, which every member declares first.
 PEPPY_KINDS = ("attempt_failed", "timeout", "precondition_failed", "resource_unavailable", "rejected")
@@ -200,12 +203,20 @@ class MoveGripperRequest:
     settle_timeout_s: float
 
 
-# The kinds of limb_motion:v1 that each of its members lists beside the
-# kinds of peppy.
-LIMB_MOTION_KINDS = {
+# The kinds of limb_motion:v1 and motion_planning:v1 that each consumed
+# member lists beside the kinds of peppy.
+CONSUMED_KINDS = {
     "move_arm": ("unreachable", "leader_streaming"),
     "move_gripper": ("leader_streaming",),
     "check_arm_move": ("leader_streaming",),
+    "execute_joint_path": ("unreachable", "leader_streaming"),
+    "plan_joint_path": ("unreachable", "no_path", "start_in_collision"),
+    "plan_cartesian_path": ("start_in_collision",),
+    "describe_arms": (),
+    "get_planning_scene": (),
+    "apply_collision_objects": (),
+    "apply_attached_collision_object": (),
+    "set_allowed_collision": (),
 }
 
 
@@ -250,25 +261,30 @@ class FiredGoal:
         self._result.set_result(SimpleNamespace(status=status, data=data, failure=failure, cancel_reason=cancel_reason))
 
 
-class FakeLimbAction:
-    """A generated limb_motion action client: every goal the brain fires is
-    a `FiredGoal` the test takes with `next_goal`. `refuse_next` makes the
-    backbone refuse the next goal with a kind and a message,
-    `fail_next_send` makes the next send fail before it reaches the
-    backbone."""
+class FakeConsumedAction:
+    """A generated consumed action client, of limb_motion or of
+    motion_planning: every goal the brain fires is a `FiredGoal` the test
+    takes with `next_goal`. `refuse_next` makes the producer refuse the next
+    goal with a kind and a message, `fail_next_send` makes the next send
+    fail before it reaches the producer. `producer` is what its slot is
+    bound to, none for a vacant slot, and `item_types` the dataclasses of
+    the objects inside its request, by their generated names."""
 
-    def __init__(self, name: str, request_type) -> None:
+    def __init__(self, name: str, request_type, *, producer: Optional[str] = "backbone", **item_types) -> None:
         self.TARGET_ACTION_NAME = name
         self.GoalRequest = request_type
+        for type_name, item_type in item_types.items():
+            setattr(self, type_name, item_type)
         self.ResultStatus = ResultStatus
-        self.FailureKind, self.Failure = failure_types(name, *LIMB_MOTION_KINDS[name])
+        self.FailureKind, self.Failure = failure_types(name, *CONSUMED_KINDS[name])
         self.ActionHandle = SimpleNamespace(fire_goal=self._fire_goal)
+        self._producer = producer
         self._fired: asyncio.Queue = asyncio.Queue()
         self._refusal = None
         self._send_error: Optional[Exception] = None
 
-    def bound_producer(self, node_runner) -> str:
-        return "backbone"
+    def bound_producer(self, node_runner) -> Optional[str]:
+        return self._producer
 
     def refuse_next(self, kind: str, message: str) -> None:
         self._refusal = self.Failure(kind, message)
@@ -332,33 +348,235 @@ class CheckArmMoveRequest:
     duration_s: float
 
 
-class FakeService:
-    """A generated limb_motion consumed service bound to the backbone, with
-    its `FailureKind` and `Failure`: each poll records its request and
-    takes the next answer the test enqueued, raising it when it is an
-    exception, such as an error reply of its `Failure`."""
+_NO_DEFAULT = object()
 
-    def __init__(self, name: str, request_type) -> None:
+
+class FakeConsumedService:
+    """A generated consumed service of limb_motion or of motion_planning,
+    with its `FailureKind` and `Failure`: each poll records its request and
+    takes the next answer the test enqueued, raising it when it is an
+    exception, such as an error reply of its `Failure`. With the queue
+    empty it answers `default` when one is given. An answer of none is the
+    reply of a service with no response fields. `producer` is what its slot
+    is bound to, none for a vacant slot, and `item_types` the dataclasses
+    of the objects inside its request, by their generated names. Services
+    that share a `journal` list each add (their name, the request) to it,
+    so a test reads their calls in one order."""
+
+    def __init__(
+        self, name: str, request_type, *, producer: Optional[str] = "backbone", default=_NO_DEFAULT, journal: Optional[list] = None, **item_types
+    ) -> None:
         self.SERVICE_NAME = name
         self.Request = request_type
-        self.FailureKind, self.Failure = failure_types(name, *LIMB_MOTION_KINDS[name])
+        for type_name, item_type in item_types.items():
+            setattr(self, type_name, item_type)
+        self.FailureKind, self.Failure = failure_types(name, *CONSUMED_KINDS[name])
         self.polled: list = []
+        self.journal = journal if journal is not None else []
+        self._producer = producer
+        self._default = default
         self._answers: deque = deque()
 
-    def bound_producer(self, node_runner) -> str:
-        return "backbone"
+    def bound_producer(self, node_runner) -> Optional[str]:
+        return self._producer
 
     def enqueue(self, answer) -> None:
         self._answers.append(answer)
 
     async def poll(self, node_runner, producer, request, timeout):
         self.polled.append(request)
-        if not self._answers:
+        self.journal.append((self.SERVICE_NAME, request))
+        return self._answer()
+
+    def _answer(self):
+        if self._answers:
+            answer = self._answers.popleft()
+        elif self._default is not _NO_DEFAULT:
+            answer = self._default
+        else:
             raise AssertionError(f"{self.SERVICE_NAME} was polled with no answer enqueued")
-        answer = self._answers.popleft()
         if isinstance(answer, Exception):
             raise answer
-        return SimpleNamespace(data=answer)
+        return None if answer is None else SimpleNamespace(data=answer)
+
+
+class FakeServiceWithoutRequest(FakeConsumedService):
+    """A generated consumed service whose request has no fields, such as
+    describe_arms: its poll takes no request, and each poll is recorded as
+    none."""
+
+    def __init__(self, name: str, *, producer: Optional[str] = "backbone", default=_NO_DEFAULT) -> None:
+        super().__init__(name, None, producer=producer, default=default)
+
+    async def poll(self, node_runner, producer, timeout):
+        self.polled.append(None)
+        return self._answer()
+
+
+# The requests of limb_motion's execute_joint_path and of the members of
+# motion_planning the brain consumes, with the objects inside them, as a
+# brain's generated modules on its `motion_planning` slot name them.
+
+
+@dataclass
+class ExecuteJointPathWaypoint:
+    joint_positions: list[float]
+
+
+@dataclass
+class ExecuteJointPathArm:
+    arm_name: str
+    waypoints: list[ExecuteJointPathWaypoint]
+    expected_start_joint_positions: list[float]
+    settle_tolerances_rad: list[float]
+
+
+@dataclass
+class ExecuteJointPathRequest:
+    arms: list[ExecuteJointPathArm]
+    duration_s: float
+    settle_timeout_s: float
+    contact_gap_m: float
+
+
+@dataclass
+class PlanJointPathArm:
+    arm_name: str
+    start_joint_positions: list[float]
+
+
+@dataclass
+class PlanJointPathJointConstraint:
+    joint_name: str
+    position: float
+    tolerance_above: float
+    tolerance_below: float
+
+
+@dataclass
+class PlanJointPathPositionConstraint:
+    link_name: str
+    position: list[float]
+    tolerance_m: float
+
+
+@dataclass
+class PlanJointPathOrientationConstraint:
+    link_name: str
+    orientation: list[float]
+    tolerance_rad: float
+    free_axis: str
+
+
+@dataclass
+class PlanJointPathRequest:
+    arms: list[PlanJointPathArm]
+    goal_joint_constraints: list[PlanJointPathJointConstraint]
+    goal_position_constraints: list[PlanJointPathPositionConstraint]
+    goal_orientation_constraints: list[PlanJointPathOrientationConstraint]
+    path_orientation_constraints: list[PlanJointPathOrientationConstraint]
+    planner: str
+    refiner: str
+    allowed_planning_time_s: float
+
+
+@dataclass
+class PlanCartesianPathWaypoint:
+    position: list[float]
+    orientation: list[float]
+
+
+@dataclass
+class PlanCartesianPathRequest:
+    arm_name: str
+    start_joint_positions: list[float]
+    link_name: str
+    waypoints: list[PlanCartesianPathWaypoint]
+    avoid_collisions: bool
+
+
+@dataclass
+class CollisionShape:
+    kind: str
+    dimensions: list[float]
+    mesh_vertices: list[float]
+    mesh_triangles: list[int]
+    position: list[float]
+    orientation: list[float]
+
+
+@dataclass
+class CollisionObject:
+    id: str
+    operation: str
+    position: list[float]
+    orientation: list[float]
+    shapes: list[CollisionShape]
+
+
+@dataclass
+class ApplyCollisionObjectsRequest:
+    objects: list[CollisionObject]
+
+
+@dataclass
+class ApplyAttachedCollisionObjectRequest:
+    object_id: str
+    link_name: str
+    touch_links: list[str]
+    operation: str
+
+
+@dataclass
+class SetAllowedCollisionRequest:
+    name: str
+    other_names: list[str]
+    allowed: bool
+
+
+def fake_planner(producer: Optional[str] = "planner") -> PlannerModules:
+    """The motion planner's generated modules, its slot bound to `producer`,
+    or vacant when that is none, and execute_joint_path on the backbone.
+    The three scene writes succeed unless the test enqueues a failure, and
+    share one `journal`; describe_arms and get_planning_scene answer what
+    the test enqueues."""
+    writes: list = []
+    return PlannerModules(
+        execute_joint_path=FakeConsumedAction(
+            "execute_joint_path", ExecuteJointPathRequest,
+            GoalRequestArmsItem=ExecuteJointPathArm, GoalRequestArmsItemWaypointsItem=ExecuteJointPathWaypoint,
+        ),
+        plan_joint_path=FakeConsumedAction(
+            "plan_joint_path", PlanJointPathRequest, producer=producer,
+            GoalRequestArmsItem=PlanJointPathArm,
+            GoalRequestGoalJointConstraintsItem=PlanJointPathJointConstraint,
+            GoalRequestGoalPositionConstraintsItem=PlanJointPathPositionConstraint,
+            GoalRequestGoalOrientationConstraintsItem=PlanJointPathOrientationConstraint,
+            GoalRequestPathOrientationConstraintsItem=PlanJointPathOrientationConstraint,
+        ),
+        plan_cartesian_path=FakeConsumedAction(
+            "plan_cartesian_path", PlanCartesianPathRequest, producer=producer,
+            GoalRequestWaypointsItem=PlanCartesianPathWaypoint,
+        ),
+        describe_arms=FakeServiceWithoutRequest("describe_arms", producer=producer),
+        get_planning_scene=FakeServiceWithoutRequest("get_planning_scene", producer=producer),
+        apply_collision_objects=FakeConsumedService(
+            "apply_collision_objects", ApplyCollisionObjectsRequest, producer=producer, default=None, journal=writes,
+            RequestObjectsItem=CollisionObject, RequestObjectsItemShapesItem=CollisionShape,
+        ),
+        apply_attached_collision_object=FakeConsumedService(
+            "apply_attached_collision_object", ApplyAttachedCollisionObjectRequest, producer=producer, default=None, journal=writes,
+        ),
+        set_allowed_collision=FakeConsumedService(
+            "set_allowed_collision", SetAllowedCollisionRequest, producer=producer, default=None, journal=writes,
+        ),
+    )
+
+
+def planner_bindings(planner: PlannerModules) -> dict:
+    """The fields of `Bindings` that hold the planner's modules, for
+    `fake_bindings(**planner_bindings(planner))`."""
+    return {field.name: getattr(planner, field.name) for field in fields(planner)}
 
 
 @dataclass
@@ -454,13 +672,14 @@ class FakeClock:
 
 def fake_bindings(**overrides) -> Bindings:
     """Bindings to the fakes above: the camera, geometry, mounts and
-    limb_state slots vacant, limb_motion scripted. `overrides` replace any
-    of them."""
+    limb_state slots vacant, limb_motion scripted, no planner modules, as
+    for a brain that does not consume the motion planner. `overrides`
+    replace any of them."""
     modules = dict(
         clock=FakeClock(),
-        move_arm=FakeLimbAction("move_arm", MoveArmRequest),
-        move_gripper=FakeLimbAction("move_gripper", MoveGripperRequest),
-        check_arm_move=FakeService("check_arm_move", CheckArmMoveRequest),
+        move_arm=FakeConsumedAction("move_arm", MoveArmRequest),
+        move_gripper=FakeConsumedAction("move_gripper", MoveGripperRequest),
+        check_arm_move=FakeConsumedService("check_arm_move", CheckArmMoveRequest),
         limb_states=VacantSlot,
         video_stream=VacantSlot,
         depth_stream=VacantSlot,
