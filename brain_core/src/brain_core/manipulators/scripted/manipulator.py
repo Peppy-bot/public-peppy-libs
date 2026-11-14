@@ -164,8 +164,8 @@ ALLOWED_PLANNING_TIME_S = 0.5
 SETTLE_JOINT_RAD = 0.05
 # A reach test passes when its lines are covered to within this share.
 FULL_REACH = 1.0 - 1e-9
-# The contact gap every arm move names: limb_motion's 0, no contact check, so
-# a move ends by its settle alone.
+# The contact gap every arm move and every planned transit names:
+# limb_motion's 0, no contact check, so a move ends by its settle alone.
 NO_CONTACT_CHECK_M = 0.0
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
@@ -710,6 +710,7 @@ class ScriptedManipulator:
         ran logs its own line, for a grab and for a place."""
         ran = await self._robot.execute_joint_path(
             arm, plan, duration_s=MOVE_DURATION_S, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=self.settle_timeout_s,
+            contact_gap_m=NO_CONTACT_CHECK_M,
         )
         cancel.check()
         if not ran.completed:

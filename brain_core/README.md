@@ -414,7 +414,8 @@ refiner, in `allowed_planning_time_s`, 0.5 s), and a `plan_cartesian_path`
 with no collision check, from the end of that plan through the grasp and
 lifted points, tests the reach of the descent and the lift. The first
 orientation that passes both runs its plan with `execute_joint_path`, the
-plan's start as the expected start, each joint within 0.05 rad at the end.
+plan's start as the expected start, each joint within 0.05 rad at the end,
+with `contact_gap_m` 0, no contact check, as every arm move.
 A grab whose orientations all fail ends before the arm moves, with the last
 one's words, the planner's kind first (`start_in_collision: ...`): no line
 takes the place of a plan. The descent, the lift and the retreat stay

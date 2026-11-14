@@ -466,7 +466,7 @@ A_PLAN = JointPlan(
     start_joint_positions=tuple(JOINTS),
     waypoints=(Waypoint(tuple(PLANNED), POSITION, ORIENTATION), Waypoint(tuple(JOINTS), POSITION, ORIENTATION)),
 )
-RUN_BARS = dict(duration_s=0.0, settle_tolerance_rad=0.05, settle_timeout_s=2.0)
+RUN_BARS = dict(duration_s=0.0, settle_tolerance_rad=0.05, settle_timeout_s=2.0, contact_gap_m=0.0)
 
 
 def path_ran(arm="left_arm", joints=JOINTS):
@@ -488,6 +488,7 @@ async def test_a_run_sends_the_plans_waypoints_with_its_start_as_the_expected_st
         ],
         duration_s=0.0,
         settle_timeout_s=2.0,
+        contact_gap_m=0.0,
     )
     goal.complete(path_ran())
     assert await asyncio.wait_for(run, WAIT) == PathResult(MoveEnd.COMPLETED, final_joint_positions=tuple(JOINTS))

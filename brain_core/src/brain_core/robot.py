@@ -424,6 +424,7 @@ class Robot:
         duration_s: float,
         settle_tolerance_rad: float,
         settle_timeout_s: float,
+        contact_gap_m: float,
     ) -> PathResult:
         """Runs the completed `plan` of `arm` through limb_motion's
         execute_joint_path, its start as the expected start, so the backbone
@@ -431,8 +432,9 @@ class Robot:
         within its start tolerance of where the plan began. Waits for each
         joint to settle within `settle_tolerance_rad` of the last waypoint,
         or for the move to fail `settle_timeout_s` after its planned end. A
-        duration of 0 is the fastest the joint limits allow. A stop cancels
-        it as it cancels any move."""
+        duration of 0 is the fastest the joint limits allow. `contact_gap_m`
+        is the contract's contact gap of the run, 0 for no contact check. A
+        stop cancels it as it cancels any move."""
         module = self._modules().execute_joint_path
         joints = len(plan.start_joint_positions)
         request = module.GoalRequest(
@@ -446,6 +448,7 @@ class Robot:
             ],
             duration_s=duration_s,
             settle_timeout_s=settle_timeout_s,
+            contact_gap_m=contact_gap_m,
         )
         moved, data = await self._run(module, request)
         ran = next((found for found in data.arms if found.arm_name == arm), None) if data is not None else None

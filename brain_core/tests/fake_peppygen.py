@@ -436,6 +436,7 @@ class ExecuteJointPathRequest:
     arms: list[ExecuteJointPathArm]
     duration_s: float
     settle_timeout_s: float
+    contact_gap_m: float
 
 
 @dataclass

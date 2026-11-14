@@ -16,6 +16,7 @@ from brain_core.limb_state import LimbStateStore
 from brain_core.manipulators.scripted.centre_proposer import CentreProposer
 from brain_core.manipulators.scripted.manipulator import (
     ALLOWED_PLANNING_TIME_S,
+    NO_CONTACT_CHECK_M,
     PLAN_ORIENTATION_TOLERANCE_RAD,
     PLAN_POSITION_TOLERANCE_M,
     PLANNER,
@@ -174,7 +175,9 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     )
     assert (PLAN_POSITION_TOLERANCE_M, PLAN_ORIENTATION_TOLERANCE_RAD, PLANNER, REFINER, ALLOWED_PLANNING_TIME_S) == tuple(plan_bars.values())
     assert ("plan", plan_bars) in robot.bars
-    assert ("run", dict(duration_s=0.0, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=SETTLE_TIMEOUT_S)) in robot.bars
+    assert ("run", dict(
+        duration_s=0.0, settle_tolerance_rad=SETTLE_JOINT_RAD, settle_timeout_s=SETTLE_TIMEOUT_S, contact_gap_m=NO_CONTACT_CHECK_M,
+    )) in robot.bars
     assert SETTLE_JOINT_RAD == 0.05
     added, allowed, ran, checked, grab = [record.getMessage() for record in log.records]
     assert checked == (
