@@ -352,10 +352,11 @@ OMPL_SOURCE_TARBALL="$PWD/ompl-2.0.2.tar.gz" cargo build --offline
 OMPL is under its BSD license, which permits the patch's modification of its sources. A
 binary that links this crate links OMPL, and the license's second clause asks a binary
 distribution to reproduce OMPL's copyright notice, conditions and disclaimer. The build
-extracts the license to `ompl-2.0.2/LICENSE` in its output directory,
-`target/<profile>/build/ompl_bridge-<hash>/out/`, which cargo reports as the `out_dir` of
-ompl_bridge's `build-script-executed` message under `--message-format=json`: ship that
-file with the binary.
+extracts the license to `ompl-2.0.2/LICENSE` in the output directory of its build script,
+which cargo reports as the `out_dir` of ompl_bridge's `build-script-executed` message
+under `--message-format=json`: ship that file with the binary. The place of that directory
+in the target directory depends on the release of cargo, so find the message by its
+`package_id`, which names ompl_bridge, and not by the path of the directory.
 
 The build compiles OMPL against the system's Boost headers, links Boost.Serialization,
 which OMPL's planner data storage uses and OMPL's CMake links, and finds Eigen 3 through
