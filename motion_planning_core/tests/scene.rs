@@ -9,6 +9,7 @@
 //! other name, changes nothing.
 
 mod common;
+mod openarm_v2;
 
 use motion_planning_core::{
     AttachRequest, OCCUPANCY_MAP, ObjectFields, ObjectRequest, PlanningScene, RobotLinks,

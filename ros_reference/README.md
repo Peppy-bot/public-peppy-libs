@@ -10,7 +10,7 @@ A parity test reads a **scenario**, an input that the test and the reference bot
 and the **reference output** that the reference wrote for it. The reference outputs are
 committed with the digests of them and of their inputs, so the parity tests run in the
 routine `cargo test` of each crate, with no ROS on the machine, and fail on an output, a
-scenario, a URDF or a mesh that differs from its digest. A change of the digests is a
+scenario, a URDF, an SRDF or a mesh that differs from its digest. A change of the digests is a
 change of the reference, which `run.sh --check` proves.
 
 | Kind of scenario | Reference | Parity test |
@@ -21,10 +21,10 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners, in a real vector space measured as MoveIt measures a joint group, the bridge's: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with the OMPL planner the scenario names, RRTConnect for `rrt_connect` and RRTstar for `rrt_star`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, the path it answers refined by MoveIt's CHOMP where the scenario's refiner is `chomp`, as the CHOMP refinement reference refines one, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, or of SO-101's arm among collision objects, a group under six joints searching with `position_only_ik`, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of every chain of the robot, both of OpenArm v2's arms or SO-101's arm, checks the pairs of the robot's own links that motion_planning_core's self model checks, which the scenario names: MoveIt's answer to each scene, planned to the goal state itself or to a pose or a position of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the scenario names pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries, and of each path rounded by MoveIt's time-optimal path at the scenario's corner tolerance, its turning and its bending, the integrals of its curvature's norm and squared norm over its length, and its duration, timed by MoveIt's time-optimal trajectory at each joint's bounds (`tools/draw_arm_planning.py` writes it, with the answers and the checked pairs of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`, and with `--robot so101` SO-101's scenes, to what `--goal` names) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with the OMPL planner the scenario names, RRTConnect for `rrt_connect` and RRTstar for `rrt_star`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, the path it answers refined by MoveIt's CHOMP where the scenario's refiner is `chomp`, as the CHOMP refinement reference refines one, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, or of SO-101's arm among collision objects, a group under six joints searching with `position_only_ik`, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of a group that holds every arm of the robot, both of OpenArm v2's arms or SO-101's arm, checks every pair of the robot's own links but those its SRDF disables: MoveIt's answer to each scene, planned to the goal state itself or to a pose or a position of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the plans check pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries, and of each path rounded by MoveIt's time-optimal path at the scenario's corner tolerance, its turning and its bending, the integrals of its curvature's norm and squared norm over its length, and its duration, timed by MoveIt's time-optimal trajectory at each joint's bounds (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`, and with `--robot so101` SO-101's scenes, to what `--goal` names) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 | `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 | `orientation_constraints` | MoveIt's kinematic constraint under rotation-vector tolerances about the axes of the target: whether a link at each configuration keeps each target within a box of tolerances inside a contract's `tolerance_rad` and within one around it (`tools/draw_orientation_constraints.py` writes it) | `motion_planning_core/tests/ros_reference_orientation_constraints.rs` |
-| `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with KDL as the inverse kinematics, on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the checked pairs and the step of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
+| `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with KDL as the inverse kinematics, on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers and the step of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
 | `chomp_refinement` | MoveIt's CHOMP optimizer (`chomp::ChompPlanner` of chomp_motion_planner) at the parameters MoveIt's CHOMP plugin loads by default, its initial trajectory the scene's input path (`fillTrajectory`), in a diff of the scene in MoveIt's hybrid collision environment, as the plugin plans, on scenes of an arm of OpenArm v2 among boxes of voxels as an octomap: CHOMP's error code, its path of 101 waypoints where its optimizer ran, and MoveIt's collision check, the robot's links padded by the scenario's clearance, smallest distance to the scene and length along CHOMP's path and along the input path, each straight between its waypoints, and along `motion_planning_core`'s CHOMP refinement of it with its corners rounded as MoveIt's time-optimal trajectory generation rounds them, with each path's turning, bending and duration as arm planning measures them, the input path the one `motion_planning_core`'s RRTConnect plans through the scene, which the scenario carries with our refinement (`tools/draw_chomp_refinement.py` writes it, with the paths and the probe spacing of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_chomp_refinement.rs` |
 
 ## Layout
@@ -32,12 +32,12 @@ change of the reference, which `run.sh --check` proves.
 | Path | What it holds |
 |---|---|
 | `scenarios/` | One JSON file per scenario. Its `kind` names the reference that runs on it. |
-| `robots/` | The URDFs of the robots that the tools draw for scenarios, and their meshes: `primitive_arm.urdf`, an arm of 7 joints dressed in boxes, cylinders and spheres and in `meshes/wedge.stl`, turned about its origin. |
+| `robots/` | The model directories of the robots that the tools draw for scenarios, each in robot_description's layout, its URDF, its SRDF and its meshes: `primitive_arm/`, an arm of 7 joints dressed in boxes, cylinders and spheres and in `meshes/wedge.stl`, turned about its origin. A scenario that poses a robot names its model directory as its `description`: `robot_description/models/<model id>` for a robot model of the repository, or a directory of `robots/`. |
 | `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is a JSON number, the shortest decimal that reads back to the reference's own bits. |
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints, the grasp link and the chain of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, each run as `uv run ros_reference/tools/<script>.py`, which builds this repository's `robot_description_py` into the script's environment, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, the model directory of each robot the scenarios pose, its parsed URDF, its arms and the limits of its joints as `robot_description_py` reads its URDF and SRDF, the links of an arm's chain and of its gripper, the finger joint of a gripper that moves of its own, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -137,14 +137,29 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    random_numbers seeds from the clock; the reference program defines that constructor and
    exports it, so MoveIt's libraries construct their generators through it, and the arm
    planning reference seeds them from each scene, the Cartesian paths reference from each
-   case, and std::rand, which KDL's step off a singularity draws from through Eigen. Two
-   things of a pose goal's scene are MoveIt's own: KDL's search for a goal ends on its
-   timeout, a clock, and the planner's thread and the goal sampler's each build a
-   generator, whose seeds follow the order they are built in. The committed pose scenes
-   repeat their bytes in every run measured, each alone and after the others, in six
-   processes and under load. KDL's search for each step of a Cartesian path ends on that
-   timeout too. CHOMP's stochastic descent draws from the generator rsl gives its thread
-   (chomp_optimizer.cpp:568), which the thread's first call of `rsl::rng` seeds and a
+   case, and std::rand, which KDL's step off a singularity draws from through Eigen.
+   MoveIt samples the goal states of a pose goal on a thread of its own: the OMPL planner's
+   context starts its goal sampler, a ConstrainedGoalSampler, when it is made, and the
+   sampler adds goal states until it holds max_goal_samples of them, has made
+   max_goal_sampling_attempts attempts, or the planner has a solution (moveit2 2.15.2
+   constrained_goal_sampler.cpp:96-111), while the planner takes each new goal state as it
+   runs (OMPL 2.0.2 RRTConnect.cpp:252-269). So the arm planning reference runs the plugins
+   of the pipeline, its request adapters, the OMPL planner's context and its response
+   adapters, in the pipeline's order (planning_pipeline.cpp:251-374), and for a pose goal it
+   waits until the context's goal sampler ends before the context solves. The planner then
+   starts with every goal state the sampler added, in the order it added them, as on a
+   machine whose inverse kinematics answers at once, and the goal sampler's thread builds
+   its generator before the planner's thread builds its own, so their seeds follow one
+   order. One thing of a pose goal's scene is MoveIt's own: KDL's search for a goal ends on
+   its timeout, a clock, after as many random restarts as the machine's speed allows, and
+   each later search draws from where those restarts left KDL's generators. So the committed
+   pose scenes are scenes where, by KDL's debug lines in the reference image, every search of
+   a goal state MoveIt reaches ends before the timeout, and in a scene whose goal lies in an
+   object or a box every search ends on it and finds none; the drawing tool keeps no scene of
+   SO-101 that its SO101_ON_KDL_TIMEOUT names. Each committed scenario of pose goals repeats
+   its bytes in three runs in one container. KDL's search for each step of a Cartesian path
+   ends on that timeout too. CHOMP's stochastic descent draws from the generator rsl gives its
+   thread (chomp_optimizer.cpp:568), which the thread's first call of `rsl::rng` seeds and a
    later seeded call refuses, so the CHOMP refinement reference, and the arm planning
    reference for the refiner `chomp`, run CHOMP on each scene on a new thread whose first
    call seeds it from the scene. CHOMP ends on its iterations or on its time limit, 10 s,
@@ -186,8 +201,9 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    and one at a box's corner the padding over the square root of 3. The scenes of every
    chain of the robot, of both arms (`--both-arms`) or of SO-101's arm (`--robot so101`),
    plan them with this crate's self model, and MoveIt's collision matrix checks the pairs
-   of the robot's own links that the self model checks, the scenario's `checked_pairs`,
-   and each object a hand holds against the other arm and what that arm holds. MoveIt
+   of the robot's own links that the self model checks, every pair but those the SRDF
+   disables, where the scenario's `group` holds every arm of the robot, and each object a
+   hand holds against the other arm and what that arm holds. MoveIt
    checks the robot against itself unpadded, and this crate keeps the clearance between
    the robot's own bodies too, so a gap between them at a clearance above 0 comes from
    this crate's clearance. Each such drawn scene starts where the self model holds the
@@ -293,11 +309,12 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    each grasp point, each such scene, a straight joint line through the robot's own body
    that both plan around, the scenes among objects holding the left hand's object, the
    right hand's cube, both, and the left hand's object set down on a table, and the scene
-   whose start, and the one whose goal, holds the robot's own bodies meeting, to poses
-   each but a path of `motion_planning_core` where MoveIt's own fails its check, which no
-   scene of the first 200 drawn gives, and the straight joint line, which a goal of poses
-   has none of (`COMMITTED_BOTH`, `COMMITTED_BOTH_OBJECTS` and `COMMITTED_BOTH_POSES`); its
-   statistics over 200 drawn scenes as rule 3 says; for the planning scene, the calls of
+   whose start, and the one whose goal, holds the robot's own bodies meeting, among
+   objects each but a path of `motion_planning_core` where MoveIt's own fails its check,
+   and to poses each but that path and the straight joint line, which a goal of poses has
+   none of, no scene of their first 200 drawn giving that path (`COMMITTED_BOTH`,
+   `COMMITTED_BOTH_OBJECTS` and `COMMITTED_BOTH_POSES`); its statistics over 200 drawn
+   scenes as rule 3 says; for the planning scene, the calls of
    `tools/draw_planning_scene.py` on OpenArm v2 and eight configurations of its left arm,
    all joints at zero, at their lower limits, at their upper limits, the one an item and a
    lid are attached at, the one the lid is detached at, and three drawn inside the limits
@@ -322,7 +339,7 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    straight. A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
-   `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
+   `uv run ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
 7. Every mode of arm planning that a caller selects, each planner and refiner that the
@@ -389,33 +406,34 @@ arm64 host.
 
 1. Write the scenario under `scenarios/`. For forward kinematics, add the robot to
    `ROBOTS` in `tools/draw_forward_kinematics.py` and run
-   `python3 ros_reference/tools/draw_forward_kinematics.py`, which writes every scenario
+   `uv run ros_reference/tools/draw_forward_kinematics.py`, which writes every scenario
    of the kind, each drawn from a generator seeded by its own name, so the others come
    out unchanged.
 2. Run `ros_reference/run.sh` on an amd64 host, which writes its reference output and the
    digests, and `ros_reference/run.sh --check` on an arm64 host, which runs the parity
    tests on the outputs of the arm64 image.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
-   runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints,
-   the chain collision parity test chains of 7 joints, the self distance parity test
-   builds the self model of OpenArm v2 or of SO-101 and refuses a scenario that names
-   another URDF, the path timing parity test asks each scenario for cornered paths that
-   TOTG blends at deviations of 0.01, 0.05, 0.1 and 0.2, a straight run, a path that it
-   refuses, a path with a corner that it runs straight on, turns that bracket its
-   turning-back threshold within 0.02 degrees, and a path with corners at the deviation of
-   execute_joint_path, the planning parity test asks each scenario for a plan of each
-   planner that finds a path and one that finds none, the occupancy parity test asks each
-   scenario's map for at least 199 voxels, the arm planning parity test asks each scenario
-   for a scene of each outcome that it names, and each scenario whose plans check the
-   robot's own pairs for a scene of each outcome of such a plan, and the planning scene
-   parity test builds the self model of OpenArm v2, refuses a scenario that names another
-   URDF or poses another arm, and asks each scenario for a pair of each case that it
-   names, and the Cartesian paths parity test asks each scenario for a case of each
-   behavior that it names.
+   runs on the new one. The forward kinematics parity test poses arms of 1 to 7 joints,
+   the chain collision parity test arms of 7 joints, the self distance parity test asks
+   the scenarios for a robot of two arms of 7 joints, as OpenArm v2 is, and for one of one
+   arm of 5, as SO-101 is, builds the self model of each scenario's robot by those counts,
+   and refuses a scenario whose robot has other arms, the path timing parity test asks
+   each scenario for cornered paths that TOTG blends at deviations of 0.01, 0.05, 0.1 and
+   0.2, a straight run, a path that it refuses, a path with a corner that it runs straight
+   on, turns that bracket its turning-back threshold within 0.02 degrees, and a path with
+   corners at the deviation of execute_joint_path, the planning parity test asks each
+   scenario for a plan of each planner that finds a path and one that finds none, the
+   occupancy parity test asks each scenario's map for at least 199 voxels, the arm
+   planning parity test asks each scenario for a scene of each outcome that it names, and
+   each scenario whose plans check the robot's own pairs for a scene of each outcome of
+   such a plan, and the planning scene parity test builds the self model of OpenArm v2,
+   refuses a scenario that names another robot or poses another arm, and asks each
+   scenario for a pair of each case that it names, and the Cartesian paths parity test
+   asks each scenario for a case of each behavior that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
-reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs
-from its digest.
+reference output has no scenario or no digest, or a scenario, a URDF, an SRDF or a mesh
+differs from its digest.
 
 ## Adding a kind of scenario
 

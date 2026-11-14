@@ -339,6 +339,7 @@ class Robot:
         settle_position_tolerance_m: float,
         settle_orientation_tolerance_rad: float,
         settle_timeout_s: float,
+        contact_gap_m: float,
     ) -> MoveResult:
         """Plans and runs one grasp-point move of `arm`, robot frame, and
         waits for it to settle within the settle tolerances or to fail its
@@ -346,13 +347,15 @@ class Robot:
         limb_motion contract has them: the plan ends within 1 mm and 0.01 rad of
         the pose, the move completes once the measured grasp point stands within
         the settle tolerances at or after the planned end, and fails with
-        `timeout` `settle_timeout_s` after it otherwise.
+        `timeout` `settle_timeout_s` after it otherwise. `contact_gap_m` is the
+        contract's contact gap of the move, 0 for no contact check.
         A duration of 0 is the fastest the joint limits allow."""
         request = self._move_arm.GoalRequest(
             **_arm_move_fields(arm, position, orientation, duration_s),
             settle_position_tolerance_m=settle_position_tolerance_m,
             settle_orientation_tolerance_rad=settle_orientation_tolerance_rad,
             settle_timeout_s=settle_timeout_s,
+            contact_gap_m=contact_gap_m,
         )
         moved, data = await self._run(self._move_arm, request)
         if data is None:

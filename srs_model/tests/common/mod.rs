@@ -1,7 +1,8 @@
 //! Shared fixture loading for the integration tests. Builds an [`Arm`] from the
-//! bundled fixture URDF and the `base` link, the same robot-agnostic entry point
-//! (`from_urdf`) production uses. `side` is `"left"`/`"right"`; left vs right is
-//! just a different chain in the same URDF, selected by the base link.
+//! fixture's URDF and the base link of its arm on `side` ([`openarm_v1`]), the same
+//! robot-agnostic entry point (`from_urdf`) production uses. `side` is
+//! `"left"`/`"right"`; left vs right is just a different chain in the same URDF,
+//! selected by the base link.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
@@ -12,18 +13,13 @@ use properties::STRAIGHT_ELBOW_BAND;
 use srs_model::{Arm, ArmAnglePolicy, ELBOW, JointVec};
 use std::sync::LazyLock;
 
+pub mod openarm_v1;
 pub mod properties;
-
-const FIXTURE_URDF: &str = include_str!("../fixtures/openarm_v10.urdf");
-
-fn base(side: &str) -> String {
-    format!("openarm_{side}_link0")
-}
 
 /// The fixture's arm on `side`, loaded once per test binary.
 pub fn arm(side: &str) -> &'static Arm {
     fn load(side: &str) -> Arm {
-        Arm::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture arm")
+        Arm::from_urdf(openarm_v1::urdf(), openarm_v1::base(side)).expect("load fixture arm")
     }
     static LEFT: LazyLock<Arm> = LazyLock::new(|| load("left"));
     static RIGHT: LazyLock<Arm> = LazyLock::new(|| load("right"));

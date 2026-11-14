@@ -17,8 +17,7 @@
 namespace ros_reference {
 
 nlohmann::json self_distance(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto model = robot_model_with_meshes(inputs, scenario.at("urdf").get<std::string>(),
-                                             scenario.at("meshes").get<std::string>());
+  const auto model = description_model(inputs, scenario.at("description").get<std::string>());
   collision_detection::CollisionEnvFCL environment(model);
   // An empty matrix allows no pair, so every pair of links is measured.
   const collision_detection::AllowedCollisionMatrix allowed;

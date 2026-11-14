@@ -5,6 +5,7 @@
 //! cannot answer says why.
 
 mod common;
+mod openarm_v2;
 
 use std::sync::atomic::AtomicBool;
 
@@ -14,16 +15,17 @@ use control_core::positive_finite::PositiveFinite;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, Arms, CartesianFailure, CartesianPath, CartesianRequest, CheckRequest, Collisions,
+    Arms, CartesianFailure, CartesianPath, CartesianRequest, CheckRequest, Collisions,
     FollowedFrame, Frame, Objects, Scene, StartFault, cartesian_path, check_path,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
 
 use common::{
-    JOINTS, LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, distance_to_map, map, occupied_at,
-    off_the_branch_seams, on_line,
+    LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, distance_to_map, map, occupied_at,
+    off_the_branch_seams, on_line, plan_arm,
 };
+use openarm_v2::{JOINTS, LEFT};
 
 const VOXEL_M: f64 = 0.02;
 const MIN_CLEARANCE_M: f64 = 0.02;
@@ -87,7 +89,7 @@ fn path_of(
     poses: &[Isometry3<f64>],
     collisions: Collisions<'_>,
 ) -> Result<CartesianPath<JOINTS>, CartesianFailure> {
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     cartesian_path(
         &arms,
         &CartesianRequest {
@@ -167,7 +169,7 @@ fn assert_on_its_lines(path: &CartesianPath<JOINTS>, poses: &[Isometry3<f64>]) {
 
 /// Asserts that a check of a caller's path at `min_clearance_m` passes `path`'s answer.
 fn assert_passes_a_check_at(path: &CartesianPath<JOINTS>, scene: &Scene<'_>, min_clearance_m: f64) {
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let check = check_path(
         &arms,
         scene,
@@ -254,7 +256,7 @@ fn a_motion_that_dips_under_the_clearance_between_its_states_ends_before_the_dip
     let poses = [moved(&start, Vector3::new(0.0, 0.0, -0.2))];
     let free = checked_path_of(START, &poses, &scene).expect("a path");
     assert_eq!(free.fraction, 1.0, "the line passes the box");
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let nearest_state = free
         .waypoints
         .iter()
@@ -365,7 +367,7 @@ fn a_link_fixed_to_the_last_joint_follows_the_lines() {
     let offset = Isometry3::translation(0.0, 0.0, 0.05);
     let link_pose = |q: &[f64; JOINTS]| LEFT_ARM.chain().at(q).link_pose_world(JOINTS - 1) * offset;
     let target = moved(&link_pose(&START), Vector3::new(0.0, 0.0, -0.05));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let path = cartesian_path(
         &arms,
         &CartesianRequest {
@@ -400,7 +402,7 @@ fn a_link_fixed_to_the_last_joint_follows_the_lines() {
 #[test]
 fn a_start_in_the_spare_above_the_clearance_departs_in_one_run() {
     let start = hand(&START);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let box_center = start.translation.vector - Vector3::new(0.0, 0.0, 0.1);
     let (map, field) = world(&cube(box_center, 0.04));
     let scene = scene(&map, &field);
@@ -472,7 +474,7 @@ fn a_start_in_contact_fails_unless_collisions_go_unchecked() {
 fn a_start_inside_the_clearance_fails_unless_collisions_go_unchecked() {
     let last_link = LEFT_ARM.chain().at(&START).link_pose_world(JOINTS - 1);
     let below = last_link.translation.vector - Vector3::new(0.0, 0.0, 0.2);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let raised = |by: f64| world(&cube(below + Vector3::new(0.0, 0.0, by), 0.02));
     let (map, field) = (0..200)
         .map(|k| raised(f64::from(k) * 0.001))
@@ -507,7 +509,7 @@ fn a_start_outside_a_limit_fails_past_its_tolerance_and_moves_onto_it_within() {
     let mut outside = START;
     outside[0] = limit + 0.01;
     let pose = hand(&START);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let asking = |tolerance: f64| {
         cartesian_path(
             &arms,
@@ -584,7 +586,7 @@ fn a_path_follows_only_a_frame_every_joint_moves() {
 #[test]
 fn a_set_stop_ends_the_path() {
     let stop = AtomicBool::new(true);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let failure = cartesian_path(
         &arms,
         &CartesianRequest {

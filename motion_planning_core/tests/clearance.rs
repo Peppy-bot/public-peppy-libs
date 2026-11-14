@@ -2,15 +2,17 @@
 //! verdict, and a part the arm carries keeps its clearance as the arm's links do.
 
 mod common;
+mod openarm_v2;
 
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{configs, unit_vectors};
-use motion_planning_core::{Arm, Arms, Contact, Surroundings};
+use motion_planning_core::{Arms, Contact, Surroundings};
 use nalgebra::Point3;
 use occupancy_map::{DistanceField, VoxelMap};
 
-use common::{JOINTS, LEFT_ARM, left_fingers, map, occupied_at, voxel_boxes, voxel_in_a_finger};
+use common::{LEFT_ARM, left_fingers, map, occupied_at, plan_arm, voxel_boxes, voxel_in_a_finger};
+use openarm_v2::{JOINTS, LEFT};
 
 const VOXEL_M: f64 = 0.05;
 
@@ -38,7 +40,7 @@ fn the_sphere_screen_gives_the_hulls_verdict(tc: TestCase) {
     let riders = left_fingers();
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the fingers ride the hand"),
         ],
@@ -100,13 +102,13 @@ fn a_finger_keeps_its_clearance_as_the_links_do() {
     let riders = left_fingers();
     let riding = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the fingers ride the hand"),
         ],
         None,
     );
-    assert!(surroundings.clear(&Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None), &q));
+    assert!(surroundings.clear(&Arms::new(vec![plan_arm(LEFT)], None), &q));
     assert!(!surroundings.clear(&riding, &q));
     let contact = surroundings.contact(&riding, &q);
     assert!(

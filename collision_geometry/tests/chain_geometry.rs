@@ -5,13 +5,16 @@
 //! points it holds, by the chain's rule.
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use collision_geometry::GeometryError;
 use collision_geometry::chain::{
     BodyGeometry, BodyMask, ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask,
 };
+use collision_geometry::clip::ClipRegion;
+use collision_geometry::fit::{fit_pieces, verify_contains};
 use collision_geometry::gjk::Hull;
 use collision_geometry::hull::exact_hull;
-use collision_geometry::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use collision_geometry::nalgebra::{
+    Isometry3, Point3, Translation3, UnitQuaternion, UnitVector3, Vector3,
+};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -104,6 +107,27 @@ fn sign(tc: &TestCase) -> f64 {
     f64::from(tc.draw(gs::integers::<i8>().min_value(-1).max_value(1)))
 }
 
+/// The unit direction of `terms`, each a direction and a drawn weight, weighed by the
+/// weights taken relative to the largest: the largest term enters at unit length, so a
+/// term whose relative weight leaves the normal range of floats moves each component of
+/// the sum by less than `f64::MIN_POSITIVE`. `None` when every weight is 0.
+fn weighed_direction(terms: &[(UnitVector3<f64>, f64)]) -> Option<Vector3<f64>> {
+    let largest = terms.iter().map(|&(_, weight)| weight).fold(0.0, f64::max);
+    (largest > 0.0).then(|| {
+        terms
+            .iter()
+            .fold(Vector3::zeros(), |sum, (direction, weight)| {
+                sum + direction.into_inner() * (weight / largest)
+            })
+            .normalize()
+    })
+}
+
+/// The [`weighed_direction`] of `terms`, the test case rejected when every weight is 0.
+fn drawn_direction(tc: &TestCase, terms: &[(UnitVector3<f64>, f64)]) -> Vector3<f64> {
+    weighed_direction(terms).unwrap_or_else(|| tc.reject())
+}
+
 /// A drawn point of the surface of the collision element of `piece` scaled by `scale`
 /// about its center, with a drawn outward unit direction of the surface's normal cone
 /// there, both in the frame of its link: a point `t` meters from the surface point along
@@ -115,21 +139,22 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
     let weight = || tc.draw(gs::floats().min_value(0.0).max_value(1.0));
     let fraction = || tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
     let element = piece.element();
-    let (point, direction) = match element.geometry {
+    let (point, terms) = match element.geometry {
         CollisionGeometry::Mesh { .. } => {
             let hull = piece.hull();
             let (on_face, vertices) = point_on_face(tc, hull, drawn_index(tc, hull.faces()));
-            let direction = hull
+            let terms: Vec<(UnitVector3<f64>, f64)> = hull
                 .faces()
                 .iter()
                 .zip(hull.planes())
                 .filter(|(face, _)| vertices.iter().all(|vertex| face.contains(vertex)))
-                .fold(Vector3::zeros(), |sum, (_, (normal, _))| {
-                    sum + normal * weight()
-                });
-            tc.assume(direction.norm() > 0.0);
+                .map(|(_, (normal, _))| (UnitVector3::new_normalize(*normal), weight()))
+                .collect();
             let center = hull.center();
-            return (center + (on_face - center) * scale, direction.normalize());
+            return (
+                center + (on_face - center) * scale,
+                drawn_direction(tc, &terms),
+            );
         }
         CollisionGeometry::Box { size } => {
             let half_extents = size * (scale / 2.0);
@@ -142,7 +167,16 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
                     sides[i] * half_extents[i]
                 }
             });
-            (point, Vector3::from_fn(|i, _| sides[i] * weight()))
+            let terms = (0..3)
+                .filter(|&i| sides[i] != 0.0)
+                .map(|i| {
+                    (
+                        UnitVector3::new_normalize(Vector3::ith(i, sides[i])),
+                        weight(),
+                    )
+                })
+                .collect();
+            (point, terms)
         }
         CollisionGeometry::Cylinder { radius, length } => {
             let (radius, half_length) = (radius * scale, length * scale / 2.0);
@@ -156,25 +190,25 @@ fn scaled_surface_point(tc: &TestCase, piece: &Piece, scale: f64) -> (Point3<f64
             } else {
                 end * half_length
             };
-            let outward = if on_side {
-                radial * weight()
-            } else {
-                Vector3::zeros()
-            };
+            let outward = on_side.then(|| (UnitVector3::new_normalize(radial), weight()));
+            let axial =
+                (end != 0.0).then(|| (UnitVector3::new_normalize(Vector3::z() * end), weight()));
             (
                 radial * across + Vector3::z() * along,
-                outward + Vector3::z() * (end * weight()),
+                outward.into_iter().chain(axial).collect(),
             )
         }
         CollisionGeometry::Sphere { radius } => {
             let direction = tc.draw(unit_vectors());
-            (direction * (radius * scale), direction)
+            (
+                direction * (radius * scale),
+                vec![(UnitVector3::new_normalize(direction), 1.0)],
+            )
         }
     };
-    tc.assume(direction.norm() > 0.0);
     (
         element.origin * Point3::from(point),
-        element.origin.rotation * direction.normalize(),
+        element.origin.rotation * drawn_direction(tc, &terms),
     )
 }
 
@@ -286,48 +320,6 @@ fn each_piece_holds_its_collision_surface(tc: TestCase) {
         }
     }
     on_a_drawn_robot::<PieceHoldsSurface>(&tc);
-}
-
-/// A floor on a joint raises its lower limit as the chain's own floor does, and leaves
-/// every other limit and every link where it stands.
-#[hegel::test]
-fn a_floor_raises_one_lower_limit_alone(tc: TestCase) {
-    struct FloorRaisesOneLimit;
-    impl ChainProperty for FloorRaisesOneLimit {
-        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
-            let urdf = dressed_urdf::<N>(tc, robot);
-            let joint = tc.draw(gs::integers::<usize>().min_value(0).max_value(N - 1));
-            let limits = geometry_of::<N>(&urdf).chain().limits();
-            let floor = tc.draw(
-                gs::floats()
-                    .min_value(limits[joint].lo - 1.0)
-                    .max_value(limits[joint].hi + 1.0),
-            );
-            let floored = geometry_of::<N>(&urdf).with_lower_floor(joint, floor);
-            let names = driven_joints::<N>();
-            let joints: Vec<&str> = names.iter().map(String::as_str).collect();
-            let expected = Chain::<N>::from_urdf(
-                &urdf_rs::read_from_string(&urdf).expect("the written URDF reads"),
-                &spec(&joints),
-            )
-            .expect("a drawn robot is a valid chain")
-            .with_lower_floor(joint, floor)
-            .limits();
-            assert_eq!(floored.chain().limits(), expected);
-            assert!(
-                (0..N)
-                    .filter(|&i| i != joint)
-                    .all(|i| floored.chain().limits()[i] == limits[i]),
-                "a floor on joint {joint} moved another limit"
-            );
-            let q = tc.draw(configs(floored.chain().limits()));
-            let poses = |geometry: &ChainGeometry<N>| -> Vec<Isometry3<f64>> {
-                geometry.place(&q).links().map(|(_, pose)| *pose).collect()
-            };
-            assert_eq!(poses(&floored), poses(&geometry_of::<N>(&urdf)));
-        }
-    }
-    on_a_drawn_robot::<FloorRaisesOneLimit>(&tc);
 }
 
 /// The bounding sphere of each piece holds the piece wherever the chain stands.
@@ -709,7 +701,6 @@ fn the_body_answers_for_a_point_as_a_chain_carrying_its_link(tc: TestCase) {
             let body = BodyGeometry::from_urdf(
                 &hung(&dressed, JointType::Fixed, origin.clone()),
                 meshes_dir(),
-                &[],
             )
             .expect("a dressed body fits");
             assert_eq!(body.link_names().collect::<Vec<_>>(), [MOUNT]);
@@ -753,64 +744,30 @@ fn the_body_answers_for_a_point_as_a_chain_carrying_its_link(tc: TestCase) {
     on_a_drawn_robot::<AnswersAsAChain>(&tc);
 }
 
-/// The overlap of the two clip regions that a test decomposes a body's link into, as the
+/// The overlap of the two clip regions that a test cuts a body's mesh into, as the
 /// regions' rules ask of adjoining regions.
 const OVERLAP_M: f64 = 0.005;
 
-/// The mean of `points`.
-fn mean(points: &[&Point3<f64>]) -> Point3<f64> {
-    Point3::from(
-        points
-            .iter()
-            .fold(Vector3::zeros(), |sum, p| sum + p.coords)
-            / points.len() as f64,
-    )
-}
-
-/// A drawn point inside the convex hull of `surface`, off its boundary: a weighted mean of
-/// four of its points, moved [`TOLERANCE`] of the way toward the mean of all its points,
-/// which lies inside the hull.
-fn inside_surface(tc: &TestCase, surface: &[Point3<f64>]) -> Point3<f64> {
-    let weighted: Vec<(Point3<f64>, f64)> = (0..4)
-        .map(|_| {
-            let vertex = surface[drawn_index(tc, surface)];
-            (vertex, tc.draw(gs::floats().min_value(0.0).max_value(1.0)))
-        })
-        .collect();
-    let total: f64 = weighted.iter().map(|(_, weight)| weight).sum();
-    tc.assume(total > 0.0);
-    let drawn = Point3::from(
-        weighted
-            .iter()
-            .fold(Vector3::zeros(), |sum, (vertex, weight)| {
-                sum + vertex.coords * (weight / total)
-            }),
-    );
-    let middle = mean(&surface.iter().collect::<Vec<_>>());
-    drawn + (middle - drawn) * TOLERANCE
-}
-
-/// A body whose mount, hung by a fixed joint at a drawn placement, is decomposed into two
-/// clip regions in the frame of the root, split across a drawn axis in the middle half of
-/// the mount's surfaces and overlapping by [`OVERLAP_M`], holds a drawn point inside the
-/// hull of a surface of the mount, off its boundary, for every padding, which grows each
-/// region's piece about its center, and no point farther from the surfaces' middle than
-/// the pieces reach: a scaled piece lies within the scale times the surfaces' diameter of
-/// their middle, and its grown points within the offset more.
+/// The surfaces of the mount of a dressed robot, hung by a fixed joint at a drawn
+/// placement, cut into the slices of two clip regions in the frame of the root, split
+/// across a drawn axis in the middle half of the surfaces and overlapping by
+/// [`OVERLAP_M`]: the pieces fitted to the two slices together hold every vertex and
+/// every face of the surfaces, as a URDF that names the slices as elements holds its
+/// mesh.
 #[hegel::test]
-fn a_body_decomposed_into_regions_holds_its_link_alone(tc: TestCase) {
-    struct Decomposed;
-    impl ChainProperty for Decomposed {
+fn the_pieces_of_two_overlapping_slices_hold_the_surfaces(tc: TestCase) {
+    struct Sliced;
+    impl ChainProperty for Sliced {
         fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
             let dressed = tc.draw(dressed(robot.clone(), N));
             let urdf = hung(&dressed, JointType::Fixed, tc.draw(placements()));
-            let surfaces = UrdfCollisions::from_urdf(&urdf)
+            let soup = UrdfCollisions::from_urdf(&urdf)
                 .expect("a hung robot's collisions read")
                 .fixed_surfaces_in_root(MOUNT, meshes_dir())
-                .expect("the mount is fixed to the root");
-            let points: Vec<&Point3<f64>> = surfaces.iter().flatten().collect();
+                .expect("the mount is fixed to the root")
+                .concat();
             let axis = tc.draw(gs::integers::<usize>().min_value(0).max_value(2));
-            let (low, high) = points
+            let (low, high) = soup
                 .iter()
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), p| {
                     (low.min(p[axis]), high.max(p[axis]))
@@ -819,35 +776,21 @@ fn a_body_decomposed_into_regions_holds_its_link_alone(tc: TestCase) {
             let (mut below, mut above) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             below[axis] = split + OVERLAP_M / 2.0;
             above[axis] = split - OVERLAP_M / 2.0;
-            let regions = [[[f64::NEG_INFINITY; 3], below], [above, [f64::INFINITY; 3]]];
-            let body = BodyGeometry::from_urdf(&urdf, meshes_dir(), &[(MOUNT, &regions)])
-                .expect("a decomposed body fits");
-            assert_eq!(body.link_names().collect::<Vec<_>>(), [MOUNT]);
-
-            let padding = tc.draw(paddings());
-            let grown = body.mask(padding);
-            let placed = grown.placed();
-            let point = inside_surface(tc, &surfaces[drawn_index(tc, &surfaces)]);
-            assert!(
-                placed.contains(&point),
-                "{point} lies inside a surface of {MOUNT}, and outside its regions grown by \
-                 {padding:?}"
-            );
-            let middle = mean(&points);
-            let radius = points
-                .iter()
-                .map(|p| (*p - middle).norm())
-                .fold(0.0, f64::max);
-            let reach = radius * (1.0 + 2.0 * padding.scale()) + padding.offset() + 0.01;
-            let far = middle + tc.draw(unit_vectors()) * reach;
-            assert!(
-                !placed.contains(&far),
-                "{far} lies beyond the reach of the regions grown by {padding:?}, and inside \
-                 them"
-            );
+            let slices: Vec<Vec<Point3<f64>>> =
+                [([f64::NEG_INFINITY; 3], below), (above, [f64::INFINITY; 3])]
+                    .into_iter()
+                    .map(|(min, max)| {
+                        ClipRegion::new(Point3::from(min), Point3::from(max))
+                            .expect("a region of the surfaces")
+                            .slice(&soup)
+                    })
+                    .collect();
+            let pieces = fit_pieces(MOUNT, &slices).expect("each slice of the mount fits");
+            verify_contains(MOUNT, &pieces, &soup)
+                .expect("the pieces of the two slices hold the surfaces");
         }
     }
-    on_a_drawn_robot::<Decomposed>(&tc);
+    on_a_drawn_robot::<Sliced>(&tc);
 }
 
 /// A robot whose body is a box at the root, a cylinder on a link fixed at a turned origin
@@ -890,30 +833,16 @@ const PLACED_BODY: &str = r#"<robot name="placed_body">
     </link>
   </robot>"#;
 
-/// The clip regions that split [`PLACED_BODY`]'s torso, the cube from z = 0.8 m to 1.2 m
-/// in the root's frame, at z = 1 m, overlapping by [`OVERLAP_M`].
-const TORSO_HALVES: [[[f64; 3]; 2]; 2] = [
-    [
-        [f64::NEG_INFINITY; 3],
-        [f64::INFINITY, f64::INFINITY, 1.0 + OVERLAP_M / 2.0],
-    ],
-    [
-        [f64::NEG_INFINITY, f64::NEG_INFINITY, 1.0 - OVERLAP_M / 2.0],
-        [f64::INFINITY; 3],
-    ],
-];
-
-/// The body of [`PLACED_BODY`], its torso split into [`TORSO_HALVES`].
+/// The body of [`PLACED_BODY`].
 fn placed_body() -> BodyGeometry {
-    BodyGeometry::from_urdf(PLACED_BODY, meshes_dir(), &[("torso", &TORSO_HALVES)])
-        .expect("the placed body fits")
+    BodyGeometry::from_urdf(PLACED_BODY, meshes_dir()).expect("the placed body fits")
 }
 
 /// The body holds the root's box, the plate's cylinder where its turned joint puts it,
-/// at x = 0.4 m along the root's z, and the torso's halves where the root's frame puts
-/// them, each to the offset of 3 cm and not 3.3 cm past it; it holds no point of the arm
-/// or the hand. Scaled by 1.5, the torso's upper half, from z = 0.9975 m to 1.2 m about
-/// its middle, reaches z = 1.2506 m.
+/// at x = 0.4 m along the root's z, and the torso's cube where its joint puts it, each to
+/// the offset of 3 cm and not 3.3 cm past it; it holds no point of the arm or the hand.
+/// Scaled by 1.5, the torso's cube, from z = 0.8 m to 1.2 m about its middle, reaches
+/// z = 1.3 m.
 #[test]
 fn a_body_stands_where_its_fixed_joints_place_it() {
     let body = placed_body();
@@ -945,30 +874,8 @@ fn a_body_stands_where_its_fixed_joints_place_it() {
     }
     let scaled = body.mask(Padding::new(1.5, 0.0).expect("a valid padding"));
     let placed = scaled.placed();
-    assert!(placed.contains(&Point3::new(0.0, 0.0, 1.245)));
-    assert!(!placed.contains(&Point3::new(0.0, 0.0, 1.256)));
-}
-
-/// Clip regions for a link a joint moves, for a link the robot does not have, or twice
-/// for one link of the body, are refused, naming the link.
-#[test]
-fn regions_off_the_body_or_given_twice_are_refused() {
-    for link in ["arm", "hand", "nowhere"] {
-        let refused = BodyGeometry::from_urdf(PLACED_BODY, meshes_dir(), &[(link, &TORSO_HALVES)]);
-        assert!(
-            matches!(&refused, Err(GeometryError::RegionsOffTheBody { body }) if body == link),
-            "regions for {link}: {refused:?}"
-        );
-    }
-    let refused = BodyGeometry::from_urdf(
-        PLACED_BODY,
-        meshes_dir(),
-        &[("torso", &TORSO_HALVES), ("torso", &TORSO_HALVES)],
-    );
-    assert!(
-        matches!(&refused, Err(GeometryError::RegionsTwice { body }) if body == "torso"),
-        "{refused:?}"
-    );
+    assert!(placed.contains(&Point3::new(0.0, 0.0, 1.295)));
+    assert!(!placed.contains(&Point3::new(0.0, 0.0, 1.305)));
 }
 
 /// A cube of half side 0.1 m, as a fitted piece, rounded by `rounding` meters.
@@ -1026,4 +933,21 @@ fn a_rounded_part_is_refused() {
     let hull = cube_piece(0.05);
     let parts = [("part", std::slice::from_ref(&hull), Isometry3::identity())];
     BodyMask::of(parts, Padding::new(1.0, 0.0).expect("a valid padding"));
+}
+
+/// The weighed direction of one term is the term's direction, however small its weight:
+/// the weights `a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it`
+/// drew on a cap's axis, 5.667004161121765e-162, and on a face normal, 5e-324.
+#[test]
+fn the_weighed_direction_of_one_term_is_its_direction_however_small_its_weight() {
+    let normal = UnitVector3::new_normalize(Vector3::new(-0.930, -0.367, -0.020));
+    for (direction, weight) in [
+        (Vector3::z_axis(), 5.667004161121765e-162),
+        (normal, 5e-324),
+    ] {
+        assert_eq!(
+            weighed_direction(&[(direction, weight)]),
+            Some(direction.into_inner())
+        );
+    }
 }

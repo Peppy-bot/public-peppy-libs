@@ -1,6 +1,6 @@
 //! Turns episodes of OpenArm v2 recorded in simulation, each one plan request of an arm,
 //! into scenes of an arm planning scenario of the ROS reference harness, and writes them on
-//! stdout as JSON with the chain of the arm they plan, the map they stand in and the
+//! stdout as JSON with the group of the arm they plan, the map they stand in and the
 //! episodes it drops.
 //! `ros_reference/tools/draw_arm_planning.py --episodes` runs it, plans the scenes with the
 //! example `plan_arm_scenes`, and writes the scenario.
@@ -9,9 +9,9 @@
 //! scenes_from_episodes <episodes directory> <launcher fragment of the motion planner>
 //! ```
 //!
-//! It reads on stdin the scenario's header without its chains and its map: its one chain
-//! is the arm the episodes plan, and the map is the motion planner's, whose arguments the
-//! launcher fragment gives. Each subdirectory of the episodes directory that holds an
+//! It reads on stdin the scenario's header without its group and its map: its group is the
+//! arm the episodes plan, and the map is the motion planner's, whose arguments the launcher
+//! fragment gives. Each subdirectory of the episodes directory that holds an
 //! `episode.json`, in the format the harness README gives, is an episode, taken in the
 //! order of their names. An episode becomes a scene at the planner's arguments:
 //!
@@ -56,19 +56,19 @@ use motion_planning_core::{
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
-use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side};
+use robot_description::{ArmId, PerArm};
 use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use arm_scenes::{JOINTS, boxes_of, map_of, on_the_arms};
-use openarm_v2::Robot;
+use arm_scenes::{boxes_of, map_of, on_the_arms};
+use openarm_v2::{ARMS, DESCRIPTION, JOINTS, Robot, root_link};
 
 /// The node whose deployment in the launcher fragment gives the planner's arguments.
 const PLANNER_NODE: &str = "motion_planner";
-/// The values of one measurement as the replay's history keeps them: the left arm's
-/// joints, the right arm's, then the left and the right gripper's openings.
-const VALUES: usize = 2 * ARM_DOF + 2;
+/// The values of one measurement as the replay's history keeps them: each arm's joints in
+/// the order of the description's arms, then each arm's gripper opening in that order.
+const VALUES: usize = ARMS * JOINTS + ARMS;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -82,43 +82,25 @@ fn main() {
         serde_json::from_reader(std::io::stdin()).expect("the scenario's header on stdin parses");
     let planner = Planner::from_fragment(Path::new(fragment));
     let recorded = Recorded::read(Path::new(episodes));
-    let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
-    let meshes = repository.join(
-        header
-            .get("meshes")
-            .and_then(Value::as_str)
-            .expect("the header names the meshes"),
-    );
-    let robot = Robot::new(meshes.to_str().expect("a UTF-8 mesh directory"));
-    let version = HardwareVersion::V2;
-    let side = recorded.side;
-    let chain = robot.arms[side].chain();
-    let arms = json!({
-        "chains": [{
-            "name": side.arm_name(),
-            "base_link": version.base_link(side),
-            "tip_link": version.tcp_link(side),
-            "joints": (0..ARM_DOF).map(|i| chain.joint_name(i)).collect::<Vec<_>>(),
-        }],
-    });
+    let arm = openarm_v2::arm(recorded.arm);
     let map = json!({
         "voxel_size": planner.voxel_size.get(),
         "map_half_side": planner.map_half_side(),
     });
     let mut whole = header;
-    for part in [&arms, &map] {
-        whole.extend(part.as_object().expect("an object").clone());
-    }
+    whole.extend(map.as_object().expect("an object").clone());
+    whole.insert("group".into(), json!(arm.name));
     whole.insert("scenes".into(), json!([]));
     let scenes: Scenes = serde_json::from_value(Value::Object(whole)).expect("the scenario parses");
-    let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
+    let described = ros_reference::Robot::of(&scenes.description);
     assert!(
-        urdf == version.urdf(),
-        "the scenario's URDF {} is OpenArm v2's, the robot of the episodes",
-        scenes.urdf
+        described.description.urdf() == DESCRIPTION.urdf(),
+        "the scenario's robot {} is OpenArm v2, the robot of the episodes",
+        scenes.description
     );
+    let robot = Robot::new(described.meshes.to_str().expect("a UTF-8 mesh directory"));
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arms::<JOINTS, _>(&scenes.chains, &urdf, &meshes, |kind_arms, _| {
+        on_the_arms::<JOINTS, ARMS, _>(std::slice::from_ref(arm), &described, |kind_arms, _| {
             let [kind_arm] = kind_arms else {
                 panic!("the scenario of the episodes plans the arm they record");
             };
@@ -133,7 +115,7 @@ fn main() {
                 .collect()
         });
     let output = json!({
-        "arms": arms,
+        "group": arm.name,
         "map": map,
         "scenes": answers
             .iter()
@@ -269,7 +251,7 @@ impl Planner {
 /// The episodes of a directory, each by its subdirectory's name, and the arm they plan.
 struct Recorded {
     episodes: Vec<(String, Episode)>,
-    side: Side,
+    arm: ArmId,
 }
 
 impl Recorded {
@@ -293,18 +275,19 @@ impl Recorded {
                 (name, Episode::read(path))
             })
             .collect();
-        let side = episodes
+        let arm = episodes
             .first()
             .unwrap_or_else(|| panic!("{} holds no episode.json", directory.display()))
             .1
-            .side;
-        if let Some((name, other)) = episodes.iter().find(|(_, e)| e.side != side) {
+            .arm;
+        if let Some((name, other)) = episodes.iter().find(|(_, e)| e.arm != arm) {
             panic!(
-                "{name} plans the {} arm and the episodes before it the {} arm; a scenario plans one",
-                other.side, side
+                "{name} plans {} and the episodes before it {}; a scenario plans one arm",
+                openarm_v2::arm(other.arm).name,
+                openarm_v2::arm(arm).name
             );
         }
-        Self { episodes, side }
+        Self { episodes, arm }
     }
 }
 
@@ -313,7 +296,7 @@ impl Recorded {
 struct EpisodeFile {
     index: u32,
     arm: String,
-    start: [f64; ARM_DOF],
+    start: [f64; JOINTS],
     goal: PoseGoal,
     camera: CameraFile,
     limb_states: Vec<LimbSample>,
@@ -367,7 +350,7 @@ struct CameraFile {
 #[derive(Deserialize)]
 struct LimbSample {
     at: f64,
-    joints: HashMap<String, [f64; ARM_DOF]>,
+    joints: HashMap<String, [f64; JOINTS]>,
     openings: HashMap<String, f64>,
 }
 
@@ -388,8 +371,8 @@ struct Episode {
     index: u32,
     /// Both planners' seed: the index plus one, as OMPL takes no seed of 0.
     seed: NonZeroU32,
-    side: Side,
-    start: [f64; ARM_DOF],
+    arm: ArmId,
+    start: [f64; JOINTS],
     goal: Goal,
     camera: DepthCamera,
     /// The measurements in the order of their stamps.
@@ -407,11 +390,12 @@ impl Episode {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{what}: {e}"));
         let file: EpisodeFile =
             serde_json::from_str(&text).unwrap_or_else(|e| panic!("{what}: episode.json: {e}"));
-        let side = Side::from_arm_name(&file.arm)
-            .unwrap_or_else(|e| panic!("{what}: the arm {:?}: {e}", file.arm));
-        let tcp = HardwareVersion::V2.tcp_link(side);
+        let arm = PerArm::<(), ARMS>::ids()
+            .find(|id| openarm_v2::arm(*id).name == file.arm)
+            .unwrap_or_else(|| panic!("{what}: the arm {:?} is no arm of OpenArm v2", file.arm));
+        let tcp = &openarm_v2::arm(arm).grasp_link;
         assert_eq!(
-            file.goal.link, tcp,
+            &file.goal.link, tcp,
             "{what}: the goal names the grasp point, {tcp}"
         );
         let goal = pose_goal(&file.goal).unwrap_or_else(|e| panic!("{what}: the goal: {e}"));
@@ -474,7 +458,7 @@ impl Episode {
         Self {
             index: file.index,
             seed,
-            side,
+            arm,
             start: file.start,
             goal,
             camera: depth,
@@ -491,37 +475,31 @@ fn stamp(seconds: f64, what: &impl std::fmt::Display) -> SystemTime {
     SystemTime::UNIX_EPOCH + since
 }
 
-/// A limb_states message as the replay's history keeps it, both arms and both grippers
-/// read by their names.
+/// A limb_states message as the replay's history keeps it, each arm and each gripper read
+/// by its name in the description.
 fn measurement(sample: &LimbSample, what: &impl std::fmt::Display) -> [f64; VALUES] {
-    let arms = ArmPair::from_fn(|side| {
-        *sample
-            .joints
-            .get(side.arm_name())
-            .unwrap_or_else(|| panic!("{what}: a limb state without {}", side.arm_name()))
-    });
-    let openings = ArmPair::from_fn(|side| {
-        *sample
-            .openings
-            .get(side.gripper_name())
-            .unwrap_or_else(|| panic!("{what}: a limb state without {}", side.gripper_name()))
-    });
-    std::array::from_fn(|i| match i {
-        i if i < ARM_DOF => arms[Side::Left][i],
-        i if i < 2 * ARM_DOF => arms[Side::Right][i - ARM_DOF],
-        i if i == 2 * ARM_DOF => openings[Side::Left],
-        _ => openings[Side::Right],
-    })
+    let arms: PerArm<[f64; JOINTS], ARMS> =
+        PerArm::from_fn(|id| named(&sample.joints, &openarm_v2::arm(id).name, what));
+    let openings: PerArm<f64, ARMS> =
+        PerArm::from_fn(|id| named(&sample.openings, &openarm_v2::arm(id).gripper.name, what));
+    let values: Vec<f64> = arms.into_iter().flatten().chain(openings).collect();
+    values
+        .try_into()
+        .expect("each arm's joints and its gripper's opening")
+}
+
+/// The value `values` holds under `name`, a member of the limb state `what`.
+fn named<T: Copy>(values: &HashMap<String, T>, name: &str, what: &impl std::fmt::Display) -> T {
+    *values
+        .get(name)
+        .unwrap_or_else(|| panic!("{what}: a limb state without {name}"))
 }
 
 /// The arms' joints and the grippers' openings of a measurement the history keeps.
-fn arms_and_openings(values: &[f64; VALUES]) -> (ArmPair<[f64; ARM_DOF]>, ArmPair<f64>) {
+fn arms_and_openings(values: &[f64; VALUES]) -> (PerArm<[f64; JOINTS], ARMS>, PerArm<f64, ARMS>) {
     (
-        ArmPair::new(
-            std::array::from_fn(|i| values[i]),
-            std::array::from_fn(|i| values[ARM_DOF + i]),
-        ),
-        ArmPair::new(values[2 * ARM_DOF], values[2 * ARM_DOF + 1]),
+        PerArm::from_fn(|id| std::array::from_fn(|i| values[id.place() * JOINTS + i])),
+        PerArm::from_fn(|id| values[ARMS * JOINTS + id.place()]),
     )
 }
 
@@ -532,7 +510,7 @@ fn pose_goal(goal: &PoseGoal) -> Result<Goal, String> {
     };
     let [x, y, z, w] = goal.orientation;
     Goal::new(
-        ARM_DOF,
+        JOINTS,
         Vec::new(),
         vec![PositionTarget {
             frame: Frame::GraspPoint,
@@ -551,8 +529,7 @@ fn pose_goal(goal: &PoseGoal) -> Result<Goal, String> {
 
 /// The map the planner builds of `episode`'s frames, and how many it took.
 fn map_of_episode(planner: &Planner, robot: &Robot, episode: &Episode) -> (VoxelMap, usize) {
-    let tree = robot.arms[Side::Left].chain().tree();
-    let root = MapFrame::parse(&tree.link(tree.root()).name).expect("the URDF root names a frame");
+    let root = MapFrame::parse(root_link()).expect("the URDF root names a frame");
     let mut map =
         VoxelMap::new(root.clone(), planner.voxel_size, planner.bounds).expect("the planner's map");
     // The replay keeps the whole recording, so every frame's stamp the limb_states reach
@@ -606,8 +583,8 @@ fn map_of_episode(planner: &Planner, robot: &Robot, episode: &Episode) -> (Voxel
 fn scene_of(
     planner: &Planner,
     robot: &Robot,
-    arm: &Arm<ARM_DOF>,
-    sampler: &IkGoalSampler<ARM_DOF>,
+    arm: &Arm<JOINTS>,
+    sampler: &IkGoalSampler<JOINTS>,
     scenes: &Scenes,
     episode: &Episode,
 ) -> Result<Value, Dropped> {
@@ -622,7 +599,7 @@ fn scene_of(
         });
     }
     let chain = arm.geometry().chain();
-    let start = start_inside_limits(chain, &episode.start, &[planner.start_tolerance; ARM_DOF])
+    let start = start_inside_limits(chain, &episode.start, &[planner.start_tolerance; JOINTS])
         .map_err(|fault| Dropped {
             reason: "start_outside_limits",
             detail: fault.to_string(),
@@ -644,7 +621,7 @@ fn scene_of(
     let field = DistanceField::of(&kind_map);
     let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
-    let alone = Arms::<ARM_DOF, ARM_DOF>::new(vec![arm.clone()], None);
+    let alone = Arms::<JOINTS, JOINTS>::new(vec![arm.clone()], None);
     let sampled = sample_goals(
         &[ArmGoal {
             goal: &episode.goal,

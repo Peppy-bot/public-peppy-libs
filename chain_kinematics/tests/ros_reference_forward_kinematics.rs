@@ -1,14 +1,15 @@
 //! Forward kinematics against MoveIt: `Chain::at` gives the world pose of each link of a
 //! serial chain read from a URDF, at a configuration of its joints. The evidence: at every
-//! configuration of every forward kinematics scenario of the ROS reference harness (the
-//! zero configuration, both limits, and configurations drawn within the limits), each
-//! link pose agrees with the global link transform of MoveIt's robot state within `ULPS`
-//! units of `f64::EPSILON`, scaled by the coordinate.
+//! configuration of each arm of every forward kinematics scenario of the ROS reference
+//! harness (the zero configuration, both limits, and configurations drawn within the
+//! limits), each link pose of the chain from the URDF root to the arm's grasp link agrees
+//! with the global link transform of MoveIt's robot state within `ULPS` units of
+//! `f64::EPSILON`, scaled by the coordinate.
 
 use chain_kinematics::nalgebra::Isometry3;
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use ros_reference::LinkPose;
-use ros_reference::forward_kinematics::{Cases, ChainCase};
+use ros_reference::forward_kinematics::{ArmCase, Cases};
 use urdf_rs::Robot;
 
 /// The largest difference allowed between a coordinate of ours and MoveIt's `x`, in units
@@ -62,18 +63,18 @@ fn assert_pose_agrees(link: &str, ours: &Isometry3<f64>, moveit: &LinkPose, at: 
     }
 }
 
-fn assert_chain_agrees_with_moveit<const N: usize>(robot: &Robot, chain: &ChainCase, at: &str) {
-    let joints: Vec<&str> = chain.joints.iter().map(String::as_str).collect();
+fn assert_arm_agrees_with_moveit<const N: usize>(robot: &Robot, case: &ArmCase, at: &str) {
+    let joints: Vec<&str> = case.arm.joints.iter().map(String::as_str).collect();
     let kinematics = Chain::<N>::from_urdf(
         robot,
         &ChainSpec {
             base_link: None,
-            tip_link: &chain.tip_link,
+            tip_link: &case.arm.grasp_link,
             joints: JointSelection::Named(&joints),
         },
     )
     .unwrap_or_else(|e| panic!("{at}: {e}"));
-    for (index, configuration) in chain.configurations.iter().enumerate() {
+    for (index, configuration) in case.configurations.iter().enumerate() {
         let q: [f64; N] = configuration
             .positions
             .as_slice()
@@ -84,7 +85,12 @@ fn assert_chain_agrees_with_moveit<const N: usize>(robot: &Robot, chain: &ChainC
         for (i, moveit) in configuration.links.iter().enumerate() {
             assert_pose_agrees(posed.link_name(i), &posed.link_pose_world(i), moveit, &at);
         }
-        assert_pose_agrees(&chain.tip_link, &posed.tip_pose(), &configuration.tip, &at);
+        assert_pose_agrees(
+            &case.arm.grasp_link,
+            &posed.tip_pose(),
+            &configuration.tip,
+            &at,
+        );
     }
 }
 
@@ -96,19 +102,19 @@ fn every_forward_kinematics_scenario_agrees_with_moveit() {
         "the harness holds a forward kinematics scenario"
     );
     for scenario in &scenarios {
-        let robot = urdf_rs::read_from_string(&scenario.urdf).expect("the URDF parses");
-        for chain in &scenario.chains {
-            let at = format!("{} {}", scenario.name, chain.name);
-            match chain.joints.len() {
-                1 => assert_chain_agrees_with_moveit::<1>(&robot, chain, &at),
-                2 => assert_chain_agrees_with_moveit::<2>(&robot, chain, &at),
-                3 => assert_chain_agrees_with_moveit::<3>(&robot, chain, &at),
-                4 => assert_chain_agrees_with_moveit::<4>(&robot, chain, &at),
-                5 => assert_chain_agrees_with_moveit::<5>(&robot, chain, &at),
-                6 => assert_chain_agrees_with_moveit::<6>(&robot, chain, &at),
-                7 => assert_chain_agrees_with_moveit::<7>(&robot, chain, &at),
+        let robot = scenario.robot.description.robot();
+        for case in &scenario.arms {
+            let at = format!("{} {}", scenario.name, case.arm.name);
+            match case.arm.joints.len() {
+                1 => assert_arm_agrees_with_moveit::<1>(robot, case, &at),
+                2 => assert_arm_agrees_with_moveit::<2>(robot, case, &at),
+                3 => assert_arm_agrees_with_moveit::<3>(robot, case, &at),
+                4 => assert_arm_agrees_with_moveit::<4>(robot, case, &at),
+                5 => assert_arm_agrees_with_moveit::<5>(robot, case, &at),
+                6 => assert_arm_agrees_with_moveit::<6>(robot, case, &at),
+                7 => assert_arm_agrees_with_moveit::<7>(robot, case, &at),
                 n => panic!(
-                    "{at}: the parity test poses chains of 1 to 7 joints, and this one has {n}"
+                    "{at}: the parity test poses arms of 1 to 7 joints, and this one has {n}"
                 ),
             }
         }

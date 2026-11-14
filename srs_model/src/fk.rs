@@ -32,7 +32,7 @@ impl ForwardKinematics {
     /// use [`chain_kinematics`] directly).
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
         let robot = urdf_rs::read_from_string(urdf).map_err(|e| format!("parse URDF: {e}"))?;
-        let tree = Tree::from_robot(&robot).map_err(SrsError::NotSrsArm)?;
+        let tree = Tree::from_robot(&robot).map_err(|e| SrsError::NotSrsArm(e.to_string()))?;
         let base = tree
             .link_index(base_link)
             .ok_or_else(|| format!("URDF missing base link '{base_link}'"))?;
@@ -60,22 +60,9 @@ impl ForwardKinematics {
         Self::from_urdf(&urdf, base_link)
     }
 
-    /// URDF joint position limits, j1..j7, in radians, including any control
-    /// floor layered over them by [`set_lower_floor`](Self::set_lower_floor).
+    /// URDF joint position limits, j1..j7, in radians.
     pub fn limits(&self) -> [Limit; ARM_DOF] {
         self.chain.limits()
-    }
-
-    /// Raise the reported lower bound of joint `joint_idx` to at least `floor`,
-    /// leaving the parsed URDF untouched. Used to impose a control margin the URDF
-    /// itself should not carry (the mechanical limit stays as vendored). Panics if
-    /// `joint_idx >= ARM_DOF`.
-    pub(crate) fn set_lower_floor(&mut self, joint_idx: usize, floor: f64) {
-        assert!(
-            joint_idx < ARM_DOF,
-            "joint_idx {joint_idx} out of range (ARM_DOF={ARM_DOF})"
-        );
-        self.chain.set_lower_floor(joint_idx, floor);
     }
 
     /// Mount the tool frame carried by `link_name`, which must sit below the tip

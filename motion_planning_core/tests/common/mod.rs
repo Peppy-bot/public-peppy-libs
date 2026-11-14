@@ -1,28 +1,31 @@
-//! What the tests share: OpenArm v2's left arm and the fingers its hand carries, the
-//! shoulder and wrist branch of a configuration and configurations drawn off the seams of
-//! the branches, a deadline no sampling reaches, voxel maps of drawn points, the distance
-//! from an arm to every occupied voxel, the distance from the objects an arm carries to its
-//! own pieces, and whether a pose stands within the precision of a Cartesian path's line.
+//! What the tests share: OpenArm v2's collision meshes, its arms and the fingers the left
+//! hand carries, the left arm as `srs_model` models it, the shoulder and wrist branch of a
+//! configuration and configurations drawn off the seams of the branches, a deadline no
+//! sampling reaches, voxel maps of drawn points, the distance from an arm to every occupied
+//! voxel, the distance from the objects an arm carries to its own pieces, and whether a pose
+//! stands within the precision of a Cartesian path's line. The crate of each test that
+//! shares it holds `openarm_v2` too.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
-use chain_kinematics::{ChainSpec, Draws, JointSelection, PRECISION_M, PRECISION_RAD, interpolate};
+use chain_kinematics::{Draws, PRECISION_M, PRECISION_RAD, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{Arm, Arms, Body};
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
-use openarm_description::{HardwareVersion, Side};
+use robot_description::ArmId;
 
-pub const JOINTS: usize = 7;
+use crate::openarm_v2::{self, JOINTS, LEFT, RIGHT};
+
 /// The samples of a line `on_line` compares a pose with: the pose's nearest sample lies at
 /// most half a sample from its nearest point of the line, which `on_line` allows.
 const LINE_SAMPLES: usize = 1000;
@@ -40,35 +43,40 @@ pub fn on_line(actual: &Isometry3<f64>, a: &Isometry3<f64>, b: &Isometry3<f64>) 
     })
 }
 
-/// OpenArm v2's collision meshes, written once per test binary.
-static MESHES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+/// The directory of OpenArm v2's collision meshes, written once per test binary.
+pub static MESHES: LazyLock<String> = LazyLock::new(|| {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("openarm_v2_meshes");
-    HardwareVersion::V2
+    openarm_v2::model()
         .write_meshes_to(&dir)
         .expect("write the meshes");
-    dir
+    dir.to_str()
+        .expect("the mesh directory is UTF-8")
+        .to_string()
 });
 
-/// The collision pieces of OpenArm v2's arm on `side`, from its base to its grasp point.
-fn arm_on(side: Side) -> ChainGeometry<JOINTS> {
-    let version = HardwareVersion::V2;
-    ChainGeometry::from_urdf(
-        version.urdf(),
-        MESHES_DIR.to_str().expect("the mesh directory is UTF-8"),
-        &ChainSpec {
-            base_link: Some(version.base_link(side)),
-            tip_link: version.tcp_link(side),
-            joints: JointSelection::PathOrder,
-        },
-    )
-    .expect("the arm fits")
-}
-
 /// The collision pieces of OpenArm v2's left arm, from its base to its grasp point.
-pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| arm_on(Side::Left));
+pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> =
+    LazyLock::new(|| openarm_v2::arm_geometry(LEFT, &MESHES));
 
 /// The collision pieces of OpenArm v2's right arm, from its base to its grasp point.
-pub static RIGHT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| arm_on(Side::Right));
+pub static RIGHT_ARM: LazyLock<ChainGeometry<JOINTS>> =
+    LazyLock::new(|| openarm_v2::arm_geometry(RIGHT, &MESHES));
+
+/// OpenArm v2's arm `id` as a plan holds it: by its name in the description, with the
+/// collision pieces of `LEFT_ARM` or `RIGHT_ARM`.
+pub fn plan_arm(id: ArmId) -> Arm<'static, JOINTS> {
+    let geometry: &'static ChainGeometry<JOINTS> = if id == LEFT { &LEFT_ARM } else { &RIGHT_ARM };
+    Arm::new(&openarm_v2::arm(id).name, geometry)
+}
+
+/// OpenArm v2's left arm as `srs_model` models it, from its base to its grasp point.
+pub fn left_srs_arm() -> srs_model::Arm {
+    let left = openarm_v2::arm(LEFT);
+    srs_model::Arm::from_urdf(openarm_v2::DESCRIPTION.urdf(), &left.base_link)
+        .expect("an SRS arm")
+        .with_tool_link(&left.grasp_link)
+        .expect("its grasp point")
+}
 
 /// The parts the left arm's links carry, the gripper's fingers, closed, as riders of its
 /// hand.
@@ -112,9 +120,9 @@ pub fn an_hour_from_now() -> Instant {
     Instant::now() + Duration::from_secs(3600)
 }
 
-/// The frame of OpenArm's URDF root, which the maps stand in.
+/// The frame of OpenArm v2's URDF root, which the maps stand in.
 pub fn world() -> Frame {
-    Frame::parse("world").expect("a frame name")
+    Frame::parse(openarm_v2::root_link()).expect("the URDF root names a frame")
 }
 
 /// A map of `voxel_m` voxels over the cube of half side `half_m` about the robot's
@@ -205,7 +213,7 @@ pub fn distance_to_map<const N: usize, const D: usize>(
 /// a vertex of a finger's piece toward its center, one the finger touches. With that
 /// distance from the bare arm. Each finger stands where its hand carries it.
 pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
-    let bare = Arm::new("left_arm", &LEFT_ARM).bodies(q);
+    let bare = plan_arm(LEFT).bodies(q);
     let posed = LEFT_ARM.chain().at(q);
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()

@@ -9,13 +9,14 @@
 //! of half the tolerance.
 
 mod common;
+mod openarm_v2;
 
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{Axis, Frame, OrientationTarget, orientation_from_parts};
-use openarm_description::HardwareVersion;
 use ros_reference::orientation_constraints::{Case, Cases};
 
-use common::{JOINTS, LEFT_ARM};
+use common::LEFT_ARM;
+use openarm_v2::{DESCRIPTION, JOINTS, LEFT};
 
 /// How far a case may lie past a bound and still count for either side: the difference of
 /// our forward kinematics and MoveIt's, at most some 4e-15 per coordinate, within this.
@@ -46,13 +47,17 @@ fn moveits_boxes_bound_our_orientation_verdicts() {
     assert!(!all.is_empty(), "the harness holds a scenario of this kind");
     for cases in &all {
         assert_eq!(
-            cases.urdf,
-            HardwareVersion::V2.urdf(),
+            cases.robot.description.urdf(),
+            DESCRIPTION.urdf(),
             "{}: our chain poses the scenario's robot",
             cases.name
         );
-        assert_eq!(cases.joints.len(), JOINTS, "{}", cases.name);
-        assert_eq!(cases.link_name, "openarm_left_tcp", "{}", cases.name);
+        assert_eq!(
+            cases.arm,
+            *openarm_v2::arm(LEFT),
+            "{}: our chain poses the scenario's arm",
+            cases.name
+        );
         for case in &cases.cases {
             let error = our_error(case);
             let at = format!(

@@ -395,8 +395,7 @@ pub(crate) fn solve(
 /// methods, so each varies only its psi/seed rather than rethreading the target.
 struct PsiSolve<'a> {
     model: &'a ArmModel,
-    /// The joint limits every returned branch must satisfy, including any control
-    /// floor layered over the URDF.
+    /// The joint limits every returned branch must satisfy, the URDF's.
     limits: &'a [Limit; ARM_DOF],
     r_d: Rotation3<f64>,
     p_w: Vector3<f64>,
@@ -891,8 +890,8 @@ mod tests {
     /// the shoulder and wrist branch the seed is on. The fixture's limits leave
     /// one branch per arm angle, so the limits are the fixture's or a full turn
     /// either way on every joint but the elbow, whose flex the reach fixes; that
-    /// window holds every branch. The explicit case is the hanging home posture,
-    /// its elbow near straight.
+    /// window holds every branch. The explicit case is the arm hanging straight
+    /// down, its elbow near straight.
     #[hegel::test]
     #[hegel::explicit_test_case(
         side = "left",
@@ -1109,7 +1108,7 @@ mod tests {
 
         // One tree holds both arms; each case sets all seven joints of its side.
         static CHAIN: std::sync::LazyLock<k::Chain<f64>> = std::sync::LazyLock::new(|| {
-            k::Chain::<f64>::from_urdf_file(crate::test_support::FIXTURE_URDF_PATH)
+            k::Chain::<f64>::from_urdf_file(crate::openarm_v1::urdf_path())
                 .expect("k loads the fixture")
         });
         let chain = &*CHAIN;

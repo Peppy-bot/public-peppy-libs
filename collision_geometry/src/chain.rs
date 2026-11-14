@@ -32,8 +32,7 @@ use chain_kinematics::{Chain, ChainSpec, Posed};
 use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
-use crate::clip::ClipRegion;
-use crate::fit::{fit_fixed_link, fit_pieces};
+use crate::fit::fit_pieces;
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
 use crate::shapes::{Shape, distance_outside_box, distance_outside_cylinder};
@@ -220,16 +219,6 @@ impl<const N: usize> ChainGeometry<N> {
         })
     }
 
-    /// The geometry with the lower limit of joint `i` raised to at least `floor`, as
-    /// [`Chain::with_lower_floor`] raises it: a control margin over the URDF's limit,
-    /// which every reader of the chain's limits then keeps.
-    pub fn with_lower_floor(self, i: usize, floor: f64) -> Self {
-        Self {
-            chain: self.chain.with_lower_floor(i, floor),
-            ..self
-        }
-    }
-
     pub fn chain(&self) -> &Chain<N> {
         &self.chain
     }
@@ -375,88 +364,35 @@ pub struct BodyGeometry {
     links: Vec<BodyLink>,
 }
 
-/// The pieces of one link of a body, and where the frame they stand in lies in the frame
-/// of the URDF root.
+/// The pieces of one link of a body, one per `<collision>` element in the link's frame,
+/// and where that frame lies in the frame of the URDF root.
 #[derive(Debug)]
 struct BodyLink {
     name: String,
     frame: Isometry3<f64>,
-    pieces: BodyPieces,
-}
-
-impl BodyLink {
-    /// The link `name` of a body, which stands at `pose` in the frame of the URDF root,
-    /// with its pieces fitted from the meshes of `meshes_dir`: one per region of
-    /// `regions`, and one per element without them.
-    fn fitted(
-        collisions: &UrdfCollisions,
-        meshes_dir: &str,
-        regions: Option<&[ClipRegion]>,
-        name: String,
-        pose: Isometry3<f64>,
-    ) -> Result<Self, GeometryError> {
-        let (frame, pieces) = match regions {
-            None => (
-                pose,
-                BodyPieces::Elements(pieces_of(collisions, &name, meshes_dir)?),
-            ),
-            Some(regions) => (
-                Isometry3::identity(),
-                BodyPieces::Regions(fit_fixed_link(
-                    collisions,
-                    &name,
-                    meshes_dir,
-                    Some(regions),
-                )?),
-            ),
-        };
-        Ok(BodyLink {
-            name,
-            frame,
-            pieces,
-        })
-    }
-}
-
-/// The pieces of a link of a body: one per `<collision>` element, in the link's frame;
-/// or, for a link that clip regions decompose, one per region, in the frame of the URDF
-/// root, each fitted to the region's slice of every element.
-#[derive(Debug)]
-enum BodyPieces {
-    Elements(Vec<Piece>),
-    Regions(Vec<Hull>),
+    pieces: Vec<Piece>,
 }
 
 impl BodyGeometry {
     /// Reads the body from the URDF and fits the pieces of each of its links from the
-    /// meshes of `meshes_dir`. Each link that `regions` names is decomposed into its clip
-    /// regions, each its `[min, max]` corners in the frame of the URDF root, meters, as
-    /// the self model's builder takes a body's regions. Regions that name a link outside
-    /// the body, or a link twice, are refused.
-    pub fn from_urdf(
-        urdf: &str,
-        meshes_dir: &str,
-        regions: &[(&str, &[[[f64; 3]; 2]])],
-    ) -> Result<Self, GeometryError> {
+    /// meshes of `meshes_dir`, one per `<collision>` element.
+    pub fn from_urdf(urdf: &str, meshes_dir: &str) -> Result<Self, GeometryError> {
         let collisions = UrdfCollisions::from_urdf(urdf)?;
-        let regions = ClipRegion::by_body(regions)?;
         let links = collisions
             .collision_link_names()
             .into_iter()
             .filter_map(|name| {
                 let pose = collisions.fixed_pose_in_root(&name).transpose()?;
-                let link_regions = regions.get(&name).map(Vec::as_slice);
-                Some(pose.map_err(GeometryError::from).and_then(|pose| {
-                    BodyLink::fitted(&collisions, meshes_dir, link_regions, name, pose)
+                Some(pose.map_err(GeometryError::from).and_then(|frame| {
+                    let pieces = pieces_of(&collisions, &name, meshes_dir)?;
+                    Ok(BodyLink {
+                        name,
+                        frame,
+                        pieces,
+                    })
                 }))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(link) = regions
-            .keys()
-            .find(|link| !links.iter().any(|body| body.name == **link))
-        {
-            return Err(GeometryError::RegionsOffTheBody { body: link.clone() });
-        }
         Ok(BodyGeometry { links })
     }
 
@@ -466,7 +402,7 @@ impl BodyGeometry {
     }
 
     /// The body's pieces grown by `padding`, to test points against: an element's piece
-    /// as a chain's [`Mask`] grows it, and a region's as a mesh's piece.
+    /// as a chain's [`Mask`] grows it.
     pub fn mask(&self, padding: Padding) -> BodyMask<'_> {
         BodyMask {
             links: self
@@ -475,16 +411,11 @@ impl BodyGeometry {
                 .map(|link| GrownLink {
                     name: &link.name,
                     frame: link.frame,
-                    pieces: match &link.pieces {
-                        BodyPieces::Elements(pieces) => pieces
-                            .iter()
-                            .map(|piece| GrownPiece::new(piece, padding))
-                            .collect(),
-                        BodyPieces::Regions(hulls) => hulls
-                            .iter()
-                            .map(|hull| GrownPiece::of_hull(hull, padding))
-                            .collect(),
-                    },
+                    pieces: link
+                        .pieces
+                        .iter()
+                        .map(|piece| GrownPiece::new(piece, padding))
+                        .collect(),
                 })
                 .collect(),
         }
@@ -981,8 +912,8 @@ fn pieces_of(
         .map(|element| {
             let local = element.local_surface(meshes_dir)?;
             let surface: Vec<Point3<f64>> = local.iter().map(|v| element.origin * v).collect();
-            let [hull] = <[Hull; 1]>::try_from(fit_pieces(link, &[surface], None)?)
-                .expect("a fit without clip regions gives one piece per surface");
+            let [hull] = <[Hull; 1]>::try_from(fit_pieces(link, &[surface])?)
+                .expect("a fit gives one piece per surface");
             Ok(Piece {
                 hull,
                 sphere_source: SphereSource::of(element, &local),

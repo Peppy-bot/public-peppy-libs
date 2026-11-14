@@ -84,9 +84,10 @@ std::array<double, 3> tolerances(double bound, std::optional<std::size_t> free) 
 }  // namespace
 
 nlohmann::json orientation_constraints(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto model = robot_model(inputs.read(scenario.at("urdf").get<std::string>()));
-  const auto joints = scenario.at("joints").get<std::vector<std::string>>();
-  const auto link = scenario.at("link_name").get<std::string>();
+  const auto model = description_model(inputs, scenario.at("description").get<std::string>());
+  const auto arm = the_arm(*model, scenario.at("arm").get<std::string>());
+  const auto& joints = arm.joints;
+  const auto& link = arm.tip_link;
   require_named_path(*model, link, joints);
   moveit::core::RobotState state(model);
   auto answers = nlohmann::json::array();

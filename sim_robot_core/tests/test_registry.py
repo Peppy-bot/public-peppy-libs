@@ -4,12 +4,13 @@ runs out."""
 from __future__ import annotations
 
 import pytest
+from robot_description_py import model
 
 from sim_robot_core.models import shipped_entry
 from sim_robot_core.registry import Caller, Registry, StillJoining
 
-V1 = shipped_entry("openarm_v1")
-V2 = shipped_entry("openarm_v2")
+V1 = shipped_entry("openarm_v1", model("openarm_v1").description())
+V2 = shipped_entry("openarm_v2", model("openarm_v2").description())
 
 
 def caller(instance: str = "alpha_init_inst", core_node: str = "sim16") -> Caller:

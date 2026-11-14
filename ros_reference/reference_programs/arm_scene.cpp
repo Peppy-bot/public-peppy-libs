@@ -179,33 +179,16 @@ void seed_moveit(std::uint32_t seed) {
   std::srand(seed);
 }
 
-ChainGroup chains_of(const nlohmann::json& scenario) {
-  ChainGroup chains{group, {}};
-  for (const auto& chain : scenario.at("chains")) {
-    chains.chains.push_back({chain.at("name").get<std::string>(),
-                             chain.at("base_link").get<std::string>(),
-                             chain.at("tip_link").get<std::string>()});
-  }
-  return chains;
+ArmGroup group_of(const moveit::core::RobotModel& model, const nlohmann::json& scenario) {
+  return arm_group(model, scenario.at("group").get<std::string>());
 }
 
-moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, const ChainGroup& chains,
-                                      Inputs& inputs) {
-  std::vector<std::string> joints;
-  for (const auto& chain : scenario.at("chains")) {
-    const auto named = chain.at("joints").get<std::vector<std::string>>();
-    joints.insert(joints.end(), named.begin(), named.end());
-  }
-  auto model = robot_model_with_meshes(inputs, scenario.at("urdf").get<std::string>(),
-                                       scenario.at("meshes").get<std::string>(), chains);
-  if (model->getJointModelGroup(group)->getActiveJointModelNames() != joints) {
-    throw std::runtime_error(
-        "the group of the scenario's chains holds other joints than the chains' joints, or "
-        "holds them in another order");
-  }
+moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& inputs) {
+  auto model = description_model(inputs, scenario.at("description").get<std::string>());
   // A URDF bounds no acceleration, and the pipeline's time parameterization needs one,
   // as a moveit_config's joint_limits.yaml gives it.
-  for (const auto* joint : model->getJointModelGroup(group)->getActiveJointModels()) {
+  for (const auto* joint :
+       model->getJointModelGroup(group_of(*model, scenario).name)->getActiveJointModels()) {
     auto* writable = model->getJointModel(joint->getName());
     for (const auto& variable : writable->getVariableNames()) {
       moveit::core::VariableBounds bounds = writable->getVariableBounds(variable);
@@ -263,7 +246,7 @@ std::vector<double> numbers(const nlohmann::json& values) {
 
 planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& model,
                                          const nlohmann::json& s, double voxel_size,
-                                         const nlohmann::json& checked_pairs, double padding) {
+                                         const ArmGroup& group, double padding) {
   auto scene = std::make_shared<planning_scene::PlanningScene>(model);
   scene->getCollisionEnvNonConst()->setPadding(padding);
   auto tree = std::make_shared<octomap::OcTree>(voxel_size);
@@ -292,7 +275,7 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
   }
   auto& state = scene->getCurrentStateNonConst();
   state.setToDefaultValues();
-  state.setJointGroupPositions(group, numbers(s.at("start")));
+  state.setJointGroupPositions(group.name, numbers(s.at("start")));
   state.update();
   const auto attach = [&](const nlohmann::json& held, const std::string& link) {
     moveit_msgs::msg::AttachedCollisionObject attached;
@@ -309,7 +292,7 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
   auto& acm = scene->getAllowedCollisionMatrixNonConst();
   const auto& links = model->getLinkModelNamesWithCollisionGeometry();
   acm.setEntry(links, links, true);
-  const auto& arm = *model->getJointModelGroup(group);
+  const auto& arm = *model->getJointModelGroup(group.name);
   std::vector<std::string> standing;
   for (const auto* link : model->getLinkModelsWithCollisionGeometry()) {
     if (!moves_with_group(link, arm)) {
@@ -331,17 +314,17 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
       acm.setEntry(id, standing, true);
     }
   }
-  const auto& bodies = model->getLinkModelNamesWithCollisionGeometry();
-  for (const auto& pair : checked_pairs) {
-    const auto a = pair.at(0).get<std::string>();
-    const auto b = pair.at(1).get<std::string>();
-    for (const auto& name : {a, b}) {
-      if (std::find(bodies.begin(), bodies.end(), name) == bodies.end()) {
-        throw std::runtime_error("the checked pair " + a + ", " + b + " names " + name +
-                                 ", no link of the robot with collision geometry");
+  // A group of every arm checks each pair of the robot's own links that the SRDF does not
+  // disable; a group of some of the arms checks none, as a plan of some arms checks its
+  // bodies against the scene alone.
+  if (group.holds_every_arm) {
+    for (std::size_t i = 0; i < links.size(); ++i) {
+      for (std::size_t j = i + 1; j < links.size(); ++j) {
+        if (!disabled_pair(*model, links[i], links[j])) {
+          acm.setEntry(links[i], links[j], false);
+        }
       }
     }
-    acm.setEntry(a, b, false);
   }
   for (const auto& pair : s.at("allowed")) {
     acm.setEntry(pair.at(0).get<std::string>(), pair.at(1).get<std::string>(), true);
@@ -370,7 +353,7 @@ std::vector<Eigen::VectorXd> points_of(const robot_trajectory::RobotTrajectory& 
 
 ChompRefined chomp_refined(const planning_scene::PlanningScene& scene,
                            const robot_trajectory::RobotTrajectoryPtr& input, std::uint32_t seed) {
-  const auto& arm = *scene.getRobotModel()->getJointModelGroup(group);
+  const auto& arm = *scene.getRobotModel()->getJointModelGroup(input->getGroupName());
   // The scene CHOMP's plugin plans in: a diff of the scene, its collision environment the
   // hybrid one (chomp_plugin.cpp:94-95).
   const auto hybrid = scene.diff();
@@ -379,7 +362,7 @@ ChompRefined chomp_refined(const planning_scene::PlanningScene& scene,
   // CHOMP takes a goal of joints alone (chomp_planner.cpp:97-103): the path's last waypoint,
   // each joint within 0 of it.
   planning_interface::MotionPlanRequest request;
-  request.group_name = group;
+  request.group_name = input->getGroupName();
   moveit::core::robotStateToRobotStateMsg(scene.getCurrentState(), request.start_state);
   request.goal_constraints.push_back(
       kinematic_constraints::constructGoalConstraints(input->getLastWayPoint(), &arm, 0.0, 0.0));
@@ -393,15 +376,17 @@ ChompRefined chomp_refined(const planning_scene::PlanningScene& scene,
   return refined;
 }
 
-Probing probing_of(const nlohmann::json& scenario, const ChainGroup& chains,
+Probing probing_of(const nlohmann::json& scenario, const ArmGroup& group,
                    const moveit::core::RobotModel& model) {
   Probing probing;
-  for (const auto& chain : chains.chains) {
-    probing.tip_links.push_back(chain.tip_link);
+  probing.group = group.name;
+  probing.self = group.holds_every_arm;
+  for (const auto& arm : group.arms) {
+    probing.tip_links.push_back(arm.tip_link);
   }
   probing.spacing = scenario.at("probe_spacing").get<double>();
   probing.corner_tolerance = scenario.at("corner_tolerance").get<double>();
-  const auto& joints = model.getJointModelGroup(group)->getActiveJointModelNames();
+  const auto& joints = model.getJointModelGroup(group.name)->getActiveJointModelNames();
   probing.max_velocity.resize(static_cast<Eigen::Index>(joints.size()));
   probing.max_acceleration.resize(static_cast<Eigen::Index>(joints.size()));
   for (std::size_t j = 0; j < joints.size(); ++j) {
@@ -434,7 +419,7 @@ void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState&
     probed.share_of_tolerance =
         std::max(probed.share_of_tolerance, share_of_tolerance(target, state));
   }
-  if (scene.isStateColliding(state, group)) {
+  if (scene.isStateColliding(state, arm.getName())) {
     ++probed.collisions;
   }
   // FCL's distance to an octomap a body touches is no measure: the planning scene's dense
@@ -546,7 +531,7 @@ nlohmann::json polyline_measured(const planning_scene::PlanningScene& scene,
 nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
                            const moveit::core::RobotModelPtr& model,
                            const nlohmann::json& waypoints, const Probing& probing) {
-  const auto& arm = *model->getJointModelGroup(group);
+  const auto& arm = *model->getJointModelGroup(probing.group);
   const auto path = rounded_path(points_of(waypoints), probing.corner_tolerance);
   moveit::core::RobotState state(scene.getCurrentState());
   Probed probed = probe_of(scene, probing);

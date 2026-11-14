@@ -7,6 +7,7 @@
 //! clearance as the start rule says.
 
 mod common;
+mod openarm_v2;
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicUsize, Ordering};

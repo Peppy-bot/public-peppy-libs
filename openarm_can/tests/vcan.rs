@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use control_core::sync::lock_ignoring_poison;
-use openarm_can::{ArmCan, GripperCan, JointVec, Mit, PosForce, v10, v20};
+use openarm_can::{ArmCan, CanInterface, GripperCan, JointVec, Mit, PosForce, v10, v20};
 use socketcan::id::FdFlags;
 use socketcan::{CanAnyFrame, CanFdSocket, CanFrame, EmbeddedFrame, Frame, Socket, StandardId};
 
@@ -69,7 +69,8 @@ fn splat(value: f64) -> JointVec {
 /// Drives the arm through the shared sweep. The capture harness runs the
 /// FFI build through the identical sequence.
 fn drive_arm_sweep(iface: &str) {
-    let mut arm = ArmCan::open(iface, true).expect("open arm");
+    let mut arm =
+        ArmCan::open(CanInterface::open(iface, true).expect("open interface")).expect("open arm");
     arm.enable_all().expect("enable");
     arm.refresh_all().expect("refresh");
     for &(kp, kd, q, dq, tau) in sweep::ARM_MIT_SWEEP {
@@ -83,8 +84,7 @@ fn drive_arm_sweep(iface: &str) {
 
 fn drive_gripper_mit_sweep(iface: &str) {
     let mut gripper = GripperCan::<Mit>::open_mit(
-        iface,
-        true,
+        CanInterface::open(iface, true).expect("open interface"),
         v10::GRIPPER_MOTOR_TYPE,
         v10::GRIPPER_SEND_ID,
         v10::GRIPPER_RECV_ID,
@@ -100,8 +100,7 @@ fn drive_gripper_mit_sweep(iface: &str) {
 
 fn drive_gripper_pos_force_sweep(iface: &str) {
     let mut gripper = GripperCan::<PosForce>::open_pos_force(
-        iface,
-        true,
+        CanInterface::open(iface, true).expect("open interface"),
         v20::GRIPPER_MOTOR_TYPE,
         v20::GRIPPER_SEND_ID,
         v20::GRIPPER_RECV_ID,
@@ -163,7 +162,8 @@ fn a_queued_state_frame_does_not_satisfy_a_refresh_pass() {
         return;
     };
     let _guard = lock_ignoring_poison(&BUS_LOCK);
-    let mut arm = ArmCan::open(&iface, true).expect("open arm");
+    let mut arm =
+        ArmCan::open(CanInterface::open(&iface, true).expect("open interface")).expect("open arm");
     let peer = CanFdSocket::open(&iface).expect("open peer");
     // A well-formed j1 state frame claiming Enabled, mid-scale readings.
     let stale = CanFrame::new(

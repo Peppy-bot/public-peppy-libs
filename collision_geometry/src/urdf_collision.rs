@@ -614,14 +614,11 @@ mod tests {
     /// A mesh's surface is its triangles, scaled componentwise, then moved by the origin.
     #[test]
     fn a_mesh_surface_applies_scale_then_origin() {
-        let meshes = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../openarm_description/assets/meshes"
-        );
+        let meshes = crate::test_support::bundled_meshes("openarm_v1");
         let urdf = URDF.replace("package://d/meshes/arm1.stl", "link6_symp.stl");
         let u = UrdfCollisions::from_urdf(&urdf).expect("parse");
         let surface = u.collisions_of("arm1")[0]
-            .surface(meshes)
+            .surface(&meshes)
             .expect("the mesh reads");
         let raw =
             crate::stl::load_stl(&format!("{meshes}/link6_symp.stl")).expect("the mesh reads");

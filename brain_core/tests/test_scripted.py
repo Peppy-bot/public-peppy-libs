@@ -22,6 +22,7 @@ from brain_core.manipulators.scripted.manipulator import (
     GRIP_SETTLE_TIMEOUT_S,
     LIFT_M,
     MOVE_DURATION_S,
+    NO_CONTACT_CHECK_M,
     NOT_STARTED,
     RELEASE_HEIGHT_M,
     SETTLE_ORIENTATION_RAD,
@@ -52,6 +53,7 @@ MOVE_BARS = dict(
     settle_position_tolerance_m=SETTLE_POSITION_M,
     settle_orientation_tolerance_rad=SETTLE_ORIENTATION_RAD,
     settle_timeout_s=SETTLE_TIMEOUT_S,
+    contact_gap_m=NO_CONTACT_CHECK_M,
 )
 GRIP_BARS = dict(settle_timeout_s=GRIP_SETTLE_TIMEOUT_S)
 
@@ -211,11 +213,12 @@ async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
     assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
-    # Settle within 2 cm and 0.15 rad, 2 s after the planned end at most; the
-    # jaws get 2 s to stand still.
+    # Settle within 2 cm and 0.15 rad, 2 s after the planned end at most, with
+    # no contact check; the jaws get 2 s to stand still.
     assert MOVE_BARS == dict(
         duration_s=0.0,
         settle_position_tolerance_m=0.02, settle_orientation_tolerance_rad=0.15, settle_timeout_s=2.0,
+        contact_gap_m=0.0,
     )
     assert GRIP_BARS == dict(settle_timeout_s=2.0)
 

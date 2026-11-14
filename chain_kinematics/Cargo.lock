@@ -72,7 +72,7 @@ dependencies = [
  "hegeltest",
  "kinematics_properties",
  "nalgebra",
- "openarm_description",
+ "robot_description",
  "ros_reference",
  "serde_json",
  "thiserror 2.0.21",
@@ -389,13 +389,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openarm_description"
-version = "0.1.0"
-dependencies = [
- "urdf-rs",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -506,12 +499,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "robot_description"
+version = "0.1.0"
+dependencies = [
+ "chain_kinematics",
+ "roxmltree",
+ "sha2",
+ "thiserror 2.0.21",
+ "urdf-rs",
+]
+
+[[package]]
 name = "ros_reference"
 version = "0.1.0"
 dependencies = [
+ "robot_description",
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

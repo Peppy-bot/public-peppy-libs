@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the arm planning scenarios of the ROS reference harness.
 
 Scenes of OpenArm v2's left arm among boxes of voxels: OUTSIDE_LIMITS scenes start one
@@ -6,8 +13,8 @@ of such a start; every other scene holds one to three boxes in front of the arm,
 and a goal configuration drawn inside the joint limits, and a seed. A box is written as
 the keys of its first and last voxel on each axis, the voxels whose centers the drawn
 box holds. motion_planning_core's example plan_arm_scenes plans every scene and gives its
-answer, the pairs of the robot's own links its plans check and the spacing at which the
-reference probes a path, which the script writes into the scenario. Of the first DRAWN
+answer and the spacing at which the reference probes a path, which the script writes into
+the scenario. Of the first DRAWN
 scenes, the scenario keeps those at COMMITTED, one of each outcome the parity test asks
 for, and the one whose path has the most corners.
 It runs cargo in motion_planning_core, so the host builds that crate. With --objects it
@@ -57,19 +64,19 @@ with the arm's own bodies meeting, take them more than MEETING_DEPTH into each o
 self model. The scenario keeps the drawn scenes at COMMITTED_SO101. Run it from any
 directory:
 
-    python3 ros_reference/tools/draw_arm_planning.py
-    python3 ros_reference/tools/draw_arm_planning.py --drawn 200
-    python3 ros_reference/tools/draw_arm_planning.py --episodes <episodes> \
+    uv run ros_reference/tools/draw_arm_planning.py
+    uv run ros_reference/tools/draw_arm_planning.py --drawn 200
+    uv run ros_reference/tools/draw_arm_planning.py --episodes <episodes> \
         --launcher <launchers-hub>/openarm/fragments/motion_planner.json5
-    python3 ros_reference/tools/draw_arm_planning.py --drawn 200 --planner rrt_star \
+    uv run ros_reference/tools/draw_arm_planning.py --drawn 200 --planner rrt_star \
         --planning-time 5
-    python3 ros_reference/tools/draw_arm_planning.py --drawn 200 --refiner chomp \
+    uv run ros_reference/tools/draw_arm_planning.py --drawn 200 --refiner chomp \
         --planning-time 5
-    python3 ros_reference/tools/draw_arm_planning.py --objects --drawn 200 --planning-time 1 \
+    uv run ros_reference/tools/draw_arm_planning.py --objects --drawn 200 --planning-time 1 \
         --min-clearance 0.04
-    python3 ros_reference/tools/draw_arm_planning.py --poses --drawn 200 --planning-time 5
-    python3 ros_reference/tools/draw_arm_planning.py --both-arms --objects
-    python3 ros_reference/tools/draw_arm_planning.py --path-orientation free --drawn 200 \
+    uv run ros_reference/tools/draw_arm_planning.py --poses --drawn 200 --planning-time 5
+    uv run ros_reference/tools/draw_arm_planning.py --both-arms --objects
+    uv run ros_reference/tools/draw_arm_planning.py --path-orientation free --drawn 200 \
         --planning-time 5 --moveit-box inner
 
 The second keeps the first 200 drawn scenes in place of those it picks, a large set for a
@@ -104,20 +111,19 @@ from pathlib import Path
 
 from drawing import (
     IDENTITY,
-    SO101_JOINTS,
-    SO101_MESHES,
-    SO101_URDF,
+    OPENARM_V2,
+    SO101,
     about_axis,
+    arm,
     box_mesh,
-    chain,
     configuration,
     example,
     generator,
-    grasp_link,
+    gripper_links,
     joint_limits,
     l_mesh,
     link_pose,
-    openarm_joints,
+    moved_link,
     options,
     pose_by_link,
     product,
@@ -142,10 +148,14 @@ BOTH_OBJECTS_NAME = "arm_planning_both_arms_objects_openarm_v2"
 # The scenario of both arms whose goal is a pose of each grasp point, written with
 # --both-arms --poses.
 BOTH_POSES_NAME = "arm_planning_both_arms_poses_openarm_v2"
-# The arms, in the order a scene of both arms holds their joints.
-SIDES = ("left", "right")
-URDF = "openarm_description/assets/openarm_v20.urdf"
-MESHES = "openarm_description/assets/meshes_v20"
+# OpenArm v2's arms, by their SRDF names: a scene of one arm plans the left one, and a scene
+# of both arms plans OPENARM_ARMS, in the order the SRDF's group BOTH_ARMS holds them, which
+# is the order a scene holds their joints in. The boxes and the objects of a scene stand in
+# front of the left arm, or mirrored across the robot's xz plane in front of the right one.
+LEFT_ARM = arm(OPENARM_V2, "left_arm")
+RIGHT_ARM = arm(OPENARM_V2, "right_arm")
+OPENARM_ARMS = (LEFT_ARM, RIGHT_ARM)
+BOTH_ARMS = "both_arms"
 VOXEL_SIZE = 0.04
 MAP_HALF_SIDE = 1.6
 VOXEL_MAP = {"voxel_size": VOXEL_SIZE, "map_half_side": MAP_HALF_SIDE}
@@ -193,21 +203,15 @@ POSE_TOLERANCE_RAD = 0.01
 # The drawn scenes of the pose scenario it keeps, as COMMITTED names them.
 COMMITTED_POSES = {
     "a straight path": 0,
-    "a path with corners": 9,
-    "MoveIt's path invalid": 103,
+    "MoveIt's path invalid": 9,
+    "a path with corners": 103,
     "a start in a box": 17,
     "a goal in a box": 2,
 }
 # SO-101's scenes among collision objects, written with --robot so101.
 SO101_NAME = "arm_planning_objects_so101"
-SO101_TIP = "gripper_frame_link"
-SO101_GRIPPER = ["gripper_link", "moving_jaw_so101_v1_link"]
-SO101_CHAIN = {
-    "name": "arm",
-    "base_link": "base_link",
-    "tip_link": SO101_TIP,
-    "joints": SO101_JOINTS,
-}
+SO101_ARM = arm(SO101, "arm")
+SO101_GRIPPER = gripper_links(SO101, SO101_ARM)
 # No scene of SO-101 holds a voxel: the map is empty, as on the robot, which has no depth
 # camera.
 SO101_VOXEL_MAP = {"voxel_size": 0.02, "map_half_side": 0.8}
@@ -221,14 +225,20 @@ SO101_OBJECT_SIZES = (0.026, 0.13)
 # of the orientations the arm holds at the position.
 SO101_TILT_RAD = 0.05
 SO101_TOLERANCE_RAD = 0.1
-# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them.
+# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them, none of them in
+# SO101_ON_KDL_TIMEOUT.
 COMMITTED_SO101 = {
-    "a straight path": 51,
+    "a straight path": 0,
     "a path with corners": 67,
-    "MoveIt's path invalid": 65,
+    "MoveIt's path invalid": 112,
     "a start in an object": 52,
     "a goal in an object": 80,
 }
+# SO-101's drawn scenes in which a search of MoveIt's goal sampler reaches KDL's timeout, a
+# clock, so MoveIt's goal states follow the machine's speed: measured with KDL's debug lines
+# in the reference image on 2026-11-11, a search ending on the timeout in 27 and 137, and one
+# solving after it in 65 and 102. The scenario keeps none of them.
+SO101_ON_KDL_TIMEOUT = (27, 65, 102, 137)
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
 OBJECT_KINDS = ("box", "sphere", "cylinder", "mesh", "L", "two shapes")
@@ -255,12 +265,12 @@ COMMITTED_BOTH = {
     "a goal in a box": 50,
     "a straight joint line through the robot's own body": 142,
 }
-# Among objects, the scenes of COMMITTED_BOTH's outcomes, and a path with both hands
-# holding an object and one setting the left hand's object down on a table.
+# Among objects, the scenes of COMMITTED_BOTH's outcomes but MoveIt's path invalid, which
+# none of the first DRAWN gives at the committed settings, and a path with both hands holding
+# an object and one setting the left hand's object down on a table.
 COMMITTED_BOTH_OBJECTS = {
     "a straight path": 0,
     "a path with corners": 16,
-    "MoveIt's path invalid": 138,
     "a start in an object": 11,
     "a goal in an object": 14,
     "a straight joint line through the robot's own body": 58,
@@ -285,8 +295,9 @@ PATH_TOLERANCE = 0.1
 FREE_START_RAD = 0.04
 # The grasp frame with its approach axis, +z, along the robot's -z, as a quaternion [x, y, z, w].
 TOP_DOWN = [1.0, 0.0, 0.0, 0.0]
-# The elbow's link of `two_links`, and its tolerance: wide, for the hand moves.
-ELBOW_LINK = "openarm_left_link3"
+# The elbow's link of `two_links`, the link the arm's joint at ELBOW_JOINT moves, its third,
+# and its tolerance: wide, for the hand moves.
+ELBOW_JOINT = 2
 ELBOW_TOLERANCE = 1.0
 # How far a goal's grasp point stands from the start's in the path orientation scenes: from a
 # short move to half the arm's 0.6 m reach from its shoulder to its grasp point.
@@ -300,17 +311,23 @@ PAIRS_BATCH = 200
 EMPTY_BATCHES = 10
 
 
-def gripper(side):
-    """The links of the gripper of the arm on `side`, which a held object may touch."""
-    return [f"openarm_{side}_ee_base_link", *(f"openarm_{side}_ee_link{k}" for k in (1, 2))]
+def gripper(arm):
+    """The links of the gripper of `arm`, an arm of OpenArm v2, which a held object may
+    touch."""
+    return gripper_links(OPENARM_V2, arm)
 
 
-def voxel_box(rng, side="left"):
-    """A box drawn in meters in front of the arm on `side`, as the keys of the first and the
-    last voxel on each axis whose center it holds."""
+def group_of(planned_arms):
+    """The SRDF's group of `planned_arms`: the arm itself, or both arms."""
+    return {"group": planned_arms[0].name if len(planned_arms) == 1 else BOTH_ARMS}
+
+
+def voxel_box(rng, arm=LEFT_ARM):
+    """A box drawn in meters in front of `arm`, as the keys of the first and the last voxel on
+    each axis whose center it holds."""
     low = [rng.uniform(low, high) for low, high in BOX_CORNERS]
     high = [corner + rng.uniform(*BOX_SIZES) for corner in low]
-    if side == "right":
+    if arm.name == RIGHT_ARM.name:
         low[1], high[1] = -high[1], -low[1]
     first = [math.ceil(c / VOXEL_SIZE - 0.5) for c in low]
     last = [math.floor(c / VOXEL_SIZE - 0.5) for c in high]
@@ -356,9 +373,9 @@ def plain_scene(start, goal, seed):
     }
 
 
-def drawn_object(rng, k, side="left", sizes=BOX_SIZES, corners=BOX_CORNERS):
+def drawn_object(rng, k, arm=LEFT_ARM, sizes=BOX_SIZES, corners=BOX_CORNERS):
     """The object `object_<k>`: one of OBJECT_KINDS, its sizes from `sizes`, turned any
-    way, its origin where a corner of `corners` stands in front of the arm on `side`."""
+    way, its origin where a corner of `corners` stands in front of `arm`."""
     size = lambda: rng.uniform(*sizes)
     kind = rng.choice(OBJECT_KINDS)
     if kind == "box":
@@ -370,8 +387,8 @@ def drawn_object(rng, k, side="left", sizes=BOX_SIZES, corners=BOX_CORNERS):
     elif kind == "mesh":
         shapes = [box_mesh([size(), size(), size()], (0.0, 0.0, 0.0))]
     elif kind == "L":
-        side = size()
-        shapes = [l_mesh(side, rng.uniform(sizes[0] / 2, side / 2), size())]
+        length = size()
+        shapes = [l_mesh(length, rng.uniform(sizes[0] / 2, length / 2), size())]
     else:
         base = [size(), size(), size() / 2]
         height, radius = size(), size() / 4
@@ -380,7 +397,7 @@ def drawn_object(rng, k, side="left", sizes=BOX_SIZES, corners=BOX_CORNERS):
             shape("cylinder", [height, radius], at=(0.0, 0.0, (base[2] + height) / 2)),
         ]
     position = [rng.uniform(low, high) for low, high in corners]
-    if side == "right":
+    if arm.name == RIGHT_ARM.name:
         position[1] = -position[1]
     return {
         "id": f"object_{k}",
@@ -391,8 +408,8 @@ def drawn_object(rng, k, side="left", sizes=BOX_SIZES, corners=BOX_CORNERS):
     }
 
 
-def held(object_id, k, side):
-    """The object `object_id` the hand on `side` holds, in the frame of its grasp point, a
+def held(object_id, k, arm):
+    """The object `object_id` the hand of `arm` holds, in the frame of its grasp point, a
     cube or, for an odd `k`, a cylinder, its gripper the links it may touch."""
     held_shape = (
         shape("cylinder", [HELD_SIDE, HELD_SIDE / 2]) if k % 2 else shape("box", [HELD_SIDE] * 3)
@@ -405,8 +422,8 @@ def held(object_id, k, side):
             "orientation": IDENTITY,
             "shapes": [held_shape],
         },
-        "link": grasp_link(side),
-        "touch_links": gripper(side),
+        "link": arm.grasp_link,
+        "touch_links": gripper(arm),
     }
 
 
@@ -415,8 +432,8 @@ def set_down_table(model, goal):
     `goal`, which holds the left arm's joints first: under the object's center, its top
     SET_DOWN_REACH above the object's lowest point, which a cube or a cylinder of HELD_SIDE
     turned any way puts at least half of HELD_SIDE below its center."""
-    joints = dict(zip(openarm_joints("left"), goal))
-    center = pose_by_link(model, grasp_link("left"), joints, [0.0, 0.0, HELD_AHEAD])["position"]
+    joints = dict(zip(LEFT_ARM.joints, goal))
+    center = pose_by_link(model, LEFT_ARM.grasp_link, joints, [0.0, 0.0, HELD_AHEAD])["position"]
     top = center[2] - HELD_SIDE / 2 + SET_DOWN_REACH
     return {
         "id": "table",
@@ -437,10 +454,10 @@ def object_scene(rng, model, limits, k):
     allowed = []
     if holding and k % 8 == 7:
         objects.append(set_down_table(model, goal))
-        allowed = [["held", "table"], *[["table", link] for link in gripper("left")]]
-    attached = [held("held", k // 2, "left")] if holding else []
+        allowed = [["held", "table"], *[["table", link] for link in gripper(LEFT_ARM)]]
+    attached = [held("held", k // 2, LEFT_ARM)] if holding else []
     if k % 3 == 0:
-        attached.append(held("other", 0, "right"))
+        attached.append(held("other", 0, RIGHT_ARM))
     return {
         "boxes": [],
         "objects": objects,
@@ -454,16 +471,15 @@ def object_scene(rng, model, limits, k):
     }
 
 
-def grasp_pose_goal(rng, model, side, start, goal):
-    """The pose goal of the grasp point of the arm on `side`, whose joints stand at `start`:
-    with no `goal`, a short move, the start's grasp pose moved within SHORT_REACH_M and
-    turned within SHORT_TURN_RAD, and else the grasp pose of the arm's joints `goal`; within
+def grasp_pose_goal(rng, model, arm, start, goal):
+    """The pose goal of the grasp point of `arm`, whose joints stand at `start`: with no
+    `goal`, a short move, the start's grasp pose moved within SHORT_REACH_M and turned within
+    SHORT_TURN_RAD, and else the grasp pose of the arm's joints `goal`; within
     POSE_TOLERANCE_M and POSE_TOLERANCE_RAD."""
-    joints = openarm_joints(side)
     if goal is not None:
-        pose = pose_by_link(model, grasp_link(side), dict(zip(joints, goal)), [0, 0, 0])
+        pose = pose_by_link(model, arm.grasp_link, dict(zip(arm.joints, goal)), [0, 0, 0])
     else:
-        turn, at = link_pose(model, grasp_link(side), dict(zip(joints, start)))
+        turn, at = link_pose(model, arm.grasp_link, dict(zip(arm.joints, start)))
         direction = [rng.gauss(0, 1) for _ in range(3)]
         norm = math.sqrt(sum(d * d for d in direction))
         reach = SHORT_REACH_M * rng.random() ** (1 / 3)
@@ -487,10 +503,10 @@ def pose_scene(rng, model, limits, k):
     limits (`grasp_pose_goal`)."""
     scene = drawn_scene(rng, limits)
     goal = configuration(rng, limits) if k % 2 else None
-    return {**scene, "goal": [grasp_pose_goal(rng, model, "left", scene["start"], goal)]}
+    return {**scene, "goal": [grasp_pose_goal(rng, model, LEFT_ARM, scene["start"], goal)]}
 
 
-def held_orientation(chain_index, link, orientation, tolerance, free_axis, box):
+def held_orientation(arm_index, link, orientation, tolerance, free_axis, box):
     """An orientation of a path, with the tolerances MoveIt holds of `box`, as the module says."""
     if box == "inner":
         bound = tolerance / math.sqrt(3.0)
@@ -499,7 +515,7 @@ def held_orientation(chain_index, link, orientation, tolerance, free_axis, box):
     else:
         bound = math.pi * math.sin(tolerance / 2.0)
     return {
-        "chain": chain_index,
+        "arm": arm_index,
         "link_name": link,
         "orientation": orientation,
         "tolerance_rad": tolerance,
@@ -508,22 +524,22 @@ def held_orientation(chain_index, link, orientation, tolerance, free_axis, box):
     }
 
 
-def held_start(rng, model, limits, side, free):
-    """A configuration of the arm on `side` drawn inside `limits`; with `free`, drawn until its
-    approach axis stands within FREE_START_RAD of straight down."""
+def held_start(rng, model, limits, arm, free):
+    """A configuration of `arm` drawn inside `limits`; with `free`, drawn until its approach
+    axis stands within FREE_START_RAD of straight down."""
     while True:
         start = configuration(rng, limits)
         if not free:
             return start
-        turn, _ = link_pose(model, grasp_link(side), dict(zip(openarm_joints(side), start)))
+        turn, _ = link_pose(model, arm.grasp_link, dict(zip(arm.joints, start)))
         if turned(turn, [0.0, 0.0, 1.0])[2] <= -math.cos(FREE_START_RAD):
             return start
 
 
-def held_goal(rng, model, side, start):
-    """A pose goal of the grasp point of the arm on `side`, whose joints stand at `start`: its turn
-    there, at a position within HELD_REACH_M of its position there along a drawn direction."""
-    turn, at = link_pose(model, grasp_link(side), dict(zip(openarm_joints(side), start)))
+def held_goal(rng, model, arm, start):
+    """A pose goal of the grasp point of `arm`, whose joints stand at `start`: its turn there,
+    at a position within HELD_REACH_M of its position there along a drawn direction."""
+    turn, at = link_pose(model, arm.grasp_link, dict(zip(arm.joints, start)))
     direction = [rng.gauss(0.0, 1.0) for _ in range(3)]
     norm = math.sqrt(sum(d * d for d in direction))
     reach = rng.uniform(*HELD_REACH_M)
@@ -535,28 +551,32 @@ def held_goal(rng, model, side, start):
     }
 
 
-def path_scene(rng, model, sides, mode, tolerance, box):
-    """A drawn scene of the arms on `sides` that holds the orientations of `mode`."""
+def path_scene(rng, model, planned_arms, mode, tolerance, box):
+    """A drawn scene of `planned_arms` that holds the orientations of `mode`."""
     free = mode == "free"
     starts = []
     goals = []
     held = []
-    for k, side in enumerate(sides):
-        limits = [joint_limits(model, joint) for joint in openarm_joints(side)]
-        start = held_start(rng, model, limits, side, free)
+    for k, posed in enumerate(planned_arms):
+        limits = [joint_limits(OPENARM_V2, joint) for joint in posed.joints]
+        start = held_start(rng, model, limits, posed, free)
         starts.extend(start)
-        goals.append(held_goal(rng, model, side, start))
-        link = grasp_link(side)
-        turn, _ = link_pose(model, link, dict(zip(openarm_joints(side), start)))
+        goals.append(held_goal(rng, model, posed, start))
+        joints = dict(zip(posed.joints, start))
+        turn, _ = link_pose(model, posed.grasp_link, joints)
         orientation = TOP_DOWN if free else quaternion(turn)
-        held.append(held_orientation(k, link, orientation, tolerance, "z" if free else "none", box))
+        free_axis = "z" if free else "none"
+        held.append(held_orientation(k, posed.grasp_link, orientation, tolerance, free_axis, box))
         if mode == "two_links":
-            elbow, _ = link_pose(model, ELBOW_LINK, dict(zip(openarm_joints(side), start)))
+            elbow_link = moved_link(OPENARM_V2, posed.joints[ELBOW_JOINT])
+            elbow, _ = link_pose(model, elbow_link, joints)
             held.append(
-                held_orientation(k, ELBOW_LINK, quaternion(elbow), ELBOW_TOLERANCE, "none", box)
+                held_orientation(k, elbow_link, quaternion(elbow), ELBOW_TOLERANCE, "none", box)
             )
     return {
-        "boxes": [voxel_box(rng, side) for side in sides for _ in range(rng.randint(1, 2))],
+        "boxes": [
+            voxel_box(rng, posed) for posed in planned_arms for _ in range(rng.randint(1, 2))
+        ],
         "objects": [],
         "attached": [],
         "allowed": [],
@@ -572,11 +592,11 @@ def path_scenario(drawn, planning, min_clearance, mode, both_arms, tolerance, bo
     """The name of the scenario of `drawn` path orientation scenes of `mode` and the scenario."""
     name = f"arm_planning{'_both_arms' if both_arms else ''}_path_{mode}_openarm_v2"
     rng = generator(name)
-    model = robot(URDF)
-    sides = SIDES if both_arms else SIDES[:1]
-    scenes = [path_scene(rng, model, sides, mode, tolerance, box) for _ in range(drawn)]
-    chains = {"chains": [chain(side) for side in sides]}
-    return name, planned(header(chains, VOXEL_MAP, min_clearance, planning), scenes)
+    model = robot(OPENARM_V2)
+    planned_arms = OPENARM_ARMS if both_arms else (LEFT_ARM,)
+    scenes = [path_scene(rng, model, planned_arms, mode, tolerance, box) for _ in range(drawn)]
+    scenario_header = header(group_of(planned_arms), VOXEL_MAP, min_clearance, planning)
+    return name, planned(scenario_header, scenes)
 
 
 def corners(ours):
@@ -595,16 +615,15 @@ def plans(planner, refiner, planning_time):
     return {"planner": planner, "refiner": refiner, **termination}
 
 
-def header(arms, voxel_map, min_clearance, planning, urdf=URDF, meshes=MESHES):
-    """The scenario's header: the robot, by its URDF and its meshes, the arms `arms` (their
-    chains), the map `voxel_map` (its voxel_size and map_half_side), the plans' clearance
-    `min_clearance`, and the plans' parameters, `planning` (their planner, refiner and
-    termination) among them."""
+def header(group, voxel_map, min_clearance, planning, description=OPENARM_V2):
+    """The scenario's header: the robot, by its model directory `description`, the arms
+    `group` (the SRDF's group of them), the map `voxel_map` (its voxel_size and
+    map_half_side), the plans' clearance `min_clearance`, and the plans' parameters,
+    `planning` (their planner, refiner and termination) among them."""
     return {
         "kind": "arm_planning",
-        "urdf": urdf,
-        "meshes": meshes,
-        **arms,
+        "description": description,
+        **group,
         **voxel_map,
         "min_clearance": min_clearance,
         "corner_tolerance": CORNER_TOLERANCE,
@@ -615,19 +634,13 @@ def header(arms, voxel_map, min_clearance, planning, urdf=URDF, meshes=MESHES):
 
 
 def planned(scenario_header, scenes):
-    """The scenario of `scenes`, each with motion_planning_core's answer, the pairs of the
-    robot's own links its plans check, after the chains, and the spacing at which the
-    reference probes a path, from the example plan_arm_scenes."""
+    """The scenario of `scenes`, each with motion_planning_core's answer, and the spacing at
+    which the reference probes a path, from the example plan_arm_scenes."""
     answers = run_example(example("plan_arm_scenes"), {**scenario_header, "scenes": scenes})
     answered = [
         {**scene, "ours": ours} for scene, ours in zip(scenes, answers["ours"], strict=True)
     ]
-    checked = {}
-    for key, value in scenario_header.items():
-        checked[key] = value
-        if key == "chains":
-            checked["checked_pairs"] = answers["checked_pairs"]
-    return {**checked, "probe_spacing": answers["probe_spacing"], "scenes": answered}
+    return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
 
 
 def drawn_scenario(drawn, planning, min_clearance, name):
@@ -636,8 +649,8 @@ def drawn_scenario(drawn, planning, min_clearance, name):
     or with `drawn` the first `drawn`, and the starts outside the limits, planned as
     `planning` says at `min_clearance`."""
     rng = generator(name)
-    model = robot(URDF)
-    limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
+    model = robot(OPENARM_V2)
+    limits = [joint_limits(OPENARM_V2, joint) for joint in LEFT_ARM.joints]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scene_of, committed = {
         NAME: (lambda k: drawn_scene(rng, limits), COMMITTED),
@@ -645,7 +658,7 @@ def drawn_scenario(drawn, planning, min_clearance, name):
         POSES_NAME: (lambda k: pose_scene(rng, model, limits, k), COMMITTED_POSES),
     }[name]
     drawn_scenes = [scene_of(k) for k in range(drawn or DRAWN)]
-    scenario_header = header({"chains": [chain("left")]}, VOXEL_MAP, min_clearance, planning)
+    scenario_header = header(group_of((LEFT_ARM,)), VOXEL_MAP, min_clearance, planning)
     return kept(planned(scenario_header, [*drawn_scenes, *outside]), drawn, committed)
 
 
@@ -655,7 +668,7 @@ def so101_goal(rng, model, joints, goal):
     SO101_TOLERANCE_RAD."""
     if goal == "joints":
         return joints
-    turn, at = link_pose(model, SO101_TIP, dict(zip(SO101_JOINTS, joints)))
+    turn, at = link_pose(model, SO101_ARM.grasp_link, dict(zip(SO101_ARM.joints, joints)))
     if goal == "position":
         return [{"position": at, "position_tolerance": POSE_TOLERANCE_M}]
     axis = [rng.gauss(0, 1) for _ in range(3)]
@@ -683,7 +696,7 @@ def so101_held(k):
             "orientation": IDENTITY,
             "shapes": [held_shape],
         },
-        "link": SO101_TIP,
+        "link": SO101_ARM.grasp_link,
         "touch_links": SO101_GRIPPER,
     }
 
@@ -715,15 +728,14 @@ def so101_scenario(drawn, planning, min_clearance, goal, holding):
     bodies meeting, and the starts outside the limits, planned as `planning` says at
     `min_clearance`."""
     rng = generator(SO101_NAME)
-    model = robot(SO101_URDF)
-    limits = [joint_limits(model, joint) for joint in SO101_JOINTS]
+    model = robot(SO101)
+    limits = [joint_limits(SO101, joint) for joint in SO101_ARM.joints]
     scenario_header = header(
-        {"chains": [SO101_CHAIN]},
+        {"group": SO101_ARM.name},
         SO101_VOXEL_MAP,
         min_clearance,
         planning,
-        urdf=SO101_URDF,
-        meshes=SO101_MESHES,
+        description=SO101,
     )
     pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or DRAWN)
     scenes = [
@@ -732,18 +744,19 @@ def so101_scenario(drawn, planning, min_clearance, goal, holding):
     ]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scenario = planned(scenario_header, [*scenes, *meeting, *outside])
-    return kept(scenario, drawn, COMMITTED_SO101)
+    return kept(scenario, drawn, COMMITTED_SO101, SO101_ON_KDL_TIMEOUT)
 
 
-def kept(scenario, drawn, committed):
+def kept(scenario, drawn, committed, excluded=()):
     """`scenario`, its drawn scenes first and every other scene after them, keeping of
     those drawn the first `drawn`, or with no `drawn` those at `committed` and the one whose
-    path has the most corners among the first DRAWN."""
+    path has the most corners among the first DRAWN but those `excluded`."""
     answered = scenario["scenes"]
     count = drawn or DRAWN
     kept_drawn = answered[:count]
     if not drawn:
-        most = max(range(DRAWN), key=lambda k: corners(kept_drawn[k]["ours"]))
+        candidates = [k for k in range(DRAWN) if k not in excluded]
+        most = max(candidates, key=lambda k: corners(kept_drawn[k]["ours"]))
         kept_drawn = [kept_drawn[k] for k in dict.fromkeys([*committed.values(), most])]
     return {**scenario, "scenes": [*kept_drawn, *answered[count:]]}
 
@@ -796,17 +809,19 @@ def both_arms_scene(rng, model, k, start, goal, among_objects):
     goal."""
     scene = plain_scene(start, goal, None)
     if not among_objects:
-        boxes = [voxel_box(rng, rng.choice(SIDES)) for _ in range(rng.randint(1, 3))]
+        boxes = [voxel_box(rng, rng.choice(OPENARM_ARMS)) for _ in range(rng.randint(1, 3))]
         return {**scene, "boxes": boxes, "seed": rng.randint(1, 2**31 - 1)}
-    objects = [drawn_object(rng, i, rng.choice(SIDES)) for i in range(rng.randint(1, 3))]
+    objects = [
+        drawn_object(rng, i, rng.choice(OPENARM_ARMS)) for i in range(rng.randint(1, 3))
+    ]
     holding = k % 2 == 1
     allowed = []
     if holding and k % 8 == 7:
         objects.append(set_down_table(model, goal))
-        allowed = [["held", "table"], *[["table", link] for link in gripper("left")]]
-    attached = [held("held", k // 2, "left")] if holding else []
+        allowed = [["held", "table"], *[["table", link] for link in gripper(LEFT_ARM)]]
+    attached = [held("held", k // 2, LEFT_ARM)] if holding else []
     if k % 3 == 0:
-        attached.append(held("other", 0, "right"))
+        attached.append(held("other", 0, RIGHT_ARM))
     return {
         **scene,
         "objects": objects,
@@ -821,11 +836,11 @@ def both_arms_pose_scene(rng, model, k, start, goal):
     arm, whose goal is a pose of each arm's grasp point: for an even `k` each a short move,
     and for an odd `k` the grasp pose of each arm's joints of `goal` (`grasp_pose_goal`)."""
     scene = both_arms_scene(rng, model, k, start, goal, False)
-    joints = len(openarm_joints("left"))
-    arms = zip(SIDES, (start[:joints], start[joints:]), (goal[:joints], goal[joints:]))
+    joints = len(LEFT_ARM.joints)
+    each_arm = zip(OPENARM_ARMS, (start[:joints], start[joints:]), (goal[:joints], goal[joints:]))
     poses = [
-        grasp_pose_goal(rng, model, side, arm_start, arm_goal if k % 2 else None)
-        for side, arm_start, arm_goal in arms
+        grasp_pose_goal(rng, model, arm, arm_start, arm_goal if k % 2 else None)
+        for arm, arm_start, arm_goal in each_arm
     ]
     return {**scene, "goal": poses}
 
@@ -837,10 +852,9 @@ def both_arms_scenario(drawn, planning, min_clearance, name):
     scenes whose start and whose goal hold the robot's own bodies meeting, and the starts
     outside the limits, planned as `planning` says at `min_clearance`."""
     rng = generator(name)
-    model = robot(URDF)
-    limits = [joint_limits(model, joint) for side in SIDES for joint in openarm_joints(side)]
-    chains = {"chains": [chain(side) for side in SIDES]}
-    scenario_header = header(chains, VOXEL_MAP, min_clearance, planning)
+    model = robot(OPENARM_V2)
+    limits = [joint_limits(OPENARM_V2, joint) for arm in OPENARM_ARMS for joint in arm.joints]
+    scenario_header = header(group_of(OPENARM_ARMS), VOXEL_MAP, min_clearance, planning)
     pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or DRAWN)
     scene_of, committed = {
         BOTH_NAME: (
@@ -877,7 +891,9 @@ def episodes_scenario(episodes, launcher, planning, min_clearance):
         print(f"dropped {count}: {reason}")
     for d in dropped:
         print(f"  {d['episode']}: {d['reason']}: {d['detail']}")
-    return planned(header(converted["arms"], converted["map"], min_clearance, planning), scenes)
+    return planned(
+        header({"group": converted["group"]}, converted["map"], min_clearance, planning), scenes
+    )
 
 
 def main():

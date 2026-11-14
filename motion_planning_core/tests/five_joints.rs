@@ -14,8 +14,11 @@ use motion_planning_core::{
     IkGoalSampler, MIN_DEPARTURE_STEP_M, OrientationTarget, PositionTarget, cartesian_path,
 };
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
-use self_collision_model::so101;
-use so101_description::{ARM_DOF, BASE_LINK, TCP_LINK, URDF, write_meshes_to};
+use robot_description::{Model, RobotDescription, states};
+use self_collision_model::SelfCollisionModel;
+
+/// The joints of SO-101's arm.
+const JOINTS: usize = 5;
 
 /// The goals each count runs: the position of a configuration drawn inside the limits.
 const GOALS: usize = 100;
@@ -30,7 +33,7 @@ const GOAL_SAMPLES: usize = 10;
 const TOLERANCE_M: f64 = 0.001;
 const SEED: u64 = 7;
 /// A posture of the arm in its vertical plane, every joint inside its limits and off them.
-const IN_ITS_PLANE: [f64; ARM_DOF] = [0.0, -0.4, 0.8, 0.6, 0.0];
+const IN_ITS_PLANE: [f64; JOINTS] = [0.0, -0.4, 0.8, 0.6, 0.0];
 /// How far a goal turns the frame about an axis it holds, past the tolerance.
 const AXIS_TURN_RAD: f64 = 0.8;
 /// The goals a sampler meets of them with an axis held: each aims at a turn about the axis
@@ -39,32 +42,50 @@ const MOST_GOALS_AXIS_HELD: usize = 90;
 /// How far the lines of the Cartesian paths run.
 const LINE_M: f64 = 0.03;
 
-/// The park pose (postures.py's `HOME_POSITIONS_RAD`): the arm folded onto itself as it
-/// rests, unfolded on the shoulder lift, the elbow and the wrist.
-const HOME: [f64; ARM_DOF] = [-0.05, -1.51, 1.47, 1.03, 0.32];
 /// The real arm's largest joint error at a goal over A13's three runs on hardware.
 const ARM_ERROR_RAD: f64 = 0.046;
 /// The moving bodies of a pair of the robot's own body: its `k` in the plan module's start
 /// rule.
 const OWN_PAIR_MOVING_BODIES: f64 = 2.0;
 
+/// SO-101's model in robot_description.
+fn model() -> &'static Model {
+    robot_description::model("so101").expect("robot_description bundles SO-101")
+}
+
+/// SO-101's description: its one arm, of `JOINTS` joints.
+static SO101: LazyLock<RobotDescription> = LazyLock::new(|| {
+    let description = model().description();
+    let [arm] = description.arms() else {
+        panic!("SO-101 has one arm");
+    };
+    assert_eq!(arm.joints.len(), JOINTS, "the joints of {}", arm.name);
+    description
+});
+
+/// SO-101's arm, as its description gives it.
+fn description_arm() -> &'static robot_description::Arm {
+    &SO101.arms()[0]
+}
+
 /// SO-101's collision meshes, written once per test binary.
 static MESHES: LazyLock<String> = LazyLock::new(|| {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("so101_meshes");
-    write_meshes_to(&dir).expect("the meshes write");
+    model().write_meshes_to(&dir).expect("the meshes write");
     dir.to_str()
         .expect("the mesh directory is UTF-8")
         .to_string()
 });
 
-/// SO-101's arm with its collision pieces.
-static ARM: LazyLock<ChainGeometry<ARM_DOF>> = LazyLock::new(|| {
+/// SO-101's arm with its collision pieces, from its base link to its grasp point.
+static ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| {
+    let arm = description_arm();
     ChainGeometry::from_urdf(
-        URDF,
+        SO101.urdf(),
         &MESHES,
         &ChainSpec {
-            base_link: Some(BASE_LINK),
-            tip_link: TCP_LINK,
+            base_link: Some(&arm.base_link),
+            tip_link: &arm.grasp_link,
             joints: JointSelection::PathOrder,
         },
     )
@@ -103,7 +124,7 @@ fn goals_met(goal_of: impl Fn(&Isometry3<f64>, &mut Draws) -> Goal) -> usize {
 /// The goal of `pose`'s position, within `TOLERANCE_M`, and of `orientation`.
 fn at_the_position(pose: &Isometry3<f64>, orientation: Option<OrientationTarget>) -> Goal {
     Goal::new(
-        ARM_DOF,
+        JOINTS,
         Vec::new(),
         vec![PositionTarget {
             frame: Frame::GraspPoint,
@@ -186,7 +207,7 @@ fn an_axis_held_frees_a_turn_about_it_the_tolerance_alone_misses() {
 fn a_goal_of_an_orientation_alone_is_met() {
     let met = goals_met(|pose, draws| {
         Goal::new(
-            ARM_DOF,
+            JOINTS,
             Vec::new(),
             Vec::new(),
             vec![tilted(pose.rotation, 0.0, 0.02, draws)],
@@ -200,7 +221,7 @@ fn a_goal_of_an_orientation_alone_is_met() {
 /// The fraction of the Cartesian path from `IN_ITS_PLANE` along `by`, the orientation kept.
 fn fraction_along(by: Vector3<f64>) -> f64 {
     let start = ARM.chain().world_ee_pose(&IN_ITS_PLANE);
-    let arms = Arms::<ARM_DOF, ARM_DOF>::new(vec![Arm::new("arm", &ARM)], None);
+    let arms = Arms::<JOINTS, JOINTS>::new(vec![Arm::new(&description_arm().name, &ARM)], None);
     let waypoints = [Isometry3::from_parts(
         Translation3::from(start.translation.vector + by),
         start.rotation,
@@ -209,7 +230,7 @@ fn fraction_along(by: Vector3<f64>) -> f64 {
         &arms,
         &CartesianRequest {
             start: IN_ITS_PLANE,
-            start_tolerance: [0.0; ARM_DOF],
+            start_tolerance: [0.0; JOINTS],
             frame: FollowedFrame::of(ARM.chain(), Frame::GraspPoint)
                 .expect("a Cartesian path follows the grasp point"),
             waypoints: &waypoints,
@@ -231,21 +252,27 @@ fn a_cartesian_path_covers_the_lines_on_which_the_joints_hold_the_orientation() 
     assert!(sideways < 1.0, "{sideways}");
 }
 
-// At the park pose, at every corner of the real arm's joint error around it and the jaw shut
-// or open, every pair of the arm's own bodies stands farther apart than the start rule's
-// least departure, `2k` of its least step for a pair whose two bodies move: a plan departs
-// from there.
+// At the park pose, the description's home state, which folds the arm onto itself as it
+// rests, at every corner of the real arm's joint error around it and the jaw shut or open,
+// every pair of the arm's own bodies stands farther apart than the start rule's least
+// departure, `2k` of its least step for a pair whose two bodies move: a plan departs from
+// there.
 #[test]
 fn a_plan_departs_from_the_park_pose_within_the_arms_error() {
     let least_departure_m = 2.0 * OWN_PAIR_MOVING_BODIES * MIN_DEPARTURE_STEP_M;
-    let mut model = so101(&MESHES).expect("SO-101's self model builds");
-    let corners = 3usize.pow(ARM_DOF as u32);
+    let arm = description_arm();
+    let home = SO101
+        .state(&arm.name, states::HOME)
+        .unwrap_or_else(|| panic!("{} has the posture {}", arm.name, states::HOME));
+    let mut model = SelfCollisionModel::<JOINTS, 1>::from_description(&SO101, &MESHES)
+        .expect("SO-101's self model builds");
+    let corners = 3usize.pow(JOINTS as u32);
     for opening in [0.0, 1.0] {
         model.set_gripper_openings(&[opening]);
         for corner in 0..corners {
-            let q: [f64; ARM_DOF] = std::array::from_fn(|i| {
+            let q: [f64; JOINTS] = std::array::from_fn(|i| {
                 let side = (corner / 3usize.pow(i as u32)) % 3;
-                HOME[i] + ARM_ERROR_RAD * (side as f64 - 1.0)
+                home[i] + ARM_ERROR_RAD * (side as f64 - 1.0)
             });
             let nearest = model.min_distance(&[q]).expect("a distance");
             assert!(

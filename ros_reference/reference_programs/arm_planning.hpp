@@ -2,7 +2,8 @@
 // (RRTConnect for `rrt_connect`, RRTstar for `rrt_star`) and its default adapters, plans each
 // scene of the scenario among the scene's boxes of voxels as an octomap and its collision
 // objects, holding the object it attaches to the arm's tip, the robot's links padded by the
-// scenario's clearance against them, to the goal state itself, seeded from the scene and
+// scenario's clearance against them, to the goal state itself or to a pose of each chain's
+// tip link, whose goal sampler ends before the planner starts, seeded from the scene and
 // ended by the scenario's iterations or by its time limit alone, as its termination says,
 // MoveIt's CHOMP refining the planned path where the scenario's refiner is `chomp`, and
 // MoveIt's collision check, padded, and unpadded distance probe each planned path: MoveIt's

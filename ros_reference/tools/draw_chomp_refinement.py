@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the CHOMP refinement scenario of the ROS reference harness.
 
 Scenes of OpenArm v2's left arm among one to three boxes of voxels, drawn as
@@ -11,8 +18,8 @@ plans no path of is dropped. Of the first DRAWN scenes, the scenario keeps the f
 whose path turns at a waypoint and the first whose path is straight. It runs cargo in
 motion_planning_core, so the host builds that crate. Run it from any directory:
 
-    python3 ros_reference/tools/draw_chomp_refinement.py
-    python3 ros_reference/tools/draw_chomp_refinement.py --drawn 200 --min-clearance 0.04
+    uv run ros_reference/tools/draw_chomp_refinement.py
+    uv run ros_reference/tools/draw_chomp_refinement.py --drawn 200 --min-clearance 0.04
 
 The second keeps every scene with a path of the first 200 drawn, in place of those it picks, a
 large set for a local run, which the README describes, planned at a clearance of 4 cm.
@@ -27,18 +34,18 @@ from draw_arm_planning import (
     CORNER_TOLERANCE,
     GOAL_TOLERANCE,
     ITERATIONS,
-    MESHES,
+    LEFT_ARM,
     MIN_CLEARANCE,
     TIME_LIMIT,
-    URDF,
     VOXEL_MAP,
     corners,
     drawn_scene,
+    group_of,
     header,
     planned,
     plans,
 )
-from drawing import chain, generator, joint_limits, openarm_joints, options, robot, write
+from drawing import OPENARM_V2, generator, joint_limits, options, write
 
 NAME = "chomp_refinement_openarm_v2"
 # The drawn scenes the scenario picks from, and the scenes it keeps of them whose path turns.
@@ -80,25 +87,23 @@ def refinement_scenario(drawn, min_clearance):
     """The scenario of the drawn scenes with a path of motion_planning_core, planned at
     `min_clearance`: those it picks, or with `drawn` every one of the first `drawn`."""
     rng = generator(NAME)
-    model = robot(URDF)
-    limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
-    arms = {"chains": [chain("left")]}
+    limits = [joint_limits(OPENARM_V2, joint) for joint in LEFT_ARM.joints]
+    group = group_of((LEFT_ARM,))
     scenes = [drawn_scene(rng, limits) for _ in range(drawn or DRAWN)]
     planning = plans("rrt_connect", "none", None)
-    answered = planned(header(arms, VOXEL_MAP, min_clearance, planning), scenes)
+    answered = planned(header(group, VOXEL_MAP, min_clearance, planning), scenes)
     with_path = [scene for scene in answered["scenes"] if "waypoints" in scene["ours"]]
     print(f"{len(with_path)} of {len(scenes)} drawn scenes with a path of ours")
     kept = with_path if drawn else picked(with_path)
     refining = plans("rrt_connect", "chomp", None)
     refined = planned(
-        header(arms, VOXEL_MAP, min_clearance, refining),
+        header(group, VOXEL_MAP, min_clearance, refining),
         [{**scene, "ours": None} for scene in kept],
     )
     return {
         "kind": "chomp_refinement",
-        "urdf": URDF,
-        "meshes": MESHES,
-        **arms,
+        "description": OPENARM_V2,
+        **group,
         **VOXEL_MAP,
         "min_clearance": min_clearance,
         "corner_tolerance": CORNER_TOLERANCE,

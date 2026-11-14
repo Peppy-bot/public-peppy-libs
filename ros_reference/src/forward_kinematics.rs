@@ -1,10 +1,9 @@
 //! Forward kinematics. The reference is MoveIt's robot state: posed at each
-//! configuration of a chain, it gives the global transform of each link that the chain
-//! moves.
+//! configuration of an arm of the scenario's robot, it gives the global transform of each
+//! link that the arm's joints move and of the arm's grasp link.
 
-use crate::{
-    Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
-};
+use crate::{Kind, LinkPose, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::Deserialize;
 
 /// The `kind` of a forward kinematics scenario and of its reference output, which refuses
@@ -15,43 +14,38 @@ enum ThisKind {
     ForwardKinematics,
 }
 
-/// A robot and the chains of it to pose.
+/// A robot and the arms of it to pose.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
     kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    urdf: String,
-    /// The directory of the collision meshes, where the URDF names them by paths relative
-    /// to itself, which MoveIt's robot model cannot read from a text alone.
-    meshes: Option<String>,
-    chains: Vec<Chain>,
+    /// The robot's model directory, relative to the repository root.
+    description: String,
+    arms: Vec<ArmConfigurations>,
 }
 
-/// A serial chain from the URDF root to `tip_link`. `joints` names every movable joint
-/// between them, in the order of a configuration.
+/// The arm `name` of the description, and the configurations of its joints to pose it at,
+/// each in the order of the arm's joints.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Chain {
+struct ArmConfigurations {
     name: String,
-    joints: Vec<String>,
-    tip_link: String,
     configurations: Vec<Vec<f64>>,
 }
 
-/// For each chain of the scenario, in its order, and each of its configurations: the
-/// global transform of the child link of each joint, in the order of the joints, and
-/// then of the tip link.
+/// For each arm of the scenario, in its order, and each of its configurations: the global
+/// transform of the child link of each joint of the arm, in the order of the joints, and
+/// then of its grasp link.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    chains: Vec<ChainPoses>,
+    arms: Vec<ArmPoses>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChainPoses {
+struct ArmPoses {
     name: String,
     configurations: Vec<Vec<LinkPose>>,
 }
@@ -60,33 +54,31 @@ struct ChainPoses {
 pub struct Cases {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    pub chains: Vec<ChainCase>,
+    pub robot: Robot,
+    pub arms: Vec<ArmCase>,
 }
 
-/// A serial chain from the URDF root to `tip_link`, driven by `joints` in that order.
-pub struct ChainCase {
-    pub name: String,
-    pub joints: Vec<String>,
-    pub tip_link: String,
+/// An arm of the robot, the chain from the URDF root to its grasp link that its joints
+/// drive in their order, and MoveIt's poses at each of its configurations.
+pub struct ArmCase {
+    pub arm: Arm,
     pub configurations: Vec<Configuration>,
 }
 
-/// One configuration of a chain and MoveIt's poses at it.
+/// One configuration of an arm and MoveIt's poses at it.
 pub struct Configuration {
-    /// One position per joint of the chain, in its order.
+    /// One position per joint of the arm, in its order.
     pub positions: Vec<f64>,
     /// The pose of the child link of each joint, in the order of the joints.
     pub links: Vec<LinkPose>,
-    /// The pose of the tip link.
+    /// The pose of the grasp link.
     pub tip: LinkPose,
 }
 
 impl Cases {
     /// Every forward kinematics scenario under `scenarios/`, in the order of their names,
-    /// each paired with its reference output: one output per chain and per
-    /// configuration, holding one pose per joint and then the pose of the tip link.
+    /// each paired with its reference output: one output per arm and per configuration,
+    /// holding one pose per joint and then the pose of the grasp link.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::ForwardKinematics)
             .into_iter()
@@ -97,40 +89,39 @@ impl Cases {
     fn load(name: String) -> Self {
         let Scenario {
             kind: ThisKind::ForwardKinematics,
-            urdf,
-            meshes,
-            chains,
+            description,
+            arms,
         } = read_scenario(&name);
-        if let Some(meshes) = meshes {
-            read_mesh_directory(&name, &meshes);
-        }
+        let robot = read_robot(&name, &description);
         let Reference {
             kind: ThisKind::ForwardKinematics,
-            chains: outputs,
+            arms: outputs,
         } = read_reference(&name);
-        assert_eq!(chains.len(), outputs.len(), "{name}: one output per chain");
-        let urdf = read_urdf(&name, &urdf);
-        let chains = chains
+        assert_eq!(arms.len(), outputs.len(), "{name}: one output per arm");
+        let arms = arms
             .into_iter()
             .zip(outputs)
-            .map(|(chain, output)| pair(&name, chain, output))
+            .map(|(posed, output)| {
+                let arm = robot.arm(&name, &posed.name);
+                pair(&name, arm, posed, output)
+            })
             .collect();
-        Cases { name, urdf, chains }
+        Cases { name, robot, arms }
     }
 }
 
-fn pair(name: &str, chain: Chain, output: ChainPoses) -> ChainCase {
-    let context = format!("{name} {}", chain.name);
+fn pair(name: &str, arm: Arm, posed: ArmConfigurations, output: ArmPoses) -> ArmCase {
+    let context = format!("{name} {}", arm.name);
     assert_eq!(
-        chain.name, output.name,
-        "{context}: the chains are in one order"
+        arm.name, output.name,
+        "{context}: the arms are in one order"
     );
     assert_eq!(
-        chain.configurations.len(),
+        posed.configurations.len(),
         output.configurations.len(),
         "{context}: one output per configuration"
     );
-    let configurations = chain
+    let configurations = posed
         .configurations
         .into_iter()
         .zip(output.configurations)
@@ -138,18 +129,18 @@ fn pair(name: &str, chain: Chain, output: ChainPoses) -> ChainCase {
         .map(|(index, (positions, mut links))| {
             assert_eq!(
                 positions.len(),
-                chain.joints.len(),
+                arm.joints.len(),
                 "{context} configuration {index}: one position per joint"
             );
             assert_eq!(
                 links.len(),
-                chain.joints.len() + 1,
-                "{context} configuration {index}: one pose per joint and the tip"
+                arm.joints.len() + 1,
+                "{context} configuration {index}: one pose per joint and the grasp link"
             );
-            let tip = links.pop().expect("the output holds the tip");
+            let tip = links.pop().expect("the output holds the grasp link");
             assert_eq!(
-                tip.link, chain.tip_link,
-                "{context} configuration {index}: the last pose is the tip"
+                tip.link, arm.grasp_link,
+                "{context} configuration {index}: the last pose is the grasp link's"
             );
             Configuration {
                 positions,
@@ -158,10 +149,8 @@ fn pair(name: &str, chain: Chain, output: ChainPoses) -> ChainCase {
             }
         })
         .collect();
-    ChainCase {
-        name: chain.name,
-        joints: chain.joints,
-        tip_link: chain.tip_link,
+    ArmCase {
+        arm,
         configurations,
     }
 }
@@ -172,41 +161,44 @@ mod tests {
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
-        let text = r#"{"kind": "inverse_kinematics", "urdf": "a.urdf", "chains": []}"#;
+        let text = r#"{"kind": "inverse_kinematics", "description": "d", "arms": []}"#;
         assert!(serde_json::from_str::<Scenario>(text).is_err());
-        let text = r#"{"kind": "forward_kinematics", "urdf": "a.urdf", "chains": []}"#;
+        let text = r#"{"kind": "forward_kinematics", "description": "d", "arms": []}"#;
         assert!(serde_json::from_str::<Scenario>(text).is_ok());
     }
 
     #[test]
     fn a_field_the_scenario_does_not_name_is_refused() {
-        let text = r#"{"kind": "forward_kinematics", "urdf": "a.urdf", "chains": [], "seed": 1}"#;
+        let text = r#"{"kind": "forward_kinematics", "description": "d", "arms": [], "seed": 1}"#;
         assert!(serde_json::from_str::<Scenario>(text).is_err());
-        let text = r#"{"kind": "forward_kinematics", "urdf": "a.urdf", "chains": [
-            {"name": "a", "joints": [], "tip_link": "t", "configurations": [], "seed": 1}
+        let text = r#"{"kind": "forward_kinematics", "description": "d", "arms": [
+            {"name": "a", "configurations": [], "seed": 1}
         ]}"#;
         assert!(serde_json::from_str::<Scenario>(text).is_err());
     }
 
     #[test]
-    #[should_panic(expected = "one pose per joint and the tip")]
-    fn an_output_without_the_tip_does_not_pair() {
-        let chain = Chain {
-            name: "arm".into(),
-            joints: vec!["j1".into()],
-            tip_link: "tip".into(),
-            configurations: vec![vec![0.0]],
+    #[should_panic(expected = "one pose per joint and the grasp link")]
+    fn an_output_without_the_grasp_link_does_not_pair() {
+        let arm = robot_description::model("so101")
+            .expect("a bundled model")
+            .description()
+            .arms()[0]
+            .clone();
+        let posed = ArmConfigurations {
+            name: arm.name.clone(),
+            configurations: vec![vec![0.0; arm.joints.len()]],
         };
         let link = LinkPose {
             link: "l1".into(),
             translation: [0.0; 3],
             rotation: [0.0; 9],
         };
-        let output = ChainPoses {
-            name: "arm".into(),
+        let output = ArmPoses {
+            name: arm.name.clone(),
             configurations: vec![vec![link]],
         };
-        pair("scenario", chain, output);
+        pair("scenario", arm, posed, output);
     }
 
     #[test]
@@ -217,13 +209,13 @@ mod tests {
             "scenarios/ holds a forward kinematics scenario"
         );
         for cases in scenarios {
-            assert!(!cases.chains.is_empty(), "{} names a chain", cases.name);
-            for chain in &cases.chains {
+            assert!(!cases.arms.is_empty(), "{} names an arm", cases.name);
+            for arm in &cases.arms {
                 assert!(
-                    !chain.configurations.is_empty(),
+                    !arm.configurations.is_empty(),
                     "{} {} holds a configuration",
                     cases.name,
-                    chain.name
+                    arm.arm.name
                 );
             }
         }

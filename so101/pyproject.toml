@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "so101"
+version = "0.1.0"
+description = "The driver code the SO-101 nodes share: the servos' names on the bus, wire-unit conversions, setpoint parsing shaped by the STS3215's constraints, the lerobot device boundary, the staleness limits of the family's links, and pose transforms."
+requires-python = ">=3.12,<3.14"
+dependencies = ["control_core_py", "numpy>=1.26"]
+
+[tool.uv.sources]
+control_core_py = { path = "../control_core_py" }
+# SO-101's description, a PyO3 extension that uv builds from its source, so
+# the tests need cargo. The units tests hold the servos' names to the joints
+# of its arm and gripper.
+robot_description_py = { path = "../robot_description_py" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/so101"]
+
+[dependency-groups]
+dev = ["pytest>=8", "robot_description_py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

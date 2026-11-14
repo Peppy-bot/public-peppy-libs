@@ -192,6 +192,7 @@ class MoveArmRequest:
     settle_position_tolerance_m: float
     settle_orientation_tolerance_rad: float
     settle_timeout_s: float
+    contact_gap_m: float
 
 
 @dataclass

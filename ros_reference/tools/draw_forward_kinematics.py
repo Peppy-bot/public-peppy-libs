@@ -1,79 +1,63 @@
+# /// script
+# requires-python = ">=3.12,<3.14"
+# dependencies = ["robot_description_py"]
+#
+# [tool.uv.sources]
+# robot_description_py = { path = "../../robot_description_py" }
+# ///
 """Writes the forward kinematics scenarios of the ROS reference harness.
 
-The configurations of each chain are its zero configuration, its lower limits, its upper
-limits, and configurations drawn uniformly inside its limits, five of them by default.
-Run it from any directory:
+The configurations of each arm of each robot of ROBOTS are its zero configuration, its
+lower limits, its upper limits, and configurations drawn uniformly inside its limits, five
+of them by default. Run it from any directory:
 
-    python3 ros_reference/tools/draw_forward_kinematics.py
-    python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500
+    uv run ros_reference/tools/draw_forward_kinematics.py
+    uv run ros_reference/tools/draw_forward_kinematics.py --drawn 500
 
 The second draws a large set for a local run, which the README describes.
 """
 
 from drawing import (
     CONFIGURATIONS_DRAWN,
+    OPENARM_V2,
+    SO101,
+    arms,
     configurations,
     generator,
     joint_limits,
-    openarm_joints,
     options,
-    robot,
     write,
 )
 
 DRAWN_CONFIGURATIONS = 5
 
-
-def openarm_arm(side):
-    return (side, openarm_joints(side), f"openarm_{side}_tcp")
-
-
-# Each robot: its URDF, the directory of its collision meshes where the URDF names them by
-# paths relative to itself, and its chains.
+# Each scenario, by its name: the model directory of the robot it poses.
 ROBOTS = {
-    "forward_kinematics_openarm_v2": (
-        "openarm_description/assets/openarm_v20.urdf",
-        {},
-        [openarm_arm("left"), openarm_arm("right")],
-    ),
-    "forward_kinematics_so101": (
-        "so101_description/src/so101_description/urdf/so101_kinematics.urdf",
-        {"meshes": "so101_description/src/so101_description/urdf/collision"},
-        [
-            (
-                "arm",
-                ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
-                "gripper_frame_link",
-            )
-        ],
-    ),
+    "forward_kinematics_openarm_v2": OPENARM_V2,
+    "forward_kinematics_so101": SO101,
 }
 
 
-def scenario(rng, urdf, meshes, chains, drawn):
-    parsed = robot(urdf)
+def scenario(rng, description, drawn):
     return {
         "kind": "forward_kinematics",
-        "urdf": urdf,
-        **meshes,
-        "chains": [
+        "description": description,
+        "arms": [
             {
-                "name": name,
-                "joints": joints,
-                "tip_link": tip_link,
+                "name": arm.name,
                 "configurations": configurations(
-                    rng, [joint_limits(parsed, joint) for joint in joints], drawn
+                    rng, [joint_limits(description, joint) for joint in arm.joints], drawn
                 ),
             }
-            for name, joints, tip_link in chains
+            for arm in arms(description)
         ],
     }
 
 
 def main():
     drawn = options(__doc__, DRAWN_CONFIGURATIONS, CONFIGURATIONS_DRAWN).parse_args().drawn
-    for name, (urdf, meshes, chains) in ROBOTS.items():
-        write(name, scenario(generator(name), urdf, meshes, chains, drawn))
+    for name, description in ROBOTS.items():
+        write(name, scenario(generator(name), description, drawn))
 
 
 if __name__ == "__main__":

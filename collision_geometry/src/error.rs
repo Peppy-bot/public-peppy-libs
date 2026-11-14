@@ -6,24 +6,13 @@
 /// they carry an opaque reason.
 #[derive(Debug, thiserror::Error)]
 pub enum GeometryError {
-    /// Supplied clip regions for a body were an empty list.
-    #[error("supplied clip regions for '{body}' are empty; provide at least one region")]
-    EmptyRegions { body: String },
     /// A body's own mesh could not be fitted (an empty, collinear, or coplanar cloud,
     /// or one no plane budget could circumscribe).
     #[error("'{body}' could not be fitted from its mesh: {reason}")]
     DegenerateBody { body: String, reason: String },
-    /// A clip region caught too little of its body's mesh to bound a solid (an empty,
-    /// collinear, or coplanar clipped slice).
-    #[error("clip region {index} of '{body}' does not bound a solid slice of its mesh: {reason}")]
-    DegenerateRegion {
-        body: String,
-        index: usize,
-        reason: String,
-    },
-    /// The hulls fitted to a body's clip regions do not conservatively contain its
-    /// mesh (the regions leave part of the surface uncovered).
-    #[error("the region hulls for '{body}' do not contain its mesh: {kind}")]
+    /// The pieces of a body do not conservatively contain a mesh they stand in for
+    /// (the pieces leave part of its surface uncovered).
+    #[error("the pieces of '{body}' do not contain the mesh they stand in for: {kind}")]
     HullMissesMesh {
         body: String,
         kind: ContainmentFailure,
@@ -32,30 +21,12 @@ pub enum GeometryError {
     /// read, or a primitive whose size is not positive and finite.
     #[error("the collision of '{link}' cannot be fitted: {reason}")]
     UnsupportedCollision { link: String, reason: String },
-    /// The bounds of a clip region of a body, by its index among the bounds given,
-    /// that span no volume.
-    #[error("clip region {index} of '{body}' spans no volume: {reason}")]
-    InvalidRegion {
-        body: String,
-        index: usize,
-        reason: String,
-    },
-    /// Clip regions given for a link that is not a link of the body: one with collision
-    /// elements that fixed joints alone join to the URDF root.
-    #[error(
-        "clip regions name '{body}', which is no link of the body: name a link with collision \
-         elements that fixed joints alone join to the URDF root"
-    )]
-    RegionsOffTheBody { body: String },
     /// A link to fit in the frame of the URDF root that a movable joint carries, so no
     /// fixed joints alone join it to the root.
     #[error(
         "'{link}' hangs below a movable joint: fixed joints alone do not join it to the URDF root"
     )]
     NotFixedToTheRoot { link: String },
-    /// Two lists of clip regions given for one body.
-    #[error("clip regions name '{body}' twice: give each body one list of regions")]
-    RegionsTwice { body: String },
     /// The chain itself could not be built from the URDF.
     #[error(transparent)]
     Chain(#[from] chain_kinematics::ChainError),

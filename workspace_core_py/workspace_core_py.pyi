@@ -1,7 +1,7 @@
 """The types of workspace_core_py, the extension module built from src/lib.rs."""
 
 from collections.abc import Iterable
-from typing import ClassVar, Final, final
+from typing import ClassVar, Final, Protocol, final
 
 type _Vector3 = tuple[float, float, float]
 """A point or a direction, ``(x, y, z)``."""
@@ -116,3 +116,39 @@ def describe_without_perception_camera(surface: SurfaceReach) -> SurfaceAnswer: 
 def check_without_perception_camera(
     positions: Positions, reaches: Iterable[Reach]
 ) -> PositionsAnswer: ...
+
+@final
+class Solves:
+    """What a solver meets of a grasp orientation: the full pose, or the approach direction alone."""
+
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+    FULL_POSES: ClassVar[Solves]
+    APPROACHES: ClassVar[Solves]
+    def __int__(self) -> int: ...
+
+class _ArmSolver(Protocol):
+    """What the reach rule asks of a solver: what it meets of a grasp orientation, the name of
+    each arm, where each arm's base stands, how far short of a target the solver holds that an
+    arm's grasp point stops in every orientation (0 where it cannot rule the target out), how far
+    short of a target an arm's grasp point stops in any orientation as near as the solver finds,
+    and the pose it brings an arm to for a grasp frame at a target turned as a row-major
+    rotation: None when it finds no joints for it, else its joints, its grasp point and its
+    approach axis, in the robot frame."""
+
+    def solves(self) -> Solves: ...
+    def arm_names(self) -> list[str]: ...
+    def arm_base(self, arm: int, /) -> Iterable[float]: ...
+    def reach_bound(self, arm: int, target: _Vector3, /) -> float: ...
+    def position_shortfall(self, arm: int, target: _Vector3, /) -> float: ...
+    def reach_pose(
+        self, arm: int, target: _Vector3, rotation: tuple[float, ...], /
+    ) -> tuple[Iterable[float], Iterable[float], Iterable[float]] | None: ...
+
+def reach(solver: _ArmSolver, target: Iterable[float]) -> Reach: ...
+
+@final
+class ArmBodies:
+    def __new__(cls, urdf: str, srdf: str, meshes_dir: str) -> ArmBodies: ...
+    def reach_over(
+        self, solver: _ArmSolver, surface: SurfaceHeight, target: Iterable[float]
+    ) -> Reach: ...

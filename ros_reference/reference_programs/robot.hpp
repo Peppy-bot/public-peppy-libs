@@ -14,37 +14,44 @@
 
 namespace ros_reference {
 
-// The robot model of a URDF, with an SRDF that names no group and no virtual joint, so
-// the URDF root stands fixed at the origin of the model frame.
-moveit::core::RobotModelPtr robot_model(const std::string& urdf_text);
+// The robot model of the description at `description`, a directory of the repository that
+// holds `<name>.urdf`, `<name>.srdf` and the collision meshes under `meshes/`, `<name>` the
+// directory's last part: MoveIt's model of the URDF and the SRDF as they are, each read
+// through `inputs`, its collision meshes loaded from the files of the same names under
+// `meshes/`.
+moveit::core::RobotModelPtr description_model(Inputs& inputs, const std::string& description);
 
-// A chain of joints from `base_link` to `tip_link`, by `name`.
-struct Chain {
+// An arm of a description: an SRDF group of one chain whose tip an end effector stands on,
+// its active joints in the chain's order, and the chain's tip.
+struct Arm {
   std::string name;
-  std::string base_link;
+  std::vector<std::string> joints;
   std::string tip_link;
 };
 
-// A planning group of an SRDF: the joints of its one chain, or of several chains, each a
-// group of its own, by the chain's name, that the planning group holds, in their order.
-struct ChainGroup {
+// A planning group of a description and its arms: the group itself when it is an arm, else
+// its subgroups, each an arm; and whether it holds every arm of the description.
+struct ArmGroup {
   std::string name;
-  std::vector<Chain> chains;
+  std::vector<Arm> arms;
+  bool holds_every_arm;
 
-  // The groups that carry an inverse kinematics solver: the group itself for one chain,
-  // and each chain's group for several, whose union MoveIt samples a goal of the group
-  // from (moveit2 2.15.2 constraint_sampler_manager.cpp, UnionConstraintSampler).
+  // The groups that carry an inverse kinematics solver: the arms, whose union MoveIt samples
+  // a goal of the group from (moveit2 2.15.2 constraint_sampler_manager.cpp,
+  // UnionConstraintSampler, for a group of several).
   std::vector<std::string> solver_groups() const;
 };
 
-// The robot model of the URDF at `urdf`, whose collision meshes MoveIt loads from the
-// files of the same names in `mesh_directory`, each read through `inputs`; a URDF that
-// names a collision mesh with no mesh directory is refused. Both paths are relative to
-// the repository root. Its SRDF names `group` when given, and no virtual joint.
-moveit::core::RobotModelPtr robot_model_with_meshes(
-    Inputs& inputs, const std::string& urdf,
-    const std::optional<std::string>& mesh_directory,
-    const std::optional<ChainGroup>& group = std::nullopt);
+// The planning group `name` of `model`'s SRDF and its arms; a group that is neither an arm
+// nor a group of arms is refused.
+ArmGroup arm_group(const moveit::core::RobotModel& model, const std::string& name);
+
+// The arm `name` of `model`'s SRDF; a group that is no arm is refused.
+Arm the_arm(const moveit::core::RobotModel& model, const std::string& name);
+
+// Whether the SRDF of `model` disables the collisions of `a` and `b`.
+bool disabled_pair(const moveit::core::RobotModel& model, const std::string& a,
+                   const std::string& b);
 
 // The child link of `joint`.
 std::string child_link(const moveit::core::RobotModel& model, const std::string& joint);

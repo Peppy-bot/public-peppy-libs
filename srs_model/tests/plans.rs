@@ -122,3 +122,17 @@ fn a_goal_out_of_reach_has_no_line() {
     );
     assert_eq!(plan_line(arm, &far, seed), None);
 }
+
+// A goal 10 m out has no line either: the descent toward it cuts its step to nothing and
+// ends at its last configuration, from the seed the backbone's plan test starts at.
+#[test]
+fn a_goal_ten_meters_out_has_no_line() {
+    let arm = arm("left");
+    let seed: JointVec = [0.0, 0.3, 0.0, 0.8, 0.0, 0.5, 0.0];
+    let start = arm.world_ee_pose(&seed);
+    let far = Isometry3::from_parts(
+        Translation3::from(start.translation.vector + srs_model::nalgebra::Vector3::x() * 10.0),
+        start.rotation,
+    );
+    assert_eq!(plan_line(arm, &far, seed), None);
+}

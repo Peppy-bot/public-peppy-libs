@@ -1,9 +1,11 @@
 //! Collision geometry for any robot, read from its URDF and its collision meshes.
 //!
-//! - [`fit`] fits the convex pieces of one body from its collision surfaces: one
+//! - [`fit`] fits the convex pieces of one body from its collision surfaces, one
 //!   circumscribing hull per `<collision>` element, which holds its surface by
-//!   construction, or one per [`ClipRegion`](clip::ClipRegion) for a concave body, where
-//!   the fit checks that the pieces together hold every vertex and face of the surfaces.
+//!   construction, and checks that pieces together hold every vertex and face of a
+//!   surface they stand in for.
+//! - [`clip`] cuts a concave mesh into the slices of axis-aligned regions, which a URDF
+//!   names as collision elements of their own.
 //! - [`gjk`] measures the distance between two convex shapes, signed through contact.
 //! - [`chain::ChainGeometry`] holds the pieces of every link that a serial chain moves
 //!   and places them at a joint configuration, each piece with a bounding sphere. Its
@@ -46,6 +48,8 @@ pub mod shapes;
 mod simplify;
 pub mod spheres;
 pub mod stl;
+#[cfg(test)]
+mod test_support;
 pub mod urdf_collision;
 
 pub use error::{ContainmentFailure, GeometryError};

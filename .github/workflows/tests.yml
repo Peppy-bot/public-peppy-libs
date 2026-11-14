@@ -53,12 +53,12 @@ jobs:
       # On a push, paths-filter compares main with the commit that main had
       # before the push, with git, in this checkout. On a pull request it reads
       # the changed files from the API.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         if: github.event_name == 'push'
         with:
           persist-credentials: false
 
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
@@ -125,13 +125,13 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       # After the checkout, so the workspace-relative target directory
       # resolves under it.
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: runs-on/action@v2.5.0
         with:
           sticky_cache: |
             cargo
@@ -142,7 +142,7 @@ jobs:
       # runs-on/action above, which unmounts the disk.
       - uses: Peppy-bot/peppy/.github/actions/sticky-disk-report@dev
 
-      - uses: ./.github/actions/rust-toolchain
+      - uses: $/.github/actions/rust-toolchain
 
       # collision_geometry builds Qhull through the qhull crate, whose bindings
       # bindgen generates against libclang at build time. ompl_bridge builds OMPL
@@ -153,7 +153,7 @@ jobs:
       # Every crate runs even after one fails, so a red run names every
       # failing crate. `--all-features` because a feature of a library crate
       # is an interface a consumer compiles (the openarm nodes take
-      # openarm_description's `meshes`), and one no suite builds is one
+      # robot_description's `meshes`), and one no suite builds is one
       # nothing holds to compiling.
       - name: Run every Rust crate's suite
         run: |
@@ -198,13 +198,18 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       # For the libs that build a Rust extension module when uv installs them.
-      - uses: ./.github/actions/rust-toolchain
+      - uses: $/.github/actions/rust-toolchain
+
+      # workspace_core_py builds collision_geometry, whose Qhull bindings
+      # bindgen generates against libclang at build time.
+      - name: Install the system libraries the libs build against
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev
 
       # uv is pinned: it resolves and installs everything the suites run
       # against, so its version is part of what a green run attests.
@@ -242,8 +247,40 @@ jobs:
       - name: Prove CI tested the committed manifests and lockfiles
         run: git diff --exit-code -- '*pyproject.toml' '*uv.lock'
 
+  # The lockfile, .github/workflows/actions.lock, holds the commit of each
+  # action that the workflows of this repository use, and GitHub Actions runs
+  # that commit only. This job fails when the lockfile does not agree with
+  # the `uses:` lines of the workflows and of the actions they use, or when a
+  # commit of the lockfile is not in the history of its tag or branch.
+  # `gh actions-lock` writes the lockfile.
+  lockfile:
+    name: Verify the lockfile of the actions
+    # The smallest RunsOn runner: the job asks the GitHub API about each
+    # commit of the lockfile and builds nothing.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # Nothing here pushes, so the job has no use for a writable
+          # credential sitting in .git/config for every later step to inherit.
+          persist-credentials: false
+
+      # The release of the extension is pinned, so every run verifies with
+      # the same program.
+      - name: Install the gh actions-lock extension
+        run: gh extension install github/gh-actions-lock --pin v0.4.1
+
+      - name: Verify the lockfile
+        run: gh actions-lock --verify
+
   test:
-    needs: [changes, rust, python]
+    needs: [changes, rust, python, lockfile]
     # Runs whatever happened above, so a failed or cancelled job turns this
     # check red.
     if: always()

@@ -552,9 +552,9 @@ mod tests {
     /// direction, or the deviation it feeds is understated.
     #[test]
     fn hill_climbing_support_matches_an_exhaustive_scan() {
-        let raw = crate::stl::load_stl(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../openarm_description/assets/meshes/link6_symp.stl"
+        let raw = crate::stl::load_stl(&format!(
+            "{}/link6_symp.stl",
+            crate::test_support::bundled_meshes("openarm_v1")
         ))
         .expect("mesh");
         let cloud: Vec<Point3<f64>> = raw
@@ -618,9 +618,9 @@ mod tests {
     /// runs to thousands.
     #[test]
     fn a_real_collision_mesh_fits_inside_budget() {
-        let raw = crate::stl::load_stl(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../openarm_description/assets/meshes/link6_symp.stl"
+        let raw = crate::stl::load_stl(&format!(
+            "{}/link6_symp.stl",
+            crate::test_support::bundled_meshes("openarm_v1")
         ))
         .expect("mesh");
         let cloud: Vec<Point3<f64>> = raw
@@ -650,9 +650,9 @@ mod tests {
     #[test]
     #[ignore = "measurement probe, not a pass/fail check"]
     fn budget_sweep_report() {
-        let raw = crate::stl::load_stl(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../openarm_description/assets/meshes/link6_symp.stl"
+        let raw = crate::stl::load_stl(&format!(
+            "{}/link6_symp.stl",
+            crate::test_support::bundled_meshes("openarm_v1")
         ))
         .expect("mesh");
         let cloud: Vec<Point3<f64>> = raw

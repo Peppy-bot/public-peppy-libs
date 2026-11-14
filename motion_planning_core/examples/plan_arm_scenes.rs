@@ -1,7 +1,6 @@
 //! Plans every scene of an arm planning scenario of the ROS reference harness, which it
-//! reads on stdin, and writes on stdout this crate's answer to each scene, the pairs of
-//! the robot's own links its plans check and the spacing at which the reference probes a
-//! path, as JSON, and on stderr how many of its plans that found no path ended at the
+//! reads on stdin, and writes on stdout this crate's answer to each scene and the spacing at
+//! which the reference probes a path, as JSON, and on stderr how many of its plans that found no path ended at the
 //! planning time and how many before it.
 //! `ros_reference/tools/draw_arm_planning.py` draws the scenes, runs it, and writes its
 //! answers into the scenario.
@@ -9,37 +8,35 @@
 #[path = "../tests/arm_scenes/mod.rs"]
 mod arm_scenes;
 
-use std::path::Path;
-
+use robot_description::{Arm, OnShape, on_shape};
+use ros_reference::Robot;
 use ros_reference::arm_planning::{Ours, Scenes};
 use serde_json::json;
 
-use arm_scenes::{
-    AtItsJoints, Planned, at_its_joints, on_the_arms, plan_scene, probe_spacing, samplers,
-};
+use arm_scenes::{Planned, on_the_arms, plan_scene, probe_spacing, samplers};
 
-/// The answers to every scene of `scenes`, from the URDF text `urdf`.
+/// The answers to every scene of `scenes`, by `arms`, the arms of `robot` its group holds.
 struct Answers<'a> {
     scenes: &'a Scenes,
-    urdf: &'a str,
-    meshes: &'a Path,
+    robot: &'a Robot,
+    arms: &'a [Arm],
 }
 
-impl AtItsJoints for Answers<'_> {
+impl OnShape for Answers<'_> {
     type Output = serde_json::Value;
 
-    fn run<const N: usize, const D: usize>(self) -> serde_json::Value {
+    fn on_shape<const N: usize, const D: usize, const K: usize>(self) -> serde_json::Value {
         let Self {
             scenes,
-            urdf,
-            meshes,
+            robot,
+            arms: planned,
         } = self;
-        on_the_arms::<N, _>(&scenes.chains, urdf, meshes, |arms, standing| {
+        on_the_arms::<N, K, _>(planned, robot, |arms, standing| {
             let samplers = samplers(arms);
             let planned: Vec<Planned> = scenes
                 .scenes
                 .iter()
-                .map(|scene| plan_scene::<N, D, _>(arms, standing, &samplers, scenes, scene))
+                .map(|scene| plan_scene::<N, D, K, _>(arms, standing, &samplers, scenes, scene))
                 .collect();
             let no_path: Vec<&Planned> = planned
                 .iter()
@@ -54,7 +51,6 @@ impl AtItsJoints for Answers<'_> {
             );
             let ours: Vec<Ours> = planned.into_iter().map(|p| p.ours).collect();
             json!({
-                "checked_pairs": standing.checked_pairs(),
                 "probe_spacing": probe_spacing::<N, D>(arms, scenes),
                 "ours": ours,
             })
@@ -65,15 +61,16 @@ impl AtItsJoints for Answers<'_> {
 fn main() {
     let scenes: Scenes =
         serde_json::from_reader(std::io::stdin()).expect("the scenario on stdin parses");
-    let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
-    let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
-    let answers = at_its_joints(
-        &scenes.chains,
+    let robot = Robot::of(&scenes.description);
+    let arms = robot.group_arms("the scenario", &scenes.group);
+    let answers = on_shape(
+        &robot.description,
         Answers {
             scenes: &scenes,
-            urdf: &urdf,
-            meshes: &repository.join(&scenes.meshes),
+            robot: &robot,
+            arms: &arms,
         },
-    );
+    )
+    .unwrap_or_else(|error| panic!("{}: {error}", scenes.description));
     println!("{answers}");
 }

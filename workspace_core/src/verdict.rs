@@ -8,7 +8,8 @@ pub enum Reach {
     Reached { arm: String },
     /// No arm reaches it. `by` is how far short of it the closest arm
     /// stops, in metres; within the reach tolerance when the arms come close
-    /// enough but none can point its gripper a grasp direction there.
+    /// enough but none can point its gripper a grasp direction there, or
+    /// only in poses that are not clear.
     Short { by: f64 },
 }
 

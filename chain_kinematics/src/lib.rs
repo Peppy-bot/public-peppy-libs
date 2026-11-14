@@ -61,7 +61,7 @@ mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use draws::Draws;
-pub use error::ChainError;
+pub use error::{ChainError, TreeError};
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
 pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
 pub use line::{

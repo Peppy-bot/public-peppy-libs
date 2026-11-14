@@ -11,14 +11,15 @@
 //! probing each planned path: MoveIt's own, and motion_planning_core's with its corners
 //! rounded as MoveIt's time-optimal trajectory generation rounds them. Both check every
 //! link that moves with the arms' joints, the grippers' fingers among them, closed, as
-//! MoveIt's default state holds them, and the pairs of the robot's own bodies that the
-//! scenario names checked.
+//! MoveIt's default state holds them, and, where the scenario's group holds every arm of
+//! the robot, the pairs of the robot's own bodies that the SRDF leaves checked.
 
 use crate::planning_scene::Object;
-use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
+use crate::{Kind, Robot, read_reference, read_robot, read_scenario, scenario_names};
+use robot_description::Arm;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
 
 /// The `kind` of an arm planning scenario and of its reference output, which refuses
 /// every other kind.
@@ -28,25 +29,19 @@ pub(crate) enum ThisKind {
     ArmPlanning,
 }
 
-/// The arms, the map and the plans' parameters of a scenario, and its scenes. A scenario
-/// that `tools/draw_arm_planning.py` has drawn holds no checked pairs, no probe spacing
-/// and no answer of motion_planning_core yet; the example `plan_arm_scenes` reads it so.
+/// The robot, its group, the map and the plans' parameters of a scenario, and its scenes. A
+/// scenario that `tools/draw_arm_planning.py` has drawn holds no probe spacing and no
+/// answer of motion_planning_core yet; the example `plan_arm_scenes` reads it so.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenes {
     pub(crate) kind: ThisKind,
-    /// The path of the robot's URDF, relative to the repository root.
-    pub urdf: String,
-    /// The directory of the collision meshes, which the URDF names by their file names,
-    /// relative to the repository root.
-    pub meshes: String,
-    /// The arms the plans move, in the order a state holds their joints: a scene's start
-    /// and goal hold each arm's joints in turn.
-    pub chains: Vec<ArmChain>,
-    /// The pairs of the robot's own links, by their names, that motion_planning_core's
-    /// self model checks and MoveIt's collision matrix checks too; empty where the plans
-    /// check no such pair, MoveIt's matrix allowing each.
-    pub checked_pairs: Option<Vec<[String; 2]>>,
+    /// The robot's model directory, relative to the repository root.
+    pub description: String,
+    /// The SRDF group the plans move: its arms, the group itself when it is an arm, else
+    /// the arms it holds, in the order a state holds their joints, a scene's start and goal
+    /// holding each arm's joints in turn.
+    pub group: String,
     pub voxel_size: f64,
     /// The half side of the cube about the robot's origin that motion_planning_core's
     /// map covers.
@@ -111,17 +106,6 @@ pub enum Termination {
     Time,
 }
 
-/// An arm the plans move: the chain from `base_link` to `tip_link`, whose joints are
-/// `joints` in their order, by `name`, the arm's name as plan_joint_path names it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArmChain {
-    pub name: String,
-    pub base_link: String,
-    pub tip_link: String,
-    pub joints: Vec<String>,
-}
-
 /// The voxels from `first` to `last`, by their keys, on every axis: the voxel of key k
 /// on an axis runs from k to k + 1 voxel sizes along it.
 #[derive(Debug, Clone, Deserialize)]
@@ -183,14 +167,14 @@ impl Scene {
     }
 }
 
-/// An orientation a plan's path holds of a link of the chain at `chain` among the scenario's
-/// chains, as plan_joint_path's path_orientation_constraints names it for
+/// An orientation a plan's path holds of a link of the arm at `arm` among the arms of the
+/// scenario's group, as plan_joint_path's path_orientation_constraints names it for
 /// motion_planning_core, and MoveIt's rotation-vector tolerances about x, y and z of the robot
 /// frame for MoveIt's path constraint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeldOrientation {
-    pub chain: usize,
+    pub arm: usize,
     pub link_name: String,
     pub orientation: [f64; 4],
     pub tolerance_rad: f64,
@@ -200,8 +184,8 @@ pub struct HeldOrientation {
 
 /// What a scene's plan reaches for: a configuration of the arms, each joint within the
 /// scenario's `goal_tolerance` of it for motion_planning_core and at it for MoveIt; or a
-/// pose of each chain's tip link, in the order of the chains, which both reach through
-/// inverse kinematics, MoveIt's KDL.
+/// pose or a position of each arm's grasp link, in the order of the arms, which both reach
+/// through inverse kinematics, MoveIt's KDL.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum SceneGoal {
@@ -210,7 +194,7 @@ pub enum SceneGoal {
     Positions(Vec<PositionGoal>),
 }
 
-/// A pose of a tip link in the robot frame, its position (m) and its orientation `[x, y,
+/// A pose of a grasp link in the robot frame, its position (m) and its orientation `[x, y,
 /// z, w]`, and how near each the goal holds: within `position_tolerance` (m) of the
 /// position, and turned within `orientation_tolerance` (rad) of the orientation, which
 /// MoveIt's `constructGoalConstraints` takes as the radius of its position region and as
@@ -225,8 +209,8 @@ pub struct PoseGoal {
     pub orientation_tolerance: f64,
 }
 
-/// A position of a tip link in the robot frame (m), which the goal holds within
-/// `position_tolerance` (m), the tip link free to turn: MoveIt's `constructGoalConstraints`
+/// A position of a grasp link in the robot frame (m), which the goal holds within
+/// `position_tolerance` (m), the grasp link free to turn: MoveIt's `constructGoalConstraints`
 /// of a point.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -237,9 +221,9 @@ pub struct PositionGoal {
 
 /// An object a grasp link holds: the object, its pose in the link's frame, the link, and
 /// the links it may touch, as apply_attached_collision_object attaches it with the arms
-/// at the scene's start. A link that is a chain's tip link is held by an arm the plan
-/// moves; any other is held by an arm the plan does not move, at its zero configuration,
-/// as MoveIt's default state holds it.
+/// at the scene's start. A link that is the grasp link of an arm of the group is held by
+/// an arm the plan moves; any other is held by an arm the plan does not move, at its zero
+/// configuration, as MoveIt's default state holds it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Held {
@@ -278,8 +262,7 @@ pub struct Probed {
     pub held_clearance: Option<f64>,
     /// The smallest distance MoveIt measures between the robot's own bodies and the
     /// objects they hold, unpadded, over the pairs its collision matrix checks, -1 in
-    /// place of every distance below it; null where the scenario's `checked_pairs` is
-    /// empty.
+    /// place of every distance below it; null where the plans check no such pair.
     #[serde(deserialize_with = "Option::deserialize")]
     pub self_clearance: Option<f64>,
     /// The largest share of its tolerance that any orientation the scene holds reaches along
@@ -373,13 +356,12 @@ impl SceneCase {
 pub struct Case {
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    /// The text of the scenario's URDF.
-    pub urdf: String,
-    /// The scenario's mesh directory.
-    pub meshes: PathBuf,
+    pub robot: Robot,
+    /// The arms of the scenario's group, in the order a state holds their joints.
+    pub arms: Vec<Arm>,
     pub scenes: Scenes,
-    /// The scenario's checked pairs.
-    pub checked_pairs: Vec<[String; 2]>,
+    /// The pairs of the robot's own links the plans check, each pair's names in order.
+    pub checked_pairs: BTreeSet<[String; 2]>,
     /// The scenario's probe spacing.
     pub probe_spacing: f64,
     pub cases: Vec<SceneCase>,
@@ -390,34 +372,52 @@ impl Case {
     /// paired with its reference output: an answer of motion_planning_core in every
     /// scene, MoveIt's probe of its path exactly where it is a path, the probe of
     /// MoveIt's own path exactly where MoveIt succeeds, and a self distance in each probe
-    /// exactly where the scenario checks pairs of the robot's own links.
+    /// exactly where the plans check pairs of the robot's own links.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::ArmPlanning)
             .into_iter()
             .map(|name| {
                 let scenes: Scenes = read_scenario(&name);
-                let urdf = read_urdf(&name, &scenes.urdf);
-                let meshes = read_mesh_directory(&name, &scenes.meshes);
-                let reference = read_reference(&name);
-                pair(name, urdf, meshes, scenes, reference)
+                let robot = read_robot(&name, &scenes.description);
+                let arms = robot.group_arms(&name, &scenes.group);
+                let checked_pairs = robot.checked_pairs(&name, &scenes.group);
+                let (probe_spacing, cases) = pair(
+                    &name,
+                    &scenes,
+                    !checked_pairs.is_empty(),
+                    read_reference(&name),
+                );
+                Case {
+                    name,
+                    robot,
+                    arms,
+                    scenes,
+                    checked_pairs,
+                    probe_spacing,
+                    cases,
+                }
             })
             .collect()
     }
 }
 
-fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: Reference) -> Case {
+/// The probe spacing of `scenes`, the scenario `name`, and each of its scenes paired with
+/// its answer of `reference`, the plans checking pairs of the robot's own links where
+/// `checks_own_pairs`.
+fn pair(
+    name: &str,
+    scenes: &Scenes,
+    checks_own_pairs: bool,
+    reference: Reference,
+) -> (f64, Vec<SceneCase>) {
     let Scenes {
         kind: ThisKind::ArmPlanning,
         ..
-    } = &scenes;
+    } = scenes;
     let Reference {
         kind: ThisKind::ArmPlanning,
         scenes: answers,
     } = reference;
-    let checked_pairs = scenes
-        .checked_pairs
-        .clone()
-        .unwrap_or_else(|| panic!("{name}: the scenario's checked pairs"));
     let probe_spacing = scenes
         .probe_spacing
         .unwrap_or_else(|| panic!("{name}: the scenario's probe spacing"));
@@ -447,8 +447,8 @@ fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: 
             };
             assert!(
                 case.probes()
-                    .all(|p| p.self_clearance.is_some() != checked_pairs.is_empty()),
-                "{what}: a self distance in each probe exactly where the scenario checks pairs"
+                    .all(|p| p.self_clearance.is_some() == checks_own_pairs),
+                "{what}: a self distance in each probe exactly where the plans check pairs"
             );
             assert!(
                 case.probes()
@@ -459,15 +459,7 @@ fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: 
             case
         })
         .collect();
-    Case {
-        name,
-        urdf,
-        meshes,
-        scenes,
-        checked_pairs,
-        probe_spacing,
-        cases,
-    }
+    (probe_spacing, cases)
 }
 
 /// MoveIt's answer `read`, whose probe the reference gives exactly where MoveIt succeeds.
@@ -530,10 +522,7 @@ mod tests {
     /// refiner, ended by `termination`, and of one scene, our answer to it `ours`.
     fn scenario(kind: &str, planner: &str, termination: &str, ours: &str) -> String {
         format!(
-            r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes",
-                "chains": [{{"name": "arm", "base_link": "base", "tip_link": "tip",
-                             "joints": ["j"]}}],
-                "checked_pairs": [], "voxel_size": 0.04,
+            r#"{{"kind": "{kind}", "description": "d", "group": "arm", "voxel_size": 0.04,
                 "map_half_side": 1.6, "min_clearance": 0.0, "corner_tolerance": 0.1,
                 "goal_tolerance": 0.01, "planner": "{planner}", "refiner": "none",
                 "termination": "{termination}", "time_limit": 5.0, "iterations": 10,
@@ -571,12 +560,16 @@ mod tests {
                                  "share_of_tolerance": null, "length": null,
                                  "turning": null, "bending": null, "duration": null"#;
 
-    fn paired(ours: &str, status: i32, moveit_probe: &str, ours_probe: &str) -> Case {
+    fn paired(
+        ours: &str,
+        status: i32,
+        moveit_probe: &str,
+        ours_probe: &str,
+    ) -> (f64, Vec<SceneCase>) {
         pair(
-            "scenario".into(),
-            String::new(),
-            PathBuf::new(),
-            scenes(ours),
+            "scenario",
+            &scenes(ours),
+            false,
             reference(status, moveit_probe, ours_probe),
         )
     }
@@ -624,19 +617,13 @@ mod tests {
         assert!(refined("stomp").is_err());
     }
 
-    // A probe holds a self distance exactly where the scenario checks pairs of the robot's
-    // own links: a scenario that checks none pairs with probes that hold none, one that
-    // checks a pair with probes that hold one, and either the other way round panics.
+    // A probe holds a self distance exactly where the plans check pairs of the robot's own
+    // links: plans that check none pair with probes that hold none, plans that check pairs
+    // with probes that hold one, and either the other way round panics.
     #[test]
-    fn a_self_distance_pairs_exactly_where_the_scenario_checks_pairs() {
-        let pairs = |checked: &str, self_clearance: &str| {
-            let scenes: Scenes = serde_json::from_str(
-                &scenario("arm_planning", "rrt_connect", "iterations", PATH).replace(
-                    r#""checked_pairs": []"#,
-                    &format!(r#""checked_pairs": {checked}"#),
-                ),
-            )
-            .expect("a scenario");
+    fn a_self_distance_pairs_exactly_where_the_plans_check_pairs() {
+        let pairs = |checks_own_pairs: bool, self_clearance: &str| {
+            let scenes = scenes(PATH);
             let probe = r#""self_clearance": null"#;
             let probe_with = format!(r#""self_clearance": {self_clearance}"#);
             let reference = reference(
@@ -644,22 +631,13 @@ mod tests {
                 &MOVEIT_PROBED.replace(probe, &probe_with),
                 &PROBED.replace(probe, &probe_with),
             );
-            std::panic::catch_unwind(|| {
-                pair(
-                    "scenario".into(),
-                    String::new(),
-                    PathBuf::new(),
-                    scenes,
-                    reference,
-                )
-            })
-            .is_ok()
+            std::panic::catch_unwind(|| pair("scenario", &scenes, checks_own_pairs, reference))
+                .is_ok()
         };
-        let checked = r#"[["link_a", "link_b"]]"#;
-        assert!(pairs("[]", "null"));
-        assert!(pairs(checked, "0.25"));
-        assert!(!pairs("[]", "0.25"));
-        assert!(!pairs(checked, "null"));
+        assert!(pairs(false, "null"));
+        assert!(pairs(true, "0.25"));
+        assert!(!pairs(false, "0.25"));
+        assert!(!pairs(true, "null"));
     }
 
     #[test]
@@ -670,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scenes_goal_is_a_configuration_or_a_pose_of_each_tip_link() {
+    fn a_scenes_goal_is_a_configuration_or_a_pose_of_each_grasp_link() {
         let goal = |text: &str| serde_json::from_str::<SceneGoal>(text);
         assert!(matches!(goal("[1.0, 2.0]"), Ok(SceneGoal::Joints(q)) if q == [1.0, 2.0]));
         let pose = r#"{"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0],
@@ -699,13 +677,13 @@ mod tests {
 
     #[test]
     fn a_scene_pairs_with_the_answers_of_moveit_and_its_probe_of_ours() {
-        let case = paired(PATH, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
-        let scene = &case.cases[0];
+        let (probe_spacing, cases) = paired(PATH, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
+        let scene = &cases[0];
         assert_eq!(scene.moveit.status, MOVEIT_SUCCESS);
         assert!(scene.moveit.probed.is_some() && scene.ours_probed.is_some());
-        assert_eq!(case.probe_spacing, 0.01);
-        let refused = paired(FAILURE, -10, MOVEIT_NONE, "null");
-        assert!(refused.cases[0].moveit.probed.is_none() && refused.cases[0].ours_probed.is_none());
+        assert_eq!(probe_spacing, 0.01);
+        let (_, refused) = paired(FAILURE, -10, MOVEIT_NONE, "null");
+        assert!(refused[0].moveit.probed.is_none() && refused[0].ours_probed.is_none());
     }
 
     #[test]
@@ -723,8 +701,8 @@ mod tests {
     #[test]
     fn moveits_probe_of_a_path_it_times_none_pairs_with_no_duration() {
         let untimed = MOVEIT_PROBED.replace(r#""duration": 2.0"#, r#""duration": null"#);
-        let case = paired(PATH, MOVEIT_SUCCESS, &untimed, PROBED);
-        let probed = case.cases[0].moveit.probed.expect("MoveIt's probe");
+        let (_, cases) = paired(PATH, MOVEIT_SUCCESS, &untimed, PROBED);
+        let probed = cases[0].moveit.probed.expect("MoveIt's probe");
         assert_eq!((probed.turning, probed.duration), (0.5, None));
     }
 

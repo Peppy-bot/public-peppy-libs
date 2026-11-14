@@ -55,11 +55,12 @@ from brain_core.robot import (
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
 ORIENTATION = (0.0, 0.0, 0.0, 1.0)
-# The tolerances and settle timeout the moves below name.
+# The tolerances, the settle timeout and the contact gap the moves below name.
 BARS = {
     "settle_position_tolerance_m": 0.02,
     "settle_orientation_tolerance_rad": 0.15,
     "settle_timeout_s": 2.0,
+    "contact_gap_m": 0.0,
 }
 # The field a check names besides the pose.
 PLAN = {"duration_s": 0.0}

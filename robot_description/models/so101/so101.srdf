@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="so101_new_calib">
+    <group name="arm">
+        <chain base_link="base_link" tip_link="gripper_frame_link"/>
+    </group>
+    <group name="gripper">
+        <joint name="gripper"/>
+    </group>
+
+    <!-- The working posture: every other joint at the center of its calibrated
+         travel, where lerobot-calibrate homes it, and the wrist rolled a quarter
+         turn from there, which turns the jaw's travel across the arm's plane and
+         puts the camera mount above the jaw, so the wrist camera looks down onto
+         the grasp with its picture upright. Where work starts. -->
+    <group_state name="ready" group="arm">
+        <joint name="shoulder_pan" value="0"/>
+        <joint name="shoulder_lift" value="0"/>
+        <joint name="elbow_flex" value="0"/>
+        <joint name="wrist_flex" value="0"/>
+        <joint name="wrist_roll" value="-1.5707963267948966"/>
+    </group_state>
+    <!-- Home: the collapsed pose the arm ships in, measured on hardware,
+         unfolded on the shoulder lift, the elbow and the wrist by the least equal
+         turn that keeps every pair the planner's self model checks out of contact
+         with each joint anywhere within the real arm's largest error at a goal, so
+         a plan starts from it. Released, it settles back onto the collapsed pose,
+         whose physical fold reaches -1.80 rad on the shoulder, past the URDF's
+         -1.745 floor. -->
+    <group_state name="home" group="arm">
+        <joint name="shoulder_pan" value="-0.05"/>
+        <joint name="shoulder_lift" value="-1.51"/>
+        <joint name="elbow_flex" value="1.47"/>
+        <joint name="wrist_flex" value="1.03"/>
+        <joint name="wrist_roll" value="0.32"/>
+    </group_state>
+    <!-- Start: the posture a simulation stands the arm in when the robot joins,
+         the arm folded over its base. -->
+    <group_state name="start" group="arm">
+        <joint name="shoulder_pan" value="-0.05"/>
+        <joint name="shoulder_lift" value="-1.72"/>
+        <joint name="elbow_flex" value="1.68"/>
+        <joint name="wrist_flex" value="1.24"/>
+        <joint name="wrist_roll" value="0.32"/>
+    </group_state>
+    <group_state name="closed" group="gripper">
+        <joint name="gripper" value="-0.174533"/>
+    </group_state>
+    <group_state name="open" group="gripper">
+        <joint name="gripper" value="1.74533"/>
+    </group_state>
+
+    <end_effector name="ee" parent_link="gripper_frame_link" group="gripper" parent_group="arm"/>
+
+    <disable_collisions link1="base_link" link2="shoulder_link" reason="Adjacent"/>
+    <disable_collisions link1="shoulder_link" link2="upper_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="upper_arm_link" link2="lower_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="lower_arm_link" link2="wrist_link" reason="Adjacent"/>
+    <disable_collisions link1="wrist_link" link2="gripper_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_link" link2="moving_jaw_so101_v1_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="upper_arm_link" reason="Never"/>
+    <disable_collisions link1="lower_arm_link" link2="gripper_link" reason="Never"/>
+    <disable_collisions link1="lower_arm_link" link2="moving_jaw_so101_v1_link" reason="Never"/>
+    <disable_collisions link1="wrist_link" link2="moving_jaw_so101_v1_link" reason="Never"/>
+</robot>

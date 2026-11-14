@@ -11,11 +11,12 @@
 //! inside a closed one, and a start near an object or holding one near the arm departs.
 
 mod common;
+mod openarm_v2;
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
@@ -26,9 +27,9 @@ use collision_geometry::hull::exact_hull;
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal,
-    GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest,
-    Objects, OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
+    ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal, GoalSampler,
+    IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest, Objects,
+    OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
     PlanningScene, PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields,
     StartFault, Surroundings, check_path, plan_path, pose_parts, term_clearances,
 };
@@ -37,9 +38,10 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, branch, distance_to_map, held_from_its_arm,
-    left_fingers, map, occupied_at, off_the_branch_seams, positive, voxel_in_a_finger,
+    LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, branch, distance_to_map, held_from_its_arm,
+    left_fingers, map, occupied_at, off_the_branch_seams, plan_arm, positive, voxel_in_a_finger,
 };
+use openarm_v2::{DESCRIPTION, JOINTS, LEFT, RIGHT};
 
 const VOXEL_M: f64 = 0.04;
 const MIN_CLEARANCE_M: f64 = 0.02;
@@ -174,7 +176,7 @@ fn box_between() -> Vec<[f64; 3]> {
 #[test]
 fn a_plan_around_a_box_keeps_its_clearance_on_its_rounded_path() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -215,7 +217,7 @@ fn a_plan_around_a_box_keeps_its_clearance_on_its_rounded_path() {
 #[test]
 fn the_same_request_on_the_same_map_gives_the_same_path() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let plan_at = |stamp: u64| {
@@ -262,7 +264,7 @@ fn a_short_pose_move_from_the_start_ends_on_its_branches() {
     /// The budget of a search of one descent: its first pass spends it.
     const ONE_DESCENT: usize = 1;
     let (map, field) = world(&[]);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let scene = Scene {
         map: &map,
         field: &field,
@@ -354,7 +356,7 @@ fn a_goal_inside_an_obstacle_is_unreachable() {
         goal_hand - Vector3::repeat(0.1),
         goal_hand + Vector3::repeat(0.1),
     ));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -396,7 +398,7 @@ fn a_goal_within_the_clearance_of_its_own_body_names_the_pair() {
         center: hand(&HIGH),
         radius: 0.0,
     };
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -432,7 +434,7 @@ fn a_goal_within_the_clearance_of_its_own_body_names_the_pair() {
 #[test]
 fn a_plan_its_iterations_end_gives_no_path() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -511,7 +513,7 @@ impl GoalSampler<JOINTS> for OneGoal {
 #[test]
 fn a_plan_samples_its_goals_while_its_planner_plans() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -547,7 +549,7 @@ fn a_plan_samples_its_goals_while_its_planner_plans() {
 #[test]
 fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     let (map, field) = world(&[]);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -621,7 +623,7 @@ const IN_THE_SPARE_M: f64 = MIN_CLEARANCE_M + 5e-4;
 
 fn near_the_slab(start_distance_m: f64) -> NearTheSlab {
     let (map, field) = world(&slab());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     // A turn of one joint that brings the arm within the start distance of the slab:
     // bisect along it to where the arm comes within it.
     let limits = LEFT_ARM.chain().limits();
@@ -732,7 +734,7 @@ fn a_goal_sampling_the_deadline_ends_says_more_time_may_help() {
         goal_hand - Vector3::repeat(0.1),
         goal_hand + Vector3::repeat(0.1),
     ));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -823,7 +825,7 @@ impl GoalSampler<JOINTS> for AllButAttemptZero {
 #[test]
 fn an_attempt_with_no_goal_leaves_the_plan_no_path() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -866,7 +868,7 @@ fn an_attempt_with_no_goal_leaves_the_plan_no_path() {
 fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
     let NearTheSlab { start, .. } = near_the_slab(IN_THE_SPARE_M);
     let (map, field) = world(&[slab(), box_between()].concat());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -923,7 +925,7 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
         })
         .collect();
     let (map, field) = world(&points);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let surroundings = Surroundings::new(&map, &field, term_clearances(MIN_CLEARANCE_M));
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
@@ -991,7 +993,7 @@ fn a_path_keeps_its_clearance_from_the_self_model() {
         radius: 0.05,
     };
     let (map, field) = world(&[]);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     use motion_planning_core::SelfModel;
     assert!(
         model.clearance(&mid, Moving::All, f64::INFINITY) < MIN_CLEARANCE_M,
@@ -1028,7 +1030,7 @@ fn a_path_keeps_its_clearance_from_the_self_model() {
 #[test]
 fn a_start_moves_onto_a_limit_within_its_tolerance() {
     let (map, field) = world(&[]);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1058,7 +1060,7 @@ fn a_start_moves_onto_a_limit_within_its_tolerance() {
             matches!(
                 &refused,
                 Err(PlanFailure::Start(StartFault::OutsideLimits { joint, .. }))
-                    if joint == "openarm_left_joint4"
+                    if joint == LEFT_ARM.chain().joint_name(3)
             ),
             "{refused:?}"
         );
@@ -1074,7 +1076,7 @@ fn a_start_inside_an_obstacle_is_refused() {
         start_hand - Vector3::repeat(0.05),
         start_hand + Vector3::repeat(0.05),
     ));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1103,7 +1105,7 @@ fn a_start_inside_an_obstacle_is_refused() {
 // arm stands inside the clearance of it.
 #[test]
 fn a_start_inside_the_clearance_of_an_object_is_refused() {
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let (empty, field) = world(&[]);
     let under = hand(&LOW) - Vector3::new(0.0, 0.0, 0.4);
     let raised = |by: f64| {
@@ -1161,7 +1163,7 @@ fn a_start_inside_the_clearance_of_an_object_is_refused() {
 #[test]
 fn a_request_without_distances_is_refused() {
     let (map, field) = world(&[]);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1214,9 +1216,9 @@ fn from_a_start_near_the_slab_and_its_own_body_both_clearances_rise() {
         center: hand(&start) + aside * 0.06,
         radius: 0.05,
     };
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     use motion_planning_core::SelfModel;
-    let bare = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let bare = Arms::new(vec![plan_arm(LEFT)], None);
     let from_map = |q: &[f64; JOINTS]| distance_to_map(&bare, &map, q);
     let (map_start, own_start) = (
         from_map(&start),
@@ -1315,9 +1317,9 @@ fn plan_from_a_pair(stands: Stands) -> Result<Vec<[f64; JOINTS]>, PlanFailure> {
     let (map, field) = world(&[]);
     let model = ApartNearTheStart {
         stands,
-        per_rad: Arm::new("left_arm", &LEFT_ARM).reach()[0],
+        per_rad: plan_arm(LEFT).reach()[0],
     };
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1413,7 +1415,7 @@ fn plan_from_near_the_slab(start_distance_m: f64) -> Result<Vec<[f64; JOINTS]>, 
     let NearTheSlab {
         map, field, start, ..
     } = near_the_slab(start_distance_m);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1448,7 +1450,7 @@ fn assert_answers_from_near_the_slab(distance: f64, planner: Planner, seed: u32)
     let NearTheSlab {
         map, field, start, ..
     } = near_the_slab(distance);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1498,7 +1500,7 @@ fn a_start_whose_finger_touches_the_map_is_refused_naming_it() {
     let riders = left_fingers();
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the fingers ride the hand"),
         ],
@@ -1555,7 +1557,7 @@ impl GoalSampler<JOINTS> for StoppingOnceDrawn<'_> {
 #[test]
 fn a_stopped_plan_says_so() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1603,7 +1605,7 @@ fn a_stopped_plan_says_so() {
 #[test]
 fn a_plan_of_several_attempts_repeats_and_keeps_its_clearance() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1675,7 +1677,7 @@ fn plan_with_a_stopping_self_model(
         stop: &stop,
         asked_once_stopped: AtomicUsize::new(0),
     };
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     let answer = plan_path(
         &arms,
         &scene,
@@ -1791,7 +1793,7 @@ fn assert_falls_short(check: &PathCheck, place: Place, passing: usize) {
 #[test]
 fn a_check_answers_the_waypoints_before_the_first_fault() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let scene = Scene {
         map: &map,
         field: &field,
@@ -1821,7 +1823,7 @@ fn a_check_answers_the_waypoints_before_the_first_fault() {
         checked.fault,
         Some(PathFault::OutsideLimits {
             waypoint: count + 1,
-            joint: "openarm_left_joint4".to_string(),
+            joint: LEFT_ARM.chain().joint_name(3).to_string(),
             position: limit - 0.01,
             low: limit,
             high: LEFT_ARM.chain().limits()[3].hi,
@@ -1852,7 +1854,7 @@ impl motion_planning_core::SelfModel<JOINTS> for AskedAtMostTenThousand {
 fn a_waypoint_far_outside_a_limit_answers_promptly() {
     let (map, field) = world(&[]);
     let model = AskedAtMostTenThousand(AtomicUsize::new(0));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], Some(&model));
+    let arms = Arms::new(vec![plan_arm(LEFT)], Some(&model));
     let scene = Scene {
         map: &map,
         field: &field,
@@ -1867,7 +1869,7 @@ fn a_waypoint_far_outside_a_limit_answers_promptly() {
         matches!(
             &checked.fault,
             Some(PathFault::OutsideLimits { waypoint: 1, joint, position, .. })
-                if joint == "openarm_left_joint7" && *position == 1e12
+                if joint == LEFT_ARM.chain().joint_name(6) && *position == 1e12
         ),
         "{checked:?}"
     );
@@ -1883,7 +1885,7 @@ fn a_check_answers_the_faults_of_its_start() {
         start_hand - Vector3::repeat(0.05),
         start_hand + Vector3::repeat(0.05),
     ));
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let scene = Scene {
         map: &map,
         field: &field,
@@ -1932,7 +1934,7 @@ fn a_check_answers_the_faults_of_its_start() {
         matches!(
             &beyond.fault,
             Some(PathFault::Start(StartFault::OutsideLimits { joint, .. }))
-                if joint == "openarm_left_joint4"
+                if joint == LEFT_ARM.chain().joint_name(3)
         ),
         "{beyond:?}"
     );
@@ -1948,7 +1950,7 @@ fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
     let NearTheSlab {
         map, field, start, ..
     } = near_the_slab(IN_THE_SPARE_M);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
@@ -1998,7 +2000,7 @@ fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
 #[test]
 fn a_check_refuses_a_request_out_of_range_and_ends_by_its_deadline() {
     let (map, field) = world(&box_between());
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let scene = Scene {
         map: &map,
         field: &field,
@@ -2045,17 +2047,35 @@ fn a_check_refuses_a_request_out_of_range_and_ends_by_its_deadline() {
 }
 
 /// The link of the left arm's grasp point, which carries what the arm holds.
-const GRASP_LINK: &str = "openarm_left_tcp";
-/// The gripper's links, which a held item may touch: the hand and its two fingers.
-const GRIPPER: [&str; 3] = [
-    "openarm_left_ee_base_link",
-    "openarm_left_ee_link1",
-    "openarm_left_ee_link2",
-];
+fn grasp_link() -> &'static str {
+    &openarm_v2::arm(LEFT).grasp_link
+}
+/// The left gripper's links, which a held item may touch: the hand and the fingers that
+/// hang from it.
+static GRIPPER: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let fingers = &openarm_v2::arm(LEFT).gripper.fingers;
+    let hand = &urdf_joint(&fingers[0].joint).parent.link;
+    std::iter::once(hand)
+        .chain(fingers.iter().map(|finger| &finger.link))
+        .map(String::as_str)
+        .collect()
+});
 /// The side of the item the tests' gripper holds: 2 cm, which the closed fingers overlap.
 const ITEM_M: f64 = 0.02;
 /// The right arm's grasp link, which the scene of both arms names besides the left's.
-const RIGHT_GRASP_LINK: &str = "openarm_right_tcp";
+fn right_grasp_link() -> &'static str {
+    &openarm_v2::arm(RIGHT).grasp_link
+}
+
+/// The joint `name` of OpenArm v2's URDF.
+fn urdf_joint(name: &str) -> &'static urdf_rs::Joint {
+    DESCRIPTION
+        .robot()
+        .joints
+        .iter()
+        .find(|joint| joint.name == name)
+        .unwrap_or_else(|| panic!("OpenArm v2 has the joint {name}"))
+}
 
 /// The scene of a plan on `map`, whose distances `field` holds, among `objects`.
 fn among<'a>(map: &'a VoxelMap, field: &'a DistanceField, objects: Objects<'a>) -> Scene<'a> {
@@ -2075,7 +2095,7 @@ fn scene_of_grasp_links(grasp_links: &[&str]) -> PlanningScene {
         .iter()
         .map(|link| link.name())
         .chain(grasp_links.iter().copied())
-        .chain(GRIPPER)
+        .chain(GRIPPER.iter().copied())
         .map(String::from);
     PlanningScene::new(RobotLinks::new(
         links,
@@ -2130,7 +2150,7 @@ fn remove_object(id: &str) -> ObjectRequest {
 
 /// The left arm's scene after `requests`, applied to `map`.
 fn scene_with(map: &mut VoxelMap, requests: &[ObjectRequest]) -> PlanningScene {
-    let mut scene = scene_of_grasp_links(&[GRASP_LINK]);
+    let mut scene = scene_of_grasp_links(&[grasp_link()]);
     scene
         .apply_collision_objects(requests, map)
         .expect("the objects apply");
@@ -2164,12 +2184,12 @@ fn attached(
 /// `scene` with the object "item" attached to the left grasp point where the arm stands
 /// at `q`, touching `touch_links`.
 fn holding(scene: &PlanningScene, q: &[f64; JOINTS], touch_links: &[&str]) -> PlanningScene {
-    attached(scene, "item", GRASP_LINK, grasp_pose(q), touch_links)
+    attached(scene, "item", grasp_link(), grasp_pose(q), touch_links)
 }
 
 /// The scene as a plan of the left arm meets it, the left arm its only arm.
 fn left_objects(scene: &PlanningScene) -> PlanObjects<'_> {
-    scene.for_arms(&[GRASP_LINK], |link| {
+    scene.for_arms(&[grasp_link()], |link| {
         panic!("the left arm is the only arm, and {link} another's grasp link")
     })
 }
@@ -2180,7 +2200,7 @@ fn riders<'a>(scene: &'a PlanningScene, fingers: &[Rider<'a>]) -> Vec<Rider<'a>>
     fingers
         .iter()
         .copied()
-        .chain(scene.riders(GRASP_LINK, &LEFT_ARM))
+        .chain(scene.riders(grasp_link(), &LEFT_ARM))
         .collect()
 }
 
@@ -2231,7 +2251,7 @@ fn a_box_is_avoided_until_it_is_removed() {
     let mut voxels = map(VOXEL_M, 1.6);
     let with_box = scene_with(&mut voxels, &[box_object()]);
     let field = DistanceField::of(&voxels);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let boxed = left_objects(&with_box);
     let near_the_box = Surroundings::new(&voxels, &field, term_clearances(MIN_CLEARANCE_M))
         .with_objects(boxed.objects(&[]));
@@ -2279,7 +2299,7 @@ fn a_goal_inside_an_object_names_the_object() {
         &[add_shape("box", &around_the_goal, "box", &[0.2; 3])],
     );
     let field = DistanceField::of(&voxels);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let boxed = left_objects(&with_box);
     let failure = plan_path(
@@ -2316,7 +2336,7 @@ fn an_attached_item_is_carried_around_the_box() {
         let riders = riders(held, &fingers);
         let arms = Arms::new(
             vec![
-                Arm::new("left_arm", &LEFT_ARM)
+                plan_arm(LEFT)
                     .riding(&riders)
                     .expect("the fingers and the item ride the hand"),
             ],
@@ -2389,7 +2409,7 @@ fn held_apart_from_its_arm(empty: &VoxelMap, q: &[f64; JOINTS], apart: f64) -> P
             &mut empty.clone(),
             &[add_shape("item", &at, "box", &[ITEM_M; 3])],
         );
-        attached(&scene, "item", GRASP_LINK, tcp, &GRIPPER)
+        attached(&scene, "item", grasp_link(), tcp, &GRIPPER)
     };
     let (mut far, mut near) = (0.0, 1.0);
     assert!(from_its_arm(&held_at(far), q) > apart);
@@ -2411,7 +2431,7 @@ fn from_its_arm(held: &PlanningScene, q: &[f64; JOINTS]) -> f64 {
     let riders = riders(held, &[]);
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the item rides the hand"),
         ],
@@ -2432,7 +2452,7 @@ fn holding_in<R>(
     let riders = riders(held, &[]);
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the item rides the hand"),
         ],
@@ -2539,7 +2559,7 @@ fn a_held_item_keeps_the_full_clearance_from_the_other_arm_and_the_torso() {
     let riders = riders(&held, &[]);
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the item rides the hand"),
         ],
@@ -2547,7 +2567,17 @@ fn a_held_item_keeps_the_full_clearance_from_the_other_arm_and_the_torso() {
     );
     let hull = cube_hull(0.005);
     let beside = ahead * Isometry3::translation(0.04, 0.0, 0.0);
-    for link in ["openarm_right_link5", "openarm_body_link0"] {
+    let right = openarm_v2::arm(RIGHT);
+    // The other arm's fifth link, and the torso its base stands on.
+    let fifth_link = urdf_joint(&right.joints[4]).child.link.as_str();
+    let torso = DESCRIPTION
+        .robot()
+        .joints
+        .iter()
+        .find(|joint| joint.child.link == right.base_link)
+        .map(|joint| joint.parent.link.as_str())
+        .expect("the right arm's base stands on the torso");
+    for link in [fifth_link, torso] {
         let parts = [RobotPart {
             link,
             piece: Placed::new(&hull, beside),
@@ -2563,10 +2593,7 @@ fn a_held_item_keeps_the_full_clearance_from_the_other_arm_and_the_torso() {
             "the item keeps the plan's clearance from {link}"
         );
         assert!(
-            plan_clearance.clear(
-                &Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None),
-                &LOW
-            ),
+            plan_clearance.clear(&Arms::new(vec![plan_arm(LEFT)], None), &LOW),
             "the bare arm comes within the plan's clearance of {link}"
         );
     }
@@ -2597,7 +2624,7 @@ fn pairs_let_the_item_rest_on_the_table_and_the_fingers_close_on_it() {
         let riders = riders(held, fingers);
         let arms = Arms::new(
             vec![
-                Arm::new("left_arm", &LEFT_ARM)
+                plan_arm(LEFT)
                     .riding(&riders)
                     .expect("the riders ride the hand"),
             ],
@@ -2659,18 +2686,18 @@ fn held_by_the_right_arm(
     id: &str,
     touch_links: &[&str],
 ) -> PlanningScene {
-    let mut scene = scene_of_grasp_links(&[GRASP_LINK, RIGHT_GRASP_LINK]);
+    let mut scene = scene_of_grasp_links(&[grasp_link(), right_grasp_link()]);
     scene
         .apply_collision_objects(requests, map)
         .expect("the objects apply");
-    attached(&scene, id, RIGHT_GRASP_LINK, right_hand(), touch_links)
+    attached(&scene, id, right_grasp_link(), right_hand(), touch_links)
 }
 
 /// The scene as a plan of the left arm meets it, the right arm's grasp link at
 /// `right_hand`.
 fn left_objects_beside_the_right(scene: &PlanningScene) -> PlanObjects<'_> {
-    scene.for_arms(&[GRASP_LINK], |link| {
-        assert_eq!(link, RIGHT_GRASP_LINK, "the other arm's grasp link");
+    scene.for_arms(&[grasp_link()], |link| {
+        assert_eq!(link, right_grasp_link(), "the other arm's grasp link");
         right_hand()
     })
 }
@@ -2686,7 +2713,7 @@ fn an_object_the_other_arm_holds_stands_where_it_holds_it() {
     let boxed = held_by_the_right_arm(&mut voxels, &[box_object()], "box", &[]);
     let field = DistanceField::of(&voxels);
     let objects = left_objects_beside_the_right(&boxed);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let scene = among(&voxels, &field, objects.objects(&[]));
     let straight = check(&arms, &scene, LOW, &[HIGH]);
     assert!(breaks_first_run_on(&straight, 0), "{straight:?}");
@@ -2699,7 +2726,7 @@ fn an_object_the_other_arm_holds_stands_where_it_holds_it() {
     let fingers = left_fingers();
     let gripped = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&fingers)
                 .expect("the fingers ride the hand"),
         ],
@@ -2815,7 +2842,7 @@ fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
     let holding_the_cube = |requests: &[ObjectRequest]| {
         let cube = add_shape("cube", &at_cube, "box", &[0.02; 3]);
         let scene = scene_with(&mut voxels.clone(), &[requests, &[cube]].concat());
-        attached(&scene, "cube", GRASP_LINK, grasp, &GRIPPER)
+        attached(&scene, "cube", grasp_link(), grasp, &GRIPPER)
     };
     let keeps = |requests: &[ObjectRequest]| {
         let scene = holding_the_cube(requests);
@@ -2823,7 +2850,7 @@ fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
         let riders = riders(&scene, &[]);
         let arms = Arms::new(
             vec![
-                Arm::new("left_arm", &LEFT_ARM)
+                plan_arm(LEFT)
                     .riding(&riders)
                     .expect("the cube rides the hand"),
             ],
@@ -2847,7 +2874,7 @@ fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
     let riders = riders(&scene, &[]);
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the cube rides the hand"),
         ],
@@ -2893,7 +2920,7 @@ fn a_path_from_a_start_near_an_object_must_move_away() {
     );
     let field = DistanceField::of(&voxels);
     let objects = left_objects(&planning);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let arms = Arms::new(vec![plan_arm(LEFT)], None);
     assert!(
         !Surroundings::new(&voxels, &field, [MIN_CLEARANCE_M + PLAN_SPARE_M, 0.0, 0.0])
             .with_objects(objects.objects(&[]))
@@ -2942,7 +2969,7 @@ fn a_pair_with_the_map_lets_a_held_item_touch_it() {
         let riders = riders(held, &[]);
         let arms = Arms::new(
             vec![
-                Arm::new("left_arm", &LEFT_ARM)
+                plan_arm(LEFT)
                     .riding(&riders)
                     .expect("the item rides the hand"),
             ],
@@ -2989,7 +3016,7 @@ fn two_held_items_are_never_checked_against_each_other() {
     let held = attached(
         &holding(&both, &LOW, &GRIPPER),
         "second",
-        GRASP_LINK,
+        grasp_link(),
         grasp_pose(&LOW),
         &GRIPPER,
     );
@@ -2998,7 +3025,7 @@ fn two_held_items_are_never_checked_against_each_other() {
     let riders = riders(&held, &[]);
     let arms = Arms::new(
         vec![
-            Arm::new("left_arm", &LEFT_ARM)
+            plan_arm(LEFT)
                 .riding(&riders)
                 .expect("the items ride the hand"),
         ],

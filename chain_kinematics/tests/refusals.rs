@@ -6,7 +6,7 @@
 //! entry silently ignored. A chain that loads is one whose forward kinematics
 //! can be believed.
 
-use chain_kinematics::{Chain, ChainError, ChainSpec, JointSelection};
+use chain_kinematics::{Chain, ChainError, ChainSpec, JointSelection, TreeError};
 
 /// A two-joint chain, with `extra` spliced in before the closing tag so each
 /// test varies exactly the one thing it is about.
@@ -143,7 +143,11 @@ fn a_multi_slot_joint_anywhere_is_refused() {
     let err = build::<2>(&urdf(BOUNDED, floater), JointSelection::PathOrder)
         .expect_err("a floating joint cannot be posed by one value");
     assert!(
-        matches!(&err, ChainError::Urdf(m) if m.contains("j_free") && m.contains("Floating")),
+        matches!(
+            &err,
+            ChainError::Tree(TreeError::MultiPositionJoint { joint, kind })
+                if joint == "j_free" && kind == "floating"
+        ),
         "expected a multi-slot refusal, got {err}"
     );
 }
@@ -158,8 +162,35 @@ fn a_link_named_twice_is_refused() {
     let err = build::<2>(&urdf(BOUNDED, duplicate), JointSelection::PathOrder)
         .expect_err("two links cannot share a name");
     assert!(
-        matches!(&err, ChainError::Urdf(m) if m.contains("same name")),
+        matches!(&err, ChainError::Tree(TreeError::LinkTwice(link)) if link == "a"),
         "expected a duplicate-link refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_urdf_joint_given_twice_is_refused() {
+    // A joint is named by the spec, the SRDF and a mimic: a repeated joint name
+    // leaves which of the two each of them means to whichever lookup runs.
+    let twice = r#"<link name="spare"/>
+      <joint name="j_a" type="fixed"><parent link="tip"/><child link="spare"/></joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, twice), JointSelection::PathOrder)
+        .expect_err("two joints cannot share a name");
+    assert!(
+        matches!(&err, ChainError::Tree(TreeError::JointTwice(joint)) if joint == "j_a"),
+        "expected a duplicate-joint refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_joint_naming_a_link_the_urdf_lacks_is_refused() {
+    let dangling = r#"<joint name="j_dangling" type="fixed">
+        <parent link="tip"/><child link="nowhere"/>
+      </joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, dangling), JointSelection::PathOrder)
+        .expect_err("a joint to no link joins nothing");
+    assert_eq!(
+        err.to_string(),
+        "the joint \"j_dangling\" names the link \"nowhere\", and the URDF has no such link"
     );
 }
 
@@ -175,7 +206,11 @@ fn a_link_with_two_parents_is_refused() {
     let err = build::<2>(&urdf(BOUNDED, second_parent), JointSelection::PathOrder)
         .expect_err("a link reached two ways is not a tree");
     assert!(
-        matches!(&err, ChainError::Urdf(m) if m.contains("two parent joints")),
+        matches!(
+            &err,
+            ChainError::Tree(TreeError::LinkOnTwoJoints { link, first, second })
+                if link == "b" && first == "j_b" && second == "j_loop"
+        ),
         "expected a two-parent refusal, got {err}"
     );
 }
@@ -189,7 +224,7 @@ fn a_urdf_with_two_roots_is_refused() {
     let err = build::<2>(&urdf(BOUNDED, orphan), JointSelection::PathOrder)
         .expect_err("two roots leave the base ambiguous");
     assert!(
-        matches!(&err, ChainError::Urdf(m) if m.contains("exactly one root link")),
+        matches!(&err, ChainError::Tree(TreeError::RootLinks { roots }) if roots == &["base", "island"]),
         "expected a multiple-root refusal, got {err}"
     );
 }
@@ -212,7 +247,10 @@ fn a_ring_of_links_beside_the_tree_is_refused() {
     let err = build::<2>(&urdf(BOUNDED, ring), JointSelection::PathOrder)
         .expect_err("a ring is not part of the tree, and cannot be walked out of");
     assert!(
-        matches!(&err, ChainError::Urdf(m) if m.contains("not reachable from root link")),
-        "expected an unreachable-link refusal, got {err}"
+        matches!(
+            &err,
+            ChainError::Tree(TreeError::JointLoop { joints }) if joints == &["j_ring_out", "j_ring_back"]
+        ),
+        "expected a loop refusal, got {err}"
     );
 }

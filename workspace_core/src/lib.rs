@@ -10,9 +10,11 @@
 //!   [`REACH_TOLERANCE`] of the point with its gripper's approach axis within
 //!   [`GRASP_ANGLE_TOLERANCE`] of one of the [`GraspDirection`]s; the roll the
 //!   gripper ends at about that direction is not checked. Each side solves
-//!   with its own inverse kinematics: a solver of full poses tries each
+//!   with its own inverse kinematics ([`reach::ArmSolver`]) and names what
+//!   the arm must stay clear of ([`reach::Clearance`]); [`reach::reach`]
+//!   judges the tries alike for both: a solver of full poses tries each
 //!   orientation [`GraspOrientation::all`] lists, eight rolls about each
-//!   direction.
+//!   direction, and a solver of approaches each direction once.
 //! - **View** ([`View`]): the point lies inside the perception camera's field
 //!   of view, seen through `camera_core`'s pinhole model of its colour stream,
 //!   and its depth stream reads a depth for it ([`Depth`],
@@ -47,7 +49,9 @@
 //! The crate takes and gives plain values (`[f64; 3]`, `[f64; 9]`) and sees a
 //! camera through `camera_core`'s pinhole model: it knows no math library, no
 //! robot description and no world, so a consumer on nalgebra and one on glam
-//! read it alike.
+//! read it alike. Its `description` feature adds [`surface_block`]: the bodies
+//! of a robot's arms, from its description, held clear of the surface that a
+//! robot's own answer is asked about.
 
 #![forbid(unsafe_code)]
 
@@ -57,6 +61,9 @@ mod fit;
 mod grasp;
 mod grid;
 pub mod messages;
+pub mod reach;
+#[cfg(feature = "description")]
+pub mod surface_block;
 mod verdict;
 
 pub use camera::{Camera, CameraFacts, Depth, PerceptionCameraError, perception_camera};

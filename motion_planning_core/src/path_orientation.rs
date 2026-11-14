@@ -382,14 +382,13 @@ fn largest_of(tolerance: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use chain_kinematics::{ChainSpec, JointSelection};
     use hegel::TestCase;
     use hegel::generators as gs;
     use nalgebra::{UnitQuaternion, Vector3};
-    use openarm_description::{HardwareVersion, Side};
 
     use super::*;
     use crate::goal::Axis;
+    use crate::goal::tests::left_arm;
 
     const JOINTS: usize = 7;
     /// The step of the central differences of an error, in radians.
@@ -398,19 +397,6 @@ mod tests {
     const DIFFERENCE_BOUND: f64 = 1e-6;
     /// The arithmetic's rounding in the bounds on a motion's turn.
     const ROUNDING: f64 = 1e-9;
-
-    fn left_arm() -> Chain<JOINTS> {
-        let version = HardwareVersion::V2;
-        Chain::from_urdf(
-            &urdf_rs::read_from_string(version.urdf()).expect("the URDF parses"),
-            &ChainSpec {
-                base_link: Some(version.base_link(Side::Left)),
-                tip_link: version.tcp_link(Side::Left),
-                joints: JointSelection::PathOrder,
-            },
-        )
-        .expect("the left arm")
-    }
 
     fn drawn_joints(tc: &TestCase, chain: &Chain<JOINTS>) -> [f64; JOINTS] {
         let limits = chain.limits();
