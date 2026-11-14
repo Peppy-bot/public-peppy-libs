@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- The manifest by which pluginlib names the package of the plugins in
+     moveit_plugins.xml: it reads the name alone. -->
+<package format="3">
+  <name>ros_reference</name>
+</package>

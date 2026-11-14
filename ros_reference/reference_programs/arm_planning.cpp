@@ -14,6 +14,7 @@
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <moveit/constraint_samplers/constraint_sampler_allocator.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
 #include <moveit/ompl_interface/model_based_planning_context.hpp>
 #include <moveit/planning_interface/planning_interface.hpp>
@@ -34,6 +35,8 @@ namespace ros_reference {
 namespace {
 
 constexpr const char* pipeline_namespace = "ompl";
+// The constraint sampler allocator that the OMPL planner loads (union_in_name_order.cpp).
+constexpr const char* constraint_sampler = "ros_reference/UnionInNameOrder";
 // MoveIt's error codes of a plan that succeeds, and of one whose planned path fails
 // MoveIt's own check: both ran the planner.
 constexpr int moveit_success = moveit_msgs::msg::MoveItErrorCodes::SUCCESS;
@@ -117,7 +120,8 @@ struct Pipeline {
 
 // The pipeline: the OMPL planner the scenario names, ended as its termination
 // says, by its `iterations` (MoveIt's termination condition Iteration) or by the
-// request's allowed planning time alone (MoveIt's default); MoveIt's default request
+// request's allowed planning time alone (MoveIt's default), its constraint samplers
+// allocated by `constraint_sampler` where it services a request; MoveIt's default request
 // adapters, a start outside a joint limit by any amount refused; and the response
 // adapters AddTimeOptimalParameterization and ValidateSolution: MoveIt's defaults but
 // DisplayMotionPath, which publishes the path for display. MoveIt simplifies each path
@@ -125,8 +129,14 @@ struct Pipeline {
 Pipeline pipeline_of(const moveit::core::RobotModelPtr& model, const nlohmann::json& scenario,
                      const PlannerConfig& planner) {
   start_ros();
+  // The OMPL planner plans without a constraint sampler plugin that it fails to load
+  // (moveit2 2.15.2 constraint_sampler_manager_loader.cpp:76-86), so the reference loads the
+  // plugin first, and a plugin that fails to load fails the reference.
+  plugins<constraint_samplers::ConstraintSamplerAllocator>(
+      "constraint_samplers::ConstraintSamplerAllocator", {constraint_sampler});
   const std::string ns = pipeline_namespace;
   std::vector<rclcpp::Parameter> parameters{
+      {"constraint_samplers", constraint_sampler},
       {ns + ".start_state_max_bounds_error", 0.0},
       {ns + "." + group_of(*model, scenario).name + ".planner_configs",
        std::vector<std::string>{planner.name}},

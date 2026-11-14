@@ -1,0 +1,17 @@
+<!-- The plugins of MoveIt's base classes that the reference program's library
+     ros_reference_moveit_plugins holds, which pluginlib finds through the ament index
+     entry that CMakeLists.txt installs. -->
+<library path="ros_reference_moveit_plugins">
+  <class name="ros_reference/UnionInNameOrder" type="ros_reference::UnionInNameOrder"
+         base_class_type="constraint_samplers::ConstraintSamplerAllocator">
+    <description>
+      The union of a group's subgroup samplers, built in the order of the subgroups' names.
+    </description>
+  </class>
+  <class name="ros_reference/PassBoundedKdl" type="ros_reference::PassBoundedKdl"
+         base_class_type="kinematics::KinematicsBase">
+    <description>
+      MoveIt's KDL inverse kinematics, its search ended by the passes of KDL's descent loop.
+    </description>
+  </class>
+</library>

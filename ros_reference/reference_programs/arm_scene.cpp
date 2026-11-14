@@ -209,8 +209,7 @@ void load_kdl(const moveit::core::RobotModelPtr& model,
   std::vector<rclcpp::Parameter> solvers;
   for (const auto& name : solver_groups) {
     const std::string kinematics = "robot_description_kinematics." + name;
-    solvers.emplace_back(kinematics + ".kinematics_solver",
-                         "kdl_kinematics_plugin/KDLKinematicsPlugin");
+    solvers.emplace_back(kinematics + ".kinematics_solver", "ros_reference/PassBoundedKdl");
     if (model->getJointModelGroup(name)->getActiveJointModels().size() < pose_freedoms) {
       solvers.emplace_back(kinematics + ".position_only_ik", true);
     }
