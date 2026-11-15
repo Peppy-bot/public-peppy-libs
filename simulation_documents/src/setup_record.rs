@@ -155,12 +155,12 @@ impl SetupRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::tests::example;
+    use crate::world::tests::{asset, example};
 
     #[test]
     fn a_record_at_the_start_holds_the_scene_alone() {
         let scene = Scene {
-            asset: "scene/default".into(),
+            asset: asset("scene/default"),
             scale: 1.0,
         };
         let record = SetupRecord::at_start(scene.clone());

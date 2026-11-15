@@ -42,7 +42,7 @@ use crate::world::{
     WorldFields, check_name_rules, no_such_region, writes_a_riser,
 };
 use crate::{
-    Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
+    AssetRef, Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
     WorldDocument, text,
 };
 use documents_core::Document;
@@ -443,6 +443,10 @@ impl ObjectEntry {
     }
 }
 
+/// The asset that the template of an entry of an item kind holds, until an
+/// expansion gives each object of the entry an asset of the item kind.
+const ITEM_KIND_ASSET: &str = "object/item_kind";
+
 /// The objects of an item kind that an entry adds: how many, and what each
 /// one is but its asset, which each draws from the assets of the item kind.
 #[derive(Clone, Debug, PartialEq)]
@@ -477,7 +481,10 @@ impl ItemKindEntry {
             .remove("count")
             .ok_or_else(|| Error::field("count", COUNT_FORM))
             .and_then(|count| Count::of(&count))?;
-        template.insert("asset".to_owned(), Value::String(String::new()));
+        template.insert(
+            "asset".to_owned(),
+            Value::String(ITEM_KIND_ASSET.to_owned()),
+        );
         Ok(ItemKindEntry {
             item_kind,
             count,
@@ -780,7 +787,7 @@ impl WorldPattern {
     /// asset of an object and of an object whose pose is `furnish`, or each
     /// candidate of a sampler of it. An entry of an item kind draws its
     /// assets from its item kind ([`Self::item_kinds`]), and is not here.
-    pub fn object_assets(&self) -> BTreeMap<&Name, BTreeSet<String>> {
+    pub fn object_assets(&self) -> BTreeMap<&Name, BTreeSet<AssetRef>> {
         self.fields
             .objects
             .iter()
@@ -810,7 +817,7 @@ impl WorldPattern {
     pub fn expansion(
         &self,
         seed: Seed,
-        assets_of_kind: &dyn Fn(&str) -> Vec<String>,
+        assets_of_kind: &dyn Fn(&str) -> Vec<AssetRef>,
     ) -> Result<Expansion, Error> {
         let mut added = BTreeMap::new();
         for (name, entry) in self.item_kind_entries() {
@@ -873,7 +880,7 @@ impl WorldPattern {
     /// refused.
     pub fn candidate_worlds(
         &self,
-        assets_of_kind: &dyn Fn(&str) -> Vec<String>,
+        assets_of_kind: &dyn Fn(&str) -> Vec<AssetRef>,
     ) -> Result<Vec<World>, Error> {
         let mut assets_of_entry = BTreeMap::new();
         for (name, entry) in self.item_kind_entries() {
@@ -885,7 +892,7 @@ impl WorldPattern {
             }
             assets_of_entry.insert(name, (entry.count.most(), assets));
         }
-        let added_with = |asset_of: &dyn Fn(&Name, &[String]) -> String| {
+        let added_with = |asset_of: &dyn Fn(&Name, &[AssetRef]) -> AssetRef| {
             let mut added = BTreeMap::new();
             for (name, (count, assets)) in &assets_of_entry {
                 for index in 1..=*count {
@@ -1096,7 +1103,7 @@ pub(crate) fn physics_candidates(object: &Sampled<Object>) -> BTreeSet<Option<Ph
 
 /// Each asset that `object` can take: its asset, or the asset of each
 /// candidate of its samplers.
-fn asset_candidates(object: &Sampled<Object>) -> BTreeSet<String> {
+fn asset_candidates(object: &Sampled<Object>) -> BTreeSet<AssetRef> {
     match object {
         Sampled::Fixed(object) => BTreeSet::from([object.asset.clone()]),
         Sampled::Drawn(drawn) => drawn
@@ -1120,7 +1127,7 @@ fn stands(robot: &Sampled<Robot>) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 struct Added {
     entry: Name,
-    asset: String,
+    asset: AssetRef,
 }
 
 /// A world pattern with the samplers that its seed alone draws, drawn.
@@ -1245,10 +1252,10 @@ impl Expansion {
 
     /// The objects that the entries of an item kind add, each with its drawn
     /// asset.
-    pub fn added_objects(&self) -> BTreeMap<&Name, &str> {
+    pub fn added_objects(&self) -> BTreeMap<&Name, &AssetRef> {
         self.added
             .iter()
-            .map(|(name, added)| (name, added.asset.as_str()))
+            .map(|(name, added)| (name, &added.asset))
             .collect()
     }
 
@@ -1691,7 +1698,7 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::world::tests::{RELEASE, name, robot};
+    use crate::world::tests::{RELEASE, asset, name, robot};
     use crate::{Feature, Offset, Pose, Raise, Stand};
     use serde_json::json;
 
@@ -1732,10 +1739,10 @@ pub(crate) mod tests {
         WorldPattern::parse(&tape_line_text()).unwrap()
     }
 
-    fn assets_of_kind(kind: &str) -> Vec<String> {
+    fn assets_of_kind(kind: &str) -> Vec<AssetRef> {
         match kind {
-            "carton" => vec!["object/carton_b".into(), "object/carton_a".into()],
-            "tape_roll" => vec!["object/tape_roll_blue".into()],
+            "carton" => vec![asset("object/carton_b"), asset("object/carton_a")],
+            "tape_roll" => vec![asset("object/tape_roll_blue")],
             _ => Vec::new(),
         }
     }
@@ -1851,10 +1858,10 @@ pub(crate) mod tests {
             .collect();
         assert!((3..=6).contains(&cartons.len()), "{cartons:?}");
         for carton in cartons {
-            let asset = &world.objects[carton].asset;
+            let drawn = &world.objects[carton].asset;
             assert!(
-                asset == "object/carton_a" || asset == "object/carton_b",
-                "{asset}"
+                [asset("object/carton_a"), asset("object/carton_b")].contains(drawn),
+                "{drawn}"
             );
         }
         assert!(
@@ -1888,13 +1895,13 @@ pub(crate) mod tests {
             .filter(|object| object.as_str().starts_with("stock_"))
             .collect();
         assert_eq!(cartons.len(), 6, "the largest count of the entry");
-        let carton_assets: BTreeSet<&str> = worlds
+        let carton_assets: BTreeSet<&AssetRef> = worlds
             .iter()
-            .map(|world| world.objects[&name("stock_1")].asset.as_str())
+            .map(|world| &world.objects[&name("stock_1")].asset)
             .collect();
         assert_eq!(
             carton_assets,
-            BTreeSet::from(["object/carton_a", "object/carton_b"])
+            BTreeSet::from([&asset("object/carton_a"), &asset("object/carton_b")])
         );
         let tape_offsets: BTreeSet<String> = worlds
             .iter()
@@ -2304,7 +2311,7 @@ pub(crate) mod tests {
         assert_eq!(written.work_cell_parameters, few.work_cell_parameters);
         let expand = |pattern: &WorldPattern| {
             let expansion = pattern
-                .expansion(Seed(3), &|_| vec!["object/book".into()])
+                .expansion(Seed(3), &|_| vec![asset("object/book")])
                 .unwrap();
             let placements = expansion.placements().unwrap();
             let mut world = placements
@@ -2317,7 +2324,7 @@ pub(crate) mod tests {
         assert_eq!(expand(&written), expand(&few));
         let world = {
             let expansion = few
-                .expansion(Seed(3), &|_| vec!["object/book".into()])
+                .expansion(Seed(3), &|_| vec![asset("object/book")])
                 .unwrap();
             let placements = expansion.placements().unwrap();
             placements

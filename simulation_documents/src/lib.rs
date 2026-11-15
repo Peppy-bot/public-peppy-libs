@@ -12,13 +12,16 @@
 //! its setup calls, and the world document of a live simulation is that record
 //! with the robots of the stack ([`World::from_setup`]). A [`Judge`] checks
 //! ground truth in a live world and gives a verdict. A [`ClaimHolder`] names
-//! the call of an applier that holds the setup claim of a simulation.
+//! the call of an applier that holds the setup claim of a simulation. An
+//! [`AssetRef`] names the asset of a scene or of an object, with the version
+//! of its entry in the catalogue when the reference names one.
 //!
 //! The world document carries the root key `simulation_schema`, and takes the
 //! root key rule, the manifest and the digest from `documents_core`. The
 //! setup record, the start setup, the judges and the verdicts are JSON5 texts
 //! of the simulation side, which carry no root key.
 
+mod asset;
 mod claim;
 mod compose;
 mod daylight;
@@ -37,6 +40,7 @@ mod sweep;
 mod text;
 mod world;
 
+pub use asset::{AssetKind, AssetRef, AssetVersion};
 pub use claim::{ApplyFailureKind, ClaimCall, ClaimHolder};
 pub use compose::{StackRobot, StartSetup};
 pub use daylight::{Date, Daylight, TimeOfDay, Weather};
