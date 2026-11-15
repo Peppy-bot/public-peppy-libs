@@ -1,6 +1,7 @@
 //! Computes every path of a Cartesian paths scenario of the ROS reference harness, which it
-//! reads on stdin, and writes on stdout this crate's answer to each case and the step of its
-//! lines, as JSON.
+//! reads on stdin, and writes on stdout this crate's answer to each case, the step of its
+//! lines and the passes of KDL's descent loop after which a search starts no descent, as
+//! JSON.
 //! `ros_reference/tools/draw_cartesian_paths.py` draws the cases, runs it, and writes its
 //! answers into the scenario.
 
@@ -11,7 +12,7 @@ mod cartesian_scenes;
 #[path = "../tests/openarm_v2/mod.rs"]
 mod openarm_v2;
 
-use chain_kinematics::CARTESIAN_STEP_M;
+use chain_kinematics::{CARTESIAN_STEP_M, SEARCH_ITERATIONS};
 use ros_reference::Robot;
 use ros_reference::cartesian_paths::{Ours, Paths};
 use serde_json::json;
@@ -34,6 +35,7 @@ fn main() {
                 .collect();
             json!({
                 "step": CARTESIAN_STEP_M,
+                "ik_search_passes": SEARCH_ITERATIONS,
                 "ours": ours,
             })
         });

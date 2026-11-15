@@ -90,12 +90,13 @@ nlohmann::json cartesian_paths(const nlohmann::json& scenario, Inputs& inputs) {
   // MoveIt keeps the paths' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
   const double step = scenario.at("step").get<double>();
+  const auto ik_search_passes = scenario.at("ik_search_passes").get<std::uint64_t>();
 
   auto answers = nlohmann::json::array();
   for (const auto& path : scenario.at("cases")) {
     // Each case loads MoveIt's inverse kinematics as a solver of its own: its random restarts
     // draw from a generator that no case before it drew from.
-    load_kdl(model, group.solver_groups());
+    load_kdl(model, group.solver_groups(), ik_search_passes);
     const auto scene = scene_of(model, path, voxel_size, group, padding);
     answers.push_back(moveit_path(*model, *scene, group, path, step));
   }

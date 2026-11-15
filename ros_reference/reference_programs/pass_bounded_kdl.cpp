@@ -1,15 +1,16 @@
 // The inverse kinematics plugin that the references load for each arm: MoveIt's KDL plugin
-// (moveit2 2.15.2 kdl_kinematics_plugin.cpp), its search ended by the passes of KDL's
-// descent loop. KDL's search descends from the seed, then from configurations it draws, until
-// a descent converges to a configuration its caller accepts or its timeout, a clock, runs out
+// (moveit2 2.15.2 kdl_kinematics_plugin.cpp), its search ended by the passes of KDL's descent
+// loop. KDL's search descends from the seed, then from configurations it draws, until a
+// descent converges to a configuration its caller accepts or its timeout, a clock, runs out
 // (:369-409). This plugin runs each descent as KDL's search of one attempt, the search of a
 // timeout of 0 (:265-266), draws each later start as KDL draws it (:70-74), from a robot
-// state of its own, and starts no descent once the search's descents have run
-// `search_passes` passes, so a search gives the same answer on every machine. KDL reports
-// the passes of a descent only in its debug line "Result <code> after <i> iterations"
-// (:493-494), so the plugin turns the KDL logger's debug lines on, reads that line, and
-// drops every line of that logger below a warning: KDL logs one at the info level on each
-// search of a position alone (:346), which the plugin runs once per descent.
+// state of its own, and starts no descent once the search's descents have run the passes of
+// its group's kinematics parameter ik_search_passes, so a search gives the same answer on
+// every machine. KDL reports the passes of a descent only in its debug line "Result <code>
+// after <i> iterations" (:493-494), so the plugin turns the KDL logger's debug lines on,
+// reads that line, and drops every line of that logger below a warning: KDL logs one at the
+// info level on each search of a position alone (:346), which the plugin runs once per
+// descent.
 
 #include <cstdarg>
 #include <cstddef>
@@ -27,14 +28,12 @@
 #include <pluginlib/class_list_macros.hpp>
 #include <rcutils/logging.h>
 
+#include "kinematics_parameters.hpp"
+
 namespace ros_reference {
 namespace {
 
-// The passes of KDL's descent loop (CartToJnt, :435-491) after which a search starts no
-// descent: chain_kinematics' SEARCH_ITERATIONS (chain_kinematics/src/ik.rs), `kdl_timeout`
-// over the mean time of a pass in the reference image, measured on 2026-11-04.
-constexpr std::size_t search_passes = 9274;
-// The timeout, in seconds, that `search_passes` stands for: moveit_ros_planning's
+// The timeout, in seconds, that a search's passes stand for: moveit_ros_planning's
 // kinematics_solver_timeout default (kinematics_parameters.yaml), which load_kdl sets on each
 // arm and every search of the references carries.
 constexpr double kdl_timeout = 0.05;
@@ -81,6 +80,20 @@ void read_kdl_lines(const rcutils_log_location_t* location, int severity, const 
   reported_descents.push_back(result == ran_every_pass ? iterations : iterations + 1);
 }
 
+// The passes of a search of `group_name` that the kinematics parameter ik_search_passes of
+// `node` gives the group: a whole number above 0.
+std::size_t search_passes_of(const rclcpp::Node& node, const std::string& group_name) {
+  const std::string name = kinematics_parameter(group_name, ik_search_passes_parameter);
+  rclcpp::Parameter parameter;
+  if (!node.get_parameter(name, parameter) ||
+      parameter.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER ||
+      parameter.as_int() < 1) {
+    throw std::runtime_error("the kinematics parameter " + name +
+                             " gives no whole number of passes above 0");
+  }
+  return static_cast<std::size_t>(parameter.as_int());
+}
+
 void read_kdl_reports() {
   static std::once_flag installed;
   std::call_once(installed, [] {
@@ -109,6 +122,7 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
                                          search_discretization)) {
       return false;
     }
+    search_passes_ = search_passes_of(*node, group_name);
     starts_ = std::make_shared<moveit::core::RobotState>(robot_model_);
     return true;
   }
@@ -146,7 +160,7 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
                                  std::to_string(reported_descents.size()) + " descents");
       }
       passes += reported_descents.front();
-      if (found || passes >= search_passes) {
+      if (found || passes >= search_passes_) {
         return found;
       }
       start = drawn_start();
@@ -163,6 +177,9 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
     return start;
   }
 
+  // The passes of KDL's descent loop (CartToJnt, :435-491) after which a search starts no
+  // descent.
+  std::size_t search_passes_ = 0;
   moveit::core::RobotStatePtr starts_;
 };
 

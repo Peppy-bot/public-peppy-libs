@@ -22,7 +22,7 @@ mod openarm_v2;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chain_kinematics::Limit;
+use chain_kinematics::{Limit, SEARCH_ITERATIONS};
 #[cfg(target_arch = "x86_64")]
 use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
@@ -269,6 +269,19 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
                 assert_eq!(centers, at_zero[&link], "{name}: {link}");
             }
         });
+    }
+}
+
+// Each scenario's search budget, on which the reference's KDL ends each search for a goal
+// state, is this crate's.
+#[test]
+fn each_scenario_carries_this_crates_search_budget() {
+    for case in Case::load_all() {
+        assert_eq!(
+            case.ik_search_passes, SEARCH_ITERATIONS,
+            "{}: the scenario's search budget is this crate's",
+            case.name
+        );
     }
 }
 

@@ -13,6 +13,7 @@
   "time_limit": 600.0,
   "iterations": 20000,
   "probe_spacing": 0.002685554460144742,
+  "ik_search_passes": 9274,
   "scenes": [
     {
       "boxes": [],

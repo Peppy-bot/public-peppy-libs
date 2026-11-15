@@ -358,6 +358,7 @@ def scenario(drawn, min_clearance):
         **voxels,
         "min_clearance": min_clearance,
         "step": answers["step"],
+        "ik_search_passes": answers["ik_search_passes"],
         "cases": answered if drawn else picked(answered),
     }
 

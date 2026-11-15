@@ -29,6 +29,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rsl/random.hpp>
 
+#include "kinematics_parameters.hpp"
 #include "planning_scene.hpp"
 
 namespace ros_reference {
@@ -202,16 +203,18 @@ moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& in
 }
 
 void load_kdl(const moveit::core::RobotModelPtr& model,
-              const std::vector<std::string>& solver_groups) {
+              const std::vector<std::string>& solver_groups, std::uint64_t ik_search_passes) {
   start_ros();
   rclcpp::NodeOptions options;
   options.automatically_declare_parameters_from_overrides(true);
   std::vector<rclcpp::Parameter> solvers;
   for (const auto& name : solver_groups) {
-    const std::string kinematics = "robot_description_kinematics." + name;
-    solvers.emplace_back(kinematics + ".kinematics_solver", "ros_reference/PassBoundedKdl");
+    solvers.emplace_back(kinematics_parameter(name, "kinematics_solver"),
+                         "ros_reference/PassBoundedKdl");
+    solvers.emplace_back(kinematics_parameter(name, ik_search_passes_parameter),
+                         static_cast<std::int64_t>(ik_search_passes));
     if (model->getJointModelGroup(name)->getActiveJointModels().size() < pose_freedoms) {
-      solvers.emplace_back(kinematics + ".position_only_ik", true);
+      solvers.emplace_back(kinematics_parameter(name, "position_only_ik"), true);
     }
   }
   options.parameter_overrides(solvers);

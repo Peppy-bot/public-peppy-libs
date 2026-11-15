@@ -634,13 +634,19 @@ def header(group, voxel_map, min_clearance, planning, description=OPENARM_V2):
 
 
 def planned(scenario_header, scenes):
-    """The scenario of `scenes`, each with motion_planning_core's answer, and the spacing at
-    which the reference probes a path, from the example plan_arm_scenes."""
+    """The scenario of `scenes`, each with motion_planning_core's answer, the spacing at
+    which the reference probes a path, and the passes of KDL's descent loop after which a
+    search of the reference's KDL starts no descent, from the example plan_arm_scenes."""
     answers = run_example(example("plan_arm_scenes"), {**scenario_header, "scenes": scenes})
     answered = [
         {**scene, "ours": ours} for scene, ours in zip(scenes, answers["ours"], strict=True)
     ]
-    return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
+    return {
+        **scenario_header,
+        "probe_spacing": answers["probe_spacing"],
+        "ik_search_passes": answers["ik_search_passes"],
+        "scenes": answered,
+    }
 
 
 def drawn_scenario(drawn, planning, min_clearance, name):

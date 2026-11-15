@@ -17,7 +17,7 @@ mod cartesian_scenes;
 mod common;
 mod openarm_v2;
 
-use chain_kinematics::{CARTESIAN_STEP_M, CARTESIAN_STEP_RAD};
+use chain_kinematics::{CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, SEARCH_ITERATIONS};
 use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use ros_reference::LinkPose;
 use ros_reference::cartesian_paths::{Case, Ours, PathCase};
@@ -210,6 +210,19 @@ fn both_end_along(c: &PathCase) -> bool {
 /// A kind of case, by its name, and whether a case is of it: a behavior a scenario holds, or
 /// a group a tally prints.
 type KindOfCase = (&'static str, fn(&PathCase) -> bool);
+
+// Each scenario's search budget, on which the reference's KDL ends each search for a state of
+// a line, is this crate's.
+#[test]
+fn each_scenario_carries_this_crates_search_budget() {
+    for case in Case::load_all() {
+        assert_eq!(
+            case.ik_search_passes, SEARCH_ITERATIONS,
+            "{}: the scenario's search budget is this crate's",
+            case.name
+        );
+    }
+}
 
 // This crate computes, case by case, the answer each scenario carries for it, at the step and
 // against the pairs of the robot's own links this crate's paths check. Its restarts draw from

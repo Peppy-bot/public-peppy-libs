@@ -442,6 +442,7 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
   // MoveIt keeps the plans' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
   const double time_limit = scenario.at("time_limit").get<double>();
+  const auto ik_search_passes = scenario.at("ik_search_passes").get<std::uint64_t>();
 
   auto answers = nlohmann::json::array();
   for (const auto& s : scenario.at("scenes")) {
@@ -450,7 +451,7 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     // that no scene before it drew from. A scene of a configuration loads none, and its
     // joint constraint reads none.
     if (is_poses(s.at("goal"))) {
-      load_kdl(model, group.solver_groups());
+      load_kdl(model, group.solver_groups(), ik_search_passes);
     }
     const auto scene = scene_of(model, s, voxel_size, group, padding);
     const auto& ours = s.at("ours");
