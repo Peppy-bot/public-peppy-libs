@@ -35,7 +35,9 @@ Its entry point builds `Bindings` from its peppygen package and hands them to
 for each role. `Bindings.from_generated` finds each module where every
 brain's peppygen puts it, so the node's manifest names its slots
 `limb_motion`, `limb_state`, `camera`, `geometry` and `camera_mounts`, as both
-brains do:
+brains do. A brain that consumes the motion planner names its slot
+`motion_planning` and also consumes limb_motion's `execute_joint_path`; the
+modules of a brain that does not are none:
 
 ```python
 import peppygen
@@ -63,18 +65,18 @@ model of each role, `perception_model` and `manipulation_model`.
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
+| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing, `execute_joint_path`, which runs a plan from its start, and the planner's `describe_arms`, `get_planning_scene` and three scene writes (`apply_collision_objects`, `apply_attached_collision_object`, `set_allowed_collision`), service calls like `check_arm_move` that say why when they give no answer |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
-| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
+| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, `release_placed` and `release_dropped`, each the held flag of a result and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags, after each of those and at the start of each grab and each place: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
-| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
+| `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
 | `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
@@ -148,6 +150,10 @@ classDiagram
         run_guarded(ctx, lane, action, body, zero, ends, asked)
         look(job, detector, phrases, timeout_s) Look
         manipulator_or_refuse(manipulator)
+        hold(gripper, item_id, closed_at)
+        release_placed(gripper, item_id, position, orientation)
+        release_dropped(gripper, item_id)
+        make_scene_follow_holds(closed_at)
     }
     class State {
         grippers
@@ -212,9 +218,18 @@ classDiagram
         stop()
     }
     class Robot {
+        has_planner
         move_arm()
         set_gripper()
         check_arm_move()
+        plan_joint_path()
+        plan_cartesian_path()
+        execute_joint_path()
+        describe_arms()
+        get_planning_scene()
+        apply_collision_objects()
+        apply_attached_collision_object()
+        set_allowed_collision()
         stop()
     }
     class LimbStateStore {
@@ -335,10 +350,10 @@ its moves carries the bars of every arm move. It ends `Aligned` with the
 points the grab goes on with, `GaveUp`, `OutOfSteps` or `Stopped` when a
 stop ended a move; the last three fail the grab there, before the descent.
 A place runs the same step above the spot the held item goes to, measured
-from the target point, and then lowers the item until it rests or the point
-is reached: an arm the backbone stops short anywhere from the pre-place
-point down, within 5 cm of the line down, has set the item on what is under
-it, and the place opens there.
+from the target point, and then lowers the item until it rests or the
+release point 5 cm above the target is reached: an arm the backbone stops
+short anywhere from the pre-place point down, within 5 cm of the line down,
+has set the item on what is under it, and the place opens there.
 
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
@@ -361,11 +376,11 @@ sequenceDiagram
     H->>SM: grab(item, gripper, max_effort, cancel)
     SM->>P: propose(item)
     P-->>SM: Grasp: the point, the orientations to try
+    SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
     loop each orientation, until one plans
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
-    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>"
-    SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
+    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws open
     SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
@@ -377,17 +392,47 @@ sequenceDiagram
         Note over SM: either fails: "<failure>; the retreat to the pre-grasp point failed: <why>"
         SM-->>H: Outcome(false, the failure)
     else every step went through
-        SM-->>H: Outcome(true): the handler sets the held flag
+        SM-->>H: Outcome(true, where the jaws closed): the handler holds through Brain.hold
     end
 ```
 
-Before the descent the jaws open only as wide as the item and 1.5 cm on each
+Before the checks the jaws open only as wide as the item and 1.5 cm on each
 side (`approach_margin_m`), as a fraction of their 14.8 cm span
 (`jaw_travel_m`, the OpenArm v2's in Waldo), so the fingers come down beside
 the item and not on what stands next to it. The width is the one the look that
 last saw the item measured: the box's left and right edges at the depth of its
 seen point. An item of no known width, one addressed by pose or put down by
-place_item, gets the jaws fully open.
+place_item, gets the jaws fully open. A grab that no orientation reaches ends
+with the jaws open: a grab takes a gripper that holds nothing, so open jaws
+drop nothing.
+
+With the motion planner bound (`Robot.has_planner`), the transit to the
+pre-grasp point is planned, and `ScriptedManipulator._transit` is the one
+step that asks. For each orientation, a `plan_joint_path` brings the grasp
+link to the pre-grasp point (within 1 mm and 0.01 rad, `rrt_connect`, no
+refiner, in `allowed_planning_time_s`, 0.5 s), and a `plan_cartesian_path`
+with no collision check, from the end of that plan through the grasp and
+lifted points, tests the reach of the descent and the lift. The first
+orientation that passes both runs its plan with `execute_joint_path`, the
+plan's start as the expected start, each joint within 0.05 rad at the end,
+with `contact_gap_m` 0, no contact check, as every arm move.
+A grab whose orientations all fail ends before the arm moves, with the last
+one's words, the planner's kind first (`start_in_collision: ...`): no line
+takes the place of a plan. The descent, the lift and the retreat stay
+`move_arm` lines. The log line counts the plans and the reach tests, and
+each planned transit that ran logs a line of its own. Before it plans, the
+grab adds the item's object, `brain/<item_id>`, to the planning scene at the
+item's place (the box its look measured, or a 5 cm sphere at its position
+for an item no look measured) and lets the gripper's links touch it: the add
+clears the item's cubes from the planner's map, so none stay under the hand
+after the lift. Each way the grab fails or stops removes the object, after
+the retreat when there is one; a grab that holds leaves it, and the brain
+moves it to the hand and attaches it (`Brain.hold`). Just before the descent,
+after the aligner, the grab asks the planner what a checked descent would
+answer: a `plan_cartesian_path` with the collision check from where the arm
+stands through the grasp and lifted points. It logs the share of the lines
+that path covers (`checked descent of item ...`) and descends by its lines
+whatever the answer.
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
@@ -403,13 +448,22 @@ carries the item to the pose through its pre-place point,
 `clearance_m` and `held_item_depth_m` (7.5 cm, how far a held item may
 reach below the grasp point) above the pose, so the item clears the floor of
 a container and what already stands in it until the descent, or `clearance_m`
-alone above it where the backbone has no plan that high; it opens there and
-climbs back to the pre-place point. An arm that stops short on its way down
-does not settle, so its move fails with `timeout`. When the latest
+alone above it where the backbone has no plan that high. The line down ends
+at the release point, `release_height_m` (5 cm) above the pose, so the arm
+does not press the item on what it is set on: the place opens there and
+climbs back to the pre-place point, and the item falls the last part. The
+reach test of the line down and the aligner's checks use the release point,
+and the result reports where the jaws opened, up to 5 cm above where the item
+rests. With the motion planner bound, the
+transit to the pre-place point is planned as a grab's is: each orientation
+planned to the high pre-place point with the reach of the line down tested
+from the end of the plan, then each to the low one; only a place that no
+orientation reaches at the high point tries the low one. An arm that stops
+short on its way down does not settle, so its move fails with `timeout`. When the latest
 limb_states snapshot puts its grasp point anywhere from the pre-place point
-down and within 5 cm (`RELEASE_OFF_LINE_M`) of the line down, the arm has
-set the item on what is under it, the rim or the floor of a container or the
-items already in it included (an item slides off a round top by a few
+down to the release point and within 5 cm (`RELEASE_OFF_LINE_M`) of the line
+down, the arm has set the item on what is under it, the rim or the floor of a
+container or the items already in it included (an item slides off a round top by a few
 centimetres before it rests): the place opens there,
 logs how far short it stopped, and reports that point. A stop of the
 descent, or an arm stopped more than 5 cm above the pre-place point or off

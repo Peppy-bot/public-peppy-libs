@@ -17,13 +17,23 @@ empty for a goal with no result of its own are the `zero` dict each
 handler passes; and `action_time` is the time from the goal's start to its
 end, whatever the outcome. It is also where each goal leaves its one line
 in the log, so a search that found nothing says there what it looked at.
+
+The planning scene of the motion planner follows the held flags of
+`State`. One method of `Brain` stands for each change of a flag (`hold`,
+`release_placed`, `release_dropped`) and writes the flag, then the scene.
+`make_scene_follow_holds` makes the scene equal to the flags, after each of
+those methods and at the start of each grab and each place: each item a
+gripper holds has its object, `brain/<item_id>`, attached to the grasp link
+of its arm, and no other object of the brain stays. `forget` writes the
+flags alone, and the next grab or place corrects the scene. With the
+planner slot vacant the scene is left alone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, Optional, Protocol, Sequence
+from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
 from .bindings import Bindings
 from .limb_state import LimbStateStore
@@ -36,8 +46,8 @@ from .perception.none import NoneDetector
 from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
 from .models import Models
-from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, ModelSource, Refusal, Role, Senses
-from .robot import Robot
+from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Quat, Refusal, Role, Senses, Vec3
+from .robot import ObjectOperation, PlannerModules, Robot, brain_object_id, item_object, item_of_object
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
 from .state import State, new_run_token
 
@@ -143,7 +153,10 @@ class Brain:
         self.bindings = bindings
         limbs = parse_limbs(params.limbs)
         self.state = State(limbs, new_run_token() if run_token is None else run_token)
-        self.robot = Robot(node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move)
+        self.robot = Robot(
+            node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move,
+            planner=PlannerModules.from_bindings(bindings),
+        )
         # The robot's measured limbs, which a manipulator reads.
         self.limb_states = LimbStateStore()
         # The perceiver alone holds the frames and the camera model: the
@@ -277,6 +290,122 @@ class Brain:
             raise Refusal(FailureKind.PRECONDITION_FAILED, reason)
         return manipulator
 
+    async def hold(self, gripper: Gripper, item_id: str, closed_at: Optional[Vec3]) -> None:
+        """A grab held `item_id` in `gripper`: the held flag in `State`, then
+        the planning scene made to follow it, the item's object moved from
+        the table by what the grasp point moved since the jaws closed at
+        `closed_at`."""
+        self.state.set_held(gripper, item_id)
+        await self.make_scene_follow_holds({item_id: closed_at} if closed_at is not None else None)
+
+    async def release_placed(self, gripper: Gripper, item_id: str, position: Vec3, orientation: Optional[Quat]) -> None:
+        """A place set `item_id` down at `position`: the held flag cleared in
+        `State`, the item at that pose, then the planning scene made to
+        follow, the item's object detached and removed. The next depth frame
+        marks the item in the planner's map."""
+        self.state.clear_held_placed(gripper, item_id, position, orientation)
+        await self.make_scene_follow_holds()
+
+    async def release_dropped(self, gripper: Gripper, item_id: str) -> None:
+        """A drop let `item_id` go: the held flag cleared and the item
+        forgotten in `State`, then the planning scene made to follow, the
+        item's object detached and removed."""
+        self.state.forget_dropped(gripper, item_id)
+        await self.make_scene_follow_holds()
+
+    async def make_scene_follow_holds(self, closed_at: Optional[Mapping[str, Vec3]] = None) -> None:
+        """Makes the planning scene equal to the held flags, from what
+        get_planning_scene says it holds:
+
+        - an object of the brain that no gripper holds, free or attached, is
+          detached and removed, and so is one attached to another arm than
+          the one that holds its item;
+        - an item a gripper holds whose object stands free has its object
+          moved by what the grasp point of the arm moved since the jaws
+          closed, where `closed_at` gives where the grasp point stood then,
+          and attached to the arm's grasp link, the gripper's links its touch
+          links;
+        - an item a gripper holds with no object of its own, or whose
+          `closed_at` is not given, gets its object at the hand, centred on
+          the grasp point: the box of its shape, or a sphere for an item with
+          none, attached the same way.
+
+        Nothing happens with the planner slot vacant. A scene call that fails
+        is logged and the next one is made: the held flags stay as they are,
+        and the next call of this function corrects the scene."""
+        if not self.robot.has_planner:
+            return
+        arms = await self.robot.describe_arms()
+        scene = await self.robot.get_planning_scene()
+        reason = arms.reason or scene.reason
+        if reason:
+            logger.warning("planning scene: not made to follow the holds: %s", reason)
+            return
+        holders = {gripper.held_item_id: gripper for gripper in self.state.grippers.values() if gripper.holding}
+        attached = set()
+        for found in scene.attached_objects:
+            item_id = item_of_object(found.id)
+            if item_id is None:
+                continue
+            holder = holders.get(item_id)
+            arm = arms.arm(holder.arm) if holder is not None else None
+            if arm is not None and found.link_name == arm.grasp_link:
+                attached.add(item_id)
+                continue
+            await self._write_scene(f"detach {found.id} from {found.link_name}", self.robot.apply_attached_collision_object(found.id, found.link_name, (), "detach"))
+            await self._write_scene(f"remove {found.id}", self.robot.apply_collision_objects([ObjectOperation.remove(found.id)]))
+        free = {}
+        for found in scene.objects:
+            item_id = item_of_object(found.id)
+            if item_id is None:
+                continue
+            if item_id in holders and item_id not in attached:
+                free[item_id] = found
+                continue
+            await self._write_scene(f"remove {found.id}", self.robot.apply_collision_objects([ObjectOperation.remove(found.id)]))
+        for item_id, gripper in holders.items():
+            if item_id not in attached:
+                await self._attach_held(item_id, gripper, arms.arm(gripper.arm), free.get(item_id), (closed_at or {}).get(item_id))
+
+    async def _attach_held(self, item_id: str, gripper, arm, table_object, closed_at: Optional[Vec3]) -> None:
+        """Puts the object of the held item `item_id` at the hand of
+        `gripper` and attaches it: its object on the table moved by what the
+        grasp point moved since `closed_at`, or a new one centred on the
+        grasp point."""
+        object_id = brain_object_id(item_id)
+        if arm is None:
+            logger.warning("planning scene: %s not attached: the motion planner does not describe arm '%s'", object_id, gripper.arm)
+            return
+        snapshot = self.limb_states.latest
+        hand = snapshot.arms.get(gripper.arm) if snapshot is not None else None
+        if hand is None:
+            logger.warning("planning scene: %s not attached: limb_states gives no grasp point of arm '%s'", object_id, gripper.arm)
+            return
+        if table_object is not None and closed_at is not None:
+            moved = tuple(at + now - then for at, now, then in zip(table_object.position, hand.position, closed_at))
+            await self._write_scene(
+                f"move {object_id} by what the grasp point moved since the jaws closed, to {_numbers(moved)}",
+                self.robot.apply_collision_objects([ObjectOperation.move(object_id, moved, table_object.orientation)]),
+            )
+        else:
+            item = self.state.items.get(item_id)
+            add = item_object(item_id, item.shape if item is not None else None, hand.position)
+            await self._write_scene(f"add {object_id} at the hand of arm '{gripper.arm}', {_numbers(hand.position)}", self.robot.apply_collision_objects([add]))
+        await self._write_scene(
+            f"attach {object_id} to {arm.grasp_link}",
+            self.robot.apply_attached_collision_object(object_id, arm.grasp_link, arm.gripper_links, "attach"),
+        )
+
+    async def _write_scene(self, what: str, write: Awaitable[str]) -> bool:
+        """Makes one write of the planning scene and logs it, or logs why it
+        failed. Returns whether it was done."""
+        reason = await write
+        if reason:
+            logger.warning("planning scene: %s failed: %s", what, reason)
+            return False
+        logger.info("planning scene: %s", what)
+        return True
+
     async def _stop_lane(self, lane: Role) -> None:
         # The manipulation model is the one the running goal read: the lane
         # rule keeps a switch from changing it while the goal runs.
@@ -354,3 +483,8 @@ class Brain:
     async def _watch_cancel(self, ctx, job: Job) -> None:
         await ctx.cancel_signal()
         await self.sequencer.cancel(job, ctx.cancel_reason(), signalled=True)
+
+
+def _numbers(values: Sequence[float]) -> str:
+    """A point for the log: in brackets, with 3 decimals each."""
+    return f"[{', '.join(f'{value:.3f}' for value in values)}]"

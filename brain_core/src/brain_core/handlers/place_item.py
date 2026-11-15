@@ -15,18 +15,20 @@ async def run(brain, ctx) -> None:
 
     async def body(job) -> dict:
         manipulator = brain.models.current(Role.MANIPULATION)
-        state = brain.state
-        gripper = state.holder(goal.gripper_name)
+        gripper = brain.state.holder(goal.gripper_name)
         item_id = gripper.held_item_id
         brain.manipulator_or_refuse(manipulator)
         orientation = tuple(goal.orientation) if goal.orientation is not None else None
         pose = Pose(tuple(goal.position), orientation)
+        # The scene equal to the held flags before the manipulator plans, so
+        # the held item rides attached to the arm.
+        await brain.make_scene_follow_holds()
         outcome = await manipulator.place(gripper, pose, job.cancel)
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the placement failed")
         final = outcome.final_position if outcome.final_position is not None else pose.position
-        state.clear_held_placed(gripper, item_id, final, pose.orientation)
+        await brain.release_placed(gripper, item_id, final, pose.orientation)
         return dict(gripper_name=gripper.name, item_id=item_id, final_position=list(final))
 
     await brain.run_guarded(ctx, Role.MANIPULATION, "place_item", body, ZERO, ends=RESULT_ENDS)

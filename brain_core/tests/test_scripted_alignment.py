@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import records_of
 from fake_peppygen import limb_states_message
-from test_scripted import DOWN, GRASP, LIFT, LIFT_MOVE, PRE, FakeClock, FakeRobot, cup, gripped, holding
+from test_scripted import DOWN, GRASP, HELD, LIFT, LIFT_MOVE, PRE, FakeClock, FakeRobot, cup, gripped, holding
 
 from brain_core.limb_state import LimbStateStore
 from brain_core.manipulators.scripted.aligning import Aligned, AlignmentFailed, GaveUp, OutOfSteps, Stopped
@@ -70,7 +70,7 @@ async def test_the_alignment_runs_above_the_item_and_the_descent_lift_and_hold_u
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
-    assert outcome == Outcome(True)
+    assert outcome == HELD
     (request,) = aligner.requests
     assert (request.pre, request.point, request.orientation) == (PRE, GRASP, DOWN[0])
     assert request.item.item_id == "cup_1-t0" and request.gripper is LEFT
@@ -103,22 +103,22 @@ async def test_a_model_that_gives_up_or_runs_out_ends_the_grab_before_the_descen
     manipulator, robot, _, _ = await started(FakeAligner(ending))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, message)
-    # The checks, the open and the move to the pre-grasp point; nothing after.
-    assert robot.kinds() == ["check", "check", "check", "grip", "move"]
+    # The open, the checks and the move to the pre-grasp point; nothing after.
+    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_a_stopped_alignment_ends_the_grab_with_the_stops_words_and_nothing_more():
     manipulator, robot, _, _ = await started(FakeAligner(Stopped("stopped: operator", steps=1)))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, "stopped: operator")
-    assert robot.kinds() == ["check", "check", "check", "grip", "move"]
+    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_an_alignment_that_fails_names_what_it_could_not_get():
     manipulator, robot, _, _ = await started(FakeAligner(failure="no frame from wrist camera 'wrist_left' after the move"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, "the alignment failed: no frame from wrist camera 'wrist_left' after the move")
-    assert robot.kinds() == ["check", "check", "check", "grip", "move"]
+    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_an_unavailable_alignment_fails_the_grab_before_any_move():
@@ -146,7 +146,7 @@ async def test_the_aligners_moves_go_through_the_manipulator_with_its_bars():
 async def test_without_an_aligner_the_grab_is_the_stage_1_sequence():
     manipulator, robot, store, _ = await started(None)
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 0.0, _token()) == Outcome(True)
+    assert await manipulator.grab(cup(), LEFT, 0.0, _token()) == HELD
     assert robot.kinds().count("move") == LIFT_MOVE
 
 
@@ -160,8 +160,10 @@ def _token() -> CancelToken:
 PLACE_Q = (0.0, 1.0, 0.0, 0.0)
 PLACE_POINT = (0.6, 0.0, 0.75)
 PLACE_ABOVE = (0.6, 0.0, 0.75 + (0.075 + 0.075))
+# The line down ends 5 cm above the place point.
+PLACE_RELEASE = lifted(PLACE_POINT, 0.05)
 ALIGNED_PLACE_ABOVE = (0.61, -0.02, PLACE_ABOVE[2])
-ALIGNED_PLACE_POINT = (0.61, -0.02, PLACE_POINT[2])
+ALIGNED_PLACE_POINT = (0.61, -0.02, PLACE_RELEASE[2])
 
 
 async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(caplog):
@@ -172,7 +174,7 @@ async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(c
     assert outcome == Outcome(True, "", ALIGNED_PLACE_POINT)
     (request,) = aligner.requests
     assert request.item is None and request.target == PLACE_POINT and request.is_place
-    assert (request.pre, request.point, request.orientation) == (PLACE_ABOVE, PLACE_POINT, PLACE_Q)
+    assert (request.pre, request.point, request.orientation) == (PLACE_ABOVE, PLACE_RELEASE, PLACE_Q)
     assert [call for call in robot.calls if call[0] != "check"] == [
         ("move", PLACE_ABOVE, PLACE_Q),
         ("move", ALIGNED_PLACE_POINT, PLACE_Q),

@@ -5,7 +5,10 @@ library cannot import it. A node hands `Bindings.from_generated(peppygen)`
 to `node.setup`; each part of the core takes the modules it uses from
 there. Every brain implements the same contracts and names its slots
 alike (limb_motion, limb_state, camera, geometry, camera_mounts), so every
-brain's peppygen has these modules under the same names.
+brain's peppygen has these modules under the same names. A brain may also
+consume the motion planner on a `motion_planning` slot, with limb_motion's
+execute_joint_path, which runs a plan; a brain whose manifest consumes
+neither has none of those modules.
 """
 
 from __future__ import annotations
@@ -29,6 +32,14 @@ GENERATED_MODULES = {
     "get_depth_intrinsics": "consumed_services.geometry.get_depth_intrinsics",
     "get_camera_poses": "consumed_services.camera_mounts.get_camera_poses",
     "wrist_video_stream": "consumed_topics.wrist_cameras.video_stream",
+    "execute_joint_path": "consumed_actions.limb_motion.execute_joint_path",
+    "plan_joint_path": "consumed_actions.motion_planning.plan_joint_path",
+    "plan_cartesian_path": "consumed_actions.motion_planning.plan_cartesian_path",
+    "describe_arms": "consumed_services.motion_planning.describe_arms",
+    "get_planning_scene": "consumed_services.motion_planning.get_planning_scene",
+    "apply_collision_objects": "consumed_services.motion_planning.apply_collision_objects",
+    "apply_attached_collision_object": "consumed_services.motion_planning.apply_attached_collision_object",
+    "set_allowed_collision": "consumed_services.motion_planning.set_allowed_collision",
     "scan_items": "exposed_actions.item_perception.scan_items",
     "identify_item": "exposed_actions.item_perception.identify_item",
     "grab_item": "exposed_actions.item_manipulation.grab_item",
@@ -97,6 +108,20 @@ class Bindings:
     # manifest has no such slot: it has no wrist pictures.
     wrist_video_stream: Any = None
 
+    # The motion planner, motion_planning:v1 on the `motion_planning` slot
+    # (peppygen.consumed_actions.motion_planning and
+    # peppygen.consumed_services.motion_planning), and limb_motion's
+    # execute_joint_path, which runs a plan. None for a brain whose
+    # manifest consumes none of them: it moves by move_arm lines alone.
+    execute_joint_path: Any = None
+    plan_joint_path: Any = None
+    plan_cartesian_path: Any = None
+    describe_arms: Any = None
+    get_planning_scene: Any = None
+    apply_collision_objects: Any = None
+    apply_attached_collision_object: Any = None
+    set_allowed_collision: Any = None
+
     @classmethod
     def from_generated(cls, package: ModuleType) -> "Bindings":
         """The bindings of a brain's generated package, its `peppygen`: each
@@ -115,5 +140,16 @@ class Bindings:
         return cls(**modules)
 
 
-# The modules a brain's package may lack.
-OPTIONAL_MODULES = frozenset({"wrist_video_stream"})
+# The modules a brain's package may lack: the wrist cameras, and the
+# members of the motion planner with the move that runs a plan.
+PLANNER_MODULES = (
+    "execute_joint_path",
+    "plan_joint_path",
+    "plan_cartesian_path",
+    "describe_arms",
+    "get_planning_scene",
+    "apply_collision_objects",
+    "apply_attached_collision_object",
+    "set_allowed_collision",
+)
+OPTIONAL_MODULES = frozenset({"wrist_video_stream", *PLANNER_MODULES})

@@ -130,8 +130,12 @@ class FakeManipulator:
 
     name = "fake"
 
-    def __init__(self, *, fail: str = "", wait_for_stop: bool = False, release: Optional[asyncio.Event] = None) -> None:
+    def __init__(
+        self, *, fail: str = "", wait_for_stop: bool = False, release: Optional[asyncio.Event] = None, closed_at=None,
+    ) -> None:
         self.fail = fail
+        # Where a grab that holds reports the jaws closed.
+        self.closed_at = closed_at
         self.wait_for_stop = wait_for_stop
         self.release = release
         self.calls: list[tuple] = []
@@ -156,7 +160,7 @@ class FakeManipulator:
         await self._began.wait()
         self._began.clear()
 
-    async def _run(self, cancel: CancelToken, final_position=None) -> Outcome:
+    async def _run(self, cancel: CancelToken, final_position=None, closed_at=None) -> Outcome:
         self._began.set()
         if self.wait_for_stop:
             await cancel.wait()
@@ -165,11 +169,11 @@ class FakeManipulator:
             await self.release.wait()
         if self.fail:
             return Outcome(False, self.fail)
-        return Outcome(True, "", final_position)
+        return Outcome(True, "", final_position, closed_at)
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
         self.calls.append(("grab", item.item_id, gripper.name, max_effort))
-        return await self._run(cancel)
+        return await self._run(cancel, closed_at=self.closed_at)
 
     async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome:
         self.calls.append(("drop", gripper.name))

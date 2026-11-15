@@ -13,6 +13,13 @@ detector can search is the detector's own answer
 (`Detector.why_unavailable`), which the brain asks first (`Brain.look`).
 A search past its deadline fails with `timeout`.
 
+The depth points of an item (`item_points`) are the readings inside its
+box, in the robot frame, less the surface it stands on, and of the rest the
+group that holds the reading nearest the box's centre. The surface is the
+height of the readings on the border of the box: a box holds its item and
+some of what is around it, and in doubt the rule keeps fewer points, since
+a shape too big hides a neighbour from the motion planner.
+
 A search awaits the detector's `detect`. A detector whose model blocks
 runs its compute through `in_daemon_thread`, a daemon thread of its own
 rather than the event loop's executor: the executor's threads are joined
@@ -29,12 +36,13 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
+from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, ItemShape, Refusal, SearchTimeout, iou
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at, depth_pixel
 
@@ -50,6 +58,21 @@ DUPLICATE_IOU = 0.5
 TOP_WINDOW = 0.6
 TOP_SAMPLES = 24
 TOP_QUANTILE = 0.9
+# The points of an item: the depth readings inside its box, at most
+# SHAPE_GRID along each side. The surface under the item is the
+# SURFACE_QUANTILE quantile of the heights of the readings on the border of
+# the box, and a reading belongs to the surface up to SURFACE_MARGIN_M above
+# it. Two readings next to each other in the depth image are of one group
+# when they stand at most GROUP_GAP_M apart.
+SHAPE_GRID = 64
+SURFACE_QUANTILE = 0.5
+SURFACE_MARGIN_M = 0.005
+GROUP_GAP_M = 0.015
+# The box around an item's points tries each turn about the vertical in
+# steps of YAW_STEP_DEG, and none of its sides is shorter than MIN_SIDE_M,
+# so the planner gets a solid even for a single point.
+YAW_STEP_DEG = 1
+MIN_SIDE_M = 0.01
 
 
 async def in_daemon_thread(function: Callable, *args):
@@ -102,20 +125,31 @@ class Look:
     def describe(self, search_started_ns: int) -> str:
         """The look in a few words for the log: the frame, when the camera
         took it against the start of the search, and every box of the
-        detector with its confidence, the placed ones first, then the
+        detector with its confidence, the placed ones first, each with the
+        shape fitted around its depth points when it has one, then the
         duplicates and the boxes with no depth, each marked so."""
         age_s = search_started_ns / 1e9 - self.frame_timestamp
         if age_s >= 0.0:
             taken = f"{age_s:.2f} s before the search"
         else:
             taken = f"{-age_s:.2f} s after the search began"
-        boxes = [f"{detection.label} {detection.confidence:.2f}" for detection in self.detections]
+        boxes = [f"{detection.label} {detection.confidence:.2f}{_shape_words(detection.shape)}" for detection in self.detections]
         boxes += [f"{box.label} {box.confidence:.2f} (duplicate)" for box in self.duplicates]
         boxes += [f"{box.label} {box.confidence:.2f} (no depth)" for box in self.unplaced]
         if not boxes:
             return f"frame {self.frame_id} taken {taken}, no box"
         count = "1 box" if len(boxes) == 1 else f"{len(boxes)} boxes"
         return f"frame {self.frame_id} taken {taken}, {count}: {', '.join(boxes)}"
+
+
+def _shape_words(shape: Optional[ItemShape]) -> str:
+    """An item's shape for the log: its sides in centimetres, its centre and
+    its turn; nothing for an item with none."""
+    if shape is None:
+        return ""
+    length, width, height = (100 * side for side in shape.sides)
+    x, y, z = shape.centre
+    return f" (box {length:.1f} x {width:.1f} x {height:.1f} cm at [{x:.3f}, {y:.3f}, {z:.3f}], {math.degrees(shape.yaw_rad):.0f} deg)"
 
 
 @dataclass
@@ -213,6 +247,7 @@ class Perceiver:
             position = self.camera.deproject(u, v, depth, width, height)
             # The box's left and right edges at the depth of its centre.
             width_m = math.dist(self.camera.deproject(box.x0, v, depth, width, height), self.camera.deproject(box.x1, v, depth, width, height))
+            found = item_points(depth_m, box, width, height, self.camera)
             detections.append(
                 Detection(
                     label=box.label,
@@ -221,6 +256,7 @@ class Perceiver:
                     region=box.xyxy,
                     width_m=width_m,
                     top_z=top_height(depth_m, box, width, height, self.camera),
+                    shape=item_box(found) if found is not None else None,
                 )
             )
         return Look(
@@ -261,6 +297,121 @@ def top_height(depth_m: np.ndarray, box: Box, color_width: int, color_height: in
         return None
     points = camera.deproject_points(columns[read], rows[read], depths[read], color_width, color_height)
     return float(np.quantile(points[:, 2], TOP_QUANTILE))
+
+
+@dataclass(frozen=True)
+class ItemPoints:
+    """The depth points of one item in the robot frame, one row of x, y, z
+    each, and the height of the surface it stands on."""
+
+    points: np.ndarray
+    surface_z: float
+
+
+def item_points(depth_m: np.ndarray, box: Box, color_width: int, color_height: int, camera: CameraModel) -> Optional[ItemPoints]:
+    """The depth points of the item in `box`, a box of a colour picture of
+    `color_width` x `color_height`:
+
+    1. the readings of `depth_m` inside the box, at most SHAPE_GRID along
+       each side, in the robot frame;
+    2. less the points of the surface the item stands on: the surface is the
+       SURFACE_QUANTILE quantile of the heights of the readings on the
+       border of the box, and a point up to SURFACE_MARGIN_M above it is of
+       the surface;
+    3. of the rest, the group that holds the point nearest the centre of the
+       box: points next to each other in the depth image at most
+       GROUP_GAP_M apart are of one group, so a neighbour inside the box
+       that no such chain joins is not part of the item.
+
+    None when the box holds no reading on its border or none above the
+    surface."""
+    height, width = depth_m.shape
+    x0, y0 = (int(value) for value in depth_pixel(depth_m, box.x0, box.y0, color_width, color_height))
+    x1, y1 = (int(value) for value in depth_pixel(depth_m, box.x1, box.y1, color_width, color_height))
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    stride = max(1, math.ceil(max(x1 - x0, y1 - y0) / SHAPE_GRID))
+    rows, columns = np.arange(y0, y1, stride), np.arange(x0, x1, stride)
+    depths = depth_m[np.ix_(rows, columns)]
+    read = depths > 0.0
+    grid_rows, grid_columns = np.meshgrid(rows, columns, indexing="ij")
+    points = np.full((*depths.shape, 3), np.nan)
+    if read.any():
+        # The colour pixel under the centre of each reading, pixel centres
+        # scaled as Intrinsics.scaled_to scales them; depth_pixel maps it back
+        # to the reading.
+        us = (grid_columns[read] + 0.5) * color_width / width - 0.5
+        vs = (grid_rows[read] + 0.5) * color_height / height - 0.5
+        points[read] = camera.deproject_points(us, vs, depths[read], color_width, color_height)
+    border = np.zeros(depths.shape, dtype=bool)
+    border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
+    if not (border & read).any():
+        return None
+    surface_z = float(np.quantile(points[border & read][:, 2], SURFACE_QUANTILE))
+    above = read & (np.nan_to_num(points[..., 2], nan=-np.inf) > surface_z + SURFACE_MARGIN_M)
+    if not above.any():
+        return None
+    candidates = np.argwhere(above)
+    centre = (np.array(depths.shape) - 1) / 2.0
+    seed = tuple(candidates[np.argmin(((candidates - centre) ** 2).sum(axis=1))])
+    group = _group_of(points, above, seed)
+    return ItemPoints(points[group], surface_z)
+
+
+def item_box(found: ItemPoints) -> ItemShape:
+    """The box around an item's points: upright, turned about the vertical
+    to the angle, in steps of YAW_STEP_DEG from 0 up to a quarter turn, that
+    gives the smallest rectangle around the points seen from above; its
+    bottom at the surface under the item, its top at the highest point. No
+    side is shorter than MIN_SIDE_M."""
+    xy = found.points[:, :2]
+    angles = np.radians(np.arange(0, 90, YAW_STEP_DEG))
+    cosines, sines = np.cos(angles), np.sin(angles)
+    along = xy[:, :1] * cosines + xy[:, 1:] * sines
+    across = -xy[:, :1] * sines + xy[:, 1:] * cosines
+    lengths = along.max(axis=0) - along.min(axis=0)
+    widths = across.max(axis=0) - across.min(axis=0)
+    best = int(np.argmin(lengths * widths))
+    yaw = float(angles[best])
+    middle_along = (along[:, best].max() + along[:, best].min()) / 2.0
+    middle_across = (across[:, best].max() + across[:, best].min()) / 2.0
+    top = float(found.points[:, 2].max())
+    bottom = found.surface_z
+    return ItemShape(
+        centre=(
+            float(middle_along * math.cos(yaw) - middle_across * math.sin(yaw)),
+            float(middle_along * math.sin(yaw) + middle_across * math.cos(yaw)),
+            (top + bottom) / 2.0,
+        ),
+        sides=(max(MIN_SIDE_M, float(lengths[best])), max(MIN_SIDE_M, float(widths[best])), max(MIN_SIDE_M, top - bottom)),
+        yaw_rad=yaw,
+    )
+
+
+def _group_of(points: np.ndarray, kept: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
+    """The cells of the grid `kept` joined to `seed` by chains of cells next
+    to each other (above, below, left, right) whose points stand at most
+    GROUP_GAP_M apart."""
+    down = kept[1:, :] & kept[:-1, :] & (np.linalg.norm(points[1:, :] - points[:-1, :], axis=-1) <= GROUP_GAP_M)
+    right = kept[:, 1:] & kept[:, :-1] & (np.linalg.norm(points[:, 1:] - points[:, :-1], axis=-1) <= GROUP_GAP_M)
+    group = np.zeros(kept.shape, dtype=bool)
+    group[seed] = True
+    queue = deque([seed])
+    rows, columns = kept.shape
+    while queue:
+        row, column = queue.popleft()
+        steps = (
+            (row + 1, column, row < rows - 1 and down[row, column]),
+            (row - 1, column, row > 0 and down[row - 1, column]),
+            (row, column + 1, column < columns - 1 and right[row, column]),
+            (row, column - 1, column > 0 and right[row, column - 1]),
+        )
+        for next_row, next_column, joined in steps:
+            if joined and not group[next_row, next_column]:
+                group[next_row, next_column] = True
+                queue.append((next_row, next_column))
+    return group
 
 
 def merge_duplicates(boxes: Sequence[Box]) -> tuple[list[Box], list[Box]]:
