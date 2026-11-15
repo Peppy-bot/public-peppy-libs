@@ -225,8 +225,7 @@ SO101_OBJECT_SIZES = (0.026, 0.13)
 # of the orientations the arm holds at the position.
 SO101_TILT_RAD = 0.05
 SO101_TOLERANCE_RAD = 0.1
-# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them, none of them in
-# SO101_ON_KDL_TIMEOUT.
+# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them.
 COMMITTED_SO101 = {
     "a straight path": 0,
     "a path with corners": 67,
@@ -234,11 +233,6 @@ COMMITTED_SO101 = {
     "a start in an object": 52,
     "a goal in an object": 80,
 }
-# SO-101's drawn scenes in which a search of MoveIt's goal sampler reaches KDL's timeout, a
-# clock, so MoveIt's goal states follow the machine's speed: measured with KDL's debug lines
-# in the reference image on 2026-11-11, a search ending on the timeout in 27 and 137, and one
-# solving after it in 65 and 102. The scenario keeps none of them.
-SO101_ON_KDL_TIMEOUT = (27, 65, 102, 137)
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
 OBJECT_KINDS = ("box", "sphere", "cylinder", "mesh", "L", "two shapes")
@@ -750,19 +744,18 @@ def so101_scenario(drawn, planning, min_clearance, goal, holding):
     ]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scenario = planned(scenario_header, [*scenes, *meeting, *outside])
-    return kept(scenario, drawn, COMMITTED_SO101, SO101_ON_KDL_TIMEOUT)
+    return kept(scenario, drawn, COMMITTED_SO101)
 
 
-def kept(scenario, drawn, committed, excluded=()):
+def kept(scenario, drawn, committed):
     """`scenario`, its drawn scenes first and every other scene after them, keeping of
     those drawn the first `drawn`, or with no `drawn` those at `committed` and the one whose
-    path has the most corners among the first DRAWN but those `excluded`."""
+    path has the most corners among the first DRAWN."""
     answered = scenario["scenes"]
     count = drawn or DRAWN
     kept_drawn = answered[:count]
     if not drawn:
-        candidates = [k for k in range(DRAWN) if k not in excluded]
-        most = max(candidates, key=lambda k: corners(kept_drawn[k]["ours"]))
+        most = max(range(DRAWN), key=lambda k: corners(kept_drawn[k]["ours"]))
         kept_drawn = [kept_drawn[k] for k in dict.fromkeys([*committed.values(), most])]
     return {**scenario, "scenes": [*kept_drawn, *answered[count:]]}
 
