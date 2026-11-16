@@ -225,13 +225,17 @@ SO101_OBJECT_SIZES = (0.026, 0.13)
 # of the orientations the arm holds at the position.
 SO101_TILT_RAD = 0.05
 SO101_TOLERANCE_RAD = 0.1
-# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them.
+# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them. Its goal in an
+# object is the drawn scene of that outcome whose IK searches cost MoveIt least: each of the
+# 4000 searches MoveIt's goal sampling makes runs the search budget's passes and checks each
+# descent's end, measured on 2026-11-16 at 0.09 s a search in 105, against 0.1 to 1.9 s in
+# 43, 80, 96, 131, 152, 163 and 190.
 COMMITTED_SO101 = {
     "a straight path": 0,
     "a path with corners": 67,
     "MoveIt's path invalid": 112,
     "a start in an object": 52,
-    "a goal in an object": 80,
+    "a goal in an object": 105,
 }
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
