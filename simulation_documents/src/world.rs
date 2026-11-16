@@ -17,7 +17,7 @@ use crate::names::{
 };
 use crate::pattern::{MinSpacing, ObjectEntry, WorkCellParameter};
 use crate::sampler::Sampled;
-use crate::{AssetField, AssetRef, Error, Name, ParameterName, RobotName};
+use crate::{AssetField, AssetKind, AssetRef, Error, Name, ParameterName, RobotName};
 
 /// The kind of a world document.
 pub(crate) const WORLD: Kind = Kind::new("simulation_schema", "world", 1);
@@ -76,7 +76,8 @@ impl From<Catalogue> for String {
     }
 }
 
-/// The scene asset of the world and the scale it is loaded at.
+/// The scene asset of the world, a reference to a scene, and the scale it
+/// is loaded at.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "SceneFields", into = "SceneFields")]
 pub struct Scene {
@@ -96,6 +97,7 @@ impl TryFrom<SceneFields> for Scene {
     type Error = Error;
 
     fn try_from(fields: SceneFields) -> Result<Scene, Error> {
+        fields.asset.check_kind(AssetKind::Scene)?;
         Ok(Scene {
             asset: fields.asset,
             scale: positive_scale(fields.scale)?,
@@ -600,6 +602,7 @@ impl TryFrom<ObjectFields> for Object {
     type Error = Error;
 
     fn try_from(fields: ObjectFields) -> Result<Object, Error> {
+        fields.asset.check_kind(AssetKind::Object)?;
         if let Some(mass) = fields.mass {
             let at_least_zero = mass >= 0.0;
             if !at_least_zero {
@@ -760,6 +763,25 @@ impl<'de> Deserialize<'de> for RecordedObject {
 
 /// Refuses a name that an object of `objects` and a riser of `risers`
 /// share: a document writes both in its `objects`, by their names.
+/// Refuses a scene whose asset is not a scene and an object whose asset is
+/// not an object, by the field of the asset: a document that reads back
+/// names a scene in `scene.asset` and an object in each
+/// `objects.<name>.asset`.
+pub(crate) fn check_asset_kinds(
+    scene: &Scene,
+    objects: &BTreeMap<Name, Object>,
+) -> Result<(), Error> {
+    let of_the_objects = objects
+        .iter()
+        .map(|(name, object)| (AssetField::Object(name), &object.asset));
+    for (field, asset) in std::iter::once((AssetField::Scene, &scene.asset)).chain(of_the_objects) {
+        asset
+            .check_kind(field.kind())
+            .map_err(|refusal| Error::field(field.to_string(), refusal.to_string()))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_riser_names(
     objects: &BTreeMap<Name, Object>,
     risers: &BTreeMap<Name, Riser>,
@@ -1531,8 +1553,10 @@ impl World {
 
     /// The document of this world. Refuses a number of the world that a
     /// document cannot hold, by its path: a float that is not finite, or a
-    /// number beyond 2^53.
+    /// number beyond 2^53. Refuses an asset of the other kind than its field
+    /// takes ([`check_asset_kinds`]).
     pub fn document(&self) -> Result<Document, Error> {
+        check_asset_kinds(&self.scene, &self.objects)?;
         check_riser_names(&self.objects, &self.risers)?;
         Ok(Document::of(WORLD, &self.fields())?)
     }
@@ -2980,6 +3004,52 @@ pub(crate) mod tests {
         assert!(
             !versioned.same_setup_as(&live) && !live.same_setup_as(&versioned),
             "an asset at a version is not the asset at no version"
+        );
+    }
+
+    #[test]
+    fn an_asset_of_the_other_kind_is_refused_at_its_field() {
+        let refusal = |from: &str, to: &str| {
+            World::parse(&example_text().replace(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refusal("scene/living_room", "object/living_room"),
+            "scene: the asset `object/living_room` is not a scene; write `scene/<id>`"
+        );
+        assert_eq!(
+            refusal(
+                "object/polyhaven_plastic_crate_01",
+                &format!("scene/polyhaven_plastic_crate_01@{VERSION}")
+            ),
+            format!(
+                "objects.crate: the asset `scene/polyhaven_plastic_crate_01@{VERSION}` is not an object; write `object/<id>`"
+            )
+        );
+
+        let mut scene_as_object = example();
+        scene_as_object.scene.asset = asset("object/living_room");
+        assert_eq!(
+            scene_as_object.to_json5().unwrap_err().to_string(),
+            "scene.asset: the asset `object/living_room` is not a scene; write `scene/<id>`"
+        );
+        let mut object_as_scene = example();
+        object_as_scene
+            .objects
+            .get_mut(&name("crate"))
+            .unwrap()
+            .asset = asset("scene/living_room");
+        assert_eq!(
+            object_as_scene.to_json5().unwrap_err().to_string(),
+            "objects.crate.asset: the asset `scene/living_room` is not an object; write `object/<id>`"
+        );
+        assert_eq!(
+            SetupRecord::built(&object_as_scene)
+                .to_json5()
+                .unwrap_err()
+                .to_string(),
+            "objects.crate.asset: the asset `scene/living_room` is not an object; write `object/<id>`"
         );
     }
 

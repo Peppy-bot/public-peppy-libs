@@ -32,6 +32,14 @@ impl AssetKind {
             _ => None,
         }
     }
+
+    /// The kind with its article, as a refusal names it.
+    fn with_article(self) -> &'static str {
+        match self {
+            AssetKind::Scene => "a scene",
+            AssetKind::Object => "an object",
+        }
+    }
 }
 
 impl fmt::Display for AssetKind {
@@ -142,6 +150,18 @@ impl AssetRef {
         self.version.as_ref()
     }
 
+    /// Refuses the reference unless it names an asset of `kind`, the kind
+    /// that its field takes ([`AssetField::kind`]).
+    pub(crate) fn check_kind(&self, kind: AssetKind) -> Result<(), Error> {
+        if self.kind == kind {
+            return Ok(());
+        }
+        Err(Error::rule(format!(
+            "the asset `{self}` is not {}; write `{kind}/<id>`",
+            kind.with_article()
+        )))
+    }
+
     /// The reference to the live version of the asset: the same kind and
     /// id, with no version.
     pub fn without_version(&self) -> AssetRef {
@@ -193,11 +213,23 @@ impl<'de> Deserialize<'de> for AssetRef {
 
 /// The field of a world document, or of a world pattern, that names an
 /// asset: the scene, or the object of a name. A refusal names the field as
-/// the document writes it.
+/// the document writes it. The field of the scene takes a scene, and the
+/// field of an object takes an object: a document with an asset of the
+/// other kind in a field does not parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetField<'a> {
     Scene,
     Object(&'a Name),
+}
+
+impl AssetField<'_> {
+    /// The kind of the asset that the field takes.
+    pub fn kind(self) -> AssetKind {
+        match self {
+            AssetField::Scene => AssetKind::Scene,
+            AssetField::Object(_) => AssetKind::Object,
+        }
+    }
 }
 
 impl fmt::Display for AssetField<'_> {
@@ -221,6 +253,27 @@ mod tests {
         let cup = Name::parse("cup").unwrap();
         assert_eq!(AssetField::Scene.to_string(), "scene.asset");
         assert_eq!(AssetField::Object(&cup).to_string(), "objects.cup.asset");
+        assert_eq!(AssetField::Scene.kind(), AssetKind::Scene);
+        assert_eq!(AssetField::Object(&cup).kind(), AssetKind::Object);
+    }
+
+    #[test]
+    fn a_reference_of_the_other_kind_than_its_field_takes_is_refused() {
+        let cup = AssetRef::parse("object/cup").unwrap();
+        let kitchen = AssetRef::parse(&format!("scene/kitchen@{VERSION}")).unwrap();
+        assert_eq!(cup.check_kind(AssetKind::Object), Ok(()));
+        assert_eq!(kitchen.check_kind(AssetKind::Scene), Ok(()));
+        assert_eq!(
+            cup.check_kind(AssetKind::Scene).unwrap_err().to_string(),
+            "the asset `object/cup` is not a scene; write `scene/<id>`"
+        );
+        assert_eq!(
+            kitchen
+                .check_kind(AssetKind::Object)
+                .unwrap_err()
+                .to_string(),
+            format!("the asset `scene/kitchen@{VERSION}` is not an object; write `object/<id>`")
+        );
     }
 
     #[test]

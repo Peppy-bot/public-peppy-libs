@@ -1952,6 +1952,32 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_with_an_asset_of_the_other_kind_does_not_parse() {
+        let refusal = |from: &str, to: &str| {
+            WorldPattern::parse(&room_with(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        let in_a_sampler = refusal(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            r#"scene: { asset: { one_of: ["scene/empty_room", "object/tray"] } }"#,
+        );
+        assert!(
+            in_a_sampler.contains("the asset `object/tray` is not a scene; write `scene/<id>`"),
+            "{in_a_sampler}"
+        );
+        let of_an_object = refusal(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            r#"tray: { asset: "scene/empty_room", pose: { in: "aisle" } },"#,
+        );
+        assert!(
+            of_an_object
+                .contains("the asset `scene/empty_room` is not an object; write `object/<id>`"),
+            "{of_an_object}"
+        );
+    }
+
+    #[test]
     fn a_pattern_gives_the_stations_of_its_furnish_poses_by_piece() {
         let pattern = room();
         let stations: Vec<(&str, &str, Side)> = pattern

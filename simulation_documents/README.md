@@ -79,7 +79,10 @@ asset id `<kind>/<id>`, with the kind `scene` or `object`, or
 the entry of an asset. An id with no version names the live entry of the asset
 in the catalogue release that the world names, and an id with a version names
 the entry of that version, live or retired. An `AssetRef` reads and writes the
-two forms, and a text of another form is refused at its field.
+two forms, and a text of another form is refused at its field. The scene of a
+world names a scene and each object names an object: a world, a setup record
+or a world pattern with an asset of the other kind does not parse, and is not
+written.
 `World::assets` gives each asset of a world with its `AssetField`, the field
 that names it (`scene.asset`, `objects.<name>.asset`): the scene, then each
 object by its name. `World::versioned` says whether the scene and each object
