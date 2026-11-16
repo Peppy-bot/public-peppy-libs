@@ -30,8 +30,9 @@ pub(crate) enum ThisKind {
 }
 
 /// The robot, its group, the map and the plans' parameters of a scenario, and its scenes. A
-/// scenario that `tools/draw_arm_planning.py` has drawn holds no probe spacing and no
-/// answer of motion_planning_core yet; the example `plan_arm_scenes` reads it so.
+/// scenario that `tools/draw_arm_planning.py` has drawn holds no probe spacing, no search
+/// budget and no answer of motion_planning_core yet; the example `plan_arm_scenes` reads it
+/// so.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenes {
@@ -68,6 +69,9 @@ pub struct Scenes {
     /// The joints' L2 distance between two probes of a path: no point of a link moves a
     /// tenth of a voxel between them.
     pub probe_spacing: Option<f64>,
+    /// The passes of KDL's descent loop after which a search of the reference's KDL, for a
+    /// goal state of poses, starts no descent: motion_planning_core's search budget.
+    pub ik_search_passes: Option<usize>,
     pub scenes: Vec<Scene>,
 }
 
@@ -364,6 +368,8 @@ pub struct Case {
     pub checked_pairs: BTreeSet<[String; 2]>,
     /// The scenario's probe spacing.
     pub probe_spacing: f64,
+    /// The scenario's search budget.
+    pub ik_search_passes: usize,
     pub cases: Vec<SceneCase>,
 }
 
@@ -381,7 +387,7 @@ impl Case {
                 let robot = read_robot(&name, &scenes.description);
                 let arms = robot.group_arms(&name, &scenes.group);
                 let checked_pairs = robot.checked_pairs(&name, &scenes.group);
-                let (probe_spacing, cases) = pair(
+                let (probe_spacing, ik_search_passes, cases) = pair(
                     &name,
                     &scenes,
                     !checked_pairs.is_empty(),
@@ -394,6 +400,7 @@ impl Case {
                     scenes,
                     checked_pairs,
                     probe_spacing,
+                    ik_search_passes,
                     cases,
                 }
             })
@@ -401,15 +408,15 @@ impl Case {
     }
 }
 
-/// The probe spacing of `scenes`, the scenario `name`, and each of its scenes paired with
-/// its answer of `reference`, the plans checking pairs of the robot's own links where
-/// `checks_own_pairs`.
+/// The probe spacing and the search budget of `scenes`, the scenario `name`, and each of its
+/// scenes paired with its answer of `reference`, the plans checking pairs of the robot's own
+/// links where `checks_own_pairs`.
 fn pair(
     name: &str,
     scenes: &Scenes,
     checks_own_pairs: bool,
     reference: Reference,
-) -> (f64, Vec<SceneCase>) {
+) -> (f64, usize, Vec<SceneCase>) {
     let Scenes {
         kind: ThisKind::ArmPlanning,
         ..
@@ -421,6 +428,9 @@ fn pair(
     let probe_spacing = scenes
         .probe_spacing
         .unwrap_or_else(|| panic!("{name}: the scenario's probe spacing"));
+    let ik_search_passes = scenes
+        .ik_search_passes
+        .unwrap_or_else(|| panic!("{name}: the scenario's search budget"));
     assert_eq!(
         scenes.scenes.len(),
         answers.len(),
@@ -459,7 +469,7 @@ fn pair(
             case
         })
         .collect();
-    (probe_spacing, cases)
+    (probe_spacing, ik_search_passes, cases)
 }
 
 /// MoveIt's answer `read`, whose probe the reference gives exactly where MoveIt succeeds.
@@ -526,7 +536,7 @@ mod tests {
                 "map_half_side": 1.6, "min_clearance": 0.0, "corner_tolerance": 0.1,
                 "goal_tolerance": 0.01, "planner": "{planner}", "refiner": "none",
                 "termination": "{termination}", "time_limit": 5.0, "iterations": 10,
-                "probe_spacing": 0.01,
+                "probe_spacing": 0.01, "ik_search_passes": 100,
                 "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
                              "objects": [], "attached": [], "allowed": [],
                              "path_orientations": [],
@@ -565,7 +575,7 @@ mod tests {
         status: i32,
         moveit_probe: &str,
         ours_probe: &str,
-    ) -> (f64, Vec<SceneCase>) {
+    ) -> (f64, usize, Vec<SceneCase>) {
         pair(
             "scenario",
             &scenes(ours),
@@ -677,12 +687,14 @@ mod tests {
 
     #[test]
     fn a_scene_pairs_with_the_answers_of_moveit_and_its_probe_of_ours() {
-        let (probe_spacing, cases) = paired(PATH, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
+        let (probe_spacing, ik_search_passes, cases) =
+            paired(PATH, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
         let scene = &cases[0];
         assert_eq!(scene.moveit.status, MOVEIT_SUCCESS);
         assert!(scene.moveit.probed.is_some() && scene.ours_probed.is_some());
         assert_eq!(probe_spacing, 0.01);
-        let (_, refused) = paired(FAILURE, -10, MOVEIT_NONE, "null");
+        assert_eq!(ik_search_passes, 100);
+        let (_, _, refused) = paired(FAILURE, -10, MOVEIT_NONE, "null");
         assert!(refused[0].moveit.probed.is_none() && refused[0].ours_probed.is_none());
     }
 
@@ -701,7 +713,7 @@ mod tests {
     #[test]
     fn moveits_probe_of_a_path_it_times_none_pairs_with_no_duration() {
         let untimed = MOVEIT_PROBED.replace(r#""duration": 2.0"#, r#""duration": null"#);
-        let (_, cases) = paired(PATH, MOVEIT_SUCCESS, &untimed, PROBED);
+        let (_, _, cases) = paired(PATH, MOVEIT_SUCCESS, &untimed, PROBED);
         let probed = cases[0].moveit.probed.expect("MoveIt's probe");
         assert_eq!((probed.turning, probed.duration), (0.5, None));
     }

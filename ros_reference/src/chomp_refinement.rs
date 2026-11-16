@@ -87,6 +87,8 @@ impl Refinements {
             time_limit: self.time_limit,
             iterations: self.iterations,
             probe_spacing: Some(self.probe_spacing),
+            // Each plan's goal is a configuration, which no inverse kinematics searches for.
+            ik_search_passes: None,
             scenes: self.scenes.iter().map(RefinementScene::planned).collect(),
         }
     }

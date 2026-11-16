@@ -4,8 +4,8 @@
 # map monitor, MoveIt's planning pipeline (moveit_ros_planning) with its OMPL planner
 # (moveit_planners_ompl) and its KDL inverse kinematics (moveit_kinematics), MoveIt's
 # CHOMP optimizer (chomp_motion_planner), random_numbers, rclcpp and sensor_msgs, and the
-# reference program built against them, for amd64 and arm64. Developers run it through
-# run.sh, and the parity tests read the outputs that it wrote.
+# reference program and its plugins built against them, for amd64 and arm64. Developers run
+# it through run.sh, and the parity tests read the outputs that it wrote.
 #
 # Every input is pinned, so a rebuild gives the same packages: the base image by the
 # digest of its index of both architectures, the ROS packages by a dated snapshot of the
@@ -58,6 +58,10 @@ RUN . /opt/ros/lyrical/setup.sh \
  && cmake --build /tmp/build --parallel 4 \
  && cmake --install /tmp/build --prefix /usr/local \
  && rm -rf /tmp/build
+
+# pluginlib finds the reference program's plugins through the ament index at the program's
+# install prefix, and the entrypoint's setup.sh puts the ROS prefix before it.
+ENV AMENT_PREFIX_PATH=/usr/local
 
 # The reference program loads the ROS libraries through the environment that
 # setup.sh exports.

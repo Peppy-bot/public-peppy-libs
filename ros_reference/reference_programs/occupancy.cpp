@@ -3,6 +3,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <Eigen/Geometry>
@@ -14,6 +15,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_listener.hpp>
 
 #include "scenario.hpp"
 
@@ -27,9 +29,11 @@ using occupancy_map_monitor::PointCloudOctomapUpdater;
 // cloudMsgCallback, which finds the sensor in its private tf buffer, tf_buffer_, which
 // the buffer's own listener fills from /tf; no public method reaches either. The
 // reference puts each sensor's pose in that buffer and calls the callback on each cloud
-// itself, on its own thread, so the updater's own code inserts it. The access rules do
-// not apply to the names in an explicit instantiation, so the instantiation of
-// PrivateMember for each tag below defines `pointer`, which gives that one member.
+// itself, on its own thread, so the updater's own code inserts it. The updater's tf
+// listener, tf_listener_, spins its private executor, executor_, on a thread of its own,
+// which the reference waits for. The access rules do not apply to the names in an
+// explicit instantiation, so the instantiation of PrivateMember for each tag below
+// defines `pointer`, which gives that one member.
 template <typename Tag, typename Tag::type member>
 struct PrivateMember {
   friend typename Tag::type pointer(Tag) { return member; }
@@ -47,6 +51,18 @@ struct TfBuffer {
   friend type pointer(TfBuffer);
 };
 template struct PrivateMember<TfBuffer, &PointCloudOctomapUpdater::tf_buffer_>;
+
+struct TfListener {
+  using type = std::shared_ptr<tf2_ros::TransformListener> PointCloudOctomapUpdater::*;
+  friend type pointer(TfListener);
+};
+template struct PrivateMember<TfListener, &PointCloudOctomapUpdater::tf_listener_>;
+
+struct ListenerExecutor {
+  using type = rclcpp::Executor::SharedPtr tf2_ros::TransformListener::*;
+  friend type pointer(ListenerExecutor);
+};
+template struct PrivateMember<ListenerExecutor, &tf2_ros::TransformListener::executor_>;
 
 constexpr const char* map_frame = "map";
 constexpr const char* sensor_frame = "sensor";
@@ -174,6 +190,19 @@ nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
   updater.initialize(node);
   if (!updater.setParams(sensor_name)) {
     throw std::runtime_error("the updater does not read its parameters from the node");
+  }
+  // The listener's destructor cancels its executor and joins its thread (tf2_ros 0.45.10
+  // transform_listener.cpp:67-72). The thread's spin() marks the executor spinning as it
+  // starts, so a cancel before that is lost and the join never ends (rclcpp 32.0.3
+  // executor.cpp:468-472, single_threaded_executor.cpp:30-39): on one CPU the reference
+  // can end before the thread first runs. The reference goes on once the executor spins.
+  const auto& listener = *(updater.*pointer(TfListener{}));
+  const auto& executor = listener.*pointer(ListenerExecutor{});
+  if (!executor) {
+    throw std::runtime_error("the updater's tf listener spins no executor of its own");
+  }
+  while (!executor->is_spinning()) {
+    std::this_thread::yield();
   }
 
   // The robot's body: a sphere in the map frame, which the updater cuts out of every

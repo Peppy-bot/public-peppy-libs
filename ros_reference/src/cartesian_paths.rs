@@ -23,9 +23,9 @@ enum ThisKind {
     CartesianPaths,
 }
 
-/// The robot, the arm, the map and the step of a scenario, and its cases. A scenario that
-/// `tools/draw_cartesian_paths.py` has drawn holds no step and no answer of
-/// motion_planning_core yet; the example `cartesian_scenes` reads it so.
+/// The robot, the arm, the map, the step and the search budget of a scenario, and its cases.
+/// A scenario that `tools/draw_cartesian_paths.py` has drawn holds no step, no search budget
+/// and no answer of motion_planning_core yet; the example `cartesian_scenes` reads it so.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Paths {
@@ -45,6 +45,9 @@ pub struct Paths {
     /// The longest step of a line (m): motion_planning_core's, and the request's max_step of
     /// compute_cartesian_path, 3.5 rad of turn for each meter of it (`MaxEEFStep`).
     pub step: Option<f64>,
+    /// The passes of KDL's descent loop after which a search of the reference's KDL, for a
+    /// state of a line, starts no descent: motion_planning_core's search budget.
+    pub ik_search_passes: Option<usize>,
     pub cases: Vec<PathRequest>,
 }
 
@@ -167,6 +170,8 @@ pub struct Case {
     pub checked_pairs: BTreeSet<[String; 2]>,
     /// The scenario's step.
     pub step: f64,
+    /// The scenario's search budget.
+    pub ik_search_passes: usize,
     pub cases: Vec<PathCase>,
 }
 
@@ -183,7 +188,7 @@ impl Case {
                 let robot = read_robot(&name, &paths.description);
                 let arm = robot.arm(&name, &paths.group);
                 let checked_pairs = robot.checked_pairs(&name, &paths.group);
-                let (step, cases) = pair(&name, &paths, read_reference(&name));
+                let (step, ik_search_passes, cases) = pair(&name, &paths, read_reference(&name));
                 Case {
                     name,
                     robot,
@@ -191,6 +196,7 @@ impl Case {
                     paths,
                     checked_pairs,
                     step,
+                    ik_search_passes,
                     cases,
                 }
             })
@@ -198,9 +204,9 @@ impl Case {
     }
 }
 
-/// The step of `paths`, the scenario `name`, and each of its cases paired with its answer
-/// of `reference`.
-fn pair(name: &str, paths: &Paths, reference: Reference) -> (f64, Vec<PathCase>) {
+/// The step and the search budget of `paths`, the scenario `name`, and each of its cases
+/// paired with its answer of `reference`.
+fn pair(name: &str, paths: &Paths, reference: Reference) -> (f64, usize, Vec<PathCase>) {
     let Paths {
         kind: ThisKind::CartesianPaths,
         ..
@@ -212,6 +218,9 @@ fn pair(name: &str, paths: &Paths, reference: Reference) -> (f64, Vec<PathCase>)
     let step = paths
         .step
         .unwrap_or_else(|| panic!("{name}: the scenario's step"));
+    let ik_search_passes = paths
+        .ik_search_passes
+        .unwrap_or_else(|| panic!("{name}: the scenario's search budget"));
     assert_eq!(
         paths.cases.len(),
         answers.len(),
@@ -244,7 +253,7 @@ fn pair(name: &str, paths: &Paths, reference: Reference) -> (f64, Vec<PathCase>)
             }
         })
         .collect();
-    (step, cases)
+    (step, ik_search_passes, cases)
 }
 
 #[cfg(test)]
@@ -259,7 +268,7 @@ mod tests {
         format!(
             r#"{{"kind": "{kind}", "description": "d", "group": "arm",
                 "voxel_size": 0.04, "map_half_side": 1.6,
-                "min_clearance": 0.0, "step": 0.01,
+                "min_clearance": 0.0, "step": 0.01, "ik_search_passes": 100,
                 "cases": [{{"start": [0.0], "link": "tip",
                             "offsets": [{{"translation": [0.0, 0.0, 0.1],
                                           "rotation": [0.0, 0.0, 0.0]}}],
@@ -285,7 +294,7 @@ mod tests {
         .expect("parses")
     }
 
-    fn paired(ours: &str, link: &str, states: &str) -> (f64, Vec<PathCase>) {
+    fn paired(ours: &str, link: &str, states: &str) -> (f64, usize, Vec<PathCase>) {
         pair("scenario", &paths(ours), reference(link, states))
     }
 
@@ -298,7 +307,7 @@ mod tests {
 
     #[test]
     fn a_case_pairs_with_moveits_path_from_its_start() {
-        let (step, cases) = paired(PATH, "tip", "[[0.0]]");
+        let (step, ik_search_passes, cases) = paired(PATH, "tip", "[[0.0]]");
         let path = &cases[0];
         assert_eq!(
             path.request.ours,
@@ -309,7 +318,8 @@ mod tests {
         );
         assert_eq!(path.moveit.fraction, 1.0);
         assert_eq!(step, 0.01);
-        let (_, refused) = paired(FAILURE, "tip", "[[0.0]]");
+        assert_eq!(ik_search_passes, 100);
+        let (_, _, refused) = paired(FAILURE, "tip", "[[0.0]]");
         assert_eq!(
             refused[0].request.ours,
             Ours::Failure {

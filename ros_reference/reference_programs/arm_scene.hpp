@@ -43,16 +43,19 @@ ArmGroup group_of(const moveit::core::RobotModel& model, const nlohmann::json& s
 moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& inputs);
 
 // MoveIt's KDL inverse kinematics on `solver_groups`, an ArmGroup's, which a pose goal's
-// constraint sampler reads. It loads as move_group loads a moveit_config's kinematics.yaml
-// that names only the solver: at the search resolution and the timeout that
-// moveit_ros_planning's kinematics_parameters.yaml gives by default (0.1 and 0.05 s), the
-// timeout set on each group as RobotModelLoader::loadKinematicsSolvers sets it (moveit2
-// 2.15.2 robot_model_loader.cpp:310-318), which the constraint sampler gives each IK call
-// (default_constraint_samplers.cpp:268). A group of fewer joints than a pose has freedoms
-// solves the position alone, its kinematics.yaml naming position_only_ik too: KDL's search
-// otherwise converges on no pose such a group does not hold.
+// constraint sampler reads, as the reference's plugin ros_reference/PassBoundedKdl
+// (pass_bounded_kdl.cpp), its search ended by `ik_search_passes` passes of KDL's descent
+// loop. It loads as move_group loads a moveit_config's kinematics.yaml that names that plugin
+// as each group's solver and sets each group's ik_search_passes: at the search resolution and
+// the timeout that moveit_ros_planning's kinematics_parameters.yaml gives by default (0.1 and
+// 0.05 s), the timeout set on each group as RobotModelLoader::loadKinematicsSolvers sets it
+// (moveit2 2.15.2 robot_model_loader.cpp:310-318), which the constraint sampler gives each IK
+// call (default_constraint_samplers.cpp:268) and the plugin bounds by passes. A group of
+// fewer joints than a pose has freedoms solves the position alone, its kinematics.yaml naming
+// position_only_ik too: KDL's search otherwise converges on no pose such a group does not
+// hold.
 void load_kdl(const moveit::core::RobotModelPtr& model,
-              const std::vector<std::string>& solver_groups);
+              const std::vector<std::string>& solver_groups, std::uint64_t ik_search_passes);
 
 std::vector<double> numbers(const nlohmann::json& values);
 

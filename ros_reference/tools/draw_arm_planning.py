@@ -225,20 +225,18 @@ SO101_OBJECT_SIZES = (0.026, 0.13)
 # of the orientations the arm holds at the position.
 SO101_TILT_RAD = 0.05
 SO101_TOLERANCE_RAD = 0.1
-# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them, none of them in
-# SO101_ON_KDL_TIMEOUT.
+# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them. Its goal in an
+# object is the drawn scene of that outcome whose IK searches cost MoveIt least: each of the
+# 4000 searches MoveIt's goal sampling makes runs the search budget's passes and checks each
+# descent's end, measured on 2026-11-16 at 0.09 s a search in 105, against 0.1 to 1.9 s in
+# 43, 80, 96, 131, 152, 163 and 190.
 COMMITTED_SO101 = {
     "a straight path": 0,
     "a path with corners": 67,
     "MoveIt's path invalid": 112,
     "a start in an object": 52,
-    "a goal in an object": 80,
+    "a goal in an object": 105,
 }
-# SO-101's drawn scenes in which a search of MoveIt's goal sampler reaches KDL's timeout, a
-# clock, so MoveIt's goal states follow the machine's speed: measured with KDL's debug lines
-# in the reference image on 2026-11-11, a search ending on the timeout in 27 and 137, and one
-# solving after it in 65 and 102. The scenario keeps none of them.
-SO101_ON_KDL_TIMEOUT = (27, 65, 102, 137)
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
 OBJECT_KINDS = ("box", "sphere", "cylinder", "mesh", "L", "two shapes")
@@ -634,13 +632,19 @@ def header(group, voxel_map, min_clearance, planning, description=OPENARM_V2):
 
 
 def planned(scenario_header, scenes):
-    """The scenario of `scenes`, each with motion_planning_core's answer, and the spacing at
-    which the reference probes a path, from the example plan_arm_scenes."""
+    """The scenario of `scenes`, each with motion_planning_core's answer, the spacing at
+    which the reference probes a path, and the passes of KDL's descent loop after which a
+    search of the reference's KDL starts no descent, from the example plan_arm_scenes."""
     answers = run_example(example("plan_arm_scenes"), {**scenario_header, "scenes": scenes})
     answered = [
         {**scene, "ours": ours} for scene, ours in zip(scenes, answers["ours"], strict=True)
     ]
-    return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
+    return {
+        **scenario_header,
+        "probe_spacing": answers["probe_spacing"],
+        "ik_search_passes": answers["ik_search_passes"],
+        "scenes": answered,
+    }
 
 
 def drawn_scenario(drawn, planning, min_clearance, name):
@@ -744,19 +748,18 @@ def so101_scenario(drawn, planning, min_clearance, goal, holding):
     ]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scenario = planned(scenario_header, [*scenes, *meeting, *outside])
-    return kept(scenario, drawn, COMMITTED_SO101, SO101_ON_KDL_TIMEOUT)
+    return kept(scenario, drawn, COMMITTED_SO101)
 
 
-def kept(scenario, drawn, committed, excluded=()):
+def kept(scenario, drawn, committed):
     """`scenario`, its drawn scenes first and every other scene after them, keeping of
     those drawn the first `drawn`, or with no `drawn` those at `committed` and the one whose
-    path has the most corners among the first DRAWN but those `excluded`."""
+    path has the most corners among the first DRAWN."""
     answered = scenario["scenes"]
     count = drawn or DRAWN
     kept_drawn = answered[:count]
     if not drawn:
-        candidates = [k for k in range(DRAWN) if k not in excluded]
-        most = max(candidates, key=lambda k: corners(kept_drawn[k]["ours"]))
+        most = max(range(DRAWN), key=lambda k: corners(kept_drawn[k]["ours"]))
         kept_drawn = [kept_drawn[k] for k in dict.fromkeys([*committed.values(), most])]
     return {**scenario, "scenes": [*kept_drawn, *answered[count:]]}
 

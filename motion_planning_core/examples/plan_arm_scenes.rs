@@ -1,13 +1,15 @@
 //! Plans every scene of an arm planning scenario of the ROS reference harness, which it
-//! reads on stdin, and writes on stdout this crate's answer to each scene and the spacing at
-//! which the reference probes a path, as JSON, and on stderr how many of its plans that found no path ended at the
-//! planning time and how many before it.
+//! reads on stdin, and writes on stdout this crate's answer to each scene, the spacing at
+//! which the reference probes a path and the passes of KDL's descent loop after which a
+//! search starts no descent, as JSON, and on stderr how many of its plans that found no
+//! path ended at the planning time and how many before it.
 //! `ros_reference/tools/draw_arm_planning.py` draws the scenes, runs it, and writes its
 //! answers into the scenario.
 
 #[path = "../tests/arm_scenes/mod.rs"]
 mod arm_scenes;
 
+use chain_kinematics::SEARCH_ITERATIONS;
 use robot_description::{Arm, OnShape, on_shape};
 use ros_reference::Robot;
 use ros_reference::arm_planning::{Ours, Scenes};
@@ -52,6 +54,7 @@ impl OnShape for Answers<'_> {
             let ours: Vec<Ours> = planned.into_iter().map(|p| p.ours).collect();
             json!({
                 "probe_spacing": probe_spacing::<N, D>(arms, scenes),
+                "ik_search_passes": SEARCH_ITERATIONS,
                 "ours": ours,
             })
         })

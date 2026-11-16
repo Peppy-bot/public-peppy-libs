@@ -1,5 +1,6 @@
-# The reference program of the ROS reference harness. The Dockerfile builds it in the
-# reference image, against the ROS packages that the image holds.
+# The reference program of the ROS reference harness and the library of its plugins of
+# MoveIt's base classes. The Dockerfile builds them in the reference image, against the ROS
+# packages that the image holds.
 cmake_minimum_required(VERSION 3.28)
 project(ros_reference LANGUAGES CXX)
 
@@ -9,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(chomp_motion_planner REQUIRED)
 find_package(geometric_shapes REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(moveit_kinematics REQUIRED)
 find_package(moveit_planners_ompl REQUIRED)
 find_package(moveit_ros_occupancy_map_monitor REQUIRED)
 find_package(moveit_ros_perception REQUIRED)
@@ -16,9 +18,11 @@ find_package(moveit_ros_planning REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(octomap REQUIRED)
 find_package(ompl REQUIRED)
+find_package(orocos_kdl REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(random_numbers REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcutils REQUIRED)
 find_package(rsl REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(srdfdom REQUIRED)
@@ -86,4 +90,41 @@ target_include_directories(ros_reference PRIVATE ${OCTOMAP_INCLUDE_DIRS})
 target_link_options(ros_reference PRIVATE
   "LINKER:--export-dynamic-symbol=_ZN14random_numbers21RandomNumberGeneratorC1Ev"
   "LINKER:--export-dynamic-symbol=_ZN14random_numbers21RandomNumberGeneratorC2Ev")
+
+# The library of MoveIt's KDL plugin, which ros_reference/PassBoundedKdl derives from, found
+# in moveit_kinematics' lib directory: moveit_kinematics 2.15.2 exports no target of it.
+find_library(MOVEIT_KDL_KINEMATICS_PLUGIN moveit_kdl_kinematics_plugin
+  PATHS ${moveit_kinematics_DIR}/../../../lib NO_DEFAULT_PATH REQUIRED)
+
+# The plugins of MoveIt's base classes that the references load through pluginlib, which
+# moveit_plugins.xml names.
+add_library(ros_reference_moveit_plugins SHARED
+  reference_programs/pass_bounded_kdl.cpp
+  reference_programs/union_in_name_order.cpp
+)
+target_link_libraries(ros_reference_moveit_plugins PRIVATE
+  ${MOVEIT_KDL_KINEMATICS_PLUGIN}
+  moveit_core::moveit_constraint_samplers
+  moveit_core::moveit_kinematics_base
+  moveit_core::moveit_planning_scene
+  moveit_core::moveit_robot_model
+  moveit_core::moveit_robot_state
+  moveit_core::moveit_utils
+  moveit_kinematics::kdl_kinematics_parameters
+  ${orocos_kdl_LIBRARIES}
+  pluginlib::pluginlib
+  rcutils::rcutils
+)
+
 install(TARGETS ros_reference)
+install(TARGETS ros_reference_moveit_plugins LIBRARY DESTINATION lib)
+# The ament index entries by which pluginlib finds the plugins at the install prefix, which
+# the image puts on AMENT_PREFIX_PATH: the package ros_reference, and its plugins of
+# moveit_core's base classes.
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ament_index/packages/ros_reference "")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ament_index/moveit_core__pluginlib__plugin/ros_reference
+  "share/ros_reference/moveit_plugins.xml\n")
+install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/ament_index/
+  DESTINATION share/ament_index/resource_index)
+install(FILES reference_programs/package.xml reference_programs/moveit_plugins.xml
+  DESTINATION share/ros_reference)
