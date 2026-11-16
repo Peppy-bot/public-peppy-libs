@@ -68,8 +68,35 @@ the bases leave no entry under, after their own marks, is refused, as is a
 each base on the way to it, and a chain of more than 128 bases is refused.
 `same_setup_as` compares two worlds whatever their manifests say, with the
 limbs of each robot alike rather than equal: each joint within `JOINT_SLACK`
-and each opening within `OPENING_SLACK` of the other's, since a measured
-joint moves by a hair from one read to the next.
+and each opening within `OPENING_SLACK` of the other's, since a measured joint
+moves by a hair from one read to the next. The two catalogue releases are part
+of the two setups, unless each asset of the two worlds names a version.
+
+The scene and each object of a world name their asset with an `AssetRef`: an
+asset id `<kind>/<id>`, with the kind `scene` or `object`, or
+`<kind>/<id>@<version>`, such as `object/cup@9f2c41d07a3be518`. An
+`AssetVersion` is the 16 lowercase hex digits that a catalogue release gives
+the entry of an asset. An id with no version names the live entry of the asset
+in the catalogue release that the world names, and an id with a version names
+the entry of that version, live or retired. An `AssetRef` reads and writes the
+two forms, and a text of another form is refused at its field. The scene of a
+world names a scene and each object names an object: a world, a setup record
+or a world pattern with an asset of the other kind does not parse, and is not
+written.
+`World::assets` gives each asset of a world with its `AssetField`, the field
+that names it (`scene.asset`, `objects.<name>.asset`): the scene, then each
+object by its name. `World::versioned` says whether the scene and each object
+name a version: such a world builds on each catalogue release that holds these
+versions. A world with an asset at no version builds on its own release only:
+`World::asset_bound_to_its_release` gives the first such asset of a world that
+names another release than the one that a simulation runs.
+`World::without_versions` gives the world with each asset at no version, and
+`World::at_the_live_versions_of` gives that world on a release, which builds
+there. An asset at a version and the same asset at no version are not the same
+setup. A riser is an instance of no asset, so it names no version. A world
+pattern names no version, since an expansion draws the live version of each
+asset: `WorldPattern::versioned_asset` gives the first asset of a pattern that
+names one.
 
 The world carries the root key `simulation_schema` and takes the root key
 rule, the manifest and the digest from `documents_core`. Two joins whose

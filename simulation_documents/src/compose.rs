@@ -143,7 +143,7 @@ impl StartSetup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::tests::{example, name, robot};
+    use crate::world::tests::{asset, example, name, robot};
     use crate::{Feature, Revision, Scene, SceneObject};
 
     fn alpha() -> StackRobot {
@@ -329,7 +329,7 @@ mod tests {
     fn a_start_setup_survives_its_two_texts() {
         let start = StartSetup {
             record: SetupRecord::at_start(Scene {
-                asset: "scene/default".into(),
+                asset: asset("scene/default"),
                 scale: 1.0,
             }),
             first_stands: BTreeMap::from([(
@@ -360,7 +360,7 @@ mod tests {
         };
         let start = StartSetup {
             record: SetupRecord::at_start(Scene {
-                asset: "scene/default".into(),
+                asset: asset("scene/default"),
                 scale: 1.0,
             }),
             first_stands: BTreeMap::from([(robot("alpha"), first)]),
@@ -385,7 +385,7 @@ mod tests {
             None,
             "the robots of the start world stand at Ready"
         );
-        assert_eq!(world.scene.asset, "scene/default");
+        assert_eq!(world.scene.asset, asset("scene/default"));
         assert!(world.objects.is_empty() && world.scene_objects.is_empty());
     }
 }

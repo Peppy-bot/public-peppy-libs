@@ -27,7 +27,7 @@ use crate::names::first_named_twice;
 use crate::pattern::{ObjectEntry, physics_candidates};
 use crate::sampler::{DrawnValue, Sampled, Segment, SitePath, SiteRule, placeholder};
 use crate::world::{Object, Robot, SceneObject, positive_scale};
-use crate::{Error, Name, Offset, Physics, Pose, RobotName, Side, Stand};
+use crate::{AssetRef, Error, Name, Offset, Physics, Pose, RobotName, Side, Stand};
 
 /// The path of the placed value of the furnish layout.
 const FURNISH: &str = "furnish";
@@ -663,7 +663,7 @@ impl FurnishEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FurnishPiece {
     pub object: Name,
-    pub asset: String,
+    pub asset: AssetRef,
     pub scale: ScaleRange,
     pub physics: Option<Physics>,
     pub mass: Option<f64>,
@@ -931,7 +931,7 @@ pub(crate) fn places_of(
 mod tests {
     use super::*;
     use crate::pattern::tests::placed;
-    use crate::world::tests::{RELEASE, name, robot};
+    use crate::world::tests::{RELEASE, asset, name, robot};
     use crate::{PlacementKind, PlacementSite, Placements, Seed, World, WorldPattern};
 
     /// A room of five pieces, one of each rule: a desk against the north
@@ -1126,7 +1126,7 @@ mod tests {
         }
         assert_eq!(
             assets,
-            BTreeSet::from(["object/office_desk".into(), "object/standing_desk".into()])
+            BTreeSet::from([asset("object/office_desk"), asset("object/standing_desk")])
         );
         let placements = placements_of(&room(), 3);
         let pieces = pieces_of(&placements);
@@ -1267,13 +1267,13 @@ mod tests {
         // The first world, and one more for the other asset of the desk, the
         // other end of the height of the desk and of the yaw of the lamp.
         assert_eq!(worlds.len(), 4);
-        let desk_assets: BTreeSet<&str> = worlds
+        let desk_assets: BTreeSet<&AssetRef> = worlds
             .iter()
-            .map(|world| world.objects[&name("desk")].asset.as_str())
+            .map(|world| &world.objects[&name("desk")].asset)
             .collect();
         assert_eq!(
             desk_assets,
-            BTreeSet::from(["object/office_desk", "object/standing_desk"])
+            BTreeSet::from([&asset("object/office_desk"), &asset("object/standing_desk")])
         );
         for world in &worlds {
             assert_eq!(world.objects[&name("desk")].scale, 0.6);
@@ -1874,8 +1874,8 @@ mod tests {
     #[test]
     fn a_pattern_gives_each_scene_and_each_asset_of_an_object_that_it_can_draw() {
         let pattern = room();
-        let scene = |asset: &str| crate::Scene {
-            asset: asset.into(),
+        let scene = |written: &str| crate::Scene {
+            asset: asset(written),
             scale: 1.0,
         };
         assert_eq!(pattern.scenes(), [scene("scene/empty_room")]);
@@ -1887,17 +1887,17 @@ mod tests {
             WorldPattern::parse(&rooms).unwrap().scenes(),
             [scene("scene/empty_room"), scene("scene/bare_room")]
         );
-        let assets: BTreeMap<String, Vec<String>> = pattern
+        let assets: BTreeMap<String, Vec<AssetRef>> = pattern
             .object_assets()
             .into_iter()
             .map(|(name, assets)| (name.to_string(), assets.into_iter().collect()))
             .collect();
         assert_eq!(
             assets["desk"],
-            ["object/office_desk", "object/standing_desk"]
+            [asset("object/office_desk"), asset("object/standing_desk")]
         );
-        assert_eq!(assets["lamp"], ["object/lamp"]);
-        assert_eq!(assets["mug"], ["object/mug"]);
+        assert_eq!(assets["lamp"], [asset("object/lamp")]);
+        assert_eq!(assets["mug"], [asset("object/mug")]);
         assert_eq!(assets.len(), 9);
         let item_kind = room_with(
             r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
@@ -1905,6 +1905,76 @@ mod tests {
         );
         let pattern = WorldPattern::parse(&item_kind).unwrap();
         assert!(!pattern.object_assets().contains_key(&name("tray")));
+    }
+
+    #[test]
+    fn a_pattern_gives_its_first_asset_that_names_a_version() {
+        const VERSION: &str = "9f2c41d07a3be518";
+        let versioned = |from: &str, to: &str| {
+            WorldPattern::parse(&room_with(from, &to.replace("VERSION", VERSION)))
+                .unwrap()
+                .versioned_asset()
+                .map(|(field, asset)| format!("{field}: {asset}"))
+        };
+        assert_eq!(room().versioned_asset(), None);
+        assert_eq!(
+            versioned(
+                r#"scene: { asset: "scene/empty_room" }"#,
+                r#"scene: { asset: { one_of: ["scene/empty_room", "scene/bare_room@VERSION"] } }"#,
+            ),
+            Some(format!("scene.asset: scene/bare_room@{VERSION}")),
+            "a candidate of a sampler"
+        );
+        assert_eq!(
+            versioned(
+                r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+                r#"tray: { asset: "object/tray@VERSION", pose: { in: "aisle" } },"#,
+            ),
+            Some(format!("objects.tray.asset: object/tray@{VERSION}"))
+        );
+        let both = room_with(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            &format!(r#"scene: {{ asset: "scene/empty_room@{VERSION}" }}"#),
+        )
+        .replace(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            &format!(r#"tray: {{ asset: "object/tray@{VERSION}", pose: {{ in: "aisle" }} }},"#),
+        );
+        assert_eq!(
+            WorldPattern::parse(&both)
+                .unwrap()
+                .versioned_asset()
+                .map(|(field, _)| field.to_string())
+                .as_deref(),
+            Some("scene.asset"),
+            "the scene is the first field"
+        );
+    }
+
+    #[test]
+    fn a_pattern_with_an_asset_of_the_other_kind_does_not_parse() {
+        let refusal = |from: &str, to: &str| {
+            WorldPattern::parse(&room_with(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        let in_a_sampler = refusal(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            r#"scene: { asset: { one_of: ["scene/empty_room", "object/tray"] } }"#,
+        );
+        assert!(
+            in_a_sampler.contains("the asset `object/tray` is not a scene; write `scene/<id>`"),
+            "{in_a_sampler}"
+        );
+        let of_an_object = refusal(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            r#"tray: { asset: "scene/empty_room", pose: { in: "aisle" } },"#,
+        );
+        assert!(
+            of_an_object
+                .contains("the asset `scene/empty_room` is not an object; write `object/<id>`"),
+            "{of_an_object}"
+        );
     }
 
     #[test]

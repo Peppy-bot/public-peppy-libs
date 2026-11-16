@@ -285,7 +285,7 @@ fn drop_base_entry<K: Ord + std::fmt::Display, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::tests::{RELEASE, example, example_text, name};
+    use crate::world::tests::{RELEASE, asset, example, example_text, name};
     use crate::{Physics, Pose, RobotName, SceneObject};
 
     fn document(text: &str) -> WorldDocument {
@@ -362,7 +362,7 @@ mod tests {
         let world = extending("")
             .resolve(&[middle.clone(), root.clone()])
             .unwrap();
-        assert_eq!(world.scene.asset, "scene/kitchen");
+        assert_eq!(world.scene.asset, asset("scene/kitchen"));
         let given = [root.clone(), middle.clone()];
         let chain: Vec<String> = extending("")
             .base_manifests(&given)
@@ -597,7 +597,7 @@ mod tests {
             "",
         )
         .unwrap();
-        assert_eq!(world.scene.asset, "scene/near");
+        assert_eq!(world.scene.asset, asset("scene/near"));
     }
 
     #[test]
@@ -629,7 +629,7 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(resolved.0.unwrap().scene.asset, "scene/default");
+        assert_eq!(resolved.0.unwrap().scene.asset, asset("scene/default"));
         assert_eq!(
             resolved.1.unwrap_err().to_string(),
             "the chain of bases holds more than 128 bases; extend a base nearer the root"
@@ -778,7 +778,7 @@ mod tests {
                 r#"{ simulation_schema: "world/v1", manifest: { name: "world_3f9a1c27", revision: 3 }, catalogue: "local" }"#,
             )])
             .unwrap();
-        assert_eq!(scene_from_the_world.scene.asset, "scene/kitchen");
+        assert_eq!(scene_from_the_world.scene.asset, asset("scene/kitchen"));
     }
 
     /// A root base extends no base, so a mark in it is refused before the

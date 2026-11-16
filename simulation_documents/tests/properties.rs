@@ -17,13 +17,31 @@ use hegel::generators::{self as gs, Generator, PrintableGenerator};
 use serde::Serialize;
 use serde_json::{Value, json};
 use simulation_documents::{
-    Band, Bounds, Catalogue, Check, ClearWays, Cone, ContentsOn, Control, Count, Date, Daylight,
-    Digest, Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs,
-    Location, Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place,
+    AssetRef, Band, Bounds, Catalogue, Check, ClearWays, Cone, ContentsOn, Control, Count, Date,
+    Daylight, Digest, Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light,
+    Limbs, Location, Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place,
     Placement, PlacementKind, Point, Pose, Raise, Reachable, Region, Revision, Riser, Robot,
     RobotName, ScaleRange, Scene, SceneObject, Seed, SetupRecord, Side, SitePath, StackRobot,
     Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
+
+/// The asset reference that `written` writes.
+fn asset(written: &str) -> AssetRef {
+    AssetRef::parse(written).expect("the text is an asset id")
+}
+
+/// The asset ids of a kind: an id alone, or an id with a version.
+#[hegel::composite]
+fn assets(tc: &TestCase, kind: &'static str) -> AssetRef {
+    let id = tc.draw(names());
+    let version = tc.draw(gs::optional(
+        gs::text().alphabet("0f").min_size(16).max_size(16),
+    ));
+    match version {
+        Some(version) => asset(&format!("{kind}/{id}@{version}")),
+        None => asset(&format!("{kind}/{id}")),
+    }
+}
 
 /// Names of objects, scene objects, locations, poses and regions: over the
 /// characters a name allows, short enough to collide.
@@ -200,7 +218,7 @@ fn controls() -> impl PrintableGenerator<BTreeMap<String, f64>> {
 #[hegel::composite]
 fn objects(tc: &TestCase) -> Object {
     Object {
-        asset: format!("object/{}", tc.draw(names())),
+        asset: tc.draw(assets("object")),
         pose: tc.draw(poses()),
         scale: tc.draw(gs::floats::<f64>().min_value(0.1).max_value(3.0)),
         physics: tc.draw(gs::optional(gs::sampled_from(&[
@@ -414,7 +432,7 @@ fn catalogues(tc: &TestCase) -> Catalogue {
 #[hegel::composite]
 fn scenes(tc: &TestCase) -> Scene {
     Scene {
-        asset: format!("scene/{}", tc.draw(names())),
+        asset: tc.draw(assets("scene")),
         scale: tc.draw(gs::floats::<f64>().min_value(0.5).max_value(2.0)),
     }
 }
@@ -970,7 +988,7 @@ fn a_seed_expands_a_pattern_into_one_world_inside_its_samplers(tc: TestCase) {
     });
     let pattern = WorldPattern::parse(&text.to_string()).unwrap();
     let seed = Seed(tc.draw(gs::integers::<u32>()));
-    let assets = |_: &str| vec!["object/book_red".to_owned(), "object/book_blue".to_owned()];
+    let assets = |_: &str| vec![asset("object/book_red"), asset("object/book_blue")];
     let expand = || {
         pattern
             .expansion(seed, &assets)
@@ -987,7 +1005,7 @@ fn a_seed_expands_a_pattern_into_one_world_inside_its_samplers(tc: TestCase) {
         fewest <= books && books <= most,
         "{books} in [{fewest}, {most}]"
     );
-    assert!(["scene/kitchen", "scene/living_room"].contains(&world.scene.asset.as_str()));
+    assert!([asset("scene/kitchen"), asset("scene/living_room")].contains(&world.scene.asset));
 }
 
 /// A room with two furnish poses, a desk that a robot works and a shelf
@@ -1046,13 +1064,13 @@ fn a_seed_expands_a_pattern_with_furnish_poses_into_the_same_placements(tc: Test
     let desk = &pieces[0];
     assert_eq!(desk.object.as_str(), "desk");
     assert!(
-        ["object/standing_desk", "object/office_desk"].contains(&desk.asset.as_str()),
+        [asset("object/standing_desk"), asset("object/office_desk")].contains(&desk.asset),
         "{desk:?}"
     );
     assert!((0.7..=1.1).contains(&desk.controls["height"]), "{desk:?}");
     assert_eq!(desk.scale, ScaleRange { min: 0.5, max: 1.0 });
     let shelf = &pieces[1];
-    assert!(["object/shelf_a", "object/shelf_b"].contains(&shelf.asset.as_str()));
+    assert!([asset("object/shelf_a"), asset("object/shelf_b")].contains(&shelf.asset));
 }
 
 /// The simulation seeds the solver of a furnish layout with the first value

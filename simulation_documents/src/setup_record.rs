@@ -8,7 +8,7 @@ use crate::daylight::Daylight;
 use crate::geometry::Region;
 use crate::world::{
     Light, Location, Material, Object, RecordedObject, Riser, Scene, SceneObject, Stand,
-    objects_and_risers, recorded_objects,
+    check_asset_kinds, objects_and_risers, recorded_objects,
 };
 use crate::{Error, Name, RobotName, World, text};
 
@@ -90,6 +90,7 @@ impl TryFrom<SetupRecord> for RecordFields {
     type Error = Error;
 
     fn try_from(record: SetupRecord) -> Result<RecordFields, Error> {
+        check_asset_kinds(&record.scene, &record.objects)?;
         Ok(RecordFields {
             scene: record.scene,
             scene_objects: record.scene_objects,
@@ -155,12 +156,12 @@ impl SetupRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::tests::example;
+    use crate::world::tests::{asset, example};
 
     #[test]
     fn a_record_at_the_start_holds_the_scene_alone() {
         let scene = Scene {
-            asset: "scene/default".into(),
+            asset: asset("scene/default"),
             scale: 1.0,
         };
         let record = SetupRecord::at_start(scene.clone());

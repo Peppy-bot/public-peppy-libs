@@ -17,7 +17,7 @@ use crate::names::{
 };
 use crate::pattern::{MinSpacing, ObjectEntry, WorkCellParameter};
 use crate::sampler::Sampled;
-use crate::{Error, Name, ParameterName, RobotName};
+use crate::{AssetField, AssetKind, AssetRef, Error, Name, ParameterName, RobotName};
 
 /// The kind of a world document.
 pub(crate) const WORLD: Kind = Kind::new("simulation_schema", "world", 1);
@@ -76,18 +76,19 @@ impl From<Catalogue> for String {
     }
 }
 
-/// The scene asset of the world and the scale it is loaded at.
+/// The scene asset of the world, a reference to a scene, and the scale it
+/// is loaded at.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "SceneFields", into = "SceneFields")]
 pub struct Scene {
-    pub asset: String,
+    pub asset: AssetRef,
     pub scale: f64,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, expecting = "a scene, { asset, scale }")]
 struct SceneFields {
-    asset: String,
+    asset: AssetRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     scale: Option<f64>,
 }
@@ -96,6 +97,7 @@ impl TryFrom<SceneFields> for Scene {
     type Error = Error;
 
     fn try_from(fields: SceneFields) -> Result<Scene, Error> {
+        fields.asset.check_kind(AssetKind::Scene)?;
         Ok(Scene {
             asset: fields.asset,
             scale: positive_scale(fields.scale)?,
@@ -567,7 +569,7 @@ impl<'de> Deserialize<'de> for SceneObject {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ObjectFields", into = "ObjectFields")]
 pub struct Object {
-    pub asset: String,
+    pub asset: AssetRef,
     pub pose: Pose,
     pub scale: f64,
     pub physics: Option<Physics>,
@@ -582,7 +584,7 @@ pub struct Object {
     expecting = "an object, { asset, pose, scale, physics, mass, controls, raise_m }"
 )]
 struct ObjectFields {
-    asset: String,
+    asset: AssetRef,
     pose: Pose,
     #[serde(skip_serializing_if = "Option::is_none")]
     scale: Option<f64>,
@@ -600,6 +602,7 @@ impl TryFrom<ObjectFields> for Object {
     type Error = Error;
 
     fn try_from(fields: ObjectFields) -> Result<Object, Error> {
+        fields.asset.check_kind(AssetKind::Object)?;
         if let Some(mass) = fields.mass {
             let at_least_zero = mass >= 0.0;
             if !at_least_zero {
@@ -760,6 +763,25 @@ impl<'de> Deserialize<'de> for RecordedObject {
 
 /// Refuses a name that an object of `objects` and a riser of `risers`
 /// share: a document writes both in its `objects`, by their names.
+/// Refuses a scene whose asset is not a scene and an object whose asset is
+/// not an object, by the field of the asset: a document that reads back
+/// names a scene in `scene.asset` and an object in each
+/// `objects.<name>.asset`.
+pub(crate) fn check_asset_kinds(
+    scene: &Scene,
+    objects: &BTreeMap<Name, Object>,
+) -> Result<(), Error> {
+    let of_the_objects = objects
+        .iter()
+        .map(|(name, object)| (AssetField::Object(name), &object.asset));
+    for (field, asset) in std::iter::once((AssetField::Scene, &scene.asset)).chain(of_the_objects) {
+        asset
+            .check_kind(field.kind())
+            .map_err(|refusal| Error::field(field.to_string(), refusal.to_string()))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_riser_names(
     objects: &BTreeMap<Name, Object>,
     risers: &BTreeMap<Name, Riser>,
@@ -1531,8 +1553,10 @@ impl World {
 
     /// The document of this world. Refuses a number of the world that a
     /// document cannot hold, by its path: a float that is not finite, or a
-    /// number beyond 2^53.
+    /// number beyond 2^53. Refuses an asset of the other kind than its field
+    /// takes ([`check_asset_kinds`]).
     pub fn document(&self) -> Result<Document, Error> {
+        check_asset_kinds(&self.scene, &self.objects)?;
         check_riser_names(&self.objects, &self.risers)?;
         Ok(Document::of(WORLD, &self.fields())?)
     }
@@ -1542,10 +1566,78 @@ impl World {
         Ok(self.document()?.to_json5())
     }
 
-    /// Whether `other` sets up the same world, whatever the two manifests say,
-    /// with the limbs of each robot alike ([`Limbs::alike`]) rather than
-    /// equal: a measured joint moves by a hair from one read to the next.
+    /// Each asset that the world names, with the field that names it: its
+    /// scene, then each object by its name. A riser is an instance of no
+    /// asset.
+    pub fn assets(&self) -> impl Iterator<Item = (AssetField<'_>, &AssetRef)> {
+        let objects = self
+            .objects
+            .iter()
+            .map(|(name, object)| (AssetField::Object(name), &object.asset));
+        std::iter::once((AssetField::Scene, &self.scene.asset)).chain(objects)
+    }
+
+    /// Whether the scene and each object of the world name the version of
+    /// their asset. Such a world builds on each catalogue release that holds
+    /// these versions; a world with an asset at no version builds on its own
+    /// release only ([`World::asset_bound_to_its_release`]).
+    pub fn versioned(&self) -> bool {
+        self.assets().all(|(_, asset)| asset.version().is_some())
+    }
+
+    /// The release rule of a world, for a simulation that runs `release`:
+    /// the first asset of the world that names no version ([`World::assets`]),
+    /// with its field, when the world names another catalogue release than
+    /// `release`. An asset with no version is the live version of the release
+    /// that its world names, so such a world builds on that release only.
+    /// None for a world that builds on `release`: it names `release`, or
+    /// each of its assets names a version.
+    pub fn asset_bound_to_its_release(
+        &self,
+        release: &Catalogue,
+    ) -> Option<(AssetField<'_>, &AssetRef)> {
+        if self.catalogue == *release {
+            return None;
+        }
+        self.assets().find(|(_, asset)| asset.version().is_none())
+    }
+
+    /// The world with each asset at no version: the scene and each object at
+    /// the live version of the catalogue release that builds it.
+    pub fn without_versions(&self) -> World {
+        let mut world = self.clone();
+        world.scene.asset = world.scene.asset.without_version();
+        for object in world.objects.values_mut() {
+            object.asset = object.asset.without_version();
+        }
+        world
+    }
+
+    /// The world on `release` with each asset at no version
+    /// ([`World::without_versions`]): the scene and each object at the live
+    /// version of `release`. It builds on `release`
+    /// ([`World::asset_bound_to_its_release`]).
+    pub fn at_the_live_versions_of(&self, release: &Catalogue) -> World {
+        World {
+            catalogue: release.clone(),
+            ..self.without_versions()
+        }
+    }
+
+    /// Whether `other` sets up the same world, whatever the two manifests
+    /// say, with the limbs of each robot alike ([`Limbs::alike`]) rather than
+    /// equal: a measured joint moves by a hair from one read to the next. An
+    /// asset at a version and the same asset at no version are not the same.
+    /// The two catalogue releases are part of the two setups, unless each
+    /// asset of the two worlds names a version ([`World::versioned`]): an
+    /// asset with no version is the live version of the release that its
+    /// world names, so two such worlds on two releases are not the same.
     pub fn same_setup_as(&self, other: &World) -> bool {
+        let on_one_release = self.catalogue == other.catalogue;
+        let on_each_release = self.versioned() && other.versioned();
+        if !on_one_release && !on_each_release {
+            return false;
+        }
         let limbs_alike =
             self.robots.len() == other.robots.len()
                 && self.robots.iter().zip(&other.robots).all(
@@ -1560,6 +1652,7 @@ impl World {
         let without_limbs = |world: &World| {
             let mut world = world.clone();
             world.manifest = other.manifest.clone();
+            world.catalogue = other.catalogue.clone();
             for robot in world.robots.values_mut() {
                 robot.limbs = None;
             }
@@ -1641,6 +1734,10 @@ pub(crate) mod tests {
         World::parse(&example_text()).unwrap()
     }
 
+    pub(crate) fn asset(text: &str) -> AssetRef {
+        AssetRef::parse(text).unwrap()
+    }
+
     pub(crate) fn name(text: &str) -> Name {
         Name::parse(text).unwrap()
     }
@@ -1666,7 +1763,7 @@ pub(crate) mod tests {
         assert_eq!(
             world.scene,
             Scene {
-                asset: "scene/living_room".into(),
+                asset: asset("scene/living_room"),
                 scale: 1.0
             }
         );
@@ -1694,7 +1791,7 @@ pub(crate) mod tests {
             SceneObject::Removed
         );
         let crate_ = &world.objects[&name("crate")];
-        assert_eq!(crate_.asset, "object/polyhaven_plastic_crate_01");
+        assert_eq!(crate_.asset, asset("object/polyhaven_plastic_crate_01"));
         assert_eq!(
             crate_.pose,
             Pose::Yawed {
@@ -2718,6 +2815,262 @@ pub(crate) mod tests {
         let mut moved = world.clone();
         moved.scene.scale = 2.0;
         assert!(!world.same_setup_as(&moved));
+    }
+
+    /// The catalogue releases that are not the release of the worked
+    /// example.
+    fn other_releases() -> [Catalogue; 2] {
+        [
+            Catalogue::Local,
+            Catalogue::try_from("b".repeat(64)).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn same_setup_ignores_the_catalogue_release_of_two_worlds_with_versions() {
+        let world = example_with_versions();
+        for catalogue in other_releases() {
+            let mut on_another_release = world.clone();
+            on_another_release.catalogue = catalogue;
+            assert!(
+                world.same_setup_as(&on_another_release)
+                    && on_another_release.same_setup_as(&world),
+                "{on_another_release:?}"
+            );
+            let mut moved = on_another_release.clone();
+            moved.scene.scale = 2.0;
+            assert!(!world.same_setup_as(&moved) && !moved.same_setup_as(&world));
+        }
+    }
+
+    #[test]
+    fn same_setup_keeps_the_catalogue_release_of_a_world_with_an_asset_at_no_version() {
+        let mut scene_alone = example();
+        scene_alone.scene.asset = example_with_versions().scene.asset;
+        for world in [example(), scene_alone] {
+            assert!(!world.versioned());
+            assert!(world.same_setup_as(&world.clone()));
+            for catalogue in other_releases() {
+                let mut on_another_release = world.clone();
+                on_another_release.catalogue = catalogue;
+                assert!(
+                    !world.same_setup_as(&on_another_release)
+                        && !on_another_release.same_setup_as(&world),
+                    "{on_another_release:?}"
+                );
+            }
+        }
+        let mut local = example();
+        local.catalogue = Catalogue::Local;
+        assert!(local.same_setup_as(&local.clone()));
+    }
+
+    const VERSION: &str = "9f2c41d07a3be518";
+
+    /// The world of the worked example with its scene and its one object at
+    /// a version each.
+    fn example_with_versions() -> World {
+        let mut world = example();
+        world.scene.asset = asset(&format!("scene/living_room@{VERSION}"));
+        world.objects.get_mut(&name("crate")).unwrap().asset =
+            asset("object/polyhaven_plastic_crate_01@0123456789abcdef");
+        world
+    }
+
+    #[test]
+    fn a_world_reads_and_writes_an_asset_with_its_version() {
+        let world = example_with_versions();
+        let text = world.to_json5().unwrap();
+        assert!(
+            text.contains(&format!("scene/living_room@{VERSION}"))
+                && text.contains("object/polyhaven_plastic_crate_01@0123456789abcdef"),
+            "{text}"
+        );
+        assert_eq!(World::parse(&text).unwrap(), world);
+        let record = SetupRecord::built(&world);
+        assert_eq!(
+            SetupRecord::parse(&record.to_json5().unwrap()).unwrap(),
+            record
+        );
+        assert_eq!(record.scene.asset, world.scene.asset);
+    }
+
+    #[test]
+    fn a_world_is_versioned_when_its_scene_and_each_object_name_a_version() {
+        let versioned = example_with_versions();
+        assert!(versioned.versioned());
+        assert!(!example().versioned());
+
+        let mut scene_alone = example();
+        scene_alone.scene.asset = versioned.scene.asset.clone();
+        assert!(!scene_alone.versioned(), "the object names no version");
+
+        let mut object_alone = versioned.clone();
+        object_alone.scene.asset = example().scene.asset;
+        assert!(!object_alone.versioned(), "the scene names no version");
+
+        let mut no_object = versioned.clone();
+        no_object.objects.clear();
+        no_object.locations.clear();
+        no_object.risers.insert(
+            name("step"),
+            crate::text::from_json5(
+                "{ riser: { width_m: 1, depth_m: 1, height_m: 0.3 }, pose: { position: [0, 0, 0], yaw: 0 } }",
+            )
+            .unwrap(),
+        );
+        assert!(
+            no_object.versioned(),
+            "a riser is an instance of no asset, so it names no version"
+        );
+    }
+
+    #[test]
+    fn a_world_names_its_assets_by_their_fields_the_scene_first() {
+        let world = example_with_versions();
+        let named: Vec<(String, String)> = world
+            .assets()
+            .map(|(field, asset)| (field.to_string(), asset.to_string()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (
+                    "scene.asset".to_owned(),
+                    format!("scene/living_room@{VERSION}")
+                ),
+                (
+                    "objects.crate.asset".to_owned(),
+                    "object/polyhaven_plastic_crate_01@0123456789abcdef".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_world_with_an_asset_at_no_version_is_bound_to_its_release() {
+        let own = example().catalogue;
+        let bound = |world: &World, release: &Catalogue| {
+            world
+                .asset_bound_to_its_release(release)
+                .map(|(field, asset)| format!("{field}: {asset}"))
+        };
+        let live = example();
+        let versioned = example_with_versions();
+        let mut object_alone = versioned.clone();
+        object_alone.objects.get_mut(&name("crate")).unwrap().asset =
+            asset("object/polyhaven_plastic_crate_01");
+        assert_eq!(bound(&live, &own), None, "its own release builds it");
+        assert_eq!(bound(&object_alone, &own), None);
+        for release in other_releases() {
+            assert_eq!(
+                bound(&live, &release).as_deref(),
+                Some("scene.asset: scene/living_room"),
+                "the scene is the first field"
+            );
+            assert_eq!(
+                bound(&object_alone, &release).as_deref(),
+                Some("objects.crate.asset: object/polyhaven_plastic_crate_01")
+            );
+            assert_eq!(bound(&versioned, &release), None, "{release:?}");
+        }
+    }
+
+    #[test]
+    fn a_world_at_the_live_versions_of_a_release_names_that_release_and_no_version() {
+        let versioned = example_with_versions();
+        for release in other_releases() {
+            let moved = versioned.at_the_live_versions_of(&release);
+            assert_eq!(moved.catalogue, release);
+            assert_eq!(
+                World {
+                    catalogue: versioned.catalogue.clone(),
+                    ..moved.clone()
+                },
+                example()
+            );
+            assert_eq!(moved.asset_bound_to_its_release(&release), None);
+            assert_eq!(moved.at_the_live_versions_of(&release), moved);
+        }
+    }
+
+    #[test]
+    fn a_world_without_versions_names_the_live_version_of_each_asset() {
+        let versioned = example_with_versions();
+        let live = versioned.without_versions();
+        assert_eq!(live, example());
+        assert!(!live.versioned());
+        assert_eq!(live.without_versions(), live);
+        assert!(
+            !versioned.same_setup_as(&live) && !live.same_setup_as(&versioned),
+            "an asset at a version is not the asset at no version"
+        );
+    }
+
+    #[test]
+    fn an_asset_of_the_other_kind_is_refused_at_its_field() {
+        let refusal = |from: &str, to: &str| {
+            World::parse(&example_text().replace(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refusal("scene/living_room", "object/living_room"),
+            "scene: the asset `object/living_room` is not a scene; write `scene/<id>`"
+        );
+        assert_eq!(
+            refusal(
+                "object/polyhaven_plastic_crate_01",
+                &format!("scene/polyhaven_plastic_crate_01@{VERSION}")
+            ),
+            format!(
+                "objects.crate: the asset `scene/polyhaven_plastic_crate_01@{VERSION}` is not an object; write `object/<id>`"
+            )
+        );
+
+        let mut scene_as_object = example();
+        scene_as_object.scene.asset = asset("object/living_room");
+        assert_eq!(
+            scene_as_object.to_json5().unwrap_err().to_string(),
+            "scene.asset: the asset `object/living_room` is not a scene; write `scene/<id>`"
+        );
+        let mut object_as_scene = example();
+        object_as_scene
+            .objects
+            .get_mut(&name("crate"))
+            .unwrap()
+            .asset = asset("scene/living_room");
+        assert_eq!(
+            object_as_scene.to_json5().unwrap_err().to_string(),
+            "objects.crate.asset: the asset `scene/living_room` is not an object; write `object/<id>`"
+        );
+        assert_eq!(
+            SetupRecord::built(&object_as_scene)
+                .to_json5()
+                .unwrap_err()
+                .to_string(),
+            "objects.crate.asset: the asset `scene/living_room` is not an object; write `object/<id>`"
+        );
+    }
+
+    #[test]
+    fn an_asset_of_another_form_is_refused_at_its_field() {
+        let refusal = |from: &str, to: &str| {
+            World::parse(&example_text().replace(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refusal("scene/living_room", "living_room"),
+            "scene: asset: `living_room` is not an asset id; write `scene/<id>` or `object/<id>`, and `@<version>` after it for one version of the asset (16 lowercase hex digits)"
+        );
+        assert_eq!(
+            refusal(
+                "object/polyhaven_plastic_crate_01",
+                "object/polyhaven_plastic_crate_01@9f2c"
+            ),
+            "objects.crate: asset: `object/polyhaven_plastic_crate_01@9f2c` is not an asset id; write `scene/<id>` or `object/<id>`, and `@<version>` after it for one version of the asset (16 lowercase hex digits)"
+        );
     }
 
     /// The world of the worked example whose robot `alpha` stands with its
