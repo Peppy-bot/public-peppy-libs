@@ -17,7 +17,7 @@ use crate::names::{
 };
 use crate::pattern::{MinSpacing, ObjectEntry, WorkCellParameter};
 use crate::sampler::Sampled;
-use crate::{AssetRef, Error, Name, ParameterName, RobotName};
+use crate::{AssetField, AssetRef, Error, Name, ParameterName, RobotName};
 
 /// The kind of a world document.
 pub(crate) const WORLD: Kind = Kind::new("simulation_schema", "world", 1);
@@ -1542,12 +1542,40 @@ impl World {
         Ok(self.document()?.to_json5())
     }
 
+    /// Each asset that the world names, with the field that names it: its
+    /// scene, then each object by its name. A riser is an instance of no
+    /// asset.
+    pub fn assets(&self) -> impl Iterator<Item = (AssetField<'_>, &AssetRef)> {
+        let objects = self
+            .objects
+            .iter()
+            .map(|(name, object)| (AssetField::Object(name), &object.asset));
+        std::iter::once((AssetField::Scene, &self.scene.asset)).chain(objects)
+    }
+
     /// Whether the scene and each object of the world name the version of
     /// their asset. Such a world builds on each catalogue release that holds
     /// these versions; a world with an asset at no version builds on its own
-    /// release only.
+    /// release only ([`World::asset_bound_to_its_release`]).
     pub fn versioned(&self) -> bool {
-        self.assets().all(|asset| asset.version().is_some())
+        self.assets().all(|(_, asset)| asset.version().is_some())
+    }
+
+    /// The release rule of a world, for a simulation that runs `release`:
+    /// the first asset of the world that names no version ([`World::assets`]),
+    /// with its field, when the world names another catalogue release than
+    /// `release`. An asset with no version is the live version of the release
+    /// that its world names, so such a world builds on that release only.
+    /// None for a world that builds on `release`: it names `release`, or
+    /// each of its assets names a version.
+    pub fn asset_bound_to_its_release(
+        &self,
+        release: &Catalogue,
+    ) -> Option<(AssetField<'_>, &AssetRef)> {
+        if self.catalogue == *release {
+            return None;
+        }
+        self.assets().find(|(_, asset)| asset.version().is_none())
     }
 
     /// The world with each asset at no version: the scene and each object at
@@ -1561,18 +1589,31 @@ impl World {
         world
     }
 
-    /// Each asset that the world names: its scene, then each object. A riser
-    /// is an instance of no asset.
-    fn assets(&self) -> impl Iterator<Item = &AssetRef> {
-        std::iter::once(&self.scene.asset).chain(self.objects.values().map(|object| &object.asset))
+    /// The world on `release` with each asset at no version
+    /// ([`World::without_versions`]): the scene and each object at the live
+    /// version of `release`. It builds on `release`
+    /// ([`World::asset_bound_to_its_release`]).
+    pub fn at_the_live_versions_of(&self, release: &Catalogue) -> World {
+        World {
+            catalogue: release.clone(),
+            ..self.without_versions()
+        }
     }
 
-    /// Whether `other` sets up the same world, whatever the two manifests and
-    /// the two catalogue releases say, with the limbs of each robot alike
-    /// ([`Limbs::alike`]) rather than equal: a measured joint moves by a hair
-    /// from one read to the next. An asset at a version and the same asset at
-    /// no version are not the same.
+    /// Whether `other` sets up the same world, whatever the two manifests
+    /// say, with the limbs of each robot alike ([`Limbs::alike`]) rather than
+    /// equal: a measured joint moves by a hair from one read to the next. An
+    /// asset at a version and the same asset at no version are not the same.
+    /// The two catalogue releases are part of the two setups, unless each
+    /// asset of the two worlds names a version ([`World::versioned`]): an
+    /// asset with no version is the live version of the release that its
+    /// world names, so two such worlds on two releases are not the same.
     pub fn same_setup_as(&self, other: &World) -> bool {
+        let on_one_release = self.catalogue == other.catalogue;
+        let on_each_release = self.versioned() && other.versioned();
+        if !on_one_release && !on_each_release {
+            return false;
+        }
         let limbs_alike =
             self.robots.len() == other.robots.len()
                 && self.robots.iter().zip(&other.robots).all(
@@ -2739,7 +2780,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn same_setup_ignores_the_manifest_and_the_catalogue_release_alone() {
+    fn same_setup_ignores_the_manifest_alone() {
         let world = example();
         let mut renamed = world.clone();
         renamed.manifest = Manifest {
@@ -2747,10 +2788,24 @@ pub(crate) mod tests {
             revision: Revision::FIRST,
         };
         assert!(world.same_setup_as(&renamed));
-        for catalogue in [
+        let mut moved = world.clone();
+        moved.scene.scale = 2.0;
+        assert!(!world.same_setup_as(&moved));
+    }
+
+    /// The catalogue releases that are not the release of the worked
+    /// example.
+    fn other_releases() -> [Catalogue; 2] {
+        [
             Catalogue::Local,
             Catalogue::try_from("b".repeat(64)).unwrap(),
-        ] {
+        ]
+    }
+
+    #[test]
+    fn same_setup_ignores_the_catalogue_release_of_two_worlds_with_versions() {
+        let world = example_with_versions();
+        for catalogue in other_releases() {
             let mut on_another_release = world.clone();
             on_another_release.catalogue = catalogue;
             assert!(
@@ -2758,10 +2813,32 @@ pub(crate) mod tests {
                     && on_another_release.same_setup_as(&world),
                 "{on_another_release:?}"
             );
+            let mut moved = on_another_release.clone();
+            moved.scene.scale = 2.0;
+            assert!(!world.same_setup_as(&moved) && !moved.same_setup_as(&world));
         }
-        let mut moved = world.clone();
-        moved.scene.scale = 2.0;
-        assert!(!world.same_setup_as(&moved));
+    }
+
+    #[test]
+    fn same_setup_keeps_the_catalogue_release_of_a_world_with_an_asset_at_no_version() {
+        let mut scene_alone = example();
+        scene_alone.scene.asset = example_with_versions().scene.asset;
+        for world in [example(), scene_alone] {
+            assert!(!world.versioned());
+            assert!(world.same_setup_as(&world.clone()));
+            for catalogue in other_releases() {
+                let mut on_another_release = world.clone();
+                on_another_release.catalogue = catalogue;
+                assert!(
+                    !world.same_setup_as(&on_another_release)
+                        && !on_another_release.same_setup_as(&world),
+                    "{on_another_release:?}"
+                );
+            }
+        }
+        let mut local = example();
+        local.catalogue = Catalogue::Local;
+        assert!(local.same_setup_as(&local.clone()));
     }
 
     const VERSION: &str = "9f2c41d07a3be518";
@@ -2822,6 +2899,75 @@ pub(crate) mod tests {
             no_object.versioned(),
             "a riser is an instance of no asset, so it names no version"
         );
+    }
+
+    #[test]
+    fn a_world_names_its_assets_by_their_fields_the_scene_first() {
+        let world = example_with_versions();
+        let named: Vec<(String, String)> = world
+            .assets()
+            .map(|(field, asset)| (field.to_string(), asset.to_string()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (
+                    "scene.asset".to_owned(),
+                    format!("scene/living_room@{VERSION}")
+                ),
+                (
+                    "objects.crate.asset".to_owned(),
+                    "object/polyhaven_plastic_crate_01@0123456789abcdef".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_world_with_an_asset_at_no_version_is_bound_to_its_release() {
+        let own = example().catalogue;
+        let bound = |world: &World, release: &Catalogue| {
+            world
+                .asset_bound_to_its_release(release)
+                .map(|(field, asset)| format!("{field}: {asset}"))
+        };
+        let live = example();
+        let versioned = example_with_versions();
+        let mut object_alone = versioned.clone();
+        object_alone.objects.get_mut(&name("crate")).unwrap().asset =
+            asset("object/polyhaven_plastic_crate_01");
+        assert_eq!(bound(&live, &own), None, "its own release builds it");
+        assert_eq!(bound(&object_alone, &own), None);
+        for release in other_releases() {
+            assert_eq!(
+                bound(&live, &release).as_deref(),
+                Some("scene.asset: scene/living_room"),
+                "the scene is the first field"
+            );
+            assert_eq!(
+                bound(&object_alone, &release).as_deref(),
+                Some("objects.crate.asset: object/polyhaven_plastic_crate_01")
+            );
+            assert_eq!(bound(&versioned, &release), None, "{release:?}");
+        }
+    }
+
+    #[test]
+    fn a_world_at_the_live_versions_of_a_release_names_that_release_and_no_version() {
+        let versioned = example_with_versions();
+        for release in other_releases() {
+            let moved = versioned.at_the_live_versions_of(&release);
+            assert_eq!(moved.catalogue, release);
+            assert_eq!(
+                World {
+                    catalogue: versioned.catalogue.clone(),
+                    ..moved.clone()
+                },
+                example()
+            );
+            assert_eq!(moved.asset_bound_to_its_release(&release), None);
+            assert_eq!(moved.at_the_live_versions_of(&release), moved);
+        }
     }
 
     #[test]

@@ -1908,6 +1908,50 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_gives_its_first_asset_that_names_a_version() {
+        const VERSION: &str = "9f2c41d07a3be518";
+        let versioned = |from: &str, to: &str| {
+            WorldPattern::parse(&room_with(from, &to.replace("VERSION", VERSION)))
+                .unwrap()
+                .versioned_asset()
+                .map(|(field, asset)| format!("{field}: {asset}"))
+        };
+        assert_eq!(room().versioned_asset(), None);
+        assert_eq!(
+            versioned(
+                r#"scene: { asset: "scene/empty_room" }"#,
+                r#"scene: { asset: { one_of: ["scene/empty_room", "scene/bare_room@VERSION"] } }"#,
+            ),
+            Some(format!("scene.asset: scene/bare_room@{VERSION}")),
+            "a candidate of a sampler"
+        );
+        assert_eq!(
+            versioned(
+                r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+                r#"tray: { asset: "object/tray@VERSION", pose: { in: "aisle" } },"#,
+            ),
+            Some(format!("objects.tray.asset: object/tray@{VERSION}"))
+        );
+        let both = room_with(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            &format!(r#"scene: {{ asset: "scene/empty_room@{VERSION}" }}"#),
+        )
+        .replace(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            &format!(r#"tray: {{ asset: "object/tray@{VERSION}", pose: {{ in: "aisle" }} }},"#),
+        );
+        assert_eq!(
+            WorldPattern::parse(&both)
+                .unwrap()
+                .versioned_asset()
+                .map(|(field, _)| field.to_string())
+                .as_deref(),
+            Some("scene.asset"),
+            "the scene is the first field"
+        );
+    }
+
+    #[test]
     fn a_pattern_gives_the_stations_of_its_furnish_poses_by_piece() {
         let pattern = room();
         let stations: Vec<(&str, &str, Side)> = pattern

@@ -14,7 +14,8 @@
 //! ground truth in a live world and gives a verdict. A [`ClaimHolder`] names
 //! the call of an applier that holds the setup claim of a simulation. An
 //! [`AssetRef`] names the asset of a scene or of an object, with the version
-//! of its entry in the catalogue when the reference names one.
+//! of its entry in the catalogue when the reference names one, and an
+//! [`AssetField`] is the field of a world that names an asset.
 //!
 //! The world document carries the root key `simulation_schema`, and takes the
 //! root key rule, the manifest and the digest from `documents_core`. The
@@ -40,7 +41,7 @@ mod sweep;
 mod text;
 mod world;
 
-pub use asset::{AssetKind, AssetRef, AssetVersion};
+pub use asset::{AssetField, AssetKind, AssetRef, AssetVersion};
 pub use claim::{ApplyFailureKind, ClaimCall, ClaimHolder};
 pub use compose::{StackRobot, StartSetup};
 pub use daylight::{Date, Daylight, TimeOfDay, Weather};

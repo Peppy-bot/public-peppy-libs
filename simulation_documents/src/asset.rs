@@ -1,12 +1,13 @@
 //! The reference to an asset of a catalogue: its kind, its id, and the
-//! version of its entry when the reference names one.
+//! version of its entry when the reference names one. The field of a world
+//! document that names an asset.
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::Error;
+use crate::{Error, Name};
 
 /// The kind of an asset that a world names: its scene, or one of its objects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -190,11 +191,37 @@ impl<'de> Deserialize<'de> for AssetRef {
     }
 }
 
+/// The field of a world document, or of a world pattern, that names an
+/// asset: the scene, or the object of a name. A refusal names the field as
+/// the document writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetField<'a> {
+    Scene,
+    Object(&'a Name),
+}
+
+impl fmt::Display for AssetField<'_> {
+    /// "scene.asset", "objects.cup.asset".
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AssetField::Scene => f.write_str("scene.asset"),
+            AssetField::Object(name) => write!(f, "objects.{name}.asset"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const VERSION: &str = "9f2c41d07a3be518";
+
+    #[test]
+    fn an_asset_field_is_written_as_the_document_writes_it() {
+        let cup = Name::parse("cup").unwrap();
+        assert_eq!(AssetField::Scene.to_string(), "scene.asset");
+        assert_eq!(AssetField::Object(&cup).to_string(), "objects.cup.asset");
+    }
 
     #[test]
     fn an_asset_id_reads_and_writes_with_and_without_a_version() {

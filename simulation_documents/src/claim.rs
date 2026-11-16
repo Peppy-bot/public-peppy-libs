@@ -35,7 +35,8 @@ impl fmt::Display for ClaimCall {
 }
 
 /// The failure kind with which the applier refuses or fails an apply, and
-/// the first step of a run: the world at its check, the seed of a world
+/// the first step of a run: the world at its check, a version of an asset
+/// of the world that the simulation does not hold, the seed of a world
 /// pattern that gives no world, a hold that ends (the setup claim of another
 /// call, a robot that another client leases, the halt), or a step after the
 /// check.
@@ -43,6 +44,7 @@ impl fmt::Display for ClaimCall {
 #[serde(rename_all = "snake_case")]
 pub enum ApplyFailureKind {
     WorldRefused,
+    VersionNotHeld,
     SeedRefused,
     Claimed,
     Leased,
@@ -52,8 +54,9 @@ pub enum ApplyFailureKind {
 
 impl ApplyFailureKind {
     /// Every kind, in the order the contract declares them.
-    pub const ALL: [ApplyFailureKind; 6] = [
+    pub const ALL: [ApplyFailureKind; 7] = [
         ApplyFailureKind::WorldRefused,
+        ApplyFailureKind::VersionNotHeld,
         ApplyFailureKind::SeedRefused,
         ApplyFailureKind::Claimed,
         ApplyFailureKind::Leased,
@@ -70,6 +73,7 @@ impl ApplyFailureKind {
     pub fn name(self) -> &'static str {
         match self {
             ApplyFailureKind::WorldRefused => "world_refused",
+            ApplyFailureKind::VersionNotHeld => "version_not_held",
             ApplyFailureKind::SeedRefused => "seed_refused",
             ApplyFailureKind::Claimed => "claimed",
             ApplyFailureKind::Leased => "leased",
@@ -208,6 +212,11 @@ mod tests {
         assert_eq!(ApplyFailureKind::parse("rejected"), None);
         assert!(ApplyFailureKind::Claimed.is_a_hold());
         assert!(!ApplyFailureKind::WorldRefused.is_a_hold());
+        assert!(!ApplyFailureKind::VersionNotHeld.is_a_hold());
         assert!(!ApplyFailureKind::ApplyFailed.is_a_hold());
+        assert_eq!(
+            ApplyFailureKind::parse("version_not_held"),
+            Some(ApplyFailureKind::VersionNotHeld)
+        );
     }
 }

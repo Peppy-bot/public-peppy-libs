@@ -42,8 +42,8 @@ use crate::world::{
     WorldFields, check_name_rules, no_such_region, writes_a_riser,
 };
 use crate::{
-    AssetRef, Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
-    WorldDocument, text,
+    AssetField, AssetRef, Catalogue, Error, Join, Manifest, Name, ParameterName, Physics,
+    RobotName, World, WorldDocument, text,
 };
 use documents_core::Document;
 
@@ -781,6 +781,26 @@ impl WorldPattern {
                 .candidate_values::<Scene>()
                 .expect("the candidates of a pattern read"),
         }
+    }
+
+    /// The first asset of the pattern that names a version, in a sampler or
+    /// out of one, with the field that names it: the scenes first
+    /// ([`Self::scenes`]), then the objects by their names
+    /// ([`Self::object_assets`]). None for a pattern that names no version:
+    /// an expansion draws the live version of each asset.
+    pub fn versioned_asset(&self) -> Option<(AssetField<'_>, AssetRef)> {
+        let of_the_scenes = self
+            .scenes()
+            .into_iter()
+            .map(|scene| (AssetField::Scene, scene.asset));
+        let of_the_objects = self.object_assets().into_iter().flat_map(|(name, assets)| {
+            assets
+                .into_iter()
+                .map(move |asset| (AssetField::Object(name), asset))
+        });
+        of_the_scenes
+            .chain(of_the_objects)
+            .find(|(_, asset)| asset.version().is_some())
     }
 
     /// Each asset that each object of `objects` can take, by its name: the
