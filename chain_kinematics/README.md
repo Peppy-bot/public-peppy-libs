@@ -74,6 +74,9 @@ robot_description holds the URDF of every description to the same tree rules
 | `interpolate` | the straight line between two poses |
 | `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
 | `clamp_into` / `all_within` / `pose_miss` | joint-limit and pose-distance helpers |
+| `Tree` | the URDF's links and joints as one tree, held to the rules above: `link_index`, `parent_joint` (the joint a link hangs on), `parent_of` (the link a joint hangs off), `children_of`, `path_to`, `subtree_from`, `fixed_path_to` |
+| `Joint` / `JointPlacement` | a joint's name, child link, limits and placement: its origin and kind, a `Copy` value whose `pose_at(q)` is the child link's frame in the parent link's at position `q` |
+| `pose_of_origin` | a URDF `<origin>` as a transform |
 | `take_targets` / `Limit::take_target` / `TARGET_SLACK` | a joint target as a robot takes it: a joint at most 0.001 rad outside its limit runs at the limit, one farther out is refused by its joint, position and limits (`OutsideLimits`) |
 
 ## Inverse kinematics
@@ -149,7 +152,7 @@ the edge feels a wall.
 ```text
 src/
   lib.rs        Chain, ChainSpec, JointSelection, Posed, Limit, and the joint-limit and pose-distance helpers
-  tree.rs       the URDF arena: links, joints, adjacency, and the walks over it
+  tree.rs       the URDF arena: links, joints and their placements, adjacency, and the walks over it
   jacobian.rs   the Jacobian's inverses, generic over N
   chain.rs      the serial chain and its posed view: forward kinematics, the Jacobian, limits
   rate.rs       one damped resolved-rate step, holding the joints it would carry past their limits, and the distance between poses

@@ -68,11 +68,8 @@ fn the_jaw_hangs_where_its_joint_places_it() {
     };
     let mut model: So101 = model(MODEL);
     let chain = arm_geometry::<ARM_DOF>(&description, &meshes(MODEL), arm);
-    let joint = UrdfCollisions::from_urdf(description.urdf())
-        .expect("the URDF reads")
-        .parent_joint(&jaw.link)
-        .expect("the jaw rides a joint")
-        .clone();
+    let urdf = UrdfCollisions::from_urdf(description.urdf()).expect("the URDF reads");
+    let (joint, _) = urdf.parent_of(&jaw.link).expect("the jaw rides a joint");
     for opening in [0.0, 0.3, 1.0] {
         model.set_gripper_openings(&[opening]);
         let fingers = model
@@ -81,9 +78,7 @@ fn the_jaw_hangs_where_its_joint_places_it() {
         let [hung] = fingers.as_slice() else {
             panic!("the arm carries one finger");
         };
-        let placed = joint
-            .offset(jaw.span.position_at(opening))
-            .expect("the jaw's joint places it");
+        let placed = joint.pose_at(jaw.span.position_at(opening));
         assert!(
             (hung.offset.translation.vector - placed.translation.vector).norm() < 1e-12
                 && hung.offset.rotation.angle_to(&placed.rotation) < 1e-12,

@@ -146,7 +146,7 @@ impl Tree {
             .links
             .iter()
             .map(|l| {
-                let origin = pose_of(&l.inertial.origin);
+                let origin = pose_of_origin(&l.inertial.origin);
                 let r = *origin.rotation.to_rotation_matrix().matrix();
                 Link {
                     name: l.name.clone(),
@@ -190,7 +190,7 @@ impl Tree {
                 name: j.name.clone(),
                 child,
                 placement: JointPlacement {
-                    origin: pose_of(&j.origin),
+                    origin: pose_of_origin(&j.origin),
                     kind,
                 },
                 limit: limit_of(j, kind)?,
@@ -265,8 +265,13 @@ impl Tree {
     }
 
     /// The link a joint hangs off.
-    fn parent_of(&self, joint: usize) -> usize {
+    pub fn parent_of(&self, joint: usize) -> usize {
         self.parents[joint]
+    }
+
+    /// The joint a link hangs on; `None` for the root.
+    pub fn parent_joint(&self, link: usize) -> Option<usize> {
+        self.parent_joint[link]
     }
 
     /// Every link strictly below `link`, in breadth-first order, paired with its
@@ -347,9 +352,9 @@ fn first_loop(
     })
 }
 
-/// URDF `<origin>` as a transform: `translation(xyz)` composed with the extrinsic
+/// A URDF `<origin>` as a transform: `translation(xyz)` composed with the extrinsic
 /// roll-pitch-yaw of `rpy`.
-fn pose_of(p: &urdf_rs::Pose) -> Isometry3<f64> {
+pub fn pose_of_origin(p: &urdf_rs::Pose) -> Isometry3<f64> {
     Isometry3::from_parts(
         Translation3::new(p.xyz[0], p.xyz[1], p.xyz[2]),
         UnitQuaternion::from_euler_angles(p.rpy[0], p.rpy[1], p.rpy[2]),

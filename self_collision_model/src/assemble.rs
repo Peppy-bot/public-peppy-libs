@@ -4,10 +4,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chain_kinematics::Joint;
 use collision_geometry::GeometryError;
 use collision_geometry::fit::{fit_fixed_link, fit_pieces};
 use collision_geometry::gjk::Hull;
-use collision_geometry::urdf_collision::{ParentJoint, UrdfCollisions};
+use collision_geometry::urdf_collision::UrdfCollisions;
 use robot_description::{Finger, FingerSpan};
 
 use crate::BuildError;
@@ -26,13 +27,13 @@ pub(crate) struct FittedBodies {
 /// A finger: a collision-bearing link on a movable joint off a chain link, fit as its
 /// own hull and placed at the live opening. `parent_link` is the chain link it hangs
 /// off (its FK segment host); `joint` places its hull in that link's frame at a
-/// given opening ([`ParentJoint::offset`]). `span` holds the joint's positions where
+/// given opening ([`Joint::pose_at`]). `span` holds the joint's positions where
 /// the gripper's `closed` and `open` states put it.
 pub(crate) struct FittedFinger {
     pub name: String,
     pub parent_link: String,
     pub hulls: Vec<Hull>,
-    pub joint: ParentJoint,
+    pub joint: Joint,
     pub span: FingerSpan,
 }
 
@@ -69,18 +70,18 @@ pub(crate) fn fit_bodies(
             if chain_set.contains(child.as_str()) || urdf.collisions_of(&child).is_empty() {
                 continue;
             }
-            let joint = urdf
-                .parent_joint(&child)
-                .expect("children_of implies a parent joint")
-                .clone();
+            let (joint, _) = urdf
+                .parent_of(&child)
+                .expect("children_of implies a parent joint");
+            let joint = joint.clone();
             attached.insert(child.clone());
-            if joint.is_fixed() {
+            if !joint.placement.kind.is_movable() {
                 surfaces.extend(urdf.child_surfaces_in_parent(&child, 0.0, meshes_dir)?);
                 continue;
             }
-            // A movable finger placed live per opening. A finger joint that is not
-            // prismatic or revolute (continuous, planar or floating) is refused when
-            // the model parses it into its runtime placer.
+            // A movable finger placed live per opening. A continuous finger joint is
+            // refused when the model builds its runtime placer; the URDF reader
+            // refuses a planar or floating one.
             let finger = fingers
                 .iter()
                 .find(|finger| finger.link == child)

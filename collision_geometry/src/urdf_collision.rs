@@ -1,12 +1,13 @@
 //! URDF collision extraction for the fit: the surface of each `<collision>` element of
-//! a link, with its origin and, for a mesh, its scale applied, the tree of links and
-//! joints, the fixed-link world poses, and the 1-DOF joint transforms that place a
-//! link on a movable joint ([`place_1dof`]).
+//! a link, with its origin and, for a mesh, its scale applied, and the tree of links
+//! and joints as chain_kinematics' [`Tree`] reads it, which places a link on its joint
+//! ([`Joint::pose_at`]) and gives the fixed-link poses in the root frame.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use nalgebra::{Isometry3, Point3, Translation3, Unit, UnitQuaternion, Vector3};
+use chain_kinematics::{Joint, Tree, pose_of_origin};
+use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
 use crate::hull::exact_hull;
@@ -194,99 +195,14 @@ fn triangles_of_hull(points: &[Point3<f64>]) -> Result<Vec<Point3<f64>>, String>
 /// Parsed URDF with the lookups the fit pipeline needs.
 pub struct UrdfCollisions {
     collisions: Vec<Collision>,
-    /// Child link name to its parent joint: parent link, joint kind, origin,
-    /// axis, and position limits.
-    parent_joints: HashMap<String, ParentJoint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JointKind {
-    Fixed,
-    /// A translation along a single axis, between its limits.
-    Prismatic,
-    /// A rotation about a single axis, between its limits.
-    Revolute,
-    /// A rotation about a single axis, with no limits.
-    Continuous,
-    /// A planar or floating joint: more than one degree of freedom.
-    OtherMovable,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParentJoint {
-    pub parent_link: String,
-    pub kind: JointKind,
-    pub origin: Isometry3<f64>,
-    pub axis: Vector3<f64>,
-    pub lower_limit: f64,
-    pub upper_limit: f64,
-}
-
-impl ParentJoint {
-    pub fn is_fixed(&self) -> bool {
-        self.kind == JointKind::Fixed
-    }
-
-    /// Placement of the child link in the parent frame at joint position `q`: the
-    /// joint origin for a fixed joint (`q` ignored), the origin composed with a
-    /// translation along the axis for a prismatic joint, and with a rotation about
-    /// the axis for a revolute or continuous joint. A planar or floating joint has more
-    /// than one degree of freedom and is refused. It reads no mesh;
-    /// [`UrdfCollisions::child_surfaces_in_parent`] places a child's surfaces with it.
-    pub fn offset(&self, q: f64) -> Result<Isometry3<f64>, String> {
-        if self.is_fixed() {
-            return Ok(self.origin);
-        }
-        let (axis, revolute) = self.one_dof()?;
-        Ok(place_1dof(&self.origin, &axis, revolute, q))
-    }
-
-    /// The unit axis of a joint of one degree of freedom, and whether the joint turns
-    /// about it (revolute or continuous) or slides along it (prismatic). A fixed joint
-    /// has no degree of freedom, a planar or floating joint has more than one, and an
-    /// axis whose norm is below 1e-12 has no direction: each is refused.
-    pub fn one_dof(&self) -> Result<(Unit<Vector3<f64>>, bool), String> {
-        /// An axis whose norm is below this cannot be normalized into a direction.
-        const ZERO_AXIS_EPS: f64 = 1e-12;
-        let revolute = match self.kind {
-            JointKind::Prismatic => false,
-            JointKind::Revolute | JointKind::Continuous => true,
-            JointKind::Fixed => return Err("a fixed joint has no degree of freedom".into()),
-            JointKind::OtherMovable => {
-                return Err(
-                    "a planar or floating joint has more than one degree of freedom, \
-                     which one position cannot place"
-                        .into(),
-                );
-            }
-        };
-        if self.axis.norm() < ZERO_AXIS_EPS {
-            return Err("parent joint has a zero axis".into());
-        }
-        // URDF axes are conventionally unit but the spec does not require it.
-        Ok((Unit::new_normalize(self.axis), revolute))
-    }
-}
-
-/// Compose a joint `origin` with a 1-DOF motion of `q` about (revolute) or along
-/// (prismatic) the unit `axis`: the placement of [`ParentJoint::offset`], for a caller
-/// that places a link at a position each query.
-pub fn place_1dof(
-    origin: &Isometry3<f64>,
-    axis: &Unit<Vector3<f64>>,
-    revolute: bool,
-    q: f64,
-) -> Isometry3<f64> {
-    if revolute {
-        origin * UnitQuaternion::from_axis_angle(axis, q)
-    } else {
-        origin * Translation3::from(axis.into_inner() * q)
-    }
+    /// The URDF's links and joints.
+    tree: Tree,
 }
 
 impl UrdfCollisions {
     /// Reads every `<collision>` element and every joint of the URDF. Refuses a
-    /// collision shape the fit cannot hold, naming its link.
+    /// collision shape the fit cannot hold, naming its link, and a URDF that
+    /// chain_kinematics' [`Tree`] refuses, naming its link or joint.
     pub fn from_urdf(urdf: &str) -> Result<Self, GeometryError> {
         let robot = urdf_rs::read_from_string(urdf).map_err(|e| format!("parse URDF: {e}"))?;
 
@@ -313,54 +229,13 @@ impl UrdfCollisions {
                 collisions.push(Collision {
                     link: link.name.clone(),
                     geometry: collision_geometry(&link.name, &c.geometry)?,
-                    origin: pose_to_isometry(&c.origin),
+                    origin: pose_of_origin(&c.origin),
                 });
             }
         }
 
-        let mut parent_joints = HashMap::new();
-        for j in &robot.joints {
-            let kind = match j.joint_type {
-                urdf_rs::JointType::Fixed => JointKind::Fixed,
-                urdf_rs::JointType::Prismatic => JointKind::Prismatic,
-                urdf_rs::JointType::Revolute => JointKind::Revolute,
-                urdf_rs::JointType::Continuous => JointKind::Continuous,
-                _ => JointKind::OtherMovable,
-            };
-            // A caller places a link on a movable joint at positions between its limits,
-            // so a movable joint's limits must be finite and ordered.
-            let movable = !matches!(kind, JointKind::Fixed);
-            let valid_limits = j.limit.lower.is_finite()
-                && j.limit.upper.is_finite()
-                && j.limit.lower <= j.limit.upper;
-            if movable && !valid_limits {
-                return Err(format!(
-                    "joint to '{}' has invalid limits [{}, {}]",
-                    j.child.link, j.limit.lower, j.limit.upper
-                )
-                .into());
-            }
-            let pj = ParentJoint {
-                parent_link: j.parent.link.clone(),
-                kind,
-                origin: pose_to_isometry(&j.origin),
-                axis: Vector3::new(j.axis.xyz[0], j.axis.xyz[1], j.axis.xyz[2]),
-                lower_limit: j.limit.lower,
-                upper_limit: j.limit.upper,
-            };
-            if parent_joints.insert(j.child.link.clone(), pj).is_some() {
-                return Err(format!(
-                    "link '{}' has two parent joints; URDF must be a tree",
-                    j.child.link
-                )
-                .into());
-            }
-        }
-
-        Ok(Self {
-            collisions,
-            parent_joints,
-        })
+        let tree = Tree::from_robot(&robot)?;
+        Ok(Self { collisions, tree })
     }
 
     pub fn from_file(path: &str) -> Result<Self, GeometryError> {
@@ -384,20 +259,26 @@ impl UrdfCollisions {
         names
     }
 
-    /// The joint whose child is `link`, if any.
-    pub fn parent_joint(&self, link: &str) -> Option<&ParentJoint> {
-        self.parent_joints.get(link)
+    /// The joint `link` hangs on and the link that joint hangs off; `None` for the
+    /// root and for a link the URDF lacks.
+    pub fn parent_of(&self, link: &str) -> Option<(&Joint, &str)> {
+        let joint = self.tree.parent_joint(self.tree.link_index(link)?)?;
+        let parent = self.tree.parent_of(joint);
+        Some((self.tree.joint(joint), self.tree.link(parent).name.as_str()))
     }
 
-    /// Links whose parent joint hangs them directly below `link`.
+    /// The links whose joints hang them directly below `link`, sorted by name.
     pub fn children_of(&self, link: &str) -> Vec<String> {
+        let Some(index) = self.tree.link_index(link) else {
+            return Vec::new();
+        };
         let mut children: Vec<String> = self
-            .parent_joints
+            .tree
+            .children_of(index)
             .iter()
-            .filter(|(_, j)| j.parent_link == link)
-            .map(|(child, _)| child.clone())
+            .map(|&joint| self.tree.link(self.tree.joint(joint).child).name.clone())
             .collect();
-        children.sort(); // HashMap order is not deterministic; callers need stable output
+        children.sort();
         children
     }
 
@@ -424,50 +305,41 @@ impl UrdfCollisions {
         link: &str,
         meshes_dir: &str,
     ) -> Result<Vec<Vec<Point3<f64>>>, GeometryError> {
-        let not_fixed = || GeometryError::NotFixedToTheRoot {
-            link: link.to_owned(),
-        };
-        let pose = self.fixed_pose_in_root(link)?.ok_or_else(not_fixed)?;
-        Ok(posed(pose, self.link_surfaces(link, meshes_dir)?))
+        let surfaces = self.link_surfaces(link, meshes_dir)?;
+        let pose =
+            self.fixed_pose_in_root(link)
+                .ok_or_else(|| GeometryError::NotFixedToTheRoot {
+                    link: link.to_owned(),
+                })?;
+        Ok(posed(pose, surfaces))
     }
 
     /// The collision surfaces of `child` posed at joint position `q`, mapped into the
-    /// parent link's frame by [`ParentJoint::offset`]: a fixed (`q` ignored),
-    /// prismatic, revolute or continuous child; a planar or floating one is refused.
+    /// parent link's frame by its joint ([`Joint::pose_at`]); a fixed joint ignores `q`.
     pub fn child_surfaces_in_parent(
         &self,
         child: &str,
         q: f64,
         meshes_dir: &str,
     ) -> Result<Vec<Vec<Point3<f64>>>, String> {
-        let pose = self
-            .parent_joint(child)
-            .ok_or_else(|| format!("link '{child}' has no parent joint"))?
-            .offset(q)
-            .map_err(|e| format!("link '{child}': {e}"))?;
-        Ok(posed(pose, self.link_surfaces(child, meshes_dir)?))
+        let (joint, _) = self
+            .parent_of(child)
+            .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
+        Ok(posed(
+            joint.pose_at(q),
+            self.link_surfaces(child, meshes_dir)?,
+        ))
     }
 
-    /// Pose of `link` in the URDF root frame, composing only fixed joints;
-    /// `None` when a joint on the path is movable (such a link has no constant
-    /// root pose and belongs to an FK chain instead). Errs if the parent chain
-    /// does not terminate (a malformed, cyclic URDF).
-    pub(crate) fn fixed_pose_in_root(&self, link: &str) -> Result<Option<Isometry3<f64>>, String> {
-        let mut pose = Isometry3::identity();
-        let mut current = link.to_string();
-        for _ in 0..=self.parent_joints.len() {
-            let Some(j) = self.parent_joints.get(&current) else {
-                return Ok(Some(pose)); // reached the root
-            };
-            if !j.is_fixed() {
-                return Ok(None);
-            }
-            pose = j.origin * pose;
-            current = j.parent_link.clone();
+    /// Pose of `link` in the URDF root frame, composing only fixed joints; `None`
+    /// when a joint on the path moves (such a link has no constant root pose and
+    /// belongs to an FK chain) or the URDF lacks the link.
+    pub(crate) fn fixed_pose_in_root(&self, link: &str) -> Option<Isometry3<f64>> {
+        let root = self.tree.root();
+        if self.tree.link(root).name == link {
+            return Some(Isometry3::identity());
         }
-        Err(format!(
-            "link '{link}' has a cyclic parent chain in the URDF"
-        ))
+        self.tree.fixed_path_to(root, link)
     }
 }
 
@@ -479,18 +351,11 @@ fn posed(pose: Isometry3<f64>, surfaces: Vec<Vec<Point3<f64>>>) -> Vec<Vec<Point
         .collect()
 }
 
-/// URDF `<origin xyz rpy>` to an isometry. URDF rpy is fixed-axis XYZ, which
-/// is exactly `from_euler_angles(roll, pitch, yaw)`.
-fn pose_to_isometry(p: &urdf_rs::Pose) -> Isometry3<f64> {
-    Isometry3::from_parts(
-        Translation3::new(p.xyz[0], p.xyz[1], p.xyz[2]),
-        UnitQuaternion::from_euler_angles(p.rpy[0], p.rpy[1], p.rpy[2]),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chain_kinematics::{JointKind, TreeError};
+    use nalgebra::UnitQuaternion;
     use std::f64::consts::FRAC_PI_2;
 
     const URDF: &str = r#"<?xml version="1.0"?>
@@ -546,53 +411,57 @@ mod tests {
             r#"<joint name="ma" type="continuous">"#,
         );
         let u = UrdfCollisions::from_urdf(&continuous).expect("parse");
-        let joint = u.parent_joint("arm1").expect("arm1 has a parent joint");
-        assert_eq!(joint.kind, JointKind::Continuous);
-        let turned = joint
-            .offset(FRAC_PI_2)
-            .expect("a continuous joint places its child");
+        let (joint, _) = u.parent_of("arm1").expect("arm1 has a parent joint");
+        let turned = joint.pose_at(FRAC_PI_2);
         let expected =
-            joint.origin * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
+            joint.placement.origin * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
         assert!((turned.translation.vector - expected.translation.vector).norm() < 1e-12);
         assert!(turned.rotation.angle_to(&expected.rotation) < 1e-12);
     }
 
-    /// A joint of one degree of freedom gives its unit axis and whether it turns; a fixed
-    /// joint and a planar one are refused.
+    /// Each link but the root hangs on one joint off one parent link, the joint read
+    /// with its kind and its unit axis.
     #[test]
-    fn one_dof_gives_the_axis_and_motion_of_a_single_degree_of_freedom() {
+    fn parent_of_gives_each_links_joint_and_parent() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        let joint = |child| u.parent_joint(child).expect("the child has a parent joint");
-        let (axis, revolute) = joint("arm1").one_dof().expect("a revolute joint");
-        assert!(revolute && (axis.into_inner() - Vector3::z()).norm() < 1e-12);
-        let (axis, revolute) = joint("finger").one_dof().expect("a prismatic joint");
-        assert!(!revolute && (axis.into_inner() + Vector3::y()).norm() < 1e-12);
-        let fixed = joint("body").one_dof().expect_err("a fixed joint");
-        assert!(fixed.contains("no degree of freedom"), "{fixed}");
+        assert!(u.parent_of("world").is_none());
+        let (body, parent) = u.parent_of("body").expect("body has a parent joint");
+        assert!(matches!(body.placement.kind, JointKind::Fixed) && parent == "world");
+        let (arm, parent) = u.parent_of("arm1").expect("arm1 has a parent joint");
+        assert!(parent == "mount");
+        assert!(
+            matches!(arm.placement.kind, JointKind::Revolute { axis } if (axis.into_inner() - Vector3::z()).norm() < 1e-12)
+        );
+        let (finger, parent) = u.parent_of("finger").expect("finger has a parent joint");
+        assert!(parent == "arm1" && finger.limit == Some((0.0, 0.04)));
+        assert!(
+            matches!(finger.placement.kind, JointKind::Prismatic { axis } if (axis.into_inner() + Vector3::y()).norm() < 1e-12)
+        );
+    }
+
+    /// A joint the tree cannot place refuses the whole URDF, naming the joint: one of
+    /// more than one degree of freedom, and one whose axis gives no direction.
+    #[test]
+    fn a_joint_the_tree_cannot_place_refuses_the_urdf() {
         let planar = URDF.replace(
             r#"<joint name="ma" type="revolute">"#,
             r#"<joint name="ma" type="planar">"#,
         );
-        let u = UrdfCollisions::from_urdf(&planar).expect("parse");
-        let planar = u
-            .parent_joint("arm1")
-            .expect("arm1 has a parent joint")
-            .one_dof()
-            .expect_err("a planar joint");
+        let error = UrdfCollisions::from_urdf(&planar)
+            .err()
+            .expect("a planar joint");
         assert!(
-            planar.contains("more than one degree of freedom"),
-            "{planar}"
+            matches!(&error, GeometryError::Tree(TreeError::MultiPositionJoint { joint, kind }) if joint == "ma" && kind == "planar"),
+            "{error}"
         );
-    }
-
-    #[test]
-    fn rejects_a_prismatic_child_with_a_zero_axis() {
         let zero_axis = URDF.replace(r#"<axis xyz="0 -1 0"/>"#, r#"<axis xyz="0 0 0"/>"#);
-        let u = UrdfCollisions::from_urdf(&zero_axis).expect("parse");
-        let err = u
-            .child_surfaces_in_parent("finger", 0.02, "/nonexistent")
-            .expect_err("zero axis");
-        assert!(err.contains("zero axis"), "{err}");
+        let error = UrdfCollisions::from_urdf(&zero_axis)
+            .err()
+            .expect("a zero axis");
+        assert!(
+            matches!(&error, GeometryError::Tree(TreeError::JointAxis { joint, .. }) if joint == "af"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -784,25 +653,13 @@ mod tests {
     #[test]
     fn fixed_pose_composes_through_fixed_joints_only() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        let m = u
-            .fixed_pose_in_root("mount")
-            .expect("an acyclic URDF")
-            .expect("mount is fixed");
+        let m = u.fixed_pose_in_root("mount").expect("mount is fixed");
         assert!((m.translation.vector - Vector3::new(0.0, 0.1, 0.5)).norm() < 1e-12);
         // The +90 degree X rotation maps local z to world -y.
         let z = m.rotation * Vector3::z();
         assert!((z + Vector3::y()).norm() < 1e-9);
-        assert_eq!(u.fixed_pose_in_root("arm1"), Ok(None));
-        assert_eq!(u.fixed_pose_in_root("finger"), Ok(None));
-    }
-
-    #[test]
-    fn parent_joint_reports_prismatic_finger() {
-        let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        let j = u.parent_joint("finger").expect("finger has parent");
-        assert_eq!(j.parent_link, "arm1");
-        assert!(!j.is_fixed());
-        assert_eq!(j.axis, Vector3::new(0.0, -1.0, 0.0));
-        assert!((j.upper_limit - 0.04).abs() < 1e-12);
+        assert_eq!(u.fixed_pose_in_root("world"), Some(Isometry3::identity()));
+        assert_eq!(u.fixed_pose_in_root("arm1"), None);
+        assert_eq!(u.fixed_pose_in_root("finger"), None);
     }
 }

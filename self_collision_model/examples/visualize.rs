@@ -362,10 +362,10 @@ fn mesh_wireframes<const N: usize, const K: usize>(
                 if on_a_chain(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
                 }
-                let joint = urdf
-                    .parent_joint(&child)
+                let (joint, _) = urdf
+                    .parent_of(&child)
                     .expect("children_of implies a parent joint");
-                let position = if joint.is_fixed() {
+                let position = if !joint.placement.kind.is_movable() {
                     0.0
                 } else {
                     let finger = arm
