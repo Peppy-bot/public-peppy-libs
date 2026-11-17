@@ -2,9 +2,10 @@
 //! limiting, the timing of a motion, the health of a motor, a mobile base's
 //! footprint, its body velocity, its limiter and its wheel odometry, the
 //! setpoint stream, the service, receive and ask loops, the fault that ends a
-//! node, the model a component is configured for, latched failure logging,
-//! waiting and locking from synchronous code, and the arms a request names,
-//! for robot nodes and the kinematics crates that plan their moves.
+//! node, the model a component is configured for, latched failure logging, a
+//! node's wall or simulation clock, waiting and locking from synchronous code,
+//! and the arms a request names, for robot nodes and the kinematics crates
+//! that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -22,6 +23,9 @@
 //!   acceleration limits, and the trajectory that plays a joint path.
 //! - [`timing`]: the clock a motion plays on and the duration a caller may ask
 //!   of it.
+//! - [`node_clock`]: the clock a node reads, the wall clock or a simulation
+//!   clock fed the ticks the node receives, the time now and a wait until a
+//!   deadline on it.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`twist`]: a body velocity in the robot frame, finite by construction.
@@ -77,6 +81,7 @@ pub mod latched_log;
 pub mod limiter;
 pub mod minimum_jerk;
 pub mod motor_health;
+pub mod node_clock;
 pub mod non_negative_finite;
 pub mod not_finite;
 pub mod odometry;
