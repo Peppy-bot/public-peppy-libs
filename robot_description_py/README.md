@@ -42,10 +42,10 @@ robot_description_py = { git = "https://github.com/Peppy-bot/public-peppy-libs",
 | `Gripper` | A gripper group: `name` and `fingers`. |
 | `Finger` | A finger's `joint`, `link`, `span`, the `FingerSpan` where the gripper's `closed` and `open` states put the joint, and `mimic`, the `Mimic` it follows, or `None` for a joint that moves of its own. |
 | `FingerSpan(closed, open)` | Where a finger joint stands at the gripper's `closed` and `open` states, two finite positions farther apart than robot_description's least finger travel (`ValueError` otherwise, with robot_description's message): `closed`, `open`, `travel`, `position_at(opening)`, the joint's position at an opening fraction, 0 at `closed` and 1 at `open`, and `opening_at(position)`, its inverse. |
-| `Mimic` | How a finger joint follows another of its gripper, as its URDF `<mimic>` gives it: the `joint` followed, and the `multiplier` and `offset` that place the finger at `multiplier` times that joint's position plus `offset`. |
+| `Mimic(joint, multiplier, offset)` | How a joint follows another, as its URDF `<mimic>` gives it: the `joint` followed, and the finite `multiplier` and `offset` that place it at `multiplier` times that joint's position plus `offset`, which `position_from(leader)` gives (`ValueError` for one that is not finite, with chain_kinematics' message). |
 | `CameraFrame` | A camera's optical frame (+z along the view, +x right, +y down): `name`, `parent_link`, `xyz` and `rpy` in the parent link's frame, and `depth_range`, the `DepthRange` the URDF's depth sensor on the frame gives, or `None` for a camera the URDF gives no depth sensor. |
 | `DepthRange` | The depths a camera measures, meters along its view: its `near` and `far`. |
-| `JointLimits` | A joint's `lower` and `upper` position limits, the URDF's, unbounded for a continuous joint, and its `velocity` and `effort` limits, as the URDF gives them. |
+| `JointLimits` | A joint's `lower` and `upper` position limits, the URDF's, unbounded for a continuous joint and 0 and 0 for a fixed one, and its `velocity` and `effort` limits, as the URDF gives them. |
 | `READY`, `HOME`, `PARK`, `CLOSED`, `OPEN` | The names of the states the SRDFs give. |
 
 ## Testing

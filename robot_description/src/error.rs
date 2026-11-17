@@ -18,6 +18,14 @@ pub struct FingerSpanError {
     pub open: f64,
 }
 
+/// A joint that a lookup by name on a [`RobotDescription`](crate::RobotDescription) is
+/// asked about and the description's URDF lacks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the URDF has no joint named {joint:?}")]
+pub struct UnknownJoint {
+    pub joint: String,
+}
+
 /// A URDF and an SRDF that do not make one description.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum DescriptionError {

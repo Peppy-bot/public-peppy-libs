@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyjson5
-from robot_description_py import HOME, FingerSpan, RobotDescription
+from robot_description_py import HOME, FingerSpan, Mimic, RobotDescription
 from robot_description_py import model as bundled_model
 
 from sim_robot_core.cameras import (
@@ -50,18 +50,6 @@ class Arm:
 
     name: str
     joints: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Mimic:
-    """How a finger joint follows another finger joint of its gripper, one
-    that moves of its own, as the description's mimic gives it: it stands at
-    multiplier times that joint's position plus offset, in the joints'
-    unit."""
-
-    joint: str
-    multiplier: float
-    offset: float
 
 
 @dataclass(frozen=True)
@@ -182,16 +170,7 @@ def _gripper(gripper) -> Gripper:
         name=gripper.name,
         joints=tuple(finger.joint for finger in gripper.fingers),
         spans=tuple(finger.span for finger in gripper.fingers),
-        mimics=tuple(
-            None
-            if finger.mimic is None
-            else Mimic(
-                joint=finger.mimic.joint,
-                multiplier=finger.mimic.multiplier,
-                offset=finger.mimic.offset,
-            )
-            for finger in gripper.fingers
-        ),
+        mimics=tuple(finger.mimic for finger in gripper.fingers),
     )
 
 

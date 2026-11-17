@@ -211,13 +211,9 @@ mod tests {
                     assert_eq!(values.len(), arm.joints.len());
                 }
                 for finger in &arm.gripper.fingers {
-                    let joint = description
-                        .robot()
-                        .joints
-                        .iter()
-                        .find(|joint| joint.name == finger.joint)
+                    let limits = description
+                        .position_limits(&finger.joint)
                         .expect("a finger's joint");
-                    let limits = crate::position_limits(joint);
                     let (closed, open) = (finger.span.closed(), finger.span.open());
                     assert!(
                         limits.contains(&closed) && limits.contains(&open),

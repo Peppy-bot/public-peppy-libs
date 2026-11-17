@@ -12,6 +12,7 @@ from robot_description_py import (
     READY,
     START,
     FingerSpan,
+    Mimic,
     RobotDescription,
     model,
 )
@@ -78,6 +79,18 @@ def test_a_span_needs_two_finite_ends_far_enough_apart(ends):
         FingerSpan(*ends)
 
 
+def test_a_mimic_places_its_joint_off_the_one_it_follows():
+    mimic = Mimic("leader", -1.0, 0.01)
+    assert mimic.position_from(0.02) == pytest.approx(-0.01)
+    assert mimic == Mimic(joint="leader", multiplier=-1.0, offset=0.01)
+
+
+@pytest.mark.parametrize("values", [(float("nan"), 0.0), (1.0, float("inf"))])
+def test_a_mimic_needs_a_finite_multiplier_and_offset(values):
+    with pytest.raises(ValueError, match="a mimic's multiplier and offset are finite"):
+        Mimic("leader", *values)
+
+
 def test_a_state_gives_one_position_per_joint_or_none():
     description = model("so101").description()
     (arm,) = description.arms
@@ -127,5 +140,5 @@ def test_joint_limits_are_the_urdfs():
             assert (limits.lower, limits.upper) == (float(limit.get("lower")), float(limit.get("upper")))
             assert limits.velocity == float(limit.get("velocity"))
             assert limits.effort == float(limit.get("effort"))
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match='the URDF has no joint named "no_such_joint"'):
         description.joint_limits("no_such_joint")

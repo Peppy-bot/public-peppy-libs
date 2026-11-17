@@ -22,10 +22,13 @@
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal
-//! ([`DescriptionError`]) that names it. A URDF's links and joints are
-//! held to one tree by the rules of chain_kinematics, which poses every chain of it
-//! ([`chain_kinematics::TreeError`]). [`position_limits`] gives a joint's position limits,
-//! and [`mesh_name`] the file name a description holds a collision mesh by.
+//! ([`DescriptionError`]) that names it. A URDF's links and joints are held to one tree
+//! by the rules of chain_kinematics, which poses every chain of it
+//! ([`chain_kinematics::TreeError`]). [`RobotDescription::position_limits`] gives a
+//! joint's position limits, and [`mesh_name`] the file name a description holds a
+//! collision mesh by.
+//!
+//! [`Mimic`]: chain_kinematics::Mimic
 //!
 //! [`model`] gives the bundled description of a robot model of this repository by its
 //! model id, the id robot_identity carries: its files, the [`Model::directory`] the build
@@ -56,15 +59,19 @@ mod xml;
 pub use arms::{ArmId, PerArm};
 pub use bundled::{Model, UnknownModel, model, models, write_meshes};
 pub use description::{
-    Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper, Mimic,
-    RobotDescription, mesh_name, position_limits,
+    Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
+    RobotDescription, mesh_name,
 };
 pub use driven::{Driven, DrivenModels, UndrivenModel};
-pub use error::{DescriptionError, FingerSpanError};
+pub use error::{DescriptionError, FingerSpanError, UnknownJoint};
 pub use shape::{NodeArms, OnShape, UnsupportedShape, on_shape};
 
 /// The URDF crate of [`RobotDescription::robot`], so a caller uses the same version.
 pub use urdf_rs;
+
+/// The kinematics crate of [`Finger::mimic`] and of the description's tree, so a caller
+/// uses the same version.
+pub use chain_kinematics;
 
 /// The names of the group states that the readers of a description look up with
 /// [`RobotDescription::state`].

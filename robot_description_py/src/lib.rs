@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
+use robot_description::chain_kinematics::Mimic;
 use robot_description::{
-    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, Mimic, Model, RobotDescription,
-    position_limits, states,
+    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, Model, RobotDescription, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
@@ -181,20 +181,26 @@ impl PyRobotDescription {
     }
 
     /// The limits of the joint `joint`: its position limits, the URDF's,
-    /// unbounded for a continuous joint, and the speed and effort limits the
-    /// URDF gives it. A joint the URDF lacks raises KeyError.
+    /// unbounded for a continuous joint and `[0, 0]` for a fixed one, and the
+    /// speed and effort limits the URDF gives it. A joint the URDF lacks raises
+    /// KeyError.
     fn joint_limits(&self, joint: &str) -> PyResult<PyJointLimits> {
-        self.0
+        let position = self
+            .0
+            .position_limits(joint)
+            .map_err(|unknown| PyKeyError::new_err(unknown.to_string()))?;
+        let found = self
+            .0
             .robot()
             .joints
             .iter()
             .find(|candidate| candidate.name == joint)
-            .map(|found| PyJointLimits {
-                position: position_limits(found),
-                velocity: found.limit.velocity,
-                effort: found.limit.effort,
-            })
-            .ok_or_else(|| PyKeyError::new_err(format!("the URDF has no joint named {joint:?}")))
+            .expect("every joint of the tree is a joint of the URDF");
+        Ok(PyJointLimits {
+            position,
+            velocity: found.limit.velocity,
+            effort: found.limit.effort,
+        })
     }
 }
 
@@ -355,30 +361,46 @@ impl PyFingerSpan {
 /// How a finger joint follows another finger joint of its gripper, one that
 /// moves of its own: it stands at `multiplier` times that joint's position
 /// plus `offset`, in the joints' unit.
-#[pyclass(name = "Mimic", module = "robot_description_py", frozen)]
+#[pyclass(name = "Mimic", module = "robot_description_py", frozen, eq)]
+#[derive(PartialEq)]
 struct PyMimic(Mimic);
 
 #[pymethods]
 impl PyMimic {
+    /// The mimic of the joint `joint` at `multiplier` and `offset`, both
+    /// finite; a value that is not raises ValueError.
+    #[new]
+    fn new(joint: String, multiplier: f64, offset: f64) -> PyResult<Self> {
+        Mimic::new(joint, multiplier, offset)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// The position of the following joint when the followed one stands at
+    /// `leader`.
+    fn position_from(&self, leader: f64) -> f64 {
+        self.0.position_from(leader)
+    }
+
     /// The joint followed.
     #[getter]
     fn joint(&self) -> &str {
-        &self.0.joint
+        self.0.joint()
     }
 
     #[getter]
     fn multiplier(&self) -> f64 {
-        self.0.multiplier
+        self.0.multiplier()
     }
 
     /// Radians or meters, the joints' unit.
     #[getter]
     fn offset(&self) -> f64 {
-        self.0.offset
+        self.0.offset()
     }
 
     fn __repr__(&self) -> String {
-        format!("<Mimic of {}>", self.0.joint)
+        format!("<Mimic of {}>", self.0.joint())
     }
 }
 
@@ -452,7 +474,8 @@ impl PyDepthRange {
 }
 
 /// The limits of a joint: its position limits, the URDF's, unbounded for a
-/// continuous joint, and the speed and effort limits the URDF gives it.
+/// continuous joint and `[0, 0]` for a fixed one, and the speed and effort
+/// limits the URDF gives it.
 #[pyclass(name = "JointLimits", module = "robot_description_py", frozen)]
 struct PyJointLimits {
     position: [f64; 2],

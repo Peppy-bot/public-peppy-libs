@@ -73,14 +73,14 @@ for arm in description.arms() {
 attach goal of simulation_robot carries. The reader is strict: an element or
 an attribute of the SRDF or of a `<gazebo>` element of the URDF that it does
 not read, and a name the URDF lacks, is a refusal ([`DescriptionError`]) that
-names it. The URDF's links and joints are held to
-one tree by the rules of chain_kinematics, which poses every chain of it.
-[`position_limits`] gives a joint's position limits, the URDF's, unbounded for
-a continuous joint, the limits each [`Arm`] carries. [`Model::digest`] is the
-SHA-256 of a model's URDF, SRDF and meshes, which robot_identity answers beside
-the files, and [`Model::directory`] the directory of `models/` the build
-bundled the model from, for a reader on the building machine that takes the
-files from disk.
+names it. The URDF's links and joints are held to one tree by the rules of
+chain_kinematics, which poses every chain of it.
+[`RobotDescription::position_limits`] gives a joint's position limits, the
+URDF's, unbounded for a continuous joint and `[0, 0]` for a fixed one, the
+limits each [`Arm`] carries. [`Model::digest`] is the SHA-256 of a model's URDF,
+SRDF and meshes, which robot_identity answers beside the files, and
+[`Model::directory`] the directory of `models/` the build bundled the model
+from, for a reader on the building machine that takes the files from disk.
 
 The `meshes` feature embeds the collision meshes: [`Model::meshes`] gives them
 and [`Model::write_meshes_to`] writes them where a builder of the URDF's

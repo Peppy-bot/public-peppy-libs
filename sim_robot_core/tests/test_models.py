@@ -98,15 +98,7 @@ class TestFromTheDescription:
             fingers = arm.gripper.fingers
             assert gripper.joints == tuple(finger.joint for finger in fingers)
             assert gripper.spans == tuple(finger.span for finger in fingers)
-            for mimic, finger in zip(gripper.mimics, fingers, strict=True):
-                described = finger.mimic
-                assert (mimic is None) == (described is None), finger.joint
-                if described is not None:
-                    assert (mimic.joint, mimic.multiplier, mimic.offset) == (
-                        described.joint,
-                        described.multiplier,
-                        described.offset,
-                    )
+            assert gripper.mimics == tuple(finger.mimic for finger in fingers)
 
     @pytest.mark.parametrize(
         ("name", "driven", "followers"),
