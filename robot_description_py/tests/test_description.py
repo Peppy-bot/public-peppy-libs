@@ -1,5 +1,5 @@
 """A description from Python: read from its two files, its arms with their
-grippers, its named states, its cameras and its joint limits."""
+grippers, its named states, its cameras, its joint limits and its transforms."""
 
 import xml.etree.ElementTree as ET
 
@@ -77,6 +77,26 @@ def test_a_span_places_its_joint_between_closed_and_open():
 def test_a_span_needs_two_finite_ends_far_enough_apart(ends):
     with pytest.raises(ValueError, match="a finger span stands at two finite positions"):
         FingerSpan(*ends)
+
+
+def test_the_transforms_place_every_link_but_the_root():
+    description = model("so101").description()
+    (arm,) = description.arms
+    positions = dict(zip(arm.joints, [0.1] * len(arm.joints), strict=True))
+    positions.update(arm.gripper.finger_positions_at(0.5))
+    transforms = description.fixed_transforms() + description.transforms_at(positions)
+    children = [transform.child for transform in transforms]
+    assert len(children) == len(set(children))
+    assert "base_link" not in children
+    (jaw,) = arm.gripper.fingers
+    for opening, state in [(0.0, CLOSED), (1.0, OPEN)]:
+        values = description.state(arm.gripper.name, state)
+        assert values is not None and len(values) == 1
+        assert arm.gripper.finger_positions_at(opening) == {jaw.joint: pytest.approx(values[0])}
+    for transform in transforms:
+        x, y, z, w = transform.orientation
+        assert x * x + y * y + z * z + w * w == pytest.approx(1.0)
+        assert len(transform.position) == 3
 
 
 def test_a_mimic_places_its_joint_off_the_one_it_follows():

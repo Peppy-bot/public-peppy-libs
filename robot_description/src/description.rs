@@ -89,6 +89,17 @@ pub struct Gripper {
     pub fingers: Vec<Finger>,
 }
 
+impl Gripper {
+    /// The position of every finger joint of the gripper at opening fraction `opening`,
+    /// by joint name: 0 at the gripper's `closed` state and 1 at its `open` one, a
+    /// finger that mimics another included.
+    pub fn finger_positions_at(&self, opening: f64) -> impl Iterator<Item = (&str, f64)> {
+        self.fingers
+            .iter()
+            .map(move |finger| (finger.joint.as_str(), finger.span.position_at(opening)))
+    }
+}
+
 /// One moving joint of a gripper and the link it carries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finger {
@@ -219,7 +230,7 @@ pub struct RobotDescription {
     srdf: String,
     robot: Robot,
     /// The URDF's links and joints, which every lookup by name reads.
-    tree: Tree,
+    pub(crate) tree: Tree,
     arms: Vec<Arm>,
     /// Each group that holds other groups and nothing else, with them, in the SRDF's order.
     group_sets: Vec<(String, Vec<String>)>,
@@ -1448,6 +1459,28 @@ mod tests {
             ),
             "the end effectors \"ee\" and \"ee_again\" both stand on the arm \"arm\""
         );
+    }
+
+    /// A joint that mimics another stands where its mimic puts it from the joint it
+    /// follows, the transform of `pinch_mirror` at a drawn position of `pinch` being the
+    /// one at `-pinch + 0.01` of its own; a joint with no position and nothing to follow
+    /// has no transform.
+    #[hegel::test]
+    fn a_mimic_joint_stands_where_its_mimic_puts_it(tc: hegel::TestCase) {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        let pinch: f64 = tc.draw(hegel::generators::floats().min_value(0.0).max_value(0.04));
+        let mirror = |transforms: Vec<crate::LinkTransform>| {
+            transforms
+                .into_iter()
+                .find(|transform| transform.child == "finger_b")
+                .map(|transform| transform.pose)
+        };
+        let followed = mirror(description.transforms_at(&HashMap::from([("pinch", pinch)])));
+        let own =
+            mirror(description.transforms_at(&HashMap::from([("pinch_mirror", -pinch + 0.01)])));
+        assert_eq!(followed, own);
+        assert!(followed.is_some(), "pinch_mirror follows pinch");
+        assert_eq!(mirror(description.transforms_at(&HashMap::new())), None);
     }
 
     #[test]

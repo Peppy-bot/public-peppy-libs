@@ -9,7 +9,8 @@
 //! - [`RobotDescription::arms`]: each group of one chain whose tip an end effector
 //!   stands on, with its base link, its grasp point and its joints, and its
 //!   [`Gripper`], each [`Finger`] with where the gripper's `closed` and `open` states
-//!   put it and, for a finger that follows another, its [`Mimic`].
+//!   put it and, for a finger that follows another, its [`Mimic`]; a gripper gives each
+//!   finger joint's position at an opening ([`Gripper::finger_positions_at`]).
 //! - [`RobotDescription::group_arms`]: the arms of a group, such as `both_arms`'s two.
 //! - [`RobotDescription::state`]: a named state of a group, such as an arm's `ready`.
 //! - [`RobotDescription::disabled_pairs`]: the pairs a collision model leaves out, each
@@ -19,6 +20,10 @@
 //!   URDF gives it a depth sensor in the form of Gazebo's URDF extension: a `<gazebo>`
 //!   element that references the optical frame and holds a `<sensor type="depth">` whose
 //!   `<camera><clip>` gives the `<near>` and `<far>` depths.
+//! - [`RobotDescription::fixed_transforms`] and [`RobotDescription::transforms_at`]: where
+//!   each link stands in its parent link, a [`LinkTransform`] per joint, the fixed joints'
+//!   for the life of the robot and the moving joints' at their positions; and
+//!   [`LinkTransform::frame_transform`]: the transform as the transforms contract carries it.
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal
@@ -54,6 +59,7 @@ mod error;
 mod gazebo;
 mod shape;
 mod srdf;
+mod transforms;
 mod xml;
 
 pub use arms::{ArmId, PerArm};
@@ -65,6 +71,7 @@ pub use description::{
 pub use driven::{Driven, DrivenModels, UndrivenModel};
 pub use error::{DescriptionError, FingerSpanError, UnknownJoint};
 pub use shape::{NodeArms, OnShape, UnsupportedShape, on_shape};
+pub use transforms::{LinkTransform, LinkTransformError};
 
 /// The URDF crate of [`RobotDescription::robot`], so a caller uses the same version.
 pub use urdf_rs;

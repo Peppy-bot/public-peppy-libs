@@ -2,6 +2,7 @@
 //! Python imports as `robot_description_py`. Its types are in
 //! `robot_description_py.pyi`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyKeyError, PyValueError};
@@ -9,7 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 use robot_description::chain_kinematics::Mimic;
 use robot_description::{
-    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, Model, RobotDescription, states,
+    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, LinkTransform, Model,
+    RobotDescription, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
@@ -34,6 +36,7 @@ fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyFinger>()?;
     module.add_class::<PyFingerSpan>()?;
     module.add_class::<PyMimic>()?;
+    module.add_class::<PyLinkTransform>()?;
     module.add_class::<PyCameraFrame>()?;
     module.add_class::<PyDepthRange>()?;
     module.add_class::<PyJointLimits>()?;
@@ -202,6 +205,93 @@ impl PyRobotDescription {
             effort: found.limit.effort,
         })
     }
+
+    /// The transform of every fixed joint of the URDF, in the URDF's order
+    /// of joints.
+    fn fixed_transforms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(
+            py,
+            self.0.fixed_transforms().iter().map(PyLinkTransform::of),
+        )
+    }
+
+    /// The transform of every joint of the URDF that moves and has a
+    /// position, in the URDF's order of joints, with `positions` by joint
+    /// name, radians or meters. A joint that follows another stands where its
+    /// mimic puts it when `positions` holds the followed joint, and at its own
+    /// position otherwise; a joint with neither has no transform.
+    fn transforms_at<'py>(
+        &self,
+        py: Python<'py>,
+        positions: HashMap<String, f64>,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let positions: HashMap<&str, f64> = positions
+            .iter()
+            .map(|(joint, position)| (joint.as_str(), *position))
+            .collect();
+        PyTuple::new(
+            py,
+            self.0
+                .transforms_at(&positions)
+                .iter()
+                .map(PyLinkTransform::of),
+        )
+    }
+}
+
+/// Where a child link stands in its parent link: a point p of the child
+/// link's frame stands at R(orientation) * p + position of the parent link's.
+#[pyclass(name = "LinkTransform", module = "robot_description_py", frozen)]
+struct PyLinkTransform {
+    parent: String,
+    child: String,
+    position: Vector3,
+    orientation: (f64, f64, f64, f64),
+}
+
+impl PyLinkTransform {
+    fn of(transform: &LinkTransform) -> Self {
+        let position = transform.pose.translation.vector;
+        let orientation = transform.pose.rotation;
+        Self {
+            parent: transform.parent.to_string(),
+            child: transform.child.to_string(),
+            position: (position.x, position.y, position.z),
+            orientation: (orientation.i, orientation.j, orientation.k, orientation.w),
+        }
+    }
+}
+
+#[pymethods]
+impl PyLinkTransform {
+    /// The parent link.
+    #[getter]
+    fn parent(&self) -> &str {
+        &self.parent
+    }
+
+    /// The child link.
+    #[getter]
+    fn child(&self) -> &str {
+        &self.child
+    }
+
+    /// The child link's origin in the parent link's frame, meters.
+    #[getter]
+    fn position(&self) -> Vector3 {
+        self.position
+    }
+
+    /// The child link's orientation in the parent link's frame, a unit
+    /// quaternion `(x, y, z, w)`.
+    #[getter]
+    fn orientation(&self) -> (f64, f64, f64, f64) {
+        self.orientation
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<LinkTransform {} in {}>", self.child, self.parent)
+    }
 }
 
 /// An arm: a group of one chain from its base link to its grasp link, with
@@ -262,6 +352,16 @@ impl PyGripper {
     #[getter]
     fn fingers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.fingers.iter().cloned().map(PyFinger))
+    }
+
+    /// The position of every finger joint at opening fraction `opening`, by
+    /// joint name: 0 at the `closed` state and 1 at the `open` one, a finger
+    /// that mimics another included.
+    fn finger_positions_at(&self, opening: f64) -> HashMap<String, f64> {
+        self.0
+            .finger_positions_at(opening)
+            .map(|(joint, position)| (joint.to_string(), position))
+            .collect()
     }
 
     fn __repr__(&self) -> String {

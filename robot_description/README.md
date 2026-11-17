@@ -77,10 +77,21 @@ names it. The URDF's links and joints are held to one tree by the rules of
 chain_kinematics, which poses every chain of it.
 [`RobotDescription::position_limits`] gives a joint's position limits, the
 URDF's, unbounded for a continuous joint and `[0, 0]` for a fixed one, the
-limits each [`Arm`] carries. [`Model::digest`] is the SHA-256 of a model's URDF,
-SRDF and meshes, which robot_identity answers beside the files, and
-[`Model::directory`] the directory of `models/` the build bundled the model
-from, for a reader on the building machine that takes the files from disk.
+limits each [`Arm`] carries. [`RobotDescription::fixed_transforms`] and
+[`RobotDescription::transforms_at`] give where each link stands in its parent
+link, a [`LinkTransform`] per joint: the fixed joints' for the life of the
+robot, and the moving joints' at their positions by joint name, a joint that
+mimics another standing where its mimic puts it from the followed joint's
+position. [`LinkTransform::frame_transform`] gives one as the transforms
+contract carries it, a `frame_tree::FrameTransform` checked as frame_tree checks
+each transform it takes, or a [`LinkTransformError`] that names the joint's two
+links and the reason; robot_description depends on frame_tree for it.
+[`Gripper::finger_positions_at`] gives each finger joint's position at
+an opening, for a publisher that holds a gripper's opening alone.
+[`Model::digest`] is the SHA-256 of a model's URDF, SRDF and meshes, which
+robot_identity answers beside the files, and [`Model::directory`] the directory
+of `models/` the build bundled the model from, for a reader on the building
+machine that takes the files from disk.
 
 The `meshes` feature embeds the collision meshes: [`Model::meshes`] gives them
 and [`Model::write_meshes_to`] writes them where a builder of the URDF's
