@@ -36,10 +36,10 @@ class AlignmentFailed(ExpectedFailure):
 class AlignRequest:
     """What a grab or a place hands the aligner: the item to grasp (none
     for a place), the gripper, the pre point the gripper stands at, the
-    point of the descent under it (the grasp point, or where the jaws
-    open), the orientation it stands in, how far the lift goes above the
-    point, and `target`, the centre the limit is measured from: the item's
-    seen point when none is given."""
+    point of the descent under it (the grasp point, or the pose where the
+    line down of a place ends), the orientation it stands in, how far the
+    lift goes above the point, and `target`, the centre the limit is
+    measured from: the item's seen point when none is given."""
 
     item: Optional[Item]
     gripper: Gripper

@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 
 from brain_core.limb_state import NO_SNAPSHOT, LimbStateStore
 from brain_core.manipulators.scripted.centre_proposer import GRASP_DEPTH_M, CentreProposer
-from brain_core.manipulators.scripted.grasp import GraspDirection, candidates, lifted, lowered
+from brain_core.manipulators.scripted.grasp import GraspDirection, candidates, lowered
 from brain_core.manipulators.scripted.manipulator import (
     CLEARANCE_M,
     HELD_ITEM_DEPTH_M,
@@ -26,7 +26,6 @@ from brain_core.manipulators.scripted.manipulator import (
     MOVE_DURATION_S,
     NO_CONTACT_CHECK_M,
     NOT_STARTED,
-    RELEASE_HEIGHT_M,
     SETTLE_ORIENTATION_RAD,
     SETTLE_POSITION_M,
     SETTLE_TIMEOUT_S,
@@ -61,9 +60,21 @@ MOVE_BARS = dict(
 GRIP_BARS = dict(settle_timeout_s=GRIP_SETTLE_TIMEOUT_S)
 
 
+def line_down_bars(duration_s: float, contact_gap_m: float = LINE_DOWN_CONTACT_GAP_M) -> dict:
+    """What a line down names: the settle bars of every arm move, its own
+    duration and a contact gap above 0."""
+    return dict(MOVE_BARS, duration_s=pytest.approx(duration_s), contact_gap_m=contact_gap_m)
+
+
 def arrived(position=None, orientation=None) -> MoveResult:
     """An arm move that completed, its grasp point at `position`."""
     return MoveResult(MoveEnd.COMPLETED, final_position=position, final_orientation=orientation)
+
+
+def touched(position, orientation=None) -> MoveResult:
+    """An arm move that completed on contact, its grasp point stopped at
+    `position`."""
+    return MoveResult(MoveEnd.COMPLETED, final_position=position, final_orientation=orientation, ended_on_contact=True)
 
 
 def move_failed(message: str, kind: str = "attempt_failed") -> MoveResult:
@@ -525,92 +536,80 @@ async def test_a_place_with_the_jaws_closed_on_air_fails_before_any_move():
     assert robot.calls == []
 
 
-async def test_a_place_checks_its_orientation_alone_opens_5_cm_above_the_pose_climbs_back_and_reports_where_it_settled():
+async def test_a_place_checks_its_orientation_alone_lowers_to_the_pose_opens_there_climbs_back_and_reports_where_it_settled():
     manipulator, robot, _ = await started()
     q, point = (0.0, 1.0, 0.0, 0.0), (0.6, 0.0, 0.75)
     above = (0.6, 0.0, 0.75 + (CLEARANCE_M + HELD_ITEM_DEPTH_M))
-    # The line down ends 5 cm above the pose, and the jaws open there.
-    release = lifted(point, RELEASE_HEIGHT_M)
-    assert RELEASE_HEIGHT_M == 0.05
-    robot.moves.extend([arrived(), arrived((0.6, 0.0, 0.802), q)])
+    # The line down ends at the pose, and the jaws open where it settled.
+    robot.moves.extend([arrived(), arrived((0.6, 0.0, 0.752), q)])
     outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
-    assert outcome == Outcome(True, "", (0.6, 0.0, 0.802))
+    assert outcome == Outcome(True, "", (0.6, 0.0, 0.752))
     assert robot.calls == [
-        ("check", above, q), ("check", release, q),
-        ("move", above, q), ("move", release, q),
+        ("check", above, q), ("check", point, q),
+        ("move", above, q), ("move", point, q),
         ("grip", "left_gripper", 1.0, 0.0),
         ("move", above, q),
     ]
 
 
 # A place lowers the item from the pre-place point (0.90 m: the clearance
-# and the held item's depth above the place point, 0.75 m) to the release
-# point 5 cm above the place point (0.80 m); an arm that stops short on the
-# way down has set it down. Its descent fails with `timeout`, and
-# limb_states says where it stands.
+# and the held item's depth above the place point, 0.75 m) to the place
+# point, and the line down stops on contact.
 
 PLACE_Q = (0.0, 1.0, 0.0, 0.0)
 PLACE_POINT = (0.6, 0.0, 0.75)
 PLACE_ABOVE = (0.6, 0.0, 0.75 + (CLEARANCE_M + HELD_ITEM_DEPTH_M))
-PLACE_RELEASE = lifted(PLACE_POINT, RELEASE_HEIGHT_M)
 SHORT = "still 32.1 mm / 0.05 rad from the target, 2.0 s after the planned end"
 
 
-async def place_stopping_at(stopped_at, descent: MoveResult = move_failed(SHORT, "timeout")):
-    """A place whose descent ends as `descent` says, with the arm stopped
-    at `stopped_at` in the snapshot the backbone publishes during the
-    descent, and the robot."""
-    manipulator, robot, store = await started()
-
-    def on_call(call: tuple) -> None:
-        if call == ("move", PLACE_RELEASE, PLACE_Q):
-            store.add(limb_states_message(2.0, left_arm=(stopped_at, PLACE_Q), left_gripper=0.3))
-
-    robot.on_call = on_call
-    robot.moves.extend([arrived(), descent])
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
-    return outcome, robot
+async def test_the_line_down_of_a_place_stops_on_contact_and_runs_at_its_speed_and_no_other_move_does():
+    manipulator, robot, _ = await started()
+    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
+    # The transit and the climb name the bars of every arm move; the line
+    # down, 15 cm at 5 cm/s, takes 3 s and stops on a contact of 2 cm.
+    assert [bars for kind, bars in robot.bars if kind == "move"] == [MOVE_BARS, line_down_bars(3.0), MOVE_BARS]
 
 
-async def test_a_place_that_stops_short_on_the_way_down_releases_there_and_climbs_back(caplog):
+async def test_the_contact_gap_and_the_speed_of_the_line_down_are_settings():
+    manipulator, robot, _ = await started(line_down_contact_gap_m=0.01, line_down_speed_m_s=0.1)
+    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
+    assert [bars for kind, bars in robot.bars if kind == "move"][1] == line_down_bars(1.5, 0.01)
+
+
+@pytest.mark.parametrize("stopped_at", [
+    # On the line down, 8.2 cm above the place point: the item rests on
+    # what is under it.
+    (0.6, 0.0, 0.832),
+    # At the pre-place point itself: a tall item meets the floor of a bowl.
+    PLACE_ABOVE,
+    # 4 cm aside: the item slid off the round top of an item in the bowl.
+    (0.6, 0.04, 0.82),
+])
+async def test_a_place_whose_line_down_ends_on_contact_releases_where_the_arm_stopped_and_climbs_back(caplog, stopped_at):
+    manipulator, robot, _ = await started()
+    robot.moves.extend([arrived(), touched(stopped_at, PLACE_Q)])
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome, robot = await place_stopping_at((0.6, 0.0, 0.8321))
-    assert outcome == Outcome(True, "", (0.6, 0.0, 0.8321))
-    assert robot.calls[-3:] == [("move", PLACE_RELEASE, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", PLACE_ABOVE, PLACE_Q)]
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(True, "", stopped_at)
+    assert robot.calls[-3:] == [("move", PLACE_POINT, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", PLACE_ABOVE, PLACE_Q)]
+    offset = "[" + ", ".join(f"{100 * (a - b):+.1f}" for a, b in zip(stopped_at, PLACE_POINT)) + "] cm"
     assert [record.getMessage() for record in log.records] == [
-        f"place with gripper 'left_gripper' stopped 3.2 cm short of the release point on the way down ({SHORT}): it releases there"
+        f"place with gripper 'left_gripper' ended its line down on contact {offset} from the place point: it releases there"
     ]
 
 
-async def test_a_place_whose_item_meets_the_floor_right_under_the_pre_place_point_releases_there():
-    # A tall item's bottom meets a bowl's floor 0.8 cm below the pre-place
-    # point, and the arm tilts a little against it: the item rests there.
-    outcome, robot = await place_stopping_at((0.6, 0.012, 0.892))
-    assert outcome == Outcome(True, "", (0.6, 0.012, 0.892))
-    assert robot.kinds()[-2:] == ["grip", "move"]
-
-
-async def test_a_place_that_stops_at_the_pre_place_point_itself_releases_there():
-    outcome, robot = await place_stopping_at(PLACE_ABOVE)
-    assert outcome == Outcome(True, "", PLACE_ABOVE)
-    assert "grip" in robot.kinds()
-
-
-async def test_a_place_whose_item_slides_off_what_is_under_it_releases_where_it_rests():
-    # The item's bottom meets a round item already in the container and
-    # slides 4 cm off its top before it rests.
-    outcome, robot = await place_stopping_at((0.6, 0.04, 0.82))
-    assert outcome == Outcome(True, "", (0.6, 0.04, 0.82))
-    assert robot.kinds()[-2:] == ["grip", "move"]
-
-
-async def test_a_place_pushed_over_5_cm_off_the_line_down_or_above_the_pre_place_point_fails_with_no_release():
-    outcome, robot = await place_stopping_at((0.6, 0.06, 0.83))
-    assert outcome == Outcome(False, SHORT)
-    assert "grip" not in robot.kinds()
-    outcome, robot = await place_stopping_at((0.6, 0.0, 0.96))
-    assert outcome == Outcome(False, SHORT)
-    assert "grip" not in robot.kinds()
+@pytest.mark.parametrize("descent, message", [
+    (move_failed(SHORT, "timeout"), SHORT),
+    (move_stopped("stopped: the operator asked"), "stopped: the operator asked"),
+    (move_failed("the follower stopped reporting"), "the follower stopped reporting"),
+    (move_refused("the side is busy"), "the side is busy"),
+])
+async def test_a_place_whose_line_down_does_not_complete_fails_and_still_holds_the_item(descent, message):
+    manipulator, robot, _ = await started()
+    robot.moves.extend([arrived(), descent])
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    assert outcome == Outcome(False, message)
+    assert robot.calls[-1] == ("move", PLACE_POINT, PLACE_Q) and "grip" not in robot.kinds()
 
 
 async def test_a_place_whose_high_pre_place_point_has_no_plan_stands_at_the_clearance_alone(caplog):
@@ -619,28 +618,14 @@ async def test_a_place_whose_high_pre_place_point_has_no_plan_stands_at_the_clea
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
     low = (0.6, 0.0, 0.75 + CLEARANCE_M)
-    assert outcome == Outcome(True, "", PLACE_RELEASE)
+    assert outcome == Outcome(True, "", PLACE_POINT)
     assert robot.calls == [
-        ("check", PLACE_ABOVE, PLACE_Q), ("check", low, PLACE_Q), ("check", PLACE_RELEASE, PLACE_Q),
-        ("move", low, PLACE_Q), ("move", PLACE_RELEASE, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", low, PLACE_Q),
+        ("check", PLACE_ABOVE, PLACE_Q), ("check", low, PLACE_Q), ("check", PLACE_POINT, PLACE_Q),
+        ("move", low, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", low, PLACE_Q),
     ]
     assert [record.getMessage() for record in log.records] == [
         "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it"
     ]
-
-
-async def test_a_place_whose_descent_a_stop_ended_fails_with_no_release():
-    outcome, robot = await place_stopping_at((0.6, 0.0, 0.83), move_stopped("stopped: the operator asked"))
-    assert outcome == Outcome(False, "stopped: the operator asked")
-    assert "grip" not in robot.kinds()
-
-
-async def test_a_place_whose_descent_fails_with_another_kind_than_timeout_fails_with_no_release():
-    """Only a move that did not settle stopped short of its target: another
-    failure says nothing of where the item is."""
-    outcome, robot = await place_stopping_at((0.6, 0.0, 0.83), move_failed("the follower stopped reporting"))
-    assert outcome == Outcome(False, "the follower stopped reporting")
-    assert "grip" not in robot.kinds()
 
 
 async def test_a_place_whose_climb_fails_still_places_and_says_so_in_the_log(caplog):
@@ -815,17 +800,29 @@ def test_a_drop_and_a_place_return_an_outcome_or_raise_cancelled(data):
     asyncio.run(scenario())
 
 
-async def test_a_place_stopped_below_the_release_point_is_off_the_line_down_and_fails_with_no_release():
-    """An arm the backbone reports below the release point went past where
-    the line down ends: nothing set the item down on the way."""
-    outcome, robot = await place_stopping_at((0.6, 0.0, 0.78))
-    assert outcome == Outcome(False, SHORT)
-    assert "grip" not in robot.kinds()
+@settings(max_examples=200)
+@given(st.data())
+def test_a_place_opens_the_jaws_once_its_line_down_completed_and_never_after_one_that_did_not(data):
+    async def scenario():
+        manipulator, robot, store = await started()
+        cancel, record = CancelToken(), {}
+        answering_drawn(robot, store, data, cancel, record)
+        orientation = data.draw(st.one_of(st.none(), st.sampled_from(DOWN)))
+        try:
+            outcome = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75), orientation), cancel)
+        except Cancelled:
+            assert cancel.cancelled
+            return
+        line_downs = [index for index, (kind, bars) in enumerate(robot.bars) if kind == "move" and bars["contact_gap_m"] > 0]
+        grips = [index for index, call in enumerate(robot.calls) if call[0] == "grip"]
+        assert len(line_downs) <= 1 and len(grips) <= 1
+        landed = bool(line_downs) and record["answers"][line_downs[0]].completed
+        event("the line down completed" if landed else "no line down completed")
+        # The jaws open right after a line down that completed, and only then.
+        assert grips == ([line_downs[0] + 1] if landed else [])
+        assert outcome.success == (landed and record["answers"][grips[0]].completed)
 
-
-def test_the_release_point_stands_below_the_lower_pre_place_point():
-    with pytest.raises(ValueError, match="release_height_m must be at least 0 and below clearance_m"):
-        ScriptedManipulator(CentreProposer(), release_height_m=0.075)
+    asyncio.run(scenario())
 
 
 def test_a_line_down_takes_its_length_divided_by_its_speed():
