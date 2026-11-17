@@ -8,7 +8,7 @@ use collision_geometry::GeometryError;
 use collision_geometry::fit::{fit_fixed_link, fit_pieces};
 use collision_geometry::gjk::Hull;
 use collision_geometry::urdf_collision::{ParentJoint, UrdfCollisions};
-use robot_description::Finger;
+use robot_description::{Finger, FingerSpan};
 
 use crate::BuildError;
 
@@ -26,15 +26,14 @@ pub(crate) struct FittedBodies {
 /// A finger: a collision-bearing link on a movable joint off a chain link, fit as its
 /// own hull and placed at the live opening. `parent_link` is the chain link it hangs
 /// off (its FK segment host); `joint` places its hull in that link's frame at a
-/// given opening ([`ParentJoint::offset`]). `closed` and `open` are the joint's
-/// positions where the gripper's `closed` and `open` states put it.
+/// given opening ([`ParentJoint::offset`]). `span` holds the joint's positions where
+/// the gripper's `closed` and `open` states put it.
 pub(crate) struct FittedFinger {
     pub name: String,
     pub parent_link: String,
     pub hulls: Vec<Hull>,
     pub joint: ParentJoint,
-    pub closed: f64,
-    pub open: f64,
+    pub span: FingerSpan,
 }
 
 /// Fit all collision bodies. `chains` are the moving-link names per chain (from
@@ -88,7 +87,6 @@ pub(crate) fn fit_bodies(
                 .ok_or_else(|| BuildError::UnnamedFinger {
                     link: child.clone(),
                 })?;
-            let (closed, open) = (finger.closed, finger.open);
             let finger_surfaces = urdf.link_surfaces(&child, meshes_dir)?;
             let hulls = fit_pieces(&child, &finger_surfaces)?;
             fitted_fingers.push(FittedFinger {
@@ -96,8 +94,7 @@ pub(crate) fn fit_bodies(
                 parent_link: name.clone(),
                 hulls,
                 joint,
-                closed,
-                open,
+                span: finger.span,
             });
         }
         links.insert(name.clone(), fit_pieces(name, &surfaces)?);

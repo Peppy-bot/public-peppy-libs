@@ -123,7 +123,7 @@ pub fn default_openings<const K: usize>(description: &RobotDescription) -> [f64;
                     .any(|joint| joint.name == finger.joint && joint.mimic.is_none())
             })
             .unwrap_or_else(|| panic!("{} has a finger that mimics none", arm.gripper.name));
-        (DEFAULT_POSITION - leading.closed) / (leading.open - leading.closed)
+        leading.span.opening_at(DEFAULT_POSITION)
     })
 }
 

@@ -56,11 +56,11 @@ mod xml;
 pub use arms::{ArmId, PerArm};
 pub use bundled::{Model, UnknownModel, model, models, write_meshes};
 pub use description::{
-    Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, Gripper, Mimic,
+    Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper, Mimic,
     RobotDescription, mesh_name, position_limits,
 };
 pub use driven::{Driven, DrivenModels, UndrivenModel};
-pub use error::DescriptionError;
+pub use error::{DescriptionError, FingerSpanError};
 pub use shape::{NodeArms, OnShape, UnsupportedShape, on_shape};
 
 /// The URDF crate of [`RobotDescription::robot`], so a caller uses the same version.

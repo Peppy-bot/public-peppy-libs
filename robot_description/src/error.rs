@@ -2,6 +2,21 @@
 //! message is actionable without reading this crate.
 
 use crate::DisabledReason;
+use crate::description::LEAST_FINGER_TRAVEL;
+
+/// The ends of a finger span that [`FingerSpan::new`](crate::FingerSpan::new) refuses:
+/// one is not finite, or the travel between them is not finite or at most
+/// `LEAST_FINGER_TRAVEL`, too small for an opening to scale.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error(
+    "a finger span stands at two finite positions more than {} apart, and {closed} and \
+     {open} are not",
+    LEAST_FINGER_TRAVEL
+)]
+pub struct FingerSpanError {
+    pub closed: f64,
+    pub open: f64,
+}
 
 /// A URDF and an SRDF that do not make one description.
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -160,6 +175,15 @@ pub enum DescriptionError {
         gripper: String,
         joint: String,
         leader: String,
+    },
+    #[error(
+        "the states \"closed\" and \"open\" of the gripper {gripper:?} put its finger joint \
+         {joint:?} where no span stands: {error}"
+    )]
+    FingerSpan {
+        gripper: String,
+        joint: String,
+        error: FingerSpanError,
     },
     #[error(
         "<disable_collisions> gives the reason {reason:?}; the reasons are {}",

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use robot_description::{Finger, RobotDescription};
+use robot_description::{Finger, FingerSpan, RobotDescription};
 
 use crate::assemble::fit_bodies;
 use collision_geometry::chain::{CarriedPart, Rider};
@@ -100,21 +100,15 @@ struct FingerJoint {
     origin: Isometry3<f64>,
     axis: Unit<Vector3<f64>>,
     revolute: bool,
-    /// Joint position (URDF joint units) at shut and at fully open.
-    closed: f64,
-    open: f64,
+    /// The joint's positions at shut and at fully open.
+    span: FingerSpan,
 }
 
 impl FingerJoint {
     /// Parse a finger's parent joint into a validated placer, the single gate
     /// for finger-joint kinds: only a prismatic or revolute finger can be
     /// placed, and its axis must normalize.
-    fn from_joint(
-        name: &str,
-        joint: &ParentJoint,
-        closed: f64,
-        open: f64,
-    ) -> Result<Self, BuildError> {
+    fn from_joint(name: &str, joint: &ParentJoint, span: FingerSpan) -> Result<Self, BuildError> {
         if joint.kind == JointKind::Continuous {
             return Err(BuildError::Geometry(format!(
                 "finger '{name}' joint is continuous, which bounds no travel"
@@ -127,8 +121,7 @@ impl FingerJoint {
             origin: joint.origin,
             axis,
             revolute,
-            closed,
-            open,
+            span,
         })
     }
 
@@ -136,7 +129,7 @@ impl FingerJoint {
     /// in `[0, 1]` (0 = shut, 1 = fully open), linearly interpolating the
     /// finger-joint travel, for a prismatic and a revolute finger alike.
     fn offset(&self, fraction: f64) -> Isometry3<f64> {
-        let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
+        let q = self.span.position_at(fraction.clamp(0.0, 1.0));
         place_1dof(&self.origin, &self.axis, self.revolute, q)
     }
 
@@ -153,7 +146,7 @@ impl FingerJoint {
     ) -> Vector3<f64> {
         let joint_world = link_world * self.origin;
         let axis_world = joint_world.rotation * self.axis.into_inner();
-        let travel = self.open - self.closed;
+        let travel = self.span.travel();
         if self.revolute {
             (axis_world * travel).cross(&(point.coords - joint_world.translation.vector))
         } else {
@@ -442,8 +435,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         for finger in fitted.fingers {
             let placement = chain_segment(&names, &finger.parent_link)
                 .expect("fit_bodies only emits fingers hosted on a chain link");
-            let placer =
-                FingerJoint::from_joint(&finger.name, &finger.joint, finger.closed, finger.open)?;
+            let placer = FingerJoint::from_joint(&finger.name, &finger.joint, finger.span)?;
             let bound = BoundingSphere::of(&finger.hulls);
             push_body(
                 &mut bodies,
@@ -507,7 +499,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         // inflation radius. Non-finger bodies do not move with an opening.
         let opening_reach = |body: &Body| -> f64 {
             let Some(f) = &body.finger else { return 0.0 };
-            let travel = (f.open - f.closed).abs();
+            let travel = f.span.travel().abs();
             if !f.revolute {
                 return travel;
             }
@@ -1098,7 +1090,7 @@ fn body_reaches<const N: usize>(chains: &[Chain<N>], bodies: &[Body]) -> Vec<[f6
                 let travel = if f.revolute {
                     0.0
                 } else {
-                    f.closed.abs().max(f.open.abs())
+                    f.span.closed().abs().max(f.span.open().abs())
                 };
                 f.origin.translation.vector.norm() + travel
             });
@@ -1407,8 +1399,7 @@ mod tests {
         extra.push(Finger {
             joint: "openarm_left_joint7".to_string(),
             link: "openarm_left_link7".to_string(),
-            closed: 0.0,
-            open: 1.0,
+            span: FingerSpan::new(0.0, 1.0).expect("a span"),
             mimic: None,
         });
         let e = refused(&extra);

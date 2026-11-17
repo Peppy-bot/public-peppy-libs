@@ -218,16 +218,14 @@ mod tests {
                         .find(|joint| joint.name == finger.joint)
                         .expect("a finger's joint");
                     let limits = crate::position_limits(joint);
+                    let (closed, open) = (finger.span.closed(), finger.span.open());
                     assert!(
-                        limits.contains(&finger.closed) && limits.contains(&finger.open),
-                        "{} {}: {} shuts at {} and opens at {}, its limits {limits:?}",
+                        limits.contains(&closed) && limits.contains(&open),
+                        "{} {}: {} shuts at {closed} and opens at {open}, its limits {limits:?}",
                         bundled.id(),
                         arm.name,
                         finger.joint,
-                        finger.closed,
-                        finger.open
                     );
-                    assert_ne!(finger.closed, finger.open, "{}", finger.joint);
                 }
             }
         }
@@ -336,7 +334,7 @@ mod tests {
                     arm.name
                 );
                 let openings: [fn(&Finger) -> f64; 2] =
-                    [|finger| finger.closed, |finger| finger.open];
+                    [|finger| finger.span.closed(), |finger| finger.span.open()];
                 for opening in openings {
                     let fingers: Vec<(&str, f64)> = arm
                         .gripper

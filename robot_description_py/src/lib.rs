@@ -8,8 +8,8 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 use robot_description::{
-    Arm, CameraFrame, DepthRange, Finger, Gripper, Mimic, Model, RobotDescription, position_limits,
-    states,
+    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, Mimic, Model, RobotDescription,
+    position_limits, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
@@ -32,6 +32,7 @@ fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyArm>()?;
     module.add_class::<PyGripper>()?;
     module.add_class::<PyFinger>()?;
+    module.add_class::<PyFingerSpan>()?;
     module.add_class::<PyMimic>()?;
     module.add_class::<PyCameraFrame>()?;
     module.add_class::<PyDepthRange>()?;
@@ -262,8 +263,8 @@ impl PyGripper {
     }
 }
 
-/// One finger of a gripper: its joint, the link the joint moves, where the
-/// gripper's `closed` and `open` states put the joint, and the finger it
+/// One finger of a gripper: its joint, the link the joint moves, the span the
+/// gripper's `closed` and `open` states give the joint, and the finger it
 /// follows where its URDF gives the joint a mimic.
 #[pyclass(name = "Finger", module = "robot_description_py", frozen)]
 struct PyFinger(Finger);
@@ -280,14 +281,10 @@ impl PyFinger {
         &self.0.link
     }
 
+    /// Where the gripper's `closed` and `open` states put the joint.
     #[getter]
-    fn closed(&self) -> f64 {
-        self.0.closed
-    }
-
-    #[getter]
-    fn open(&self) -> f64 {
-        self.0.open
+    fn span(&self) -> PyFingerSpan {
+        PyFingerSpan(self.0.span)
     }
 
     /// The finger joint this one follows, or None for a joint that moves of
@@ -299,6 +296,59 @@ impl PyFinger {
 
     fn __repr__(&self) -> String {
         format!("<Finger {}>", self.0.joint)
+    }
+}
+
+/// Where a finger joint stands between its gripper's `closed` and `open`
+/// states, two finite positions in the joint's unit farther apart than
+/// robot_description's least finger travel: an opening
+/// fraction places the joint on the line through them, 0 at `closed` and 1 at
+/// `open`.
+#[pyclass(name = "FingerSpan", module = "robot_description_py", frozen, eq)]
+#[derive(PartialEq)]
+struct PyFingerSpan(FingerSpan);
+
+#[pymethods]
+impl PyFingerSpan {
+    /// The span from `closed` to `open`. Ends that are not finite, or a
+    /// travel between them too small for an opening to scale, raise
+    /// ValueError with robot_description's message.
+    #[new]
+    fn new(closed: f64, open: f64) -> PyResult<Self> {
+        FingerSpan::new(closed, open)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[getter]
+    fn closed(&self) -> f64 {
+        self.0.closed()
+    }
+
+    #[getter]
+    fn open(&self) -> f64 {
+        self.0.open()
+    }
+
+    /// The signed distance from `closed` to `open`, larger in magnitude than
+    /// robot_description's least finger travel.
+    #[getter]
+    fn travel(&self) -> f64 {
+        self.0.travel()
+    }
+
+    /// The joint's position at opening fraction `opening`.
+    fn position_at(&self, opening: f64) -> f64 {
+        self.0.position_at(opening)
+    }
+
+    /// The opening fraction at which the joint stands at `position`.
+    fn opening_at(&self, position: f64) -> f64 {
+        self.0.opening_at(position)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<FingerSpan {} to {}>", self.0.closed(), self.0.open())
     }
 }
 

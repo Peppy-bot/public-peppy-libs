@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use urdf_rs::{Joint, JointType, Robot};
 
-use crate::error::DescriptionError;
+use crate::error::{DescriptionError, FingerSpanError};
 use crate::gazebo::{self, DepthSensor};
 use crate::srdf::{self, Srdf};
 use crate::states;
@@ -93,13 +93,74 @@ pub struct Gripper {
 pub struct Finger {
     pub joint: String,
     pub link: String,
-    /// The joint's position where the gripper's `closed` state puts it.
-    pub closed: f64,
-    /// The joint's position where the gripper's `open` state puts it.
-    pub open: f64,
+    /// Where the gripper's `closed` and `open` states put the joint.
+    pub span: FingerSpan,
     /// The finger joint this one follows, as its URDF `<mimic>` gives it; none for a joint
     /// that moves of its own.
     pub mimic: Option<Mimic>,
+}
+
+/// Where a finger joint stands between its gripper's `closed` and `open` states: two
+/// finite positions more than [`LEAST_FINGER_TRAVEL`] apart, in the joint's unit,
+/// radians or meters. An opening fraction places the joint on the line through them: 0
+/// at `closed`, 1 at `open`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FingerSpan {
+    closed: f64,
+    open: f64,
+}
+
+/// The least travel a finger span takes, in the joint's unit, radians or meters: a
+/// nanoradian or a nanometer, far below the travel of any finger. Above it,
+/// [`FingerSpan::opening_at`] of a position within 1e3 of `closed`, past the range of any
+/// joint, stays within 1e12 and finite. It is the floor sim_robot_core held a finger's
+/// travel to.
+pub(crate) const LEAST_FINGER_TRAVEL: f64 = 1e-9;
+
+impl FingerSpan {
+    /// The span from `closed` to `open`, refused ([`FingerSpanError`]) when either is not
+    /// finite, or the travel between them is not finite or at most
+    /// [`LEAST_FINGER_TRAVEL`].
+    pub fn new(closed: f64, open: f64) -> Result<Self, FingerSpanError> {
+        let travel = open - closed;
+        if closed.is_finite()
+            && open.is_finite()
+            && travel.is_finite()
+            && travel.abs() > LEAST_FINGER_TRAVEL
+        {
+            Ok(Self { closed, open })
+        } else {
+            Err(FingerSpanError { closed, open })
+        }
+    }
+
+    /// The joint's position at the gripper's `closed` state.
+    pub fn closed(self) -> f64 {
+        self.closed
+    }
+
+    /// The joint's position at the gripper's `open` state.
+    pub fn open(self) -> f64 {
+        self.open
+    }
+
+    /// The signed distance from `closed` to `open`, larger than [`LEAST_FINGER_TRAVEL`]
+    /// in magnitude.
+    pub fn travel(self) -> f64 {
+        self.open - self.closed
+    }
+
+    /// The joint's position at opening fraction `opening`, on the line through `closed`
+    /// at 0 and `open` at 1.
+    pub fn position_at(self, opening: f64) -> f64 {
+        self.closed + opening * self.travel()
+    }
+
+    /// The opening fraction at which the joint stands at `position`: the inverse of
+    /// [`FingerSpan::position_at`].
+    pub fn opening_at(self, position: f64) -> f64 {
+        (position - self.closed) / self.travel()
+    }
 }
 
 /// How a finger joint follows another finger joint of its gripper, one that moves of its
@@ -719,11 +780,16 @@ fn gripper(name: &str, groups: &Groups, states: &[State]) -> Result<Gripper, Des
                 multiplier * closed[index] + offset,
                 multiplier * open[index] + offset,
             );
+            let span =
+                FingerSpan::new(closed, open).map_err(|error| DescriptionError::FingerSpan {
+                    gripper: name.to_string(),
+                    joint: joint.name.clone(),
+                    error,
+                })?;
             Ok(Finger {
                 joint: joint.name.clone(),
                 link: joint.child.link.clone(),
-                closed,
-                open,
+                span,
                 mimic,
             })
         })
@@ -892,16 +958,14 @@ mod tests {
                         Finger {
                             joint: "pinch".to_string(),
                             link: "finger_a".to_string(),
-                            closed: 0.0,
-                            open: 0.04,
+                            span: FingerSpan::new(0.0, 0.04).expect("a span"),
                             mimic: None,
                         },
                         // The mimic's multiplier and offset place it off its leader.
                         Finger {
                             joint: "pinch_mirror".to_string(),
                             link: "finger_b".to_string(),
-                            closed: 0.01,
-                            open: -0.03,
+                            span: FingerSpan::new(0.01, -0.03).expect("a span"),
                             mimic: Some(Mimic {
                                 joint: "pinch".to_string(),
                                 multiplier: -1.0,
@@ -1367,6 +1431,58 @@ mod tests {
             ),
             "the end effectors \"ee\" and \"ee_again\" both stand on the arm \"arm\""
         );
+    }
+
+    #[test]
+    fn a_finger_that_stands_still_between_closed_and_open_is_refused() {
+        assert_eq!(
+            srdf_refusal(
+                r#"<group_state name="open" group="gripper"><joint name="pinch" value="0.04"/>"#,
+                r#"<group_state name="open" group="gripper"><joint name="pinch" value="0"/>"#
+            ),
+            "the states \"closed\" and \"open\" of the gripper \"gripper\" put its finger joint \
+             \"pinch\" where no span stands: a finger span stands at two finite positions more \
+             than 0.000000001 apart, and 0 and 0 are not"
+        );
+    }
+
+    #[test]
+    fn a_span_places_its_joint_on_the_line_through_closed_and_open() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        let fingers = &description.arms()[0].gripper.fingers;
+        let (leader, mimic) = (fingers[0].span, fingers[1].span);
+        for opening in [-0.5, 0.0, 0.25, 1.0, 1.5] {
+            assert_eq!(leader.opening_at(leader.position_at(opening)), opening);
+            // The mimic stands where its URDF <mimic> puts it off its leader.
+            assert_eq!(
+                mimic.position_at(opening),
+                -leader.position_at(opening) + 0.01
+            );
+        }
+        assert_eq!(
+            (leader.closed(), leader.open(), leader.travel()),
+            (0.0, 0.04, 0.04)
+        );
+    }
+
+    #[test]
+    fn a_span_needs_two_finite_ends_far_enough_apart() {
+        for (closed, open) in [
+            (0.3, 0.3),
+            (0.0, LEAST_FINGER_TRAVEL),
+            (f64::NAN, 0.3),
+            (0.0, f64::INFINITY),
+            (-f64::MAX, f64::MAX),
+        ] {
+            let error = FingerSpan::new(closed, open).expect_err("no span stands there");
+            assert_eq!(
+                (error.closed.to_bits(), error.open.to_bits()),
+                (closed.to_bits(), open.to_bits()),
+                "{closed} {open}"
+            );
+        }
+        assert!(FingerSpan::new(0.3, -0.3).is_ok());
+        assert!(FingerSpan::new(0.0, 2.0 * LEAST_FINGER_TRAVEL).is_ok());
     }
 
     #[test]

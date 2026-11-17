@@ -82,7 +82,7 @@ fn the_jaw_hangs_where_its_joint_places_it() {
             panic!("the arm carries one finger");
         };
         let placed = joint
-            .offset(jaw.closed + opening * (jaw.open - jaw.closed))
+            .offset(jaw.span.position_at(opening))
             .expect("the jaw's joint places it");
         assert!(
             (hung.offset.translation.vector - placed.translation.vector).norm() < 1e-12

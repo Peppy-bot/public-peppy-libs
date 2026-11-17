@@ -377,7 +377,7 @@ fn mesh_wireframes<const N: usize, const K: usize>(
                             "'{child}' rides a moving joint and {} names no finger of it",
                             arm.gripper.name
                         ))?;
-                    finger.closed + opening * (finger.open - finger.closed)
+                    finger.span.position_at(*opening)
                 };
                 verts.extend(
                     urdf.child_surfaces_in_parent(&child, position, meshes)?

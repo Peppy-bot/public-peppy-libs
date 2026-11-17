@@ -40,7 +40,8 @@ robot_description_py = { git = "https://github.com/Peppy-bot/public-peppy-libs",
 | `RobotDescription` | Its `urdf` and `srdf`, its `arms`, `state(group, name)` (a position per joint of the group, or `None`), `cameras` and `joint_limits(joint)` (`KeyError` for a joint the URDF lacks). |
 | `Arm` | An arm group: `name`, `base_link`, `grasp_link`, `joints` (base to tip) and `gripper`. |
 | `Gripper` | A gripper group: `name` and `fingers`. |
-| `Finger` | A finger's `joint`, `link`, where the gripper's `closed` and `open` states put the joint, and `mimic`, the `Mimic` it follows, or `None` for a joint that moves of its own. |
+| `Finger` | A finger's `joint`, `link`, `span`, the `FingerSpan` where the gripper's `closed` and `open` states put the joint, and `mimic`, the `Mimic` it follows, or `None` for a joint that moves of its own. |
+| `FingerSpan(closed, open)` | Where a finger joint stands at the gripper's `closed` and `open` states, two finite positions farther apart than robot_description's least finger travel (`ValueError` otherwise, with robot_description's message): `closed`, `open`, `travel`, `position_at(opening)`, the joint's position at an opening fraction, 0 at `closed` and 1 at `open`, and `opening_at(position)`, its inverse. |
 | `Mimic` | How a finger joint follows another of its gripper, as its URDF `<mimic>` gives it: the `joint` followed, and the `multiplier` and `offset` that place the finger at `multiplier` times that joint's position plus `offset`. |
 | `CameraFrame` | A camera's optical frame (+z along the view, +x right, +y down): `name`, `parent_link`, `xyz` and `rpy` in the parent link's frame, and `depth_range`, the `DepthRange` the URDF's depth sensor on the frame gives, or `None` for a camera the URDF gives no depth sensor. |
 | `DepthRange` | The depths a camera measures, meters along its view: its `near` and `far`. |

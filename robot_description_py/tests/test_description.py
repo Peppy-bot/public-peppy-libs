@@ -5,7 +5,16 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from robot_description_py import CLOSED, HOME, OPEN, READY, START, RobotDescription, model
+from robot_description_py import (
+    CLOSED,
+    HOME,
+    OPEN,
+    READY,
+    START,
+    FingerSpan,
+    RobotDescription,
+    model,
+)
 
 
 def test_files_of_two_robots_do_not_make_one_description():
@@ -42,12 +51,31 @@ def test_each_arm_gives_its_chain_and_its_gripper():
         closed = description.state(arm.gripper.name, CLOSED)
         opened = description.state(arm.gripper.name, OPEN)
         assert closed is not None and opened is not None
-        assert fingers[0].closed == closed[0] and fingers[0].open == opened[0]
+        assert fingers[0].span.closed == closed[0] and fingers[0].span.open == opened[0]
         # The second finger follows the first one to one, as the URDF's <mimic> gives it.
         assert fingers[0].mimic is None
         mimic = fingers[1].mimic
         assert mimic is not None
         assert (mimic.joint, mimic.multiplier, mimic.offset) == (fingers[0].joint, 1.0, 0.0)
+
+
+def test_a_span_places_its_joint_between_closed_and_open():
+    description = model("so101").description()
+    (arm,) = description.arms
+    span = arm.gripper.fingers[0].span
+    for opening in (-0.5, 0.0, 0.25, 1.0, 1.5):
+        assert span.opening_at(span.position_at(opening)) == pytest.approx(opening)
+    assert span.position_at(0.0) == span.closed and span.position_at(1.0) == pytest.approx(span.open)
+    assert span.travel == span.open - span.closed
+    assert FingerSpan(span.closed, span.open) == span
+    mirrored = FingerSpan(0.0, -1.5708)
+    assert mirrored.position_at(0.5) == pytest.approx(-0.7854)
+
+
+@pytest.mark.parametrize("ends", [(0.3, 0.3), (0.0, 1e-10), (float("nan"), 0.3), (0.0, float("inf"))])
+def test_a_span_needs_two_finite_ends_far_enough_apart(ends):
+    with pytest.raises(ValueError, match="a finger span stands at two finite positions"):
+        FingerSpan(*ends)
 
 
 def test_a_state_gives_one_position_per_joint_or_none():
