@@ -35,6 +35,7 @@
 #include "scenario.hpp"
 #include "self_distance.hpp"
 #include "smac_2d.hpp"
+#include "transform_lookup.hpp"
 #include "velocity_smoother.hpp"
 
 namespace {
@@ -61,6 +62,7 @@ const std::map<std::string, Reference> references = {
     {"room_dataset", ros_reference::room_dataset},
     {"self_distance", ros_reference::self_distance},
     {"smac_2d", ros_reference::smac_2d},
+    {"transform_lookup", ros_reference::transform_lookup},
     {"velocity_smoother", ros_reference::velocity_smoother},
 };
 

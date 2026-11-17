@@ -43,6 +43,7 @@ pub mod pure_pursuit;
 pub mod room_dataset;
 pub mod self_distance;
 pub mod smac_2d;
+pub mod transform_lookup;
 pub mod velocity_smoother;
 
 use robot_description::{Arm, RobotDescription};
@@ -89,6 +90,7 @@ enum Kind {
     SelfDistance,
     #[serde(rename = "smac_2d")]
     Smac2d,
+    TransformLookup,
     VelocitySmoother,
 }
 
