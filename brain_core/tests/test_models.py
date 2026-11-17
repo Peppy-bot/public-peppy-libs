@@ -152,7 +152,7 @@ async def test_a_grab_never_asks_the_perception_model():
     by_pose = grab_goal()
     await grab_item.run(brain, by_pose)
     assert by_pose.completed["success"] is True
-    await place_item.run(brain, FakeCtx(fake_peppygen.place_item, gripper_name="", position=[0.6, 0.2, 0.75], orientation=None))
+    await place_item.run(brain, FakeCtx(fake_peppygen.place_item, gripper_name="", position=[0.6, 0.2, 0.75], orientation=None, target_item_id=None))
     # The item's position comes from the brain's memory, not from a look.
     by_id = grab_goal(item_id=by_pose.completed["item_id"], position=[0.0, 0.0, 0.0])
     await grab_item.run(brain, by_id)
