@@ -4,7 +4,7 @@ flag, item ids across looks and runs, and the best match for a description."""
 import pytest
 
 from brain_core.limbs import Limb, parse_limbs
-from brain_core.ports import Coverage, Detection, Refusal
+from brain_core.ports import Coverage, Detection, ItemShape, Refusal
 from brain_core.state import State, best_match, new_run_token
 from brain_core.words import content_words, named_by, normalised
 
@@ -210,6 +210,27 @@ def test_items_sharing_a_place_keep_their_own_ids():
     )
     assert [item.item_id for item in second] == ["apple_1-t0", "bowl_1-t0"]
     assert [item.label for item in second] == ["apple", "bowl"]
+
+
+# A bowl that fills: its box keeps its centre, and its seen point, the depth
+# under the centre of the picture box, rises from the inside bottom of the
+# empty bowl to the top of each fruit placed in it (z 0.381, 0.426 and 0.472
+# in Waldo with 0, 1 and 2 fruits).
+BOWL_BOX = ItemShape((0.45, 0.0, 0.405), (0.16, 0.16, 0.07), 0.0)
+
+
+@pytest.mark.xfail(strict=True, reason="slice 0c of ROBOTAI-41: State._match measures the distance of two boxes on their footprint")
+@pytest.mark.parametrize("seen_points", [
+    # Two fruits placed with no look between them: a rise of 9.1 cm.
+    [(0.45, 0.0, 0.381), (0.45, 0.0, 0.472)],
+    # A look after each fruit, the seen point on a fruit 2.5 cm to the side.
+    [(0.45, 0.0, 0.381), (0.45, 0.025, 0.426), (0.45, -0.025, 0.472)],
+])
+def test_a_container_keeps_its_id_while_it_fills(seen_points):
+    state = make_state()
+    for now_ns, seen in enumerate(seen_points, start=1):
+        [bowl] = state.remember([Detection("bowl", seen, 0.9, shape=BOWL_BOX)], now_ns=now_ns, coverage=EVERY)
+        assert bowl.item_id == "bowl_1-t0"
 
 
 def test_an_identify_search_takes_no_near_item_whose_label_shares_no_word():
