@@ -4,7 +4,9 @@ above the item, or above the spot a held item goes to, and the descent.
 The manipulator hands the aligner the item to grasp (none for a place),
 the gripper, the pre point the gripper stands at, the point of the descent
 under it, the orientation it stands in, how far the lift goes above the
-point, and for a place the target point (`AlignRequest`). The aligner may
+point, for a place the target point, for a place or a drop into an item
+that item's target value, and whether a descent follows (`AlignRequest`).
+The aligner may
 move the gripper sideways and turn it, at the same height, through the
 manipulator (`ArmMoves`: whether the backbone has a plan for points at an
 orientation, and the move itself, so every move carries the bars of every
@@ -20,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol, Union
 
-from ...ports import CancelToken, ExpectedFailure, FailureKind, Gripper, Item, Quat, Senses, Vec3
+from ...ports import CancelToken, ExpectedFailure, FailureKind, Gripper, Item, Quat, Senses, TargetItem, Vec3
 from ...robot import MoveResult
 
 
@@ -39,7 +41,10 @@ class AlignRequest:
     point of the descent under it (the grasp point, or the pose where the
     line down of a place ends), the orientation it stands in, how far the
     lift goes above the point, and `target`, the centre the limit is
-    measured from: the item's seen point when none is given."""
+    measured from: the item's seen point when none is given. `into` is the
+    item a place or a drop puts the held item in or on, none for a grab and
+    for a place by position, and `descends` is false for a drop above that
+    item, whose jaws open at the pre point with no descent."""
 
     item: Optional[Item]
     gripper: Gripper
@@ -48,10 +53,14 @@ class AlignRequest:
     orientation: Quat
     lift_m: float
     target: Optional[Vec3] = None
+    into: Optional[TargetItem] = None
+    descends: bool = True
 
     def __post_init__(self) -> None:
         if self.item is None and self.target is None:
             raise ValueError("an alignment needs an item to grasp or a target point")
+        if not self.descends and self.into is None:
+            raise ValueError("only an alignment above a target item ends with no descent")
 
     @property
     def is_place(self) -> bool:
@@ -63,12 +72,16 @@ class AlignRequest:
 
     @property
     def centre(self) -> tuple[float, float]:
+        if self.into is not None:
+            return self.into.centre
         at = self.target if self.target is not None else self.item.position
         return (at[0], at[1])
 
     @property
     def centre_words(self) -> str:
         """What the state text measures the grasp point from."""
+        if self.into is not None:
+            return f"the centre of the {self.into.label or 'item'}"
         return "the target point" if self.is_place else f"the {self.label}'s seen centre"
 
 

@@ -5,7 +5,7 @@ import pytest
 
 from brain_core.manipulators.scripted.aligning import AlignRequest
 from brain_core.manipulators.scripted.grasp import GraspDirection, orientation
-from brain_core.ports import Gripper, Item
+from brain_core.ports import Gripper, Item, TargetItem
 
 LEFT = Gripper("left_gripper", "left_arm")
 SEEN = (0.50, 0.10, 0.72)
@@ -41,3 +41,22 @@ def test_a_place_request_measures_from_the_target_point():
 def test_an_alignment_with_neither_an_item_nor_a_target_is_refused():
     with pytest.raises(ValueError, match="an item to grasp or a target point"):
         AlignRequest(None, LEFT, PRE, POINT, DOWN_0, LIFT_M)
+
+
+BOWL = TargetItem("wooden_bowl_1-t0", "wooden bowl", (0.337, 0.0), 0.531, 0.443, 0.192)
+
+
+def test_a_place_into_an_item_measures_from_the_centre_of_that_item_and_descends():
+    request = AlignRequest(None, LEFT, PRE, (0.34, 0.01, 0.443), DOWN_0, LIFT_M, target=(0.337, 0.0, 0.531), into=BOWL)
+    assert request.is_place and request.descends
+    assert request.centre == (0.337, 0.0) and request.centre_words == "the centre of the wooden bowl"
+
+
+def test_a_drop_above_an_item_ends_with_no_descent():
+    request = AlignRequest(None, LEFT, PRE, PRE, DOWN_0, LIFT_M, target=(0.337, 0.0, 0.531), into=BOWL, descends=False)
+    assert request.descends is False
+
+
+def test_only_an_alignment_above_a_target_item_ends_with_no_descent():
+    with pytest.raises(ValueError, match="only an alignment above a target item ends with no descent"):
+        AlignRequest(None, LEFT, PRE, PRE, DOWN_0, LIFT_M, target=(0.52, 0.11, 0.70), descends=False)
