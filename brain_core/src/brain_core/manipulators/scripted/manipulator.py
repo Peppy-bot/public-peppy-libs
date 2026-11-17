@@ -105,7 +105,8 @@ opened. A climb that fails is logged, and the place still succeeds: the
 jaws are open and the item is down.
 
 A place and a grab carry the arm to their pre point on the carry step:
-the transit and the move there. The line down of a place and of a grab
+the transit and the move there. With an aligner, each then runs the align
+step above its point. The line down of a place and of a grab
 runs on the descend step. A drop and the release of a place run on the
 release step: it opens the gripper
 and, for a place, climbs back to the pre-place point. A step returns its `StepRecord`: its name, what it was asked, its result, why it
@@ -131,7 +132,7 @@ from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
 from ...robot import ArmDescription, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
 from ...waiting import until
-from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps
+from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps, Stopped
 from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
 
 logger = logging.getLogger(__name__)
@@ -484,7 +485,9 @@ class ScriptedManipulator:
         the descent on that fails."""
         orientation, (pre, point, lift) = carried.orientation, carried.points
         if self.aligner is not None:
-            pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
+            request = AlignRequest(item, gripper, pre, point, orientation, self.lift_m)
+            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            pre, point, lift, orientation = aligned.pre, aligned.point, aligned.lift, aligned.orientation
         await carried.log_descent(point, lift, orientation, cancel)
         try:
             return await self._descend_close_lift(item, gripper, max_effort, orientation, pre, point, lift, cancel, notes, steps)
@@ -524,35 +527,34 @@ class ScriptedManipulator:
         notes.append("held")
         return Outcome(True, closed_at=closed_at, steps=tuple(steps))
 
-    async def _align(
-        self, item: Item, gripper: Gripper, pre: Vec3, point: Vec3, orientation: Quat, cancel: CancelToken, notes: list[str]
-    ) -> tuple[Vec3, Vec3, Vec3, Quat]:
-        """The aligner's correction above the item: the pre-grasp, grasp
-        and lifted points and the orientation the grab goes on with."""
-        return await self._run_alignment(AlignRequest(item, gripper, pre, point, orientation, self.lift_m), cancel, notes)
-
-    async def _run_alignment(self, request: AlignRequest, cancel: CancelToken, notes: list[str]) -> tuple[Vec3, Vec3, Vec3, Quat]:
-        """One alignment above the point of `request`: the pre, point and
-        lifted points and the orientation the sequence goes on with. A
-        model that gives up, runs out of steps or has a move stopped ends
+    async def _align(self, aligner: Aligner, request: AlignRequest, cancel: CancelToken, notes: list[str]) -> StepRecord[Aligned]:
+        """The align step: `aligner` corrects the gripper above the point of
+        `request`, through this manipulator's moves, and `notes` says how
+        far the grasp point moved and along which line the jaws close. It
+        goes through with the points and the orientation the sequence goes
+        on with. A model that gives up, runs out of steps or cannot observe
+        fails it, and so does a stop that ended one of its moves: each ends
         the sequence here, before the descent, so nothing retreats."""
-        pre = request.pre
+        inputs = {"request": request}
         try:
-            alignment = await self.aligner.align(request, self, cancel)
+            alignment = await aligner.align(request, self, cancel)
         except AlignmentFailed as failure:
-            raise _Failed(f"the alignment failed: {failure.message}") from None
-        if isinstance(alignment, Aligned):
-            moved_cm = 100 * math.dist(alignment.pre[:2], pre[:2])
-            notes.append(
-                f"aligned in {alignment.steps} step{'' if alignment.steps == 1 else 's'}: the grasp point moved {moved_cm:.1f} cm, "
-                f"the jaws close along {jaw_line_deg(alignment.orientation):.0f} degrees"
-            )
-            return alignment.pre, alignment.point, alignment.lift, alignment.orientation
+            return StepRecord("align", inputs, failure=StepFailure.ALIGNMENT, message=f"the alignment failed: {failure.message}")
         if isinstance(alignment, GaveUp):
-            raise _Failed(f"the model gave up after {alignment.steps} step{'' if alignment.steps == 1 else 's'}")
+            message = f"the model gave up after {alignment.steps} step{'' if alignment.steps == 1 else 's'}"
+            return StepRecord("align", inputs, failure=StepFailure.ALIGNMENT, message=message, measured={"steps": alignment.steps})
         if isinstance(alignment, OutOfSteps):
-            raise _Failed(f"no ready in {alignment.steps} steps")
-        raise _Failed(alignment.message, stopped=True)
+            message = f"no ready in {alignment.steps} steps"
+            return StepRecord("align", inputs, failure=StepFailure.ALIGNMENT, message=message, measured={"steps": alignment.steps})
+        if isinstance(alignment, Stopped):
+            return StepRecord("align", inputs, failure=StepFailure.STOPPED, message=alignment.message, measured={"steps": alignment.steps})
+        moved_cm = 100 * math.dist(alignment.pre[:2], request.pre[:2])
+        jaw_deg = jaw_line_deg(alignment.orientation)
+        notes.append(
+            f"aligned in {alignment.steps} step{'' if alignment.steps == 1 else 's'}: the grasp point moved {moved_cm:.1f} cm, "
+            f"the jaws close along {jaw_deg:.0f} degrees"
+        )
+        return StepRecord("align", inputs, alignment, measured={"steps": alignment.steps, "shift_cm": moved_cm, "jaw_line_deg": jaw_deg})
 
     async def refusal_for(self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken) -> str:
         """For the aligner: the backbone's words for the first of `points`
@@ -622,7 +624,8 @@ class ScriptedManipulator:
         orientation, (pre, point) = carried.orientation, carried.points
         if self.aligner is not None:
             request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=pose.position)
-            pre, point, _lift, orientation = await self._run_alignment(request, cancel, notes)
+            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            pre, point, orientation = aligned.pre, aligned.point, aligned.orientation
         if notes:
             logger.info("place with gripper '%s': %s", gripper.name, "; ".join(notes))
         landed = _passed(await self._descend(gripper.arm, pre, point, orientation, cancel), steps)

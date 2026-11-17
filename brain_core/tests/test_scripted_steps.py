@@ -3,6 +3,7 @@ outcome's `steps`: what each step was asked, what it gave the next one,
 why it failed and its numbers."""
 
 import pytest
+from test_planned_transit import started as started_with_planner
 from test_scripted import (
     DOWN,
     GRASP,
@@ -25,7 +26,18 @@ from test_scripted import (
     started,
     touched,
 )
+from test_scripted_alignment import (
+    ALIGNED_LIFT,
+    ALIGNED_PLACE_ABOVE,
+    ALIGNED_PLACE_POINT,
+    ALIGNED_POINT,
+    ALIGNED_PRE,
+    TURNED,
+    FakeAligner,
+)
+from test_scripted_alignment import started as started_with_aligner
 
+from brain_core.manipulators.scripted.aligning import Aligned, GaveUp, OutOfSteps, Stopped
 from brain_core.manipulators.scripted.manipulator import Landed, Released, StepFailure, StepRecord
 from brain_core.ports import Cancelled, CancelToken, Outcome, Pose
 from brain_core.robot import ArmDescriptions, GripResult, MoveCheck, MoveEnd, PathResult
@@ -243,16 +255,12 @@ async def test_a_grab_that_no_orientation_reaches_records_no_reach():
 
 
 async def test_a_planned_carry_counts_its_plans_and_reach_tests():
-    from test_planned_transit import started as started_with_planner
-
     manipulator, robot, _ = await started_with_planner()
     carry = record_of(await place(manipulator), "carry")
     assert carry.measured == carry_measured(0, pytest.approx(0.15), plans=1, reach_tests=1)
 
 
 async def test_a_planned_grab_whose_transit_run_fails_records_the_failed_carry_and_removes_the_object():
-    from test_planned_transit import started as started_with_planner
-
     manipulator, robot, _ = await started_with_planner()
     robot.runs.append(PathResult(MoveEnd.FAILED, "the guard would hold the path short at waypoint 1", "unreachable"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
@@ -263,8 +271,6 @@ async def test_a_planned_grab_whose_transit_run_fails_records_the_failed_carry_a
 
 
 async def test_a_carry_the_planner_cannot_describe_fails_as_a_move_with_no_try_of_the_low_point():
-    from test_planned_transit import started as started_with_planner
-
     manipulator, robot, _ = await started_with_planner()
     robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
     outcome = await place(manipulator)
@@ -273,11 +279,69 @@ async def test_a_carry_the_planner_cannot_describe_fails_as_a_move_with_no_try_o
 
 
 async def test_a_cancel_during_a_planned_grabs_transit_run_removes_the_object_and_raises():
-    from test_planned_transit import started as started_with_planner
-
     manipulator, robot, _ = await started_with_planner()
     cancel = CancelToken()
     robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "run" else None
     with pytest.raises(Cancelled):
         await manipulator.grab(cup(), LEFT, 0.0, cancel)
     assert [call[0] for call in robot.calls[-2:]] == ["run", "remove"]
+
+
+# The align step: the aligner's correction above the point of a grab or a
+# place, between the carry and the descent.
+
+
+async def aligned_started(ending=None, **kwargs):
+    """A started manipulator whose aligner ends as `ending` says, and the
+    aligner."""
+    aligner = FakeAligner(ending, **kwargs)
+    manipulator, robot, store, _ = await started_with_aligner(aligner)
+    return aligner, manipulator, robot, store
+
+
+async def test_a_grab_with_an_aligner_runs_carry_align_descend_and_records_how_the_model_moved_the_gripper():
+    aligner, manipulator, robot, store = await aligned_started(Aligned(ALIGNED_PRE, ALIGNED_POINT, ALIGNED_LIFT, TURNED, steps=2))
+    holding(robot, store)
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == HELD and names(outcome) == ["carry", "align", "descend"]
+    align = record_of(outcome, "align")
+    [request] = aligner.requests
+    assert align.inputs == {"request": request}
+    assert align.result == Aligned(ALIGNED_PRE, ALIGNED_POINT, ALIGNED_LIFT, TURNED, steps=2)
+    # 1.2 cm along x and 0.4 cm along y; DOWN[1] closes the jaws along 45 degrees.
+    assert align.measured == {"steps": 2, "shift_cm": pytest.approx(1.265, abs=1e-3), "jaw_line_deg": pytest.approx(45.0)}
+    # The descent starts from the aligned pre-grasp point.
+    assert record_of(outcome, "descend").inputs["start"] == ALIGNED_PRE
+
+
+async def test_a_place_with_an_aligner_reads_as_its_four_steps():
+    # The place point and the orientation of the alignment tests are the
+    # ones of these.
+    ending = Aligned(ALIGNED_PLACE_ABOVE, ALIGNED_PLACE_POINT, ALIGNED_PLACE_ABOVE, PLACE_Q, steps=2)
+    aligner, manipulator, robot, _ = await aligned_started(ending)
+    outcome = await place(manipulator)
+    assert outcome.success and names(outcome) == ["carry", "align", "descend", "release"]
+    assert record_of(outcome, "align").result == ending
+    assert record_of(outcome, "descend").inputs["end"] == ALIGNED_PLACE_POINT
+    assert record_of(outcome, "release").inputs["climb_to"] == ALIGNED_PLACE_ABOVE
+
+
+@pytest.mark.parametrize("ending, failure, message, measured", [
+    (GaveUp(steps=1), StepFailure.ALIGNMENT, "the model gave up after 1 step", {"steps": 1}),
+    (OutOfSteps(5), StepFailure.ALIGNMENT, "no ready in 5 steps", {"steps": 5}),
+    (Stopped("stopped: operator", steps=2), StepFailure.STOPPED, "stopped: operator", {"steps": 2}),
+])
+async def test_an_alignment_that_does_not_end_ready_ends_the_grab_with_its_failed_align_record(ending, failure, message, measured):
+    aligner, manipulator, robot, _ = await aligned_started(ending)
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, message)
+    assert names(outcome) == ["carry", "align"]
+    assert outcome.steps[-1] == StepRecord("align", {"request": aligner.requests[0]}, failure=failure, message=message, measured=measured)
+
+
+async def test_an_alignment_that_cannot_observe_ends_the_place_with_a_failed_align_and_nothing_measured():
+    aligner, manipulator, robot, _ = await aligned_started(failure="no frame from wrist camera 'wrist_left' after the move")
+    outcome = await place(manipulator)
+    assert outcome == Outcome(False, "the alignment failed: no frame from wrist camera 'wrist_left' after the move")
+    assert names(outcome) == ["carry", "align"]
+    assert (outcome.steps[-1].failure, outcome.steps[-1].measured) == (StepFailure.ALIGNMENT, {})

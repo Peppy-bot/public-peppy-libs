@@ -477,8 +477,12 @@ A place and a grab carry the arm to their pre point on the carry step of
 `ScriptedManipulator`: the transit at each height in turn until an
 orientation reaches, then the move there. It measures the check_arm_move
 calls, the plans and the reach tests it ran, their time, and the height of
-the pre point above the grasp point or the pose. The line down of a place
-and of a grab runs on its descend step, which goes through when the line down completes,
+the pre point above the grasp point or the pose. With an aligner, a place
+and a grab then run its align step, which records the aligner's ending,
+the steps the model took, how far the grasp point moved and the line the
+jaws close along. A place reads as its four steps: carry, align, descend
+and release. The line down of a place and of a grab runs on its descend
+step, which goes through when the line down completes,
 settled or on contact, and measures how far short of its end it stopped.
 A drop and the release of a place run on its release step, which opens the
 gripper and, for a place, climbs back. A step returns its `StepRecord`: its name, what it was asked, its
