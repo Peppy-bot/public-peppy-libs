@@ -103,8 +103,10 @@ async def test_a_model_that_gives_up_or_runs_out_ends_the_grab_before_the_descen
     manipulator, robot, _, _ = await started(FakeAligner(ending))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, message)
-    # The open, the checks and the move to the pre-grasp point; nothing after.
-    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
+    # The open, the checks and the move to the pre-grasp point; then the jaws
+    # go back to their opening before the grab, and the arm stays there.
+    assert robot.kinds() == ["grip", "check", "check", "check", "move", "grip"]
+    assert robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
 
 
 async def test_a_stopped_alignment_ends_the_grab_with_the_stops_words_and_nothing_more():
@@ -118,7 +120,7 @@ async def test_an_alignment_that_fails_names_what_it_could_not_get():
     manipulator, robot, _, _ = await started(FakeAligner(failure="no frame from wrist camera 'wrist_left' after the move"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, "the alignment failed: no frame from wrist camera 'wrist_left' after the move")
-    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
+    assert robot.kinds() == ["grip", "check", "check", "check", "move", "grip"]
 
 
 async def test_an_unavailable_alignment_fails_the_grab_before_any_move():

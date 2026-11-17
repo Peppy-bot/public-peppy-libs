@@ -335,8 +335,11 @@ search past its bound fails with `timeout`, and any other exception with
 `ScriptedManipulator.grab`, after the handler has resolved the item and the
 gripper. Each step that fails ends the grab with the backbone's own words. A
 step that fails once the descent was sent first retreats: the gripper opens
-and the arm moves straight back up to the pre-grasp point. A goal that a stop
-ended, a goal that ends cancelled, retreats from nothing.
+and the arm moves straight back up to the pre-grasp point. A step that fails
+after the jaws opened and before the descent puts the jaws back to the
+opening that the latest limb_states snapshot gave before the grab, and the
+arm stays where it is. A goal that a stop ended, a goal that ends cancelled,
+retreats from nothing and puts nothing back.
 
 With an `aligner`, one more step sits between the move to the pre-grasp
 point and the descent. The manipulator hands it the item, the gripper, the
@@ -380,7 +383,7 @@ sequenceDiagram
     loop each orientation, until one plans
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
-    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws open
+    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws go back to their opening before the grab
     SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
@@ -402,9 +405,11 @@ side (`approach_margin_m`), as a fraction of their 14.8 cm span
 the item and not on what stands next to it. The width is the one the look that
 last saw the item measured: the box's left and right edges at the depth of its
 seen point. An item of no known width, one addressed by pose or put down by
-place_item, gets the jaws fully open. A grab that no orientation reaches ends
-with the jaws open: a grab takes a gripper that holds nothing, so open jaws
-drop nothing.
+place_item, gets the jaws fully open. A grab that no orientation reaches puts
+the jaws back to their opening before the grab, as each step that fails before
+the descent does, so the next grab starts as this one started. A put back that
+fails adds why to the failure: `<failure>; putting the jaws back to 0.00
+failed: <why>`.
 
 With the motion planner bound (`Robot.has_planner`), the transit to the
 pre-grasp point is planned, and `ScriptedManipulator._transit` is the one
@@ -416,17 +421,47 @@ lifted points, tests the reach of the descent and the lift. The first
 orientation that passes both runs its plan with `execute_joint_path`, the
 plan's start as the expected start, each joint within 0.05 rad at the end,
 with `contact_gap_m` 0, no contact check, as every arm move.
-A grab whose orientations all fail ends before the arm moves, with the last
-one's words, the planner's kind first (`start_in_collision: ...`): no line
-takes the place of a plan. The descent, the lift and the retreat stay
-`move_arm` lines. The log line counts the plans and the reach tests, and
+A grab whose orientations all fail, and that does not take the second path
+below, ends before the arm moves, with the last one's words, the planner's
+kind first (`no_path: ...`): no line takes the place of a plan.
+
+The grab plans with the jaws open as it opened them, so the planner examines
+the open hand for the full transit and the grab takes an orientation whose
+open fingers are clear before the arm moves. On a gripper whose fingers turn
+on pivots, a finger moves down when the jaws open, so open jaws can bring a
+part of the hand nearer to a thing below it than the clearance of the
+planner. The grab takes a second path only when the planner refuses the
+start of each orientation (`start_in_collision`):
+
+1. The jaws close. A grab takes a gripper that holds nothing, so the close
+   is safe, also when a place left the jaws open.
+2. Each orientation is planned again with the hand closed. When the planner
+   refuses each one again, the grab fails before the arm moves, with the
+   planner's words: `the planner refuses the start of each orientation with
+   the jaws open, and with the jaws closed no plan reaches item ...`.
+3. The plan runs to the pre-grasp point, and the jaws open there for the
+   item.
+4. The grab asks the planner whether the arm is clear where it stands, the
+   open jaws included, with the request of the checked descent below: its
+   start is where the arm stands, and the planner refuses a start in
+   collision as it refuses that of a plan. A path in the answer lets the
+   grab go on as on the first path. Any other answer fails the grab with
+   the planner's words (`the planner does not find the arm clear at the
+   pre-grasp point ... with the jaws of gripper 'g' open: <words>`), the arm
+   stays at the pre-grasp point, and the grab tries no other orientation.
+
+A brain without the planner has the first path alone: check_arm_move gives
+no kind for a refusal. A place holds its item, so its jaws stay closed and
+it has no second path. The descent, the lift and the retreat stay `move_arm`
+lines. The log line counts the plans and the reach tests, and
 each planned transit that ran logs a line of its own. Before it plans, the
 grab adds the item's object, `brain/<item_id>`, to the planning scene at the
 item's place (the box its look measured, or a 5 cm sphere at its position
 for an item no look measured) and lets the gripper's links touch it: the add
 clears the item's cubes from the planner's map, so none stay under the hand
 after the lift. Each way the grab fails or stops removes the object, after
-the retreat when there is one; a grab that holds leaves it, and the brain
+the retreat when there is one and before the put back of the jaws; a grab
+that holds leaves it, and the brain
 moves it to the hand and attaches it (`Brain.hold`). Just before the descent,
 after the aligner, the grab asks the planner what a checked descent would
 answer: a `plan_cartesian_path` with the collision check from where the arm
@@ -436,10 +471,11 @@ whatever the answer.
 
 Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
-item's width; where the descent's result put the
+item's width; the second path, with the planner's words for the start it
+refused with the jaws open; where the descent's result put the
 grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the
 arm settled; limb_state's grasp point at the close; the two openings it
-judged; and the retreat.
+judged; and the retreat or the put back of the jaws.
 
 A place whose jaws stand closed on air (an opening below `hold_opening_min`
 in the latest snapshot: the item slipped since the grab) fails before any

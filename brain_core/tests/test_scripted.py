@@ -349,7 +349,7 @@ async def test_a_retreat_that_cannot_open_adds_why_and_moves_no_further(caplog):
         False, "gripper 'left_gripper' closed on nothing; the retreat to the pre-grasp point failed: the follower stopped reporting"
     )
     assert robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
-    assert "the retreat stopped short: the follower stopped reporting" in log.records[-1].getMessage()
+    assert "the retreat to the pre-grasp point stopped short: the follower stopped reporting" in log.records[-1].getMessage()
 
 
 async def test_a_retreat_whose_climb_fails_adds_why():
@@ -422,8 +422,54 @@ async def test_no_orientation_that_plans_fails_with_the_last_orientation_its_poi
         "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 8 of 8, "
         "[-0.383, 0.924, 0.000, 0.000], has no plan to its pre-grasp point [0.500, 0.100, 0.770]: refusal 7",
     )
-    # The jaws opened before the checks, and the grab ends with them open.
-    assert robot.kinds() == ["grip"] + ["check"] * len(DOWN)
+    # The jaws opened before the checks, and the grab puts them back as they
+    # were.
+    assert robot.kinds() == ["grip"] + ["check"] * len(DOWN) + ["grip"]
+
+
+# A grab that fails after the jaws opened and before its descent puts them
+# back to the opening of the latest snapshot before the grab.
+
+
+async def test_a_grab_that_no_orientation_reaches_puts_the_jaws_back_as_they_were(caplog):
+    manipulator, robot, store = await started(opening=0.4)
+    robot.checks.extend([MoveCheck(False, "no plan")] * len(DOWN))
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome.message.endswith("has no plan to its pre-grasp point [0.500, 0.100, 0.770]: no plan")
+    assert [call for call in robot.calls if call[0] == "grip"] == [("grip", "left_gripper", 1.0, 0.0), ("grip", "left_gripper", 0.4, 0.0)]
+    assert robot.calls[-1] == ("grip", "left_gripper", 0.4, 0.0)
+    assert log.records[-1].getMessage().endswith(f"put the jaws back to 0.40; failed: {outcome.message}")
+
+
+async def test_jaws_that_do_not_go_back_add_why_to_the_failure(caplog):
+    manipulator, robot, store = await started(opening=0.0)
+    robot.checks.extend([MoveCheck(False, "no plan")] * len(DOWN))
+    robot.grips.extend([gripped(1.0), grip_failed("the follower stopped reporting")])
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome.message.endswith(": no plan; putting the jaws back to 0.00 failed: the follower stopped reporting")
+    assert "putting the jaws back to 0.00 stopped short: the follower stopped reporting" in log.records[-1].getMessage()
+
+
+async def test_a_measured_opening_past_the_jaws_travel_goes_back_to_its_end():
+    manipulator, robot, store = await started(opening=1.004)
+    robot.moves.append(move_refused("the side is busy"))
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(False, "the side is busy")
+    assert robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
+
+
+async def test_a_brain_without_a_planner_takes_no_second_path():
+    """check_arm_move gives a reason and no kind: whatever its words, a
+    refusal of each orientation puts the jaws back, and no close and no
+    second search follow."""
+    manipulator, robot, store = await started(opening=0.4)
+    refusal = "start_in_collision: the start keeps openarm_left_ee_link1 0.0176 m from the map, inside the clearance 0.0400 m"
+    robot.checks.extend([MoveCheck(False, refusal)] * len(DOWN))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome.message.startswith("no plan reaches item 'cup_1-t0'") and outcome.message.endswith(refusal)
+    assert robot.kinds() == ["grip"] + ["check"] * len(DOWN) + ["grip"]
+    assert robot.calls[-1] == ("grip", "left_gripper", 0.4, 0.0)
 
 
 async def test_a_grab_whose_grasp_point_has_no_plan_names_that_point():
@@ -438,7 +484,7 @@ async def test_a_refused_pre_grasp_move_ends_the_grab_with_its_message():
     robot.moves.append(move_refused("the side is busy"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the side is busy")
-    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
+    assert robot.kinds() == ["grip", "check", "check", "check", "move", "grip"]
 
 
 async def test_a_cancel_between_two_moves_raises_cancelled_out_of_the_grab(caplog):
@@ -475,7 +521,9 @@ async def test_a_grab_by_pose_is_not_lowered_and_its_orientation_is_the_only_one
     )
     # The approach of the identity orientation is +Z: the pre-grasp point
     # stands below the grasp point.
-    assert robot.calls == [("grip", "left_gripper", 1.0, 0.0), ("check", (0.5, 0.1, 0.7 - CLEARANCE_M), q)]
+    assert robot.calls == [
+        ("grip", "left_gripper", 1.0, 0.0), ("check", (0.5, 0.1, 0.7 - CLEARANCE_M), q), ("grip", "left_gripper", 1.0, 0.0),
+    ]
 
 
 async def test_a_grab_by_pose_without_an_orientation_tries_the_down_rolls_at_the_point_itself():
@@ -771,10 +819,12 @@ def test_a_grab_returns_an_outcome_or_raises_cancelled_holds_only_when_both_open
 
 def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot, answers: list, outcome: Outcome) -> None:
     """A failed grab: an answer that a stop ended is the last call. Else,
-    one that failed before the descent was sent sends nothing after it; one
-    that failed once it was sent ends with the retreat, the gripper opened
-    and the arm sent back to the pre-grasp point, and the outcome says why
-    a retreat stopped short."""
+    an open of the jaws that failed is the only call; one that failed after
+    the open and before the descent was sent ends with the jaws put back to
+    the opening of the first snapshot, 1, and the outcome says why a put
+    back stopped short; one that failed once the descent was sent ends with
+    the retreat, the gripper opened and the arm sent back to the pre-grasp
+    point, and the outcome says why a retreat stopped short."""
     calls = robot.calls
     if any(answer.cancelled for answer in answers if not isinstance(answer, MoveCheck)):
         event("a stop ended a step")
@@ -782,7 +832,7 @@ def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot,
         return
     moves = [index for index, call in enumerate(calls) if call[0] == "move"]
     if len(moves) < 2:
-        assert robot.kinds().count("grip") <= 1
+        assert_a_failure_before_the_descent_puts_the_jaws_back(robot, answers, outcome)
         return
     opened = max(index for index, call in enumerate(calls) if call[0] == "grip" and call[2] == 1.0)
     assert opened > moves[1]
@@ -792,6 +842,20 @@ def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot,
     stopped_short = len(retreat) == 1 or not answers[-1].completed
     event("the retreat stopped short" if stopped_short else "retreated")
     assert ("the retreat to the pre-grasp point failed" in outcome.message) == stopped_short
+
+
+def assert_a_failure_before_the_descent_puts_the_jaws_back(robot: FakeRobot, answers: list, outcome: Outcome) -> None:
+    """A failed grab whose descent was not sent and that no stop ended: the
+    open, then, when it went through, the jaws put back as the last call."""
+    grips = [call for call in robot.calls if call[0] == "grip"]
+    if not answers[0].completed:
+        event("the open failed")
+        assert robot.calls == grips == [("grip", "left_gripper", 1.0, 0.0)]
+        return
+    assert len(grips) == 2 and robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
+    put_back_short = not answers[-1].completed
+    event("putting the jaws back stopped short" if put_back_short else "put the jaws back")
+    assert ("putting the jaws back to 1.00 failed" in outcome.message) == put_back_short
 
 
 @given(st.data())
