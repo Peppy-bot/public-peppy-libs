@@ -775,3 +775,52 @@ async def test_the_target_is_refused_before_a_brain_with_no_manipulation_model_s
     ctx = place_goal([0.0, 0.0, 0.0], target_item_id="mug_1-t0")
     await place_item.run(brain, ctx)
     assert ctx.completed["message"] == "unknown item 'mug_1-t0': scan or identify it again"
+
+
+def recording_the_order(brain, manipulator) -> list[str]:
+    """The order of the scene calls and of the manipulator's drop."""
+    order: list[str] = []
+    follow, drop = brain.make_scene_follow_holds, manipulator.drop
+
+    async def following(*args):
+        order.append("scene")
+        await follow(*args)
+
+    async def dropping(*args, **kwargs):
+        order.append("drop")
+        return await drop(*args, **kwargs)
+
+    brain.make_scene_follow_holds, manipulator.drop = following, dropping
+    return order
+
+
+async def test_a_drop_with_a_target_item_makes_the_scene_follow_the_holds_then_drops_above_it_and_forgets_the_item():
+    manipulator = FakeManipulator()
+    brain, cup, bowl = await holding_with_a_bowl(manipulator)
+    order = recording_the_order(brain, manipulator)
+    ctx = drop_goal(target_item_id=bowl.item_id)
+    await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is True, ctx.completed["message"]
+    assert manipulator.calls == [("drop", "left_gripper", bowl.item_id)]
+    # The scene follows before the carry, and again after the release.
+    assert order == ["scene", "drop", "scene"]
+    assert cup.item_id not in brain.state.items and bowl.item_id in brain.state.items
+
+
+async def test_a_drop_with_no_target_opens_where_the_arm_stands_and_the_scene_follows_after_it_alone():
+    manipulator = FakeManipulator()
+    brain, _, _ = await holding_with_a_bowl(manipulator)
+    order = recording_the_order(brain, manipulator)
+    ctx = drop_goal(target_item_id="")
+    await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is True and manipulator.calls == [("drop", "left_gripper")]
+    assert order == ["drop", "scene"]
+
+
+async def test_a_drop_above_an_unknown_item_is_refused_and_keeps_the_held_item():
+    manipulator = FakeManipulator()
+    brain, cup, _ = await holding_with_a_bowl(manipulator)
+    ctx = drop_goal(target_item_id="mug_1-t0")
+    await drop_item.run(brain, ctx)
+    assert (ctx.completed["success"], ctx.completed["message"]) == (False, "unknown item 'mug_1-t0': scan or identify it again")
+    assert manipulator.calls == [] and state_of(brain).held_item_ids == [cup.item_id, ""]
