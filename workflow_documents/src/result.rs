@@ -316,14 +316,37 @@ pub enum IncidentResult {
 
 impl IncidentResult {
     /// What an incident holds of `result`, the result of the call of its
-    /// step: the result itself, or its size when its compact JSON text is
-    /// larger than [`INCIDENT_RESULT_LIMIT_BYTES`].
-    pub fn of(result: serde_json::Value) -> IncidentResult {
-        let bytes = result.to_string().len();
+    /// step: a copy of the result, or its size when its compact JSON text is
+    /// larger than [`INCIDENT_RESULT_LIMIT_BYTES`]. The size is counted as
+    /// the text is written, with no text kept, and a result too large is
+    /// not copied.
+    pub fn of(result: &serde_json::Value) -> IncidentResult {
+        let bytes = compact_json_bytes(result);
         match bytes <= INCIDENT_RESULT_LIMIT_BYTES {
-            true => IncidentResult::Value(result),
+            true => IncidentResult::Value(result.clone()),
             false => IncidentResult::TooLarge { bytes },
         }
+    }
+}
+
+/// The size of the compact JSON text of `value`, in bytes.
+fn compact_json_bytes(value: &serde_json::Value) -> usize {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, value).expect("a writer that keeps nothing never fails");
+    counter.0
+}
+
+/// A writer that counts the bytes written to it and keeps none of them.
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -470,6 +493,7 @@ mod tests {
     use super::{
         DifferenceKind, Ending, INCIDENT_RESULT_LIMIT_BYTES, IncidentRecord, IncidentResult,
         RefusalCause, RunRefusal, RunResult, RunState, SafeStateOutcome, SafeStateResult,
+        compact_json_bytes,
     };
 
     /// A run result reads and writes the fields its readers read, each
@@ -585,6 +609,15 @@ mod tests {
         assert_eq!(serde_json::to_value(&incident).unwrap(), no_result);
     }
 
+    /// The size of a result is the length of its compact JSON text, its
+    /// strings escaped as that text writes them.
+    #[test]
+    fn the_size_of_a_result_is_the_length_of_its_compact_json_text() {
+        let result =
+            json!({ "message": "a \"quoted\" line\nand é", "values": [1, 2.5, null, true] });
+        assert_eq!(compact_json_bytes(&result), result.to_string().len());
+    }
+
     /// An incident holds a result whose JSON text is at the limit, and only
     /// the size of a result one byte larger.
     #[test]
@@ -593,11 +626,11 @@ mod tests {
         let of_size = |bytes: usize| json!("x".repeat(bytes - 2));
         let at_limit = of_size(INCIDENT_RESULT_LIMIT_BYTES);
         assert_eq!(
-            IncidentResult::of(at_limit.clone()),
+            IncidentResult::of(&at_limit),
             IncidentResult::Value(at_limit)
         );
         assert_eq!(
-            IncidentResult::of(of_size(INCIDENT_RESULT_LIMIT_BYTES + 1)),
+            IncidentResult::of(&of_size(INCIDENT_RESULT_LIMIT_BYTES + 1)),
             IncidentResult::TooLarge {
                 bytes: INCIDENT_RESULT_LIMIT_BYTES + 1
             }
