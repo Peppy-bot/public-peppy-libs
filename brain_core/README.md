@@ -338,8 +338,12 @@ step that fails once the descent was sent first retreats: the gripper opens
 and the arm moves straight back up to the pre-grasp point. A step that fails
 after the jaws opened and before the descent puts the jaws back to the
 opening that the latest limb_states snapshot gave before the grab, and the
-arm stays where it is. A goal that a stop ended, a goal that ends cancelled,
-retreats from nothing and puts nothing back.
+arm stays where it is. Once the arm moved toward the item, the put back
+does not open the jaws wider there: it closes them to that opening when it
+is narrower than the opening of the latest snapshot, and the jaws stay as
+they stand otherwise. A goal that a stop ended, a goal that ends cancelled,
+retreats from nothing and puts nothing back; a put back that a stop ended
+ends the grab as a stop.
 
 With an `aligner`, one more step sits between the move to the pre-grasp
 point and the descent. The manipulator hands it the item, the gripper, the
@@ -407,8 +411,8 @@ last saw the item measured: the box's left and right edges at the depth of its
 seen point. An item of no known width, one addressed by pose or put down by
 place_item, gets the jaws fully open. A grab that no orientation reaches puts
 the jaws back to their opening before the grab, as each step that fails before
-the descent does, so the next grab starts as this one started. A put back that
-fails adds why to the failure: `<failure>; putting the jaws back to 0.00
+the arm moves does, so the next grab starts as this one started. A put back
+that fails adds why to the failure: `<failure>; putting the jaws back to 0.00
 failed: <why>`.
 
 With the motion planner bound (`Robot.has_planner`), the transit to the
@@ -431,24 +435,30 @@ open fingers are clear before the arm moves. On a gripper whose fingers turn
 on pivots, a finger moves down when the jaws open, so open jaws can bring a
 part of the hand nearer to a thing below it than the clearance of the
 planner. The grab takes a second path only when the planner refuses the
-start of each orientation (`start_in_collision`):
+start (`start_in_collision`). The start is where the arm stands, the same
+for each orientation, so the first refusal ends the search:
 
 1. The jaws close. A grab takes a gripper that holds nothing, so the close
    is safe, also when a place left the jaws open.
 2. Each orientation is planned again with the hand closed. When the planner
-   refuses each one again, the grab fails before the arm moves, with the
-   planner's words: `the planner refuses the start of each orientation with
-   the jaws open, and with the jaws closed no plan reaches item ...`.
+   refuses the start again, or no orientation plans, the grab fails before
+   the arm moves, with the planner's words: `the planner refuses the start
+   where the arm stands with the jaws open, and with the jaws closed no plan
+   reaches item ...`.
 3. The plan runs to the pre-grasp point, and the jaws open there for the
    item.
 4. The grab asks the planner whether the arm is clear where it stands, the
    open jaws included, with the request of the checked descent below: its
    start is where the arm stands, and the planner refuses a start in
    collision as it refuses that of a plan. A path in the answer lets the
-   grab go on as on the first path. Any other answer fails the grab with
-   the planner's words (`the planner does not find the arm clear at the
-   pre-grasp point ... with the jaws of gripper 'g' open: <words>`), the arm
-   stays at the pre-grasp point, and the grab tries no other orientation.
+   grab go on as on the first path, and with no aligner the log of the
+   checked descent reads that answer. Any other answer fails the grab with
+   the planner's words, the arm stays at the pre-grasp point, and the grab
+   tries no other orientation: a start in collision gives `the planner does
+   not find the arm clear at the pre-grasp point ... with the jaws of
+   gripper 'g' open: <words>`, and any other answer `the planner cannot
+   tell whether the arm is clear at the pre-grasp point ...`, since the plan
+   examined the closed hand alone.
 
 A brain without the planner has the first path alone: check_arm_move gives
 no kind for a refusal. A place holds its item, so its jaws stay closed and

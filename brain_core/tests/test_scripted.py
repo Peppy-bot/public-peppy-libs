@@ -100,7 +100,9 @@ class FakeRobot:
     in `bars`. A check plans, a move lands on its target, a grip stops at
     its target, unless the test queued another answer for that kind.
     `on_call` runs once each call is recorded, before it answers: a test
-    hooks the lift or a cancel there. Its planner slot is vacant.
+    hooks the lift or a cancel there. Its planner slot is vacant. With
+    `limb_states`, a grip that completes adds a snapshot to it, the jaws at
+    their final opening, as the stream does once the jaws settle.
 
     Each call yields to the loop once before it is recorded, as a call to
     the backbone does, so what an earlier call scheduled has happened by
@@ -116,6 +118,7 @@ class FakeRobot:
         self.moves: deque = deque()
         self.grips: deque = deque()
         self.on_call: Callable[[tuple], None] = lambda call: None
+        self.limb_states: Optional[LimbStateStore] = None
 
     async def check_arm_move(self, arm, position, orientation, **bars) -> MoveCheck:
         assert arm == "left_arm"
@@ -135,7 +138,20 @@ class FakeRobot:
         await asyncio.sleep(0)
         self.bars.append(("grip", bars))
         self._record(("grip", gripper, opening, max_effort))
-        return self.grips.popleft() if self.grips else gripped(opening)
+        result = self.grips.popleft() if self.grips else gripped(opening)
+        self._publish_jaws(gripper, result)
+        return result
+
+    def _publish_jaws(self, gripper: str, result: GripResult) -> None:
+        """Adds to `limb_states` the snapshot after a grip that completed:
+        the latest one a millisecond later, `gripper` at the final opening
+        of `result`."""
+        latest = self.limb_states.latest if self.limb_states is not None else None
+        if latest is None or not result.completed or result.final_opening is None:
+            return
+        left = latest.arms["left_arm"]
+        openings = {**latest.gripper_openings, gripper: result.final_opening}
+        self.limb_states.add(limb_states_message(latest.timestamp + 0.001, left_arm=(left.position, left.orientation), **openings))
 
     def _record(self, call: tuple) -> None:
         self.calls.append(call)
@@ -164,6 +180,7 @@ async def started(*, opening: Optional[float] = 1.0, wait_s: float = 0.0, **kwar
     store holding a first snapshot with the left gripper open, unless
     `opening` is none."""
     robot, store = FakeRobot(), LimbStateStore()
+    robot.limb_states = store
     if opening is not None:
         store.add(limb_states_message(1.0, left_gripper=opening))
     manipulator = ScriptedManipulator(CentreProposer(), snapshot_wait_s=wait_s, clock=FakeClock(), **kwargs)
@@ -454,9 +471,47 @@ async def test_jaws_that_do_not_go_back_add_why_to_the_failure(caplog):
 
 async def test_a_measured_opening_past_the_jaws_travel_goes_back_to_its_end():
     manipulator, robot, store = await started(opening=1.004)
-    robot.moves.append(move_refused("the side is busy"))
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(False, "the side is busy")
+    robot.checks.extend([MoveCheck(False, "no plan")] * len(DOWN))
+    assert not (await manipulator.grab(cup(), LEFT, 0.0, CancelToken())).success
     assert robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
+
+
+# Once the arm moved toward the item, the put back closes the jaws to their
+# opening before the grab, and never opens them wider there.
+
+
+async def test_a_grab_that_fails_after_the_arm_moved_closes_the_jaws_back(caplog):
+    manipulator, robot, store = await started(opening=0.0)
+    robot.moves.append(move_refused("the side is busy"))
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "the side is busy")
+    assert robot.kinds() == ["grip", "check", "check", "check", "move", "grip"]
+    assert robot.calls[-1] == ("grip", "left_gripper", 0.0, 0.0)
+    assert log.records[-1].getMessage().endswith("put the jaws back to 0.00; failed: the side is busy")
+
+
+async def test_a_grab_that_fails_after_the_arm_moved_leaves_jaws_narrower_than_before(caplog):
+    manipulator, robot, store = await started(opening=1.0)
+    robot.moves.append(move_refused("the side is busy"))
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "the side is busy")
+    (opened,) = [call for call in robot.calls if call[0] == "grip"]
+    assert opened[2] < 1.0 and robot.kinds()[-1] == "move"
+    assert f"the jaws stay at {opened[2]:.2f}: the put back to 1.00 does not open them wider where the arm stopped" in (
+        log.records[-1].getMessage()
+    )
+
+
+async def test_a_put_back_that_a_stop_ended_ends_the_grab_as_a_stop(caplog):
+    manipulator, robot, store = await started(opening=0.4)
+    robot.checks.extend([MoveCheck(False, "no plan")] * len(DOWN))
+    robot.grips.extend([gripped(1.0), GripResult(MoveEnd.CANCELLED, "stopped: the operator asked")])
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome.message.endswith(": no plan; putting the jaws back to 0.40 was stopped: stopped: the operator asked")
+    assert "putting the jaws back to 0.40 was stopped: stopped: the operator asked" in log.records[-1].getMessage()
 
 
 async def test_a_brain_without_a_planner_takes_no_second_path():
@@ -484,7 +539,8 @@ async def test_a_refused_pre_grasp_move_ends_the_grab_with_its_message():
     robot.moves.append(move_refused("the side is busy"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the side is busy")
-    assert robot.kinds() == ["grip", "check", "check", "check", "move", "grip"]
+    # The jaws stand open as wide as before the grab: nothing goes back.
+    assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_a_cancel_between_two_moves_raises_cancelled_out_of_the_grab(caplog):
@@ -846,11 +902,19 @@ def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot,
 
 def assert_a_failure_before_the_descent_puts_the_jaws_back(robot: FakeRobot, answers: list, outcome: Outcome) -> None:
     """A failed grab whose descent was not sent and that no stop ended: the
-    open, then, when it went through, the jaws put back as the last call."""
+    open, then, when it went through, the jaws put back as the last call
+    when the arm did not move. Once the arm moved, the jaws stand at an
+    opening of 1 or less, never wider than the 1 of the first snapshot, so
+    they stay."""
     grips = [call for call in robot.calls if call[0] == "grip"]
     if not answers[0].completed:
         event("the open failed")
         assert robot.calls == grips == [("grip", "left_gripper", 1.0, 0.0)]
+        return
+    if "move" in robot.kinds():
+        event("the jaws stay where the arm moved")
+        assert grips == [("grip", "left_gripper", 1.0, 0.0)]
+        assert "putting the jaws back" not in outcome.message
         return
     assert len(grips) == 2 and robot.calls[-1] == ("grip", "left_gripper", 1.0, 0.0)
     put_back_short = not answers[-1].completed
