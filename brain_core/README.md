@@ -65,10 +65,10 @@ model of each role, `perception_model` and `manipulation_model`.
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `TargetItem`, the item a place or a drop puts the held item in or on, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
-| `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
+| `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, `target_item`, the target value of a place or a drop or its refusal, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing, `execute_joint_path`, which runs a plan from its start, and the planner's `describe_arms`, `get_planning_scene` and three scene writes (`apply_collision_objects`, `apply_attached_collision_object`, `set_allowed_collision`), service calls like `check_arm_move` that say why when they give no answer |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
@@ -475,6 +475,36 @@ ended, fails the place with the jaws closed: the gripper still holds the
 item. A climb that fails is logged and the place still succeeds, since the
 item is down and the jaws are open.
 
+A place or a drop can name a target item, the item to put the held item in
+or on (`target_item_id` of item_manipulation): the handler asks
+`State.target_item`, which refuses an unknown id, the held item itself and
+an item that another gripper holds, all before any move, and builds the
+`TargetItem` from what the brain knew of the item: the centre and the shorter
+side of its box, its top and its bottom (the surface under it), or, with no
+box, its seen point, its measured top and its width. A box whose longer side
+is under half the item's width across the picture is fitted around
+something that lies in the item, such as a fruit in a bowl: x and y then
+come from the seen point and the width from `width_m`. A place into a target
+carries the held item from above, at each roll, to 12.5 cm over the target's
+top (`above_target_m`), else 7.5 cm, with the line down to the target's
+bottom in its reach test; with an aligner, the model corrects the held item's
+place above the target, told its label and width (`AlignRequest.into`); the
+line down from there to the target's bottom stops on contact, so the item
+rests on the target's floor or on what it holds, and the jaws open where the
+arm stopped, then the arm climbs back. `position` and `orientation` of the
+goal are not read. A drop above a target makes the scene follow the holds,
+carries the same way with the pre-place point alone in its reach test, aligns
+with no descent after it (`AlignRequest.descends` false), and opens there,
+with no climb; the brain forgets the dropped item. The target keeps its id
+and what the brain knew of it.
+
+A look that names a known item with a box matches it when its box centre, or
+its seen point when it has no box, lies inside the footprint of that box:
+the seen point of a bowl rises to the top of each fruit put in it and moves
+aside with them, while the bowl stays. A new box inside that footprint
+leaves the known box, its top raised to the higher of the two, since the
+depth step fits a filled bowl's box around a fruit in it.
+
 A place and a grab carry the arm to their pre point on the carry step of
 `ScriptedManipulator`: the transit at each height in turn until an
 orientation reaches, then the move there. It measures the check_arm_move
@@ -487,7 +517,8 @@ and release. The line down of a place and of a grab runs on its descend
 step, which goes through when the line down completes,
 settled or on contact, and measures how far short of its end it stopped.
 A drop and the release of a place run on its release step, which opens the
-gripper and, for a place, climbs back. A step returns its `StepRecord`: its name, what it was asked, its
+gripper and, for a place, climbs back; a drop above a target runs carry,
+align and release. A step returns its `StepRecord`: its name, what it was asked, its
 result, its `StepFailure` (`no_reach`, `move`, `alignment` or `stopped`)
 with the words, and its measured numbers, the unit in each name. The
 sequence keeps the records in order and stops at the first one with a
