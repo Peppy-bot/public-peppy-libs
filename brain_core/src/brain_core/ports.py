@@ -289,6 +289,45 @@ class Item:
     shape: Optional[ItemShape] = None
 
 
+@dataclass(frozen=True)
+class TargetItem:
+    """The item a place or a drop puts the held item in or on, as the brain
+    knew it when the goal started: its id and label, `centre` the x and y of
+    its middle in the robot frame, `top_z` the height of its top (its rim
+    for a container), `bottom_z` the height of the surface under it, where
+    the line down of a place ends when it meets nothing, and `width_m` its
+    width seen from above, none when no look measured it."""
+
+    item_id: str
+    label: str
+    centre: tuple[float, float]
+    top_z: float
+    bottom_z: float
+    width_m: Optional[float]
+
+    @classmethod
+    def of(cls, item: Item) -> TargetItem:
+        """The target value of a known item. With a box (`shape`): its
+        centre, its top, its bottom and the shorter of its sides seen from
+        above. A box whose longer side is under half the item's width across
+        the picture is not the item's own: the depth step fitted it around
+        something that lies in the item, such as a fruit in a bowl. Then x
+        and y come from the seen point and the width from `width_m`, and the
+        top and the bottom from that box. With no box: x and y and the bottom
+        from the seen point, the top from `top_z` (the seen point when no
+        look measured one), and the width from `width_m`."""
+        shape = item.shape
+        if shape is None:
+            x, y, z = item.position
+            top = item.top_z if item.top_z is not None else z
+            return cls(item.item_id, item.label, (x, y), top, z, item.width_m)
+        top = shape.centre[2] + shape.sides[2] / 2
+        bottom = shape.centre[2] - shape.sides[2] / 2
+        if item.width_m is not None and max(shape.sides[0], shape.sides[1]) < item.width_m / 2:
+            return cls(item.item_id, item.label, (item.position[0], item.position[1]), top, bottom, item.width_m)
+        return cls(item.item_id, item.label, (shape.centre[0], shape.centre[1]), top, bottom, min(shape.sides[0], shape.sides[1]))
+
+
 @dataclass
 class Gripper:
     """One gripper from the fixed set the launcher named, the arm that

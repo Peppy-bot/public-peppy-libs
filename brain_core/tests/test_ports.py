@@ -1,9 +1,10 @@
-"""The roles a brain's models serve, parsed once from a goal's text, and
-the kind and the words each refusal and failure carries."""
+"""The roles a brain's models serve, parsed once from a goal's text, the
+kind and the words each refusal and failure carries, and the target value
+of a known item."""
 
 import pytest
 
-from brain_core.ports import CancelToken, Cancelled, ExpectedFailure, FailureKind, Refusal, Role, parse_role
+from brain_core.ports import CancelToken, Cancelled, ExpectedFailure, FailureKind, Item, ItemShape, Refusal, Role, TargetItem, parse_role
 
 BOTH = (Role.PERCEPTION, Role.MANIPULATION)
 
@@ -43,3 +44,40 @@ def test_a_token_is_set_once_and_says_whether_the_goals_own_signal_set_it():
     with pytest.raises(Cancelled) as raised:
         token.check()
     assert (raised.value.reason, raised.value.signalled) == ("its sender is gone", True)
+
+
+# The target value of a known item (TargetItem.of): its box, else its top,
+# else its seen point.
+
+BOWL_BOX = ItemShape((0.337, 0.000, 0.487), (0.192, 0.196, 0.088), 0.0)
+
+
+def a_bowl(**fields) -> Item:
+    return Item("wooden_bowl_1-t0", "wooden bowl", (0.380, -0.008, 0.461), None, 0.9, 1, **fields)
+
+
+def test_a_target_with_a_box_reads_its_centre_top_bottom_and_shorter_side():
+    target = TargetItem.of(a_bowl(shape=BOWL_BOX, width_m=0.18, top_z=0.52))
+    assert (target.item_id, target.label) == ("wooden_bowl_1-t0", "wooden bowl")
+    assert target.centre == (0.337, 0.000)
+    assert target.top_z == pytest.approx(0.531) and target.bottom_z == pytest.approx(0.443)
+    assert target.width_m == 0.192
+
+
+def test_a_box_under_half_the_width_across_the_picture_is_not_the_items_own():
+    # A bowl first seen with a fruit in it: the depth step fitted the box
+    # around the fruit (the box session of 2026-11-18).
+    fruit_box = ItemShape((0.334, -0.029, 0.486), (0.065, 0.053, 0.087), 1.536)
+    target = TargetItem.of(a_bowl(shape=fruit_box, width_m=0.18))
+    assert target.centre == (0.380, -0.008) and target.width_m == 0.18
+    assert target.top_z == pytest.approx(0.5295) and target.bottom_z == pytest.approx(0.4425)
+
+
+def test_a_target_with_no_box_reads_its_top_and_its_seen_point():
+    target = TargetItem.of(a_bowl(top_z=0.53, width_m=0.18))
+    assert (target.centre, target.top_z, target.bottom_z, target.width_m) == ((0.380, -0.008), 0.53, 0.461, 0.18)
+
+
+def test_a_target_with_no_box_and_no_top_reads_its_seen_point_alone():
+    target = TargetItem.of(a_bowl())
+    assert (target.centre, target.top_z, target.bottom_z, target.width_m) == ((0.380, -0.008), 0.461, 0.461, None)
