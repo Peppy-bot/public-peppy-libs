@@ -15,7 +15,6 @@ use std::collections::HashSet;
 
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use chain_kinematics::{Chain, ChainSpec, Joint, JointKind, JointPlacement, JointSelection};
-use robot_description::urdf_rs::JointType;
 use robot_description::{Finger, FingerSpan, RobotDescription};
 
 use crate::assemble::fit_bodies;
@@ -124,28 +123,18 @@ struct FingerJoint {
 impl FingerJoint {
     /// The placer of the finger `link` on its parent `joint`, the single gate for
     /// finger-joint kinds: a finger turns on a revolute joint or slides on a prismatic
-    /// one; a continuous finger joint, as the description's URDF gives it, bounds no
-    /// travel and is refused, and a fixed one moves no finger.
-    fn from_joint(
-        description: &RobotDescription,
-        link: &str,
-        joint: &Joint,
-        span: FingerSpan,
-    ) -> Result<Self, BuildError> {
-        let continuous = description
-            .robot()
-            .joints
-            .iter()
-            .any(|urdf| urdf.name == joint.name && urdf.joint_type == JointType::Continuous);
-        if continuous {
-            return Err(BuildError::ContinuousFinger {
-                link: link.to_owned(),
-                joint: joint.name.clone(),
-            });
-        }
+    /// one; a continuous finger joint bounds no travel and is refused, and a fixed one
+    /// moves no finger.
+    fn from_joint(link: &str, joint: &Joint, span: FingerSpan) -> Result<Self, BuildError> {
         let motion = match joint.placement.kind {
             JointKind::Revolute { axis } => FingerMotion::Turn { axis },
             JointKind::Prismatic { axis } => FingerMotion::Slide { axis },
+            JointKind::Continuous { .. } => {
+                return Err(BuildError::ContinuousFinger {
+                    link: link.to_owned(),
+                    joint: joint.name.clone(),
+                });
+            }
             JointKind::Fixed => {
                 return Err(BuildError::NoSuchFinger {
                     link: link.to_owned(),
@@ -471,8 +460,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         for finger in fitted.fingers {
             let placement = chain_segment(&names, &finger.parent_link)
                 .expect("fit_bodies only emits fingers hosted on a chain link");
-            let placer =
-                FingerJoint::from_joint(description, &finger.name, &finger.joint, finger.span)?;
+            let placer = FingerJoint::from_joint(&finger.name, &finger.joint, finger.span)?;
             let bound = BoundingSphere::of(&finger.hulls);
             push_body(
                 &mut bodies,

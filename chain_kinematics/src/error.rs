@@ -20,8 +20,8 @@ pub enum ChainError {
     )]
     MimicCoupling { follower: String, leader: String },
     #[error(
-        "the actuated joint '{joint}' has no range: its <limit> gives its lower and upper \
-         limits equal, as an absent <limit> does"
+        "the actuated joint '{joint}' has no range: it is continuous, or its <limit> gives \
+         its lower and upper limits equal, as an absent <limit> does"
     )]
     NoRange { joint: String },
     #[error("'{tool}' is not a link fixed below the tip '{tip}'")]
@@ -71,14 +71,29 @@ pub enum TreeError {
     )]
     JointAxis { joint: String, axis: [f64; 3] },
     #[error(
-        "the joint {joint:?} moves between the limits {lower} and {upper}; a joint that moves \
-         has finite limits, the lower one at or below the upper one"
+        "the joint {joint:?} moves between the limits {lower} and {upper}; a revolute or a \
+         prismatic joint has finite limits, the lower one at or below the upper one"
     )]
     JointLimits {
         joint: String,
         lower: f64,
         upper: f64,
     },
+    #[error("the joint {joint:?} has {error}")]
+    JointMimic { joint: String, error: MimicError },
+}
+
+/// A mimic that [`Mimic::new`](crate::Mimic::new) refuses: its multiplier or its offset
+/// is not finite.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error(
+    "the mimic of {joint:?} at the multiplier {multiplier} and the offset {offset}; a \
+     mimic's multiplier and offset are finite"
+)]
+pub struct MimicError {
+    pub joint: String,
+    pub multiplier: f64,
+    pub offset: f64,
 }
 
 /// The links that hang on no joint, as a refusal writes them.

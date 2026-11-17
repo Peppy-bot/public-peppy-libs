@@ -37,7 +37,7 @@
 
 use nalgebra::{Isometry3, Matrix6, Point3, SMatrix, SVector, Vector3, Vector6};
 
-use crate::{Chain, JointKind, Limit, Posed};
+use crate::{Chain, Limit, Posed};
 
 /// The error at which a descent converges, in meters and radians: KDL's `epsilon` default
 /// (kdl_kinematics_parameters.yaml:27-31), which also bounds a stuck step (:475-477).
@@ -382,9 +382,10 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         };
         let linear = posed.point_world_jacobian(&origin, segment);
         std::array::from_fn(|j| {
-            let turn = match posed.kind(j) {
-                JointKind::Revolute { .. } if self.moving[j] => posed.axis_world(j),
-                _ => Vector3::zeros(),
+            let turn = if self.moving[j] && posed.kind(j).turns() {
+                posed.axis_world(j)
+            } else {
+                Vector3::zeros()
             };
             let along = if self.moving[j] {
                 linear[j]

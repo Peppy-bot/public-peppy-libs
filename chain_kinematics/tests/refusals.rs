@@ -87,6 +87,22 @@ fn an_unbounded_actuated_joint_is_refused() {
 }
 
 #[test]
+fn an_actuated_continuous_joint_is_refused_for_its_range() {
+    // A continuous joint declares no range, whatever <limit> it carries.
+    let continuous = urdf(BOUNDED, "").replacen(
+        r#"<joint name="j_b" type="revolute">"#,
+        r#"<joint name="j_b" type="continuous">"#,
+        1,
+    );
+    let err = build::<2>(&continuous, JointSelection::PathOrder)
+        .expect_err("a continuous joint has no range to clamp into");
+    assert!(
+        matches!(&err, ChainError::NoRange { joint } if joint == "j_b"),
+        "expected a no-range refusal, got {err}"
+    );
+}
+
+#[test]
 fn a_mimic_coupling_onto_the_chain_is_refused() {
     // `q` poses only the joints it names, so the follower would stay behind and
     // the reported tip would be a pose the mechanism cannot reach.

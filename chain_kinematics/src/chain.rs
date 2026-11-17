@@ -100,7 +100,9 @@ impl<const N: usize> Chain<N> {
         let actuated = select_joints(&tree, &path, spec.joints)?;
         let axes_local =
             std::array::from_fn(|i| match tree.joint(path[actuated[i]]).placement.kind {
-                JointKind::Revolute { axis } | JointKind::Prismatic { axis } => axis.into_inner(),
+                JointKind::Revolute { axis }
+                | JointKind::Continuous { axis }
+                | JointKind::Prismatic { axis } => axis.into_inner(),
                 JointKind::Fixed => unreachable!("select_joints only returns movable joints"),
             });
         let limits = actuated_limits::<N>(&tree, &path, &actuated)?;
@@ -382,7 +384,7 @@ impl<const N: usize> Posed<'_, N> {
         let cols: [Vector6<f64>; N] = std::array::from_fn(|i| {
             let z = self.axis_base(i);
             match self.chain.kinds[i] {
-                JointKind::Revolute { .. } => {
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
                     let linear = z.cross(&(p_ee - self.origin_base(i)));
                     Vector6::new(linear.x, linear.y, linear.z, z.x, z.y, z.z)
                 }
@@ -414,7 +416,9 @@ impl<const N: usize> Posed<'_, N> {
             }
             let z = self.axis_world(j);
             match self.chain.kinds[j] {
-                JointKind::Revolute { .. } => z.cross(&(point.coords - self.origin_world(j))),
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
+                    z.cross(&(point.coords - self.origin_world(j)))
+                }
                 JointKind::Prismatic { .. } => z,
                 JointKind::Fixed => Vector3::zeros(),
             }
@@ -435,8 +439,8 @@ impl<const N: usize> Posed<'_, N> {
 /// The actuated joints' position limits, or a refusal.
 ///
 /// A chain clamps into, seeds from and checks against each actuated joint's range, so
-/// an actuated joint whose lower and upper limits are equal, as an absent `<limit>`
-/// leaves them, is refused ([`ChainError::NoRange`]). The tree refuses limits that are
+/// an actuated joint that is continuous, or whose lower and upper limits are equal, as
+/// an absent `<limit>` leaves them, is refused ([`ChainError::NoRange`]). The tree refuses limits that are
 /// not finite and in order ([`TreeError::JointLimits`](crate::TreeError::JointLimits)).
 fn actuated_limits<const N: usize>(
     tree: &Tree,
@@ -475,7 +479,7 @@ fn refuse_mimic_coupling<const N: usize>(
         .map(|&slot| tree.joint(path[slot]).name.as_str())
         .collect();
     let coupled = tree.joints().iter().find_map(|j| {
-        let leader = j.mimic.as_deref()?;
+        let leader = j.mimic.as_ref()?.joint();
         (driven.contains(&j.name.as_str()) || driven.contains(&leader)).then(|| {
             ChainError::MimicCoupling {
                 follower: j.name.clone(),

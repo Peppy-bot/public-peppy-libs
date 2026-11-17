@@ -1,8 +1,8 @@
 //! A joint's pose at a position: the child link's frame in the parent link's frame,
 //! read from a one-joint URDF of each kind with a drawn origin and axis.
 
-use chain_kinematics::Tree;
 use chain_kinematics::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use chain_kinematics::{JointKind, Mimic, Tree, TreeError};
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{angles, points, unit_vectors};
@@ -126,4 +126,81 @@ fn a_fixed_joint_ignores_the_position(tc: TestCase) {
     let joint = DrawnJoint::draw(&tc, HOLDING);
     let q: f64 = tc.draw(gs::floats().min_value(-4.0).max_value(4.0));
     assert_close(&joint.tree().joint(0).pose_at(q), &joint.origin());
+}
+
+/// A continuous joint turns as a revolute one does, and declares no range whatever
+/// `<limit>` its URDF gives.
+#[hegel::test]
+fn a_continuous_joint_turns_and_declares_no_range(tc: TestCase) {
+    let mut joint = DrawnJoint::draw(&tc, &["continuous"]);
+    let tree = joint.tree();
+    let continuous = tree.joint(0);
+    assert!(matches!(
+        continuous.placement.kind,
+        JointKind::Continuous { .. }
+    ));
+    assert_eq!(continuous.limit, None);
+    let q = tc.draw(angles());
+    let pose = continuous.pose_at(q);
+    joint.kind = "revolute";
+    assert_close(&pose, &joint.tree().joint(0).pose_at(q));
+}
+
+/// Two prismatic joints off one base, `follower` carrying `mimic`.
+fn mimic_urdf(mimic: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?><robot name="mimic">
+<link name="base"/><link name="a"/><link name="b"/>
+<joint name="leader" type="prismatic"><parent link="base"/><child link="a"/>
+<axis xyz="0 1 0"/><limit lower="0" upper="0.04" effort="1" velocity="1"/></joint>
+<joint name="follower" type="prismatic"><parent link="base"/><child link="b"/>
+<axis xyz="0 1 0"/>{mimic}<limit lower="-0.03" upper="0.01" effort="1" velocity="1"/></joint>
+</robot>"#
+    )
+}
+
+/// A joint's `<mimic>` is read whole: the joint it follows, and its multiplier and
+/// offset, 1 and 0 where the `<mimic>` gives none.
+#[test]
+fn a_mimic_is_read_with_its_multiplier_and_offset() {
+    let read = |mimic: &str| {
+        let robot = urdf_rs::read_from_string(&mimic_urdf(mimic)).expect("parse the mimic URDF");
+        let tree = Tree::from_robot(&robot).expect("a tree");
+        let follower = tree.joint_index("follower").expect("the follower");
+        tree.joint(follower).mimic.clone()
+    };
+    let full = read(r#"<mimic joint="leader" multiplier="-1" offset="0.01"/>"#)
+        .expect("the follower mimics");
+    assert_eq!(
+        full,
+        Mimic::new("leader".to_string(), -1.0, 0.01).expect("a finite mimic")
+    );
+    assert_eq!(full.position_from(0.02), -0.01);
+    let bare = read(r#"<mimic joint="leader"/>"#).expect("the follower mimics");
+    assert_eq!((bare.multiplier(), bare.offset()), (1.0, 0.0));
+    assert_eq!(read(""), None);
+}
+
+/// A mimic whose multiplier or offset is not finite is refused, naming the joint it
+/// follows; the tree that reads one is refused, naming the joint that mimics.
+#[test]
+fn a_mimic_that_is_not_finite_is_refused() {
+    for (multiplier, offset) in [(f64::NAN, 0.0), (1.0, f64::INFINITY)] {
+        let error = Mimic::new("leader".to_string(), multiplier, offset)
+            .expect_err("a mimic that is not finite");
+        assert_eq!(error.joint, "leader");
+    }
+    let mut robot = urdf_rs::read_from_string(&mimic_urdf(r#"<mimic joint="leader"/>"#))
+        .expect("parse the mimic URDF");
+    let follower = robot
+        .joints
+        .iter_mut()
+        .find(|joint| joint.name == "follower")
+        .expect("the follower");
+    follower.mimic.as_mut().expect("a mimic").multiplier = Some(f64::NAN);
+    let error = Tree::from_robot(&robot).expect_err("a tree with a mimic that is not finite");
+    assert!(
+        matches!(&error, TreeError::JointMimic { joint, .. } if joint == "follower"),
+        "{error}"
+    );
 }

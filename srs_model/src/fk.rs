@@ -13,7 +13,7 @@
 //! [`crate::coriolis`] read the world-frame accessors instead, because gravity is
 //! a world quantity (it acts along world -Z).
 
-use chain_kinematics::{Chain, ChainSpec, JointKind, JointSelection, Tree};
+use chain_kinematics::{Chain, ChainSpec, JointSelection, Tree};
 use nalgebra::Isometry3;
 
 use crate::SrsError;
@@ -116,7 +116,7 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
             .iter()
             .copied()
             .filter(|&j| {
-                matches!(tree.joint(j).placement.kind, JointKind::Revolute { .. })
+                tree.joint(j).placement.kind.turns()
                     || tree.subtree_has_revolute(tree.joint(j).child)
             })
             .collect();
@@ -134,7 +134,7 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
                 )
             }));
         };
-        if matches!(tree.joint(joint).placement.kind, JointKind::Revolute { .. }) {
+        if tree.joint(joint).placement.kind.turns() {
             revolute += 1;
         }
         link = tree.joint(joint).child;

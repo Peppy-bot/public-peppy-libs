@@ -412,6 +412,10 @@ mod tests {
         );
         let u = UrdfCollisions::from_urdf(&continuous).expect("parse");
         let (joint, _) = u.parent_of("arm1").expect("arm1 has a parent joint");
+        assert!(
+            matches!(joint.placement.kind, JointKind::Continuous { axis } if (axis.into_inner() - Vector3::z()).norm() < 1e-12)
+        );
+        assert_eq!(joint.limit, None);
         let turned = joint.pose_at(FRAC_PI_2);
         let expected =
             joint.placement.origin * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
