@@ -8,6 +8,7 @@ from test_scripted import (
     GRASP,
     HELD,
     LEFT,
+    LIFT,
     PLACE_ABOVE,
     PLACE_POINT,
     PLACE_Q,
@@ -26,8 +27,8 @@ from test_scripted import (
 )
 
 from brain_core.manipulators.scripted.manipulator import Landed, Released, StepFailure, StepRecord
-from brain_core.ports import CancelToken, Outcome, Pose
-from brain_core.robot import GripResult, MoveEnd
+from brain_core.ports import Cancelled, CancelToken, Outcome, Pose
+from brain_core.robot import ArmDescriptions, GripResult, MoveCheck, MoveEnd, PathResult
 
 DROP_INPUTS = {"gripper": "left_gripper", "climb_to": None}
 PLACE_RELEASE_INPUTS = {"gripper": "left_gripper", "climb_to": PLACE_ABOVE}
@@ -35,6 +36,16 @@ PLACE_RELEASE_INPUTS = {"gripper": "left_gripper", "climb_to": PLACE_ABOVE}
 
 async def place(manipulator) -> Outcome:
     return await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+
+
+def names(outcome: Outcome) -> list[str]:
+    return [record.step for record in outcome.steps]
+
+
+def record_of(outcome: Outcome, step: str) -> StepRecord:
+    """The one record of `step` in the outcome."""
+    [record] = [record for record in outcome.steps if record.step == step]
+    return record
 
 
 async def test_a_drop_records_its_release_with_the_opening_the_jaws_stood_at():
@@ -102,8 +113,8 @@ GRAB_DESCEND_INPUTS = {"start": PRE, "end": GRASP, "orientation": DOWN[0], "cont
 async def test_a_place_records_its_line_down_settled_at_the_pose_before_its_release():
     manipulator, robot, _ = await started()
     outcome = await place(manipulator)
-    assert [record.step for record in outcome.steps] == ["descend", "release"]
-    assert outcome.steps[0] == StepRecord(
+    assert names(outcome)[-2:] == ["descend", "release"]
+    assert record_of(outcome, "descend") == StepRecord(
         "descend", PLACE_DESCEND_INPUTS, Landed(PLACE_POINT, on_contact=False), measured={"short_of_end_m": 0.0}
     )
 
@@ -112,7 +123,7 @@ async def test_a_place_whose_line_down_ends_on_contact_records_where_and_how_far
     manipulator, robot, _ = await started()
     robot.moves.extend([arrived(), touched((0.6, 0.0, 0.832), PLACE_Q)])
     outcome = await place(manipulator)
-    descend = outcome.steps[0]
+    descend = record_of(outcome, "descend")
     assert descend.result == Landed((0.6, 0.0, 0.832), on_contact=True)
     assert descend.measured == {"short_of_end_m": pytest.approx(0.082)}
 
@@ -121,7 +132,8 @@ async def test_a_line_down_whose_result_gives_no_position_measures_nothing():
     manipulator, robot, _ = await started()
     robot.moves.extend([arrived(), arrived()])
     outcome = await place(manipulator)
-    assert outcome.steps[0].result == Landed(None, on_contact=False) and outcome.steps[0].measured == {}
+    descend = record_of(outcome, "descend")
+    assert descend.result == Landed(None, on_contact=False) and descend.measured == {}
 
 
 @pytest.mark.parametrize("descent, failure", [
@@ -134,7 +146,8 @@ async def test_a_place_whose_line_down_does_not_complete_ends_with_its_failed_de
     manipulator, robot, _ = await started()
     robot.moves.extend([arrived(), descent])
     outcome = await place(manipulator)
-    assert outcome.steps == (StepRecord("descend", PLACE_DESCEND_INPUTS, failure=failure, message=descent.message),)
+    assert outcome.steps[-1] == StepRecord("descend", PLACE_DESCEND_INPUTS, failure=failure, message=descent.message)
+    assert "release" not in names(outcome)
 
 
 async def test_a_grab_records_its_line_down_and_closes_where_it_ended():
@@ -143,11 +156,9 @@ async def test_a_grab_records_its_line_down_and_closes_where_it_ended():
     robot.moves.extend([arrived(), touched((GRASP[0], GRASP[1], GRASP[2] + 0.012), DOWN[0])])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == HELD
-    assert outcome.steps == (
-        StepRecord(
-            "descend", GRAB_DESCEND_INPUTS, Landed((GRASP[0], GRASP[1], GRASP[2] + 0.012), on_contact=True),
-            measured={"short_of_end_m": pytest.approx(0.012)},
-        ),
+    assert outcome.steps[-1] == StepRecord(
+        "descend", GRAB_DESCEND_INPUTS, Landed((GRASP[0], GRASP[1], GRASP[2] + 0.012), on_contact=True),
+        measured={"short_of_end_m": pytest.approx(0.012)},
     )
 
 
@@ -156,6 +167,117 @@ async def test_a_grab_whose_line_down_times_out_ends_with_its_failed_descend_aft
     robot.moves.extend([arrived(), move_failed(SHORT, "timeout")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, SHORT)
-    assert outcome.steps == (StepRecord("descend", GRAB_DESCEND_INPUTS, failure=StepFailure.MOVE, message=SHORT),)
+    assert outcome.steps[-1] == StepRecord("descend", GRAB_DESCEND_INPUTS, failure=StepFailure.MOVE, message=SHORT)
     # The retreat is no step: the gripper opens and the arm climbs back.
     assert robot.calls[-2:] == [("grip", "left_gripper", 1.0, 0.0), ("move", PRE, DOWN[0])]
+
+
+# The carry step: the transit to the pre point and the move there. A place
+# tries the pre-place point 15 cm above the pose, then 7.5 cm; a grab the
+# pre-grasp point 7.5 cm back along the approach.
+
+PLACE_CARRY_INPUTS = {"reference": PLACE_POINT, "orientations": (PLACE_Q,), "heights_m": (0.15, 0.075)}
+LOW_ABOVE = (0.6, 0.0, 0.75 + 0.075)
+
+
+def carry_measured(checks: int, height_m: float, plans: int = 0, reach_tests: int = 0) -> dict:
+    # The clock of the tests stands still.
+    return {"checks": checks, "plans": plans, "reach_tests": reach_tests, "seconds": 0.0, "height_above_reference_m": height_m}
+
+
+async def test_a_place_first_carries_the_item_to_the_high_pre_place_point():
+    manipulator, robot, _ = await started()
+    outcome = await place(manipulator)
+    assert names(outcome) == ["carry", "descend", "release"]
+    carry = record_of(outcome, "carry")
+    assert (carry.inputs, carry.failure, carry.message) == (PLACE_CARRY_INPUTS, None, "")
+    assert (carry.result.orientation, carry.result.points) == (PLACE_Q, (PLACE_ABOVE, PLACE_POINT))
+    # The pre-place point and the place point, each checked once.
+    assert carry.measured == carry_measured(2, pytest.approx(0.15))
+
+
+async def test_a_place_with_no_plan_at_the_high_point_carries_to_the_low_one_and_counts_every_check():
+    manipulator, robot, _ = await started()
+    robot.checks.append(MoveCheck(False, "no line plan fits the limits", 0.0))
+    carry = record_of(await place(manipulator), "carry")
+    assert carry.result.points == (LOW_ABOVE, PLACE_POINT)
+    assert carry.measured == carry_measured(3, 0.075)
+
+
+async def test_a_place_that_no_orientation_reaches_records_no_reach_and_nothing_moves():
+    manipulator, robot, _ = await started()
+    robot.checks.extend([MoveCheck(False, "no plan")] * 2)
+    outcome = await place(manipulator)
+    assert outcome.steps == (StepRecord("carry", PLACE_CARRY_INPUTS, failure=StepFailure.NO_REACH, message=outcome.message),)
+    assert outcome.message.startswith("no plan reaches the pose [0.600, 0.000, 0.750] with gripper 'left_gripper'")
+    assert robot.kinds() == ["check", "check"]
+
+
+@pytest.mark.parametrize("transit, failure", [
+    (move_refused("the side is busy"), StepFailure.MOVE),
+    (move_stopped("stopped: the operator asked"), StepFailure.STOPPED),
+])
+async def test_a_place_whose_transit_does_not_complete_ends_with_its_failed_carry(transit, failure):
+    manipulator, robot, _ = await started()
+    robot.moves.append(transit)
+    outcome = await place(manipulator)
+    assert outcome.steps == (StepRecord("carry", PLACE_CARRY_INPUTS, failure=failure, message=transit.message),)
+
+
+async def test_a_grab_carries_the_gripper_to_the_pre_grasp_point_with_the_grasp_and_lifted_points_after_it():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert names(outcome) == ["carry", "descend"]
+    carry = record_of(outcome, "carry")
+    assert carry.inputs == {"reference": GRASP, "orientations": DOWN, "heights_m": (0.075,)}
+    assert (carry.result.orientation, carry.result.points) == (DOWN[0], (PRE, GRASP, LIFT))
+    assert carry.measured == carry_measured(3, 0.075)
+
+
+async def test_a_grab_that_no_orientation_reaches_records_no_reach():
+    manipulator, robot, _ = await started()
+    robot.checks.extend([MoveCheck(False, f"refusal {i}") for i in range(len(DOWN))])
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert [(record.step, record.failure) for record in outcome.steps] == [("carry", StepFailure.NO_REACH)]
+
+
+async def test_a_planned_carry_counts_its_plans_and_reach_tests():
+    from test_planned_transit import started as started_with_planner
+
+    manipulator, robot, _ = await started_with_planner()
+    carry = record_of(await place(manipulator), "carry")
+    assert carry.measured == carry_measured(0, pytest.approx(0.15), plans=1, reach_tests=1)
+
+
+async def test_a_planned_grab_whose_transit_run_fails_records_the_failed_carry_and_removes_the_object():
+    from test_planned_transit import started as started_with_planner
+
+    manipulator, robot, _ = await started_with_planner()
+    robot.runs.append(PathResult(MoveEnd.FAILED, "the guard would hold the path short at waypoint 1", "unreachable"))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert [(record.step, record.failure, record.message) for record in outcome.steps] == [
+        ("carry", StepFailure.MOVE, "the guard would hold the path short at waypoint 1"),
+    ]
+    assert robot.calls[-1] == ("remove", "brain/cup_1-t0")
+
+
+async def test_a_carry_the_planner_cannot_describe_fails_as_a_move_with_no_try_of_the_low_point():
+    from test_planned_transit import started as started_with_planner
+
+    manipulator, robot, _ = await started_with_planner()
+    robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
+    outcome = await place(manipulator)
+    assert [(record.step, record.failure) for record in outcome.steps] == [("carry", StepFailure.MOVE)]
+    assert robot.kinds() == ["describe"]
+
+
+async def test_a_cancel_during_a_planned_grabs_transit_run_removes_the_object_and_raises():
+    from test_planned_transit import started as started_with_planner
+
+    manipulator, robot, _ = await started_with_planner()
+    cancel = CancelToken()
+    robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "run" else None
+    with pytest.raises(Cancelled):
+        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+    assert [call[0] for call in robot.calls[-2:]] == ["run", "remove"]

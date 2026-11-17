@@ -473,8 +473,12 @@ ended, fails the place with the jaws closed: the gripper still holds the
 item. A climb that fails is logged and the place still succeeds, since the
 item is down and the jaws are open.
 
-The line down of a place and of a grab runs on the descend step of
-`ScriptedManipulator`, which goes through when the line down completes,
+A place and a grab carry the arm to their pre point on the carry step of
+`ScriptedManipulator`: the transit at each height in turn until an
+orientation reaches, then the move there. It measures the check_arm_move
+calls, the plans and the reach tests it ran, their time, and the height of
+the pre point above the grasp point or the pose. The line down of a place
+and of a grab runs on its descend step, which goes through when the line down completes,
 settled or on contact, and measures how far short of its end it stopped.
 A drop and the release of a place run on its release step, which opens the
 gripper and, for a place, climbs back. A step returns its `StepRecord`: its name, what it was asked, its

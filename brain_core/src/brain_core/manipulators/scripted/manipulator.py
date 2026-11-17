@@ -104,8 +104,10 @@ holds the item. A place reports where the grasp point stood when the jaws
 opened. A climb that fails is logged, and the place still succeeds: the
 jaws are open and the item is down.
 
-The line down of a place and of a grab runs on the descend step. A drop
-and the release of a place run on the release step: it opens the gripper
+A place and a grab carry the arm to their pre point on the carry step:
+the transit and the move there. The line down of a place and of a grab
+runs on the descend step. A drop and the release of a place run on the
+release step: it opens the gripper
 and, for a place, climbs back to the pre-place point. A step returns its `StepRecord`: its name, what it was asked, its result, why it
 failed and its measured numbers. The sequence keeps the records in order
 and stops at the first one with a failure, whose message ends the
@@ -284,6 +286,21 @@ class StepRecord(Generic[StepResult]):
     measured: Mapping[str, float] = field(default_factory=dict)
 
 
+@dataclass
+class Carried:
+    """Where a carry left the arm: the orientation that planned, and the
+    points of the moves that follow it in order, the pre point first, where
+    the arm stands now. `abandon` undoes what the carry added for a grab
+    that fails or stops later, and `log_descent` logs what a checked descent
+    from where the arm stands would answer; each does nothing with no
+    planner."""
+
+    orientation: Quat
+    points: tuple[Vec3, ...]
+    abandon: Callable[[], Awaitable[None]]
+    log_descent: Callable[[Vec3, Vec3, Quat, CancelToken], Awaitable[None]]
+
+
 @dataclass(frozen=True)
 class Landed:
     """Where a line down ended: the grasp point its result gives, none when
@@ -445,27 +462,30 @@ class ScriptedManipulator:
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
-        reach = await self._transit(
-            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True, item=item,
+        carried = _passed(
+            await self._carry(
+                gripper, grasp, f"item '{item.item_id}'", cancel, notes,
+                heights_m=(self.clearance_m,), with_lift=True, item=item, notes_the_orientation=True,
+            ),
+            steps,
         )
         try:
-            return await self._run_grab(item, gripper, max_effort, reach, cancel, notes, steps)
+            return await self._run_grab(item, gripper, max_effort, carried, cancel, notes, steps)
         except (_Failed, Cancelled):
-            await reach.abandon()
+            await carried.abandon()
             raise
 
     async def _run_grab(
-        self, item: Item, gripper: Gripper, max_effort: float, reach: _Reach, cancel: CancelToken, notes: list[str],
+        self, item: Item, gripper: Gripper, max_effort: float, carried: Carried, cancel: CancelToken, notes: list[str],
         steps: list[StepRecord],
     ) -> Outcome:
-        """The grab from its transit on: the transit, the alignment, then the
+        """The grab from its pre-grasp point on: the alignment, then the
         descent, the close and the lift, with the retreat after a step from
         the descent on that fails."""
-        orientation, (pre, point, lift) = reach.orientation, reach.points
-        await reach.go(cancel)
+        orientation, (pre, point, lift) = carried.orientation, carried.points
         if self.aligner is not None:
             pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
-        await reach.log_descent(point, lift, orientation, cancel)
+        await carried.log_descent(point, lift, orientation, cancel)
         try:
             return await self._descend_close_lift(item, gripper, max_effort, orientation, pre, point, lift, cancel, notes, steps)
         except _Failed as failure:
@@ -592,9 +612,14 @@ class ScriptedManipulator:
             raise _Failed(str(error)) from None
         target = f"the pose {_numbers(pose.position)}"
         notes: list[str] = []
-        reach = await self._place_reach(gripper, Grasp(pose.position, orientations), target, cancel, notes)
-        orientation, (pre, point) = reach.orientation, reach.points
-        await reach.go(cancel)
+        carried = _passed(
+            await self._carry(
+                gripper, Grasp(pose.position, orientations), target, cancel, notes,
+                heights_m=(self.clearance_m + self.held_item_depth_m, self.clearance_m),
+            ),
+            steps,
+        )
+        orientation, (pre, point) = carried.orientation, carried.points
         if self.aligner is not None:
             request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=pose.position)
             pre, point, _lift, orientation = await self._run_alignment(request, cancel, notes)
@@ -647,20 +672,54 @@ class ScriptedManipulator:
         except ValueError as error:
             raise _Failed(f"no grasp for item '{item.item_id}': {error}") from None
 
-    async def _place_reach(self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str]) -> _Reach:
-        """The transit of a place: to the pre-place point `clearance_m` and
-        `held_item_depth_m` above the pose when the backbone has a plan that
-        high, else `clearance_m` above it, which `notes` says. Its points are
-        the pre-place point and the pose, where the line down ends."""
-        high = self.clearance_m + self.held_item_depth_m
+    async def _carry(
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
+        heights_m: tuple[float, ...], with_lift: bool = False, item: Optional[Item] = None, notes_the_orientation: bool = False,
+    ) -> StepRecord[Carried]:
+        """The carry step: the transit to the pre point the first of
+        `heights_m` back along the approach from the grasp point of `grasp`,
+        then the move there; at each next height when no orientation reaches
+        the one before, which `notes` says in a place's words. Its points:
+        the pre point, the grasp point (the pose for a place), and for a grab
+        (`with_lift`) the lifted point. `notes_the_orientation` puts the
+        orientation that planned and the calls it took in `notes`, as a grab
+        logs it. No orientation that reaches at any height fails the step
+        before anything moves; a transit that does not complete fails it
+        and undoes what it added for `item`, and so does a cancel before it
+        raises."""
+        inputs = {"reference": grasp.point, "orientations": grasp.orientations, "heights_m": heights_m}
+        checks = _Checks()
+        transit_notes = notes if notes_the_orientation else []
+        for index, height in enumerate(heights_m):
+            try:
+                reach = await self._transit(
+                    gripper, grasp, target, cancel, transit_notes, checks, clearance_m=height, with_lift=with_lift, item=item,
+                )
+                break
+            except _NoReach as failure:
+                if index + 1 == len(heights_m):
+                    return _failed_step("carry", inputs, failure, StepFailure.NO_REACH)
+                notes.append(
+                    f"no plan {100 * height:.1f} cm above the pose: the pre-place point stands {100 * heights_m[index + 1]:.1f} cm above it"
+                )
+            except _Failed as failure:
+                return _failed_step("carry", inputs, failure)
         try:
-            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=high)
-        except _NoReach:
-            notes.append(f"no plan {100 * high:.1f} cm above the pose: the pre-place point stands {100 * self.clearance_m:.1f} cm above it")
-            return await self._transit(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
+            await reach.go(cancel)
+        except _Failed as failure:
+            await reach.abandon()
+            return _failed_step("carry", inputs, failure)
+        except Cancelled:
+            await reach.abandon()
+            raise
+        measured = {
+            "checks": checks.count, "plans": checks.plans, "reach_tests": checks.lines, "seconds": checks.seconds,
+            "height_above_reference_m": height,
+        }
+        return StepRecord("carry", inputs, Carried(reach.orientation, reach.points, reach.abandon, reach.log_descent), measured=measured)
 
     async def _transit(
-        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], checks: _Checks, *,
         clearance_m: float, with_lift: bool = False, item: Optional[Item] = None,
     ) -> _Reach:
         """The first orientation of `grasp` whose moves reach, as
@@ -672,10 +731,10 @@ class ScriptedManipulator:
         orientation is planned (`_planned_reach`), and the transit runs the
         plan; abandoning the reach removes the object. A failure that no
         orientation reaches is raised before anything moves, the object
-        removed."""
+        removed. Each call of a reach test counts in `checks`."""
         if not self._robot.has_planner:
             orientation, points, _ = await self._first_reach(
-                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+                gripper, grasp, target, cancel, notes, checks, clearance_m=clearance_m, with_lift=with_lift,
                 test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
             )
             return _Reach(
@@ -686,7 +745,7 @@ class ScriptedManipulator:
         object_id = await self._add_item_object(item, arm) if item is not None else None
         try:
             orientation, points, plan = await self._first_reach(
-                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
+                gripper, grasp, target, cancel, notes, checks, clearance_m=clearance_m, with_lift=with_lift,
                 test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
             )
         except (_Failed, Cancelled):
@@ -825,7 +884,7 @@ class ScriptedManipulator:
         )
 
     async def _first_reach(
-        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], checks: _Checks, *,
         clearance_m: float, with_lift: bool = False,
         test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[tuple[int, str] | None, object]]],
     ) -> tuple[Quat, tuple[Vec3, ...], object]:
@@ -835,10 +894,9 @@ class ScriptedManipulator:
         the grasp point; then the grasp point, the pose for a place; then for
         a grab (`with_lift`) the lifted point. With none, the failure names
         the last orientation tried, its point that does not pass and the
-        words for it."""
+        words for it. Each call of `test` counts in `checks`."""
         names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "place point")
         last_refusal = ""
-        checks = _Checks()
         for index, orientation in enumerate(grasp.orientations):
             points = (pre_grasp(grasp.point, orientation, clearance_m), grasp.point)
             if with_lift:
