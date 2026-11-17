@@ -473,6 +473,15 @@ ended, fails the place with the jaws closed: the gripper still holds the
 item. A climb that fails is logged and the place still succeeds, since the
 item is down and the jaws are open.
 
+A drop and the release of a place run on the release step of
+`ScriptedManipulator`, which opens the gripper and, for a place, climbs
+back. A step returns its `StepRecord`: its name, what it was asked, its
+result, its `StepFailure` (`no_reach`, `move`, `alignment` or `stopped`)
+with the words, and its measured numbers, the unit in each name. The
+sequence keeps the records in order and stops at the first one with a
+failure, whose words end the outcome, and the outcome keeps the records in
+`Outcome.steps`, which no comparison of two outcomes reads.
+
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
 the eight rolls of a grasp from above. Under the centre of the box of an open
 item, a mug or a bowl seen from above, the camera sees the inside bottom, so

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Optional, Protocol, Sequence
 
@@ -307,12 +307,17 @@ class Gripper:
 class Outcome:
     """What a manipulation backend reports when a sequence ends. The
     measured grasp-point position when the jaws opened, for place_item, and
-    when the jaws closed on the item, for a grab_item that held it."""
+    when the jaws closed on the item, for a grab_item that held it. `steps`
+    are the records of the steps the sequence ran, in order, for a backend
+    that keeps them (the scripted manipulator's `StepRecord`): what
+    happened on the way, so two outcomes that report the same compare equal
+    whatever their steps."""
 
     success: bool
     message: str = ""
     final_position: Optional[Vec3] = None
     closed_at: Optional[Vec3] = None
+    steps: tuple[object, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)

@@ -104,6 +104,14 @@ holds the item. A place reports where the grasp point stood when the jaws
 opened. A climb that fails is logged, and the place still succeeds: the
 jaws are open and the item is down.
 
+A drop and the release of a place run on the release step: it opens the
+gripper and, for a place, climbs back to the pre-place point. A step
+returns its `StepRecord`: its name, what it was asked, its result, why it
+failed and its measured numbers. The sequence keeps the records in order
+and stops at the first one with a failure, whose message ends the
+outcome; the outcome keeps the records in `steps`. A cancel raises
+`Cancelled`, as in every step.
+
 The manipulator keeps nothing between goals: ids and held flags live in
 `State`.
 """
@@ -113,8 +121,9 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Awaitable, Callable, Generic, Mapping, Optional, Sequence, TypeVar
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
@@ -244,6 +253,62 @@ class _Reach:
     log_descent: Callable[[Vec3, Vec3, Quat, CancelToken], Awaitable[None]]
 
 
+class StepFailure(StrEnum):
+    """Why a step did not go through."""
+
+    # No orientation has a plan: nothing moved.
+    NO_REACH = "no_reach"
+    # A move, a plan or a jaw move did not complete.
+    MOVE = "move"
+    # The aligner gave up, ran out of steps or could not observe.
+    ALIGNMENT = "alignment"
+    # A stop ended the goal of the step.
+    STOPPED = "stopped"
+
+
+StepResult = TypeVar("StepResult")
+
+
+@dataclass(frozen=True)
+class StepRecord(Generic[StepResult]):
+    """One step of a sequence as it ran: `step` its name ("carry", "align",
+    "descend" or "release"), `inputs` what it was asked, `result` what the
+    next step reads, none when the step failed, `failure` and `message` why
+    it failed, and `measured` its numbers, the unit in each name."""
+
+    step: str
+    inputs: Mapping[str, object]
+    result: Optional[StepResult] = None
+    failure: Optional[StepFailure] = None
+    message: str = ""
+    measured: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Released:
+    """How a release ended: the opening the jaws stood at once open, and
+    for a release that climbs, whether the arm got back to its climb
+    point; none for one that does not climb."""
+
+    opening: float
+    climbed: Optional[bool] = None
+
+
+def _failed_step(step: str, inputs: Mapping[str, object], failure: _Failed, kind: StepFailure = StepFailure.MOVE) -> StepRecord:
+    """The record of `step` that `failure` ended: `kind`, or `STOPPED` when
+    a stop ended its goal."""
+    return StepRecord(step, inputs, failure=StepFailure.STOPPED if failure.stopped else kind, message=failure.message)
+
+
+def _passed(record: StepRecord[StepResult], steps: list[StepRecord]) -> StepResult:
+    """Keeps `record` in `steps` and gives its result. A record with a
+    failure ends the sequence: `_Failed` with its message."""
+    steps.append(record)
+    if record.failure is not None:
+        raise _Failed(record.message, stopped=record.failure is StepFailure.STOPPED)
+    return record.result
+
+
 async def _nothing(*_) -> None:
     return None
 
@@ -332,18 +397,20 @@ class ScriptedManipulator:
         return outcome
 
     async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome:
+        steps: list[StepRecord] = []
         try:
             self._require_started()
-            await self._grip(gripper.name, OPEN, 0.0, cancel)
+            _passed(await self._release(gripper, cancel), steps)
         except _Failed as failure:
-            return Outcome(False, failure.message)
-        return Outcome(True)
+            return Outcome(False, failure.message, steps=tuple(steps))
+        return Outcome(True, steps=tuple(steps))
 
     async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
+        steps: list[StepRecord] = []
         try:
-            return await self._place(gripper, pose, cancel)
+            return await self._place(gripper, pose, cancel, steps)
         except _Failed as failure:
-            return Outcome(False, failure.message)
+            return Outcome(False, failure.message, steps=tuple(steps))
 
     async def stop(self) -> None:
         """Nothing of its own: the lane's stop cancels the robot's move in
@@ -494,7 +561,7 @@ class ScriptedManipulator:
         state = snapshot.arms.get(arm) if snapshot is not None else None
         return state.position if state is not None else None
 
-    async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
+    async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
         self._require_started()
         # Jaws closed on air since the grab: the item slipped on the way, and
         # a place would carry nothing. The caller learns it here, before any
@@ -526,17 +593,35 @@ class ScriptedManipulator:
                 "place with gripper '%s' ended its line down on contact %s from the place point: it releases there",
                 gripper.name, _offset_cm(landed.final_position, point),
             )
-        await self._grip(gripper.name, OPEN, 0.0, cancel)
+        _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
+        return Outcome(True, "", landed.final_position, steps=tuple(steps))
+
+    async def _release(
+        self, gripper: Gripper, cancel: CancelToken, climb: Optional[tuple[Vec3, Quat]] = None
+    ) -> StepRecord[Released]:
+        """The release step: opens `gripper` where its arm stands, then, given
+        `climb`, a point and an orientation, moves the arm straight up to it.
+        A jaw move that does not complete fails the step. A climb that fails
+        is logged and the step still goes through: the jaws are open and the
+        item is down, and the arm stays where the climb stopped."""
+        inputs = {"gripper": gripper.name, "climb_to": climb[0] if climb is not None else None}
         try:
-            await self._move(gripper.arm, pre, orientation, cancel)
+            opening = await self._grip(gripper.name, OPEN, 0.0, cancel)
         except _Failed as failure:
-            # The jaws are open and the item is down: the place went
-            # through, and the arm stays where the climb stopped.
+            return _failed_step("release", inputs, failure)
+        measured = {"opening": opening}
+        if climb is None:
+            return StepRecord("release", inputs, Released(opening), measured=measured)
+        point, orientation = climb
+        try:
+            await self._move(gripper.arm, point, orientation, cancel)
+        except _Failed as failure:
             logger.warning(
                 "place with gripper '%s' released the item, but the climb back to the pre-place point failed: %s",
                 gripper.name, failure.message,
             )
-        return Outcome(True, "", landed.final_position)
+            return StepRecord("release", inputs, Released(opening, climbed=False), measured=measured)
+        return StepRecord("release", inputs, Released(opening, climbed=True), measured=measured)
 
     def _require_started(self) -> None:
         reason = self.why_unavailable()
