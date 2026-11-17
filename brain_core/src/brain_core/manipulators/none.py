@@ -8,7 +8,9 @@ that the brain has no model. abort and get_state work as on any brain.
 
 from __future__ import annotations
 
-from ..ports import CancelToken, Gripper, Item, Outcome, Pose
+from typing import Optional, Union
+
+from ..ports import CancelToken, Gripper, Item, Outcome, Pose, TargetItem
 
 
 class NoneManipulator:
@@ -26,10 +28,10 @@ class NoneManipulator:
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
         return Outcome(False, self.why_unavailable())
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome:
+    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
         return Outcome(False, self.why_unavailable())
 
-    async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
         return Outcome(False, self.why_unavailable())
 
     async def stop(self) -> None:

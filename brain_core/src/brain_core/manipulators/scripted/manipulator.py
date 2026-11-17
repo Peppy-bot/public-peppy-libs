@@ -82,7 +82,8 @@ the item's width; where the descent's result put the grasp point against
 the commanded one, and whether the descent ended on contact; limb_state's
 grasp point at the close; the two openings it judged; and the retreat.
 
-A drop opens the gripper where it is. A place first reads the gripper's
+A drop opens the gripper where it is. A place into a target item and a
+drop above one end at once with `TARGETS_REFUSED`. A place first reads the gripper's
 opening from the latest snapshot: jaws below `hold_opening_min` stand
 closed on air, the item slipped since the grab, and the place fails
 before any move, naming it. It then carries the held item above the
@@ -126,10 +127,10 @@ import math
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Awaitable, Callable, Generic, Mapping, Optional, Sequence, TypeVar
+from typing import Awaitable, Callable, Generic, Mapping, Optional, Sequence, TypeVar, Union
 
 from ...limb_state import LimbSnapshot
-from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
+from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, TargetItem, Vec3
 from ...robot import ArmDescription, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
 from ...waiting import until
 from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps, Stopped
@@ -203,6 +204,8 @@ APPROACH_MARGIN_M = 0.015
 OPEN = 1.0
 CLOSED = 0.0
 NOT_STARTED = "the scripted manipulator has not been started"
+# What a place into an item and a drop above one end with.
+TARGETS_REFUSED = "the scripted manipulator places at a pose and drops where the arm stands: it takes no target item"
 
 
 class _Failed(Exception):
@@ -424,19 +427,23 @@ class ScriptedManipulator:
             logger.info("grab of item '%s' with gripper '%s': %s", item.item_id, gripper.name, "; ".join(notes))
         return outcome
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome:
+    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
         steps: list[StepRecord] = []
         try:
+            if above is not None:
+                raise _Failed(TARGETS_REFUSED)
             self._require_started()
             _passed(await self._release(gripper, cancel), steps)
         except _Failed as failure:
             return Outcome(False, failure.message, steps=tuple(steps))
         return Outcome(True, steps=tuple(steps))
 
-    async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
         steps: list[StepRecord] = []
         try:
-            return await self._place(gripper, pose, cancel, steps)
+            if isinstance(to, TargetItem):
+                raise _Failed(TARGETS_REFUSED)
+            return await self._place(gripper, to, cancel, steps)
         except _Failed as failure:
             return Outcome(False, failure.message, steps=tuple(steps))
 
