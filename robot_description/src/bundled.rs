@@ -207,7 +207,7 @@ mod tests {
                 ] {
                     let values = description
                         .state(&arm.name, posture)
-                        .unwrap_or_else(|| panic!("{} {}: {posture}", bundled.id(), arm.name));
+                        .unwrap_or_else(|unknown| panic!("{}: {unknown}", bundled.id()));
                     assert_eq!(values.len(), arm.joints.len());
                 }
                 for finger in &arm.gripper.fingers {

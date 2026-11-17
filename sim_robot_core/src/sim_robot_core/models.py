@@ -177,9 +177,11 @@ def _gripper(gripper) -> Gripper:
 def _start_posture(source: str, description: RobotDescription) -> dict[str, float]:
     posture: dict[str, float] = {}
     for arm in description.arms:
-        home = description.state(arm.name, HOME)
-        if home is None:
-            raise _fail(source, f"the description gives the arm '{arm.name}' no {HOME} state")
+        try:
+            home = description.state(arm.name, HOME)
+        except KeyError as unknown:
+            reason = f"the description gives the arm '{arm.name}' no {HOME} state"
+            raise _fail(source, reason) from unknown
         posture.update(zip(arm.joints, home, strict=True))
         posture.update((finger.joint, finger.span.closed) for finger in arm.gripper.fingers)
     return posture

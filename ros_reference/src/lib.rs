@@ -280,9 +280,7 @@ impl Robot {
     pub fn group_arms(&self, name: &str, group: &str) -> Vec<Arm> {
         self.description
             .group_arms(group)
-            .unwrap_or_else(|| {
-                panic!("{name}: the group {group} is neither an arm nor a group of arms")
-            })
+            .unwrap_or_else(|unknown| panic!("{name}: {unknown}"))
             .into_iter()
             .cloned()
             .collect()

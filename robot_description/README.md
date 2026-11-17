@@ -64,7 +64,7 @@ the farthest depths it measures, meters along its view ([`DepthRange`]):
 let model = robot_description::model("openarm_v2")?;
 let description = model.description();
 for arm in description.arms() {
-    let ready = description.state(&arm.name, robot_description::states::READY);
+    let ready = description.state(&arm.name, robot_description::states::READY)?;
     println!("{}: {:?} from {} to {}", arm.name, ready, arm.base_link, arm.grasp_link);
 }
 ```

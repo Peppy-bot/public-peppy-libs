@@ -34,6 +34,23 @@ pub struct UnknownLink {
     pub link: String,
 }
 
+/// A group that [`RobotDescription::group_arms`](crate::RobotDescription::group_arms) is
+/// asked about and that is no arm and no group of arms of the description's SRDF.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the SRDF has no arm and no group of arms named {group:?}")]
+pub struct UnknownGroup {
+    pub group: String,
+}
+
+/// A state that [`RobotDescription::state`](crate::RobotDescription::state) is asked
+/// about and the description's SRDF does not give the group.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the SRDF gives the group {group:?} no state named {state:?}")]
+pub struct UnknownState {
+    pub group: String,
+    pub state: String,
+}
+
 /// A URDF and an SRDF that do not make one description.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum DescriptionError {

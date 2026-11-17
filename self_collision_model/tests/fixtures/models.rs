@@ -59,7 +59,7 @@ pub fn posture<const N: usize, const K: usize>(
         let group = &description.arms()[index].name;
         description
             .state(group, name)
-            .unwrap_or_else(|| panic!("{group} has the posture {name}"))
+            .unwrap_or_else(|unknown| panic!("{unknown}"))
             .try_into()
             .unwrap_or_else(|_| panic!("the posture {name} of {group} holds {N} joints"))
     })

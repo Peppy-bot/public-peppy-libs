@@ -189,10 +189,9 @@ fn arm_joints<const N: usize>(
 ) -> Result<[f64; N], String> {
     let positions = match args.joints.iter().rfind(|(name, _)| *name == arm.name) {
         Some((_, positions)) => positions.as_slice(),
-        None => description.state(&arm.name, states::HOME).ok_or(format!(
-            "{} has no home state; give --joints {}=<positions>",
-            arm.name, arm.name
-        ))?,
+        None => description
+            .state(&arm.name, states::HOME)
+            .map_err(|unknown| format!("{unknown}; give --joints {}=<positions>", arm.name))?,
     };
     positions.try_into().map_err(|_| {
         format!(

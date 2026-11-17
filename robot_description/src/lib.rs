@@ -73,7 +73,9 @@ pub use description::{
     RobotDescription, mesh_name,
 };
 pub use driven::{Driven, DrivenModels, UndrivenModel};
-pub use error::{DescriptionError, FingerSpanError, UnknownJoint, UnknownLink};
+pub use error::{
+    DescriptionError, FingerSpanError, UnknownGroup, UnknownJoint, UnknownLink, UnknownState,
+};
 pub use shape::{NodeArms, OnShape, UnsupportedShape, on_shape};
 pub use transforms::{LinkTransform, LinkTransformError};
 

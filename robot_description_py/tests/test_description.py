@@ -51,7 +51,6 @@ def test_each_arm_gives_its_chain_and_its_gripper():
         ]
         closed = description.state(arm.gripper.name, CLOSED)
         opened = description.state(arm.gripper.name, OPEN)
-        assert closed is not None and opened is not None
         assert fingers[0].span.closed == closed[0] and fingers[0].span.open == opened[0]
         # The second finger follows the first one to one, as the URDF's <mimic> gives it.
         assert fingers[0].mimic is None
@@ -91,7 +90,7 @@ def test_the_transforms_place_every_link_but_the_root():
     (jaw,) = arm.gripper.fingers
     for opening, state in [(0.0, CLOSED), (1.0, OPEN)]:
         values = description.state(arm.gripper.name, state)
-        assert values is not None and len(values) == 1
+        assert len(values) == 1
         assert arm.gripper.finger_positions_at(opening) == {jaw.joint: pytest.approx(values[0])}
     for transform in transforms:
         x, y, z, w = transform.orientation
@@ -111,14 +110,15 @@ def test_a_mimic_needs_a_finite_multiplier_and_offset(values):
         Mimic("leader", *values)
 
 
-def test_a_state_gives_one_position_per_joint_or_none():
+def test_a_state_gives_one_position_per_joint_and_an_unknown_one_raises():
     description = model("so101").description()
     (arm,) = description.arms
     for posture in [READY, HOME, START]:
-        positions = description.state(arm.name, posture)
-        assert positions is not None and len(positions) == len(arm.joints)
-    assert description.state(arm.name, "no_such_state") is None
-    assert description.state("no_such_group", READY) is None
+        assert len(description.state(arm.name, posture)) == len(arm.joints)
+    for group, state in [(arm.name, "no_such_state"), ("no_such_group", READY)]:
+        refusal = f'the SRDF gives the group "{group}" no state named "{state}"'
+        with pytest.raises(KeyError, match=refusal):
+            description.state(group, state)
 
 
 def test_each_camera_gives_its_optical_frame():

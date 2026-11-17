@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use chain_kinematics::{JointKind, Mimic, Tree};
 use urdf_rs::{Joint, JointType, Robot};
 
-use crate::error::{DescriptionError, FingerSpanError, UnknownJoint, UnknownLink};
+use crate::error::{
+    DescriptionError, FingerSpanError, UnknownGroup, UnknownJoint, UnknownLink, UnknownState,
+};
 use crate::gazebo::{self, DepthSensor};
 use crate::srdf::{self, Srdf};
 use crate::states;
@@ -345,25 +347,40 @@ impl RobotDescription {
 
     /// The arms of the group `name`, in the order a state of the group holds their joints:
     /// the group itself when it is an arm, else the groups it holds, each an arm, in the
-    /// SRDF's order of them. None for a group that is neither, or for no group.
-    pub fn group_arms(&self, name: &str) -> Option<Vec<&Arm>> {
+    /// SRDF's order of them. A group that is neither, and a group the SRDF lacks, are
+    /// refused ([`UnknownGroup`]).
+    pub fn group_arms(&self, name: &str) -> Result<Vec<&Arm>, UnknownGroup> {
+        let unknown = || UnknownGroup {
+            group: name.to_string(),
+        };
         if let Some(arm) = self.arms.iter().find(|arm| arm.name == name) {
-            return Some(vec![arm]);
+            return Ok(vec![arm]);
         }
-        let (_, subgroups) = self.group_sets.iter().find(|(group, _)| group == name)?;
+        let (_, subgroups) = self
+            .group_sets
+            .iter()
+            .find(|(group, _)| group == name)
+            .ok_or_else(unknown)?;
         subgroups
             .iter()
             .map(|subgroup| self.arms.iter().find(|arm| arm.name == *subgroup))
-            .collect()
+            .collect::<Option<_>>()
+            .ok_or_else(unknown)
     }
 
     /// The state `name` of `group`: a position for each joint of the group that moves of
-    /// its own, in the group's order, which for an arm is the order of [`Arm::joints`].
-    pub fn state(&self, group: &str, name: &str) -> Option<&[f64]> {
+    /// its own, in the group's order, which for an arm is the order of [`Arm::joints`]. A
+    /// state the SRDF does not give the group, as for a group the SRDF lacks, is refused
+    /// ([`UnknownState`]).
+    pub fn state(&self, group: &str, name: &str) -> Result<&[f64], UnknownState> {
         self.states
             .iter()
             .find(|state| state.group == group && state.name == name)
             .map(|state| state.values.as_slice())
+            .ok_or_else(|| UnknownState {
+                group: group.to_string(),
+                state: name.to_string(),
+            })
     }
 
     /// The pairs of links whose collisions are disabled, each of two links with collision
@@ -1042,9 +1059,15 @@ mod tests {
                 .group_arms(group)
                 .map(|arms| arms.iter().map(|arm| arm.name.as_str()).collect::<Vec<_>>())
         };
-        assert_eq!(names("arm"), Some(vec!["arm"]));
+        assert_eq!(names("arm"), Ok(vec!["arm"]));
         for group in ["all", "gripper", "no_such_group"] {
-            assert_eq!(names(group), None, "{group}");
+            assert_eq!(
+                names(group),
+                Err(UnknownGroup {
+                    group: group.to_string()
+                }),
+                "{group}"
+            );
         }
         let both = crate::model("openarm_v2")
             .expect("a bundled model")
@@ -1105,14 +1128,23 @@ mod tests {
         let description = RobotDescription::parse(URDF, SRDF).expect("the description");
         assert_eq!(
             description.state("arm", "ready"),
-            Some([0.5, -0.25].as_slice())
+            Ok([0.5, -0.25].as_slice())
         );
-        assert_eq!(
-            description.state("gripper", "open"),
-            Some([0.04].as_slice())
-        );
-        assert_eq!(description.state("arm", "open"), None);
-        assert_eq!(description.state("gripper", "ready"), None);
+        assert_eq!(description.state("gripper", "open"), Ok([0.04].as_slice()));
+        for (group, state) in [
+            ("arm", "open"),
+            ("gripper", "ready"),
+            ("no_such_group", "ready"),
+        ] {
+            assert_eq!(
+                description.state(group, state),
+                Err(UnknownState {
+                    group: group.to_string(),
+                    state: state.to_string()
+                }),
+                "{group} {state}"
+            );
+        }
     }
 
     #[test]

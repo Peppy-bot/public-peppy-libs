@@ -170,10 +170,13 @@ impl PyRobotDescription {
     }
 
     /// The state `name` of the group `group`: a position for each joint of
-    /// the group that moves of its own, in the group's order, or None for a
-    /// state the SRDF does not give.
-    fn state(&self, group: &str, name: &str) -> Option<Vec<f64>> {
-        self.0.state(group, name).map(<[f64]>::to_vec)
+    /// the group that moves of its own, in the group's order. A state the
+    /// SRDF does not give the group raises KeyError.
+    fn state(&self, group: &str, name: &str) -> PyResult<Vec<f64>> {
+        self.0
+            .state(group, name)
+            .map(<[f64]>::to_vec)
+            .map_err(|unknown| PyKeyError::new_err(unknown.to_string()))
     }
 
     /// The optical frame of each camera the robot carries, with the depths
