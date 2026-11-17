@@ -48,11 +48,11 @@ error, so it is a refusal at construction.
 | Refused | What you would get otherwise |
 |---|---|
 | A joint named twice in `JointSelection::Named` | The later slot wins, so the earlier entry of `q` moves nothing: the caller commands two joints and the arm honours one |
-| An actuated joint with no usable range (absent `<limit>`, or an infinite or inverted one) | A joint that turns freely confined to an invented range, so the chain refuses motion the mechanism has |
+| An actuated joint with no range (its lower and upper limits equal, as an absent `<limit>` leaves them) | A joint that turns freely confined to an invented range, so the chain refuses motion the mechanism has |
 | A `<mimic>` coupling with either end among the actuated joints | `q` poses only the joints it names, so the coupled joint stays behind and the reported tip is a pose the mechanism cannot hold. A coupling clear of the chain, as a gripper's two fingers are, is left alone |
 | A tip that is not below the base, or a joint that is not on the path | A frame composed from an unrelated branch |
 | A tool link reached through a joint that moves | A "fixed" tool offset that tracks the gripper opening |
-| A URDF that is not a single tree of joints that each take one position (`TreeError`: a link or a joint given twice, a joint naming a link the URDF lacks, a link on two joints, joints in a loop, other than one root link, a floating, planar or spherical joint), or `N` disagreeing with the chain's joint count | Every fixed-size type below built on a count that is not the robot's |
+| A URDF that is not a single tree of joints that each take one position (`TreeError`: a link or a joint given twice, a joint naming a link the URDF lacks, a link on two joints, joints in a loop, other than one root link, a floating, planar or spherical joint, a moving joint whose axis is not finite or is zero, or whose limits are not finite and in order), or `N` disagreeing with the chain's joint count | Every fixed-size type below built on a count that is not the robot's |
 
 robot_description holds the URDF of every description to the same tree rules
 (`Tree::from_robot`).

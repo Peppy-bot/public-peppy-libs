@@ -59,10 +59,10 @@ impl JointKind {
 pub struct Joint {
     pub name: String,
     pub child: usize,
-    pub origin: Isometry3<f64>,
-    pub kind: JointKind,
-    /// `None` when the URDF declares no usable range (an absent `<limit>` leaves
-    /// `lower == upper == 0`, and a continuous joint has no range by definition).
+    /// Where the joint holds its child link: its origin and how it moves.
+    pub placement: JointPlacement,
+    /// The lower and upper limits of a joint that moves, as its URDF gives them, finite
+    /// and in order; `None` for a fixed joint, which declares none.
     pub limit: Option<(f64, f64)>,
     /// The joint this one's position is bound to by a URDF `<mimic>`, if any.
     /// Carried rather than resolved: a coupling below the tip is another
@@ -71,9 +71,26 @@ pub struct Joint {
 }
 
 impl Joint {
+    /// The child link's frame in the parent link's frame at position `q`, as its
+    /// [`JointPlacement`] gives it.
+    pub fn pose_at(&self, q: f64) -> Isometry3<f64> {
+        self.placement.pose_at(q)
+    }
+}
+
+/// Where a joint holds its child link: the joint's origin in the parent link's frame
+/// and how it moves. It is `Copy`, for a caller that places a child link at each query
+/// without holding the joint.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JointPlacement {
+    pub origin: Isometry3<f64>,
+    pub kind: JointKind,
+}
+
+impl JointPlacement {
     /// The child link's frame in the parent link's frame at position `q`: the
     /// joint's origin, then its motion. A fixed joint is at its origin for every `q`.
-    pub fn pose_at(&self, q: f64) -> Isometry3<f64> {
+    pub fn pose_at(self, q: f64) -> Isometry3<f64> {
         self.origin * self.kind.motion(q)
     }
 }
@@ -168,15 +185,15 @@ impl Tree {
             }
             children[parent].push(idx);
             parents.push(parent);
+            let kind = kind_of(j)?;
             joints.push(Joint {
                 name: j.name.clone(),
                 child,
-                origin: pose_of(&j.origin),
-                kind: kind_of(j)?,
-                // An absent <limit> defaults both bounds to zero; a continuous
-                // joint is unbounded. Either way there is no range to report.
-                limit: ((j.limit.upper - j.limit.lower) != 0.0)
-                    .then_some((j.limit.lower, j.limit.upper)),
+                placement: JointPlacement {
+                    origin: pose_of(&j.origin),
+                    kind,
+                },
+                limit: limit_of(j, kind)?,
                 mimic: j.mimic.as_ref().map(|m| m.joint.clone()),
             });
         }
@@ -280,14 +297,14 @@ impl Tree {
     pub fn fixed_path_to(&self, from: usize, to: &str) -> Option<Isometry3<f64>> {
         for &j in &self.children[from] {
             let joint = &self.joints[j];
-            if joint.kind.is_movable() {
+            if joint.placement.kind.is_movable() {
                 continue;
             }
             if self.links[joint.child].name == to {
-                return Some(joint.origin);
+                return Some(joint.placement.origin);
             }
             if let Some(rest) = self.fixed_path_to(joint.child, to) {
-                return Some(joint.origin * rest);
+                return Some(joint.placement.origin * rest);
             }
         }
         None
@@ -297,7 +314,7 @@ impl Tree {
     /// the branch continuing an arm from a fixed mount or a gripper.
     pub fn subtree_has_revolute(&self, link: usize) -> bool {
         self.children[link].iter().any(|&j| {
-            matches!(self.joints[j].kind, JointKind::Revolute { .. })
+            matches!(self.joints[j].placement.kind, JointKind::Revolute { .. })
                 || self.subtree_has_revolute(self.joints[j].child)
         })
     }
@@ -346,23 +363,59 @@ fn inertia_of(i: &urdf_rs::Inertia) -> Matrix3<f64> {
     )
 }
 
+/// The least norm a moving joint's `<axis>` may have, a direction vector without a unit:
+/// normalizing a shorter one gives no direction.
+const LEAST_AXIS_NORM: f64 = 1e-12;
+
 /// The joint's kind, or a refusal for the kinds this library cannot pose.
 ///
 /// A floating, planar or spherical joint occupies more than one configuration
 /// slot, so treating it as anything simpler silently welds or misplaces every
 /// link below it. Refused for the whole model, not just the chain: a multi-slot
 /// joint anywhere makes the tree's single-value-per-joint contract a lie.
+///
+/// A joint that moves turns about or slides along its axis, normalized here; an axis
+/// that is not finite, or shorter than [`LEAST_AXIS_NORM`], gives no direction and is
+/// refused.
 fn kind_of(j: &urdf_rs::Joint) -> Result<JointKind, TreeError> {
-    let axis = || Unit::new_normalize(Vector3::new(j.axis.xyz[0], j.axis.xyz[1], j.axis.xyz[2]));
+    let axis = || {
+        let axis = Vector3::from(*j.axis.xyz);
+        if axis.iter().all(|c| c.is_finite()) && axis.norm() >= LEAST_AXIS_NORM {
+            Ok(Unit::new_normalize(axis))
+        } else {
+            Err(TreeError::JointAxis {
+                joint: j.name.clone(),
+                axis: *j.axis.xyz,
+            })
+        }
+    };
     match &j.joint_type {
         urdf_rs::JointType::Revolute | urdf_rs::JointType::Continuous => {
-            Ok(JointKind::Revolute { axis: axis() })
+            Ok(JointKind::Revolute { axis: axis()? })
         }
-        urdf_rs::JointType::Prismatic => Ok(JointKind::Prismatic { axis: axis() }),
+        urdf_rs::JointType::Prismatic => Ok(JointKind::Prismatic { axis: axis()? }),
         urdf_rs::JointType::Fixed => Ok(JointKind::Fixed),
         other => Err(TreeError::MultiPositionJoint {
             joint: j.name.clone(),
             kind: format!("{other:?}").to_lowercase(),
         }),
     }
+}
+
+/// The joint's range of positions, the lower and upper limits its URDF gives, for a joint
+/// that moves: refused when they are not finite, or when the lower one stands above the
+/// upper one. `None` for a fixed joint, which declares none.
+fn limit_of(j: &urdf_rs::Joint, kind: JointKind) -> Result<Option<(f64, f64)>, TreeError> {
+    if !kind.is_movable() {
+        return Ok(None);
+    }
+    let (lower, upper) = (j.limit.lower, j.limit.upper);
+    if !(lower.is_finite() && upper.is_finite() && lower <= upper) {
+        return Err(TreeError::JointLimits {
+            joint: j.name.clone(),
+            lower,
+            upper,
+        });
+    }
+    Ok(Some((lower, upper)))
 }

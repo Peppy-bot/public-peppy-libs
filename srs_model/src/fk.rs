@@ -116,7 +116,7 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
             .iter()
             .copied()
             .filter(|&j| {
-                matches!(tree.joint(j).kind, JointKind::Revolute { .. })
+                matches!(tree.joint(j).placement.kind, JointKind::Revolute { .. })
                     || tree.subtree_has_revolute(tree.joint(j).child)
             })
             .collect();
@@ -134,7 +134,7 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
                 )
             }));
         };
-        if matches!(tree.joint(joint).kind, JointKind::Revolute { .. }) {
+        if matches!(tree.joint(joint).placement.kind, JointKind::Revolute { .. }) {
             revolute += 1;
         }
         link = tree.joint(joint).child;
