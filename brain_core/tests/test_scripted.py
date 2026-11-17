@@ -21,6 +21,8 @@ from brain_core.manipulators.scripted.manipulator import (
     HELD_ITEM_DEPTH_M,
     GRIP_SETTLE_TIMEOUT_S,
     LIFT_M,
+    LINE_DOWN_CONTACT_GAP_M,
+    LINE_DOWN_SPEED_M_S,
     MOVE_DURATION_S,
     NO_CONTACT_CHECK_M,
     NOT_STARTED,
@@ -29,6 +31,7 @@ from brain_core.manipulators.scripted.manipulator import (
     SETTLE_POSITION_M,
     SETTLE_TIMEOUT_S,
     ScriptedManipulator,
+    line_down_duration_s,
 )
 from brain_core.ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Senses
 from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult
@@ -823,3 +826,18 @@ async def test_a_place_stopped_below_the_release_point_is_off_the_line_down_and_
 def test_the_release_point_stands_below_the_lower_pre_place_point():
     with pytest.raises(ValueError, match="release_height_m must be at least 0 and below clearance_m"):
         ScriptedManipulator(CentreProposer(), release_height_m=0.075)
+
+
+def test_a_line_down_takes_its_length_divided_by_its_speed():
+    # 2 cm of gap, so no arm stands between a settle and a contact; 5 cm/s.
+    assert (LINE_DOWN_CONTACT_GAP_M, LINE_DOWN_SPEED_M_S) == (0.02, 0.05)
+    assert line_down_duration_s((0.6, 0.0, 0.9), (0.6, 0.0, 0.75), LINE_DOWN_SPEED_M_S) == pytest.approx(3.0)
+    assert line_down_duration_s((0.5, 0.1, 0.77), (0.5, 0.1, 0.695), 0.025) == pytest.approx(3.0)
+    assert line_down_duration_s((0.6, 0.0, 0.75), (0.6, 0.0, 0.75), LINE_DOWN_SPEED_M_S) == 0.0
+
+
+@pytest.mark.parametrize("setting", ["line_down_contact_gap_m", "line_down_speed_m_s"])
+@pytest.mark.parametrize("value", [0.0, -0.01, float("nan")])
+def test_the_contact_gap_and_the_speed_of_a_line_down_are_above_0(setting, value):
+    with pytest.raises(ValueError, match=f"{setting} must be above 0"):
+        ScriptedManipulator(CentreProposer(), **{setting: value})

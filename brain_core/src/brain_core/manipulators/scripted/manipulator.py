@@ -170,6 +170,13 @@ NO_CONTACT_CHECK_M = 0.0
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
 SETTLE_TIMED_OUT = "timeout"
+# A line down, the descent of a grab or of a place, has its own contact gap
+# and its own speed. The gap is the settle position tolerance, 2 cm, so no
+# arm stands between a settle and a contact. The duration of a line down is
+# its length divided by the speed (`line_down_duration_s`): 3 s for the
+# 15 cm from the high pre-place point.
+LINE_DOWN_CONTACT_GAP_M = 0.02
+LINE_DOWN_SPEED_M_S = 0.05
 # Where the line down of a place ends and the jaws open: this far above the
 # pose, so the arm does not press the item on what it is set on. The item
 # falls the last part, and the brain records it where the jaws opened. An
@@ -272,6 +279,8 @@ class ScriptedManipulator:
         approach_margin_m: float = APPROACH_MARGIN_M,
         release_height_m: float = RELEASE_HEIGHT_M,
         allowed_planning_time_s: float = ALLOWED_PLANNING_TIME_S,
+        line_down_contact_gap_m: float = LINE_DOWN_CONTACT_GAP_M,
+        line_down_speed_m_s: float = LINE_DOWN_SPEED_M_S,
         aligner: Optional[Aligner] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -279,6 +288,10 @@ class ScriptedManipulator:
             raise ValueError(
                 f"release_height_m must be at least 0 and below clearance_m, the lower pre-place point: got {release_height_m} and {clearance_m}"
             )
+        if not line_down_contact_gap_m > 0.0:
+            raise ValueError(f"line_down_contact_gap_m must be above 0, so a line down stops on contact: got {line_down_contact_gap_m}")
+        if not line_down_speed_m_s > 0.0:
+            raise ValueError(f"line_down_speed_m_s must be above 0: got {line_down_speed_m_s}")
         self.proposer = proposer
         # The model that corrects the gripper above the item before the
         # descent; none for the grab with no model.
@@ -297,6 +310,8 @@ class ScriptedManipulator:
         self.approach_margin_m = approach_margin_m
         self.release_height_m = release_height_m
         self.allowed_planning_time_s = allowed_planning_time_s
+        self.line_down_contact_gap_m = line_down_contact_gap_m
+        self.line_down_speed_m_s = line_down_speed_m_s
         # The brain's monotonic clock, for the checks' time in the log line.
         self._clock = clock
         self._robot = None
@@ -844,6 +859,12 @@ class ScriptedManipulator:
         if after is None:
             raise _Failed("no limb_states snapshot after the lift")
         return after
+
+
+def line_down_duration_s(start: Vec3, end: Vec3, speed_m_s: float) -> float:
+    """The duration of a line down from `start` to `end`: its length divided
+    by `speed_m_s`."""
+    return math.dist(start, end) / speed_m_s
 
 
 def _short_on_the_way_down(start: Vec3, end: Vec3, at: Optional[Vec3], off_line_m: float) -> bool:
