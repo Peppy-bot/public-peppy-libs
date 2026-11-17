@@ -172,7 +172,7 @@ impl<const N: usize> Chain<N> {
         let mut here = Isometry3::identity();
         for &j in &self.path {
             let joint = self.tree.joint(j);
-            here *= joint.origin * joint.kind.motion(0.0);
+            here *= joint.pose_at(0.0);
             if joint.child == link {
                 return here;
             }
@@ -256,7 +256,7 @@ impl<const N: usize> Chain<N> {
             // and contribute a constant offset.
             let driven = self.driven_by[slot];
             let value = driven.map_or(0.0, |i| q[i]);
-            here *= joint.origin * joint.kind.motion(value);
+            here *= joint.pose_at(value);
             if let Some(i) = driven {
                 joint_world[i] = here;
             }

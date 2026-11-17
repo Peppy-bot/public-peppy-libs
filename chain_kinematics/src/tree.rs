@@ -70,6 +70,14 @@ pub struct Joint {
     pub mimic: Option<String>,
 }
 
+impl Joint {
+    /// The child link's frame in the parent link's frame at position `q`: the
+    /// joint's origin, then its motion. A fixed joint is at its origin for every `q`.
+    pub fn pose_at(&self, q: f64) -> Isometry3<f64> {
+        self.origin * self.kind.motion(q)
+    }
+}
+
 /// One link's rigid-body data, in the link frame. Links carry no pose of their
 /// own: a link's frame *is* its parent joint's frame.
 #[derive(Debug, Clone)]
@@ -258,7 +266,7 @@ impl Tree {
         while let Some((at, here)) = queue.pop_front() {
             for &j in &self.children[at] {
                 let joint = &self.joints[j];
-                let below = here * joint.origin * joint.kind.motion(value(j));
+                let below = here * joint.pose_at(value(j));
                 out.push((joint.child, below));
                 queue.push_back((joint.child, below));
             }
