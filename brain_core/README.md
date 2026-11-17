@@ -362,10 +362,13 @@ the OpenArm v2, or fails with `timeout` `settle_timeout_s` (2 s) after
 its planned end, with the backbone's words, such as `still 8.0 mm / 0.02 rad
 from the target, 2.0 s after the planned end`. Every arm move names the
 contract's `contact_gap_m` as 0, no contact check, and the fastest duration,
-but the line down of a place: it names `line_down_contact_gap_m` (2 cm, the
-settle position tolerance, so no arm stands between a settle and a contact),
-and its duration is its length divided by `line_down_speed_m_s` (5 cm/s): 3 s
-for the 15 cm from the high pre-place point. A check asks with the same
+but a line down, the descent of a grab and the line down of a place: it
+names `line_down_contact_gap_m` (2 cm, the settle position tolerance, so no
+arm stands between a settle and a contact), and its duration is its length
+divided by `line_down_speed_m_s` (5 cm/s): 1.5 s for the 7.5 cm of a grab's
+descent, 3 s for the 15 cm from the high pre-place point. A grab whose
+descent ends on contact closes there, where the fingers met the item or what
+is under it. A check asks with the same
 pose and duration. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
 jaws to stand still.
 
@@ -384,7 +387,8 @@ sequenceDiagram
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
     Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws open
-    SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
+    SM->>R: move_arm(pre-grasp): settles, or fails
+    SM->>R: move_arm(grasp point), a line down: settles or ends on contact, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
     SM->>R: move_arm(lifted point)
@@ -441,8 +445,8 @@ Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
 item's width; where the descent's result put the
 grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the
-arm settled; limb_state's grasp point at the close; the two openings it
-judged; and the retreat.
+arm settled or ended on contact, and `on contact` when it did; limb_state's
+grasp point at the close; the two openings it judged; and the retreat.
 
 A place whose jaws stand closed on air (an opening below `hold_opening_min`
 in the latest snapshot: the item slipped since the grab) fails before any

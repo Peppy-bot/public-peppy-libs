@@ -16,9 +16,11 @@ A grab:
    pre-grasp point; with an `aligner` (its port is `aligning.py`), a model then looks
    through the wrist and chest cameras and corrects the gripper's place
    and turn above the item, and the pre-grasp, grasp and lifted points
-   become the aligned ones; then moves to the grasp point;
-4. closes with the goal's `max_effort` and judges the hold from the
-   result's `final_opening`: below `hold_opening_min` the jaws met nothing;
+   become the aligned ones; then moves to the grasp point on a line down
+   that stops on contact;
+4. closes where the line down ended, at the grasp point or on contact,
+   with the goal's `max_effort` and judges the hold from the result's
+   `final_opening`: below `hold_opening_min` the jaws met nothing;
 5. lifts, then judges the hold again from the first limb_states snapshot
    captured after the lift's result, waiting up to `snapshot_wait_s` for
    it: below `hold_opening_min`, or more than `hold_drop_max` below the
@@ -32,9 +34,9 @@ the measured grasp point stands within `settle_position_m` and
 planned end; a gripper move waits up to `grip_settle_timeout_s` for the
 jaws to stand still. A check asks with the arm move's pose and duration.
 Every arm move names the contact gap 0, no contact check, and the fastest
-duration, but the line down of a place: it stops on contact, with
-`line_down_contact_gap_m`, and runs slowly, its duration its length divided
-by `line_down_speed_m_s`.
+duration, but a line down, the descent of a grab and of a place: it stops
+on contact, with `line_down_contact_gap_m`, and runs slowly, its duration
+its length divided by `line_down_speed_m_s`.
 
 The transit, the move to the pre-grasp point and to the pre-place point,
 is the one step that depends on the motion planner (`_transit`). Without
@@ -76,9 +78,9 @@ a gripper that holds nothing.
 
 Each grab leaves one log line: the orientation that planned, with how many
 check_arm_move calls ran and their total time; how wide the jaws opened for
-the item's width; where the descent's result
-put the grasp point against the commanded one; limb_state's grasp point at
-the close; the two openings it judged; and the retreat.
+the item's width; where the descent's result put the grasp point against
+the commanded one, and whether the descent ended on contact; limb_state's
+grasp point at the close; the two openings it judged; and the retreat.
 
 A drop opens the gripper where it is. A place first reads the gripper's
 opening from the latest snapshot: jaws below `hold_opening_min` stand
@@ -385,7 +387,7 @@ class ScriptedManipulator:
             pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
         await reach.log_descent(point, lift, orientation, cancel)
         try:
-            return await self._descend_close_lift(item, gripper, max_effort, orientation, point, lift, cancel, notes)
+            return await self._descend_close_lift(item, gripper, max_effort, orientation, pre, point, lift, cancel, notes)
         except _Failed as failure:
             if failure.stopped:
                 raise
@@ -397,14 +399,16 @@ class ScriptedManipulator:
             raise
 
     async def _descend_close_lift(
-        self, item: Item, gripper: Gripper, max_effort: float, orientation: Quat, point: Vec3, lift: Vec3,
+        self, item: Item, gripper: Gripper, max_effort: float, orientation: Quat, pre: Vec3, point: Vec3, lift: Vec3,
         cancel: CancelToken, notes: list[str],
     ) -> Outcome:
-        """The grab from its descent on: down to `point`, close, judge, lift
-        to `lift`, judge again. A hold reports where limb_states put the
-        grasp point when the jaws closed."""
-        landed = await self._move(gripper.arm, point, orientation, cancel)
-        notes.append(f"landed {_offset_cm(landed.final_position, point)} from the grasp point")
+        """The grab from its descent on: the line down from `pre` to `point`,
+        close where it ended, judge, lift to `lift`, judge again. A hold
+        reports where limb_states put the grasp point when the jaws
+        closed."""
+        landed = await self._line_down(gripper.arm, pre, point, orientation, cancel)
+        on_contact = ", on contact" if landed.ended_on_contact else ""
+        notes.append(f"landed {_offset_cm(landed.final_position, point)} from the grasp point{on_contact}")
         closed = await self._grip(gripper.name, CLOSED, max_effort, cancel)
         closed_at = self._arm_position(gripper.arm)
         notes.append(f"limb_state at the close {_offset_cm(closed_at, point)} from it")

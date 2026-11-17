@@ -226,7 +226,12 @@ async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     holding(robot, store)
     assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
-    assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
+    expected = [(kind, bars[kind]) for kind in robot.kinds()]
+    # The descent, the second move, is a line down: the 7.5 cm from the
+    # pre-grasp point at 5 cm/s take 1.5 s, and it stops on contact.
+    descent = [index for index, kind in enumerate(robot.kinds()) if kind == "move"][1]
+    expected[descent] = ("move", line_down_bars(1.5))
+    assert robot.bars == expected
     # Settle within 2 cm and 0.15 rad, 2 s after the planned end at most, with
     # no contact check; the jaws get 2 s to stand still.
     assert MOVE_BARS == dict(
@@ -271,6 +276,28 @@ async def test_the_log_line_gives_where_the_descent_settled_against_the_grasp_po
     assert "landed [-0.3, +0.2, -0.1] cm from the grasp point" in line
 
 
+async def test_a_descent_that_ends_on_contact_closes_where_the_arm_stopped_and_the_log_says_so(caplog):
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    # The fingers meet the desk 1.2 cm above the grasp point.
+    robot.moves.extend([arrived(), touched((GRASP[0], GRASP[1], GRASP[2] + 0.012), DOWN[0])])
+    with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
+        assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
+    # The jaws close right after the descent, and the lift goes on as ever.
+    assert robot.calls[-3:] == [("move", GRASP, DOWN[0]), ("grip", "left_gripper", 0.0, 12.0), ("move", LIFT, DOWN[0])]
+    [line] = [record.getMessage() for record in log.records]
+    assert "landed [+0.0, +0.0, +1.2] cm from the grasp point, on contact; limb_state at the close" in line
+
+
+async def test_the_contact_gap_and_the_speed_of_a_grabs_descent_are_the_line_down_settings():
+    manipulator, robot, store = await started(line_down_contact_gap_m=0.01, line_down_speed_m_s=0.025)
+    holding(robot, store)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+    moves = [bars for kind, bars in robot.bars if kind == "move"]
+    # The pre-grasp move and the lift name the bars of every arm move.
+    assert moves == [MOVE_BARS, line_down_bars(3.0, 0.01), MOVE_BARS]
+
+
 # A step that fails once the descent has begun retreats: the gripper opens
 # and the arm climbs straight back to the pre-grasp point.
 
@@ -302,6 +329,16 @@ async def test_a_close_on_nothing_retreats_with_no_lift():
     assert robot.calls[-3] == ("grip", "left_gripper", 0.0, 0.0) and robot.calls[-2:] == RETREAT
     # The only moves are the reach and the retreat: no lift.
     assert robot.kinds().count("move") == 3
+
+
+async def test_a_descent_that_ended_on_contact_and_closed_on_nothing_retreats_as_any_other():
+    manipulator, robot, store = await started()
+    holding(robot, store, closed=0.01)
+    robot.moves.extend([arrived(), touched(GRASP, DOWN[0])])
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "gripper 'left_gripper' closed on nothing")
+    # The retreat is no line down: the bars of every arm move.
+    assert robot.calls[-2:] == RETREAT and robot.bars[-1] == ("move", MOVE_BARS)
 
 
 async def test_a_failed_lift_retreats():
