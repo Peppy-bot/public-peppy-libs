@@ -39,7 +39,7 @@ from test_scripted_alignment import started as started_with_aligner
 
 from brain_core.manipulators.scripted.aligning import Aligned, GaveUp, OutOfSteps, Stopped
 from brain_core.manipulators.none import NoneManipulator
-from brain_core.manipulators.scripted.manipulator import TARGETS_REFUSED, Landed, Released, StepFailure, StepRecord
+from brain_core.manipulators.scripted.manipulator import Landed, Released, StepFailure, StepRecord
 from brain_core.ports import Cancelled, CancelToken, Outcome, Pose, TargetItem
 from brain_core.robot import ArmDescriptions, GripResult, MoveCheck, MoveEnd, PathResult
 
@@ -348,15 +348,9 @@ async def test_an_alignment_that_cannot_observe_ends_the_place_with_a_failed_ali
     assert (outcome.steps[-1].failure, outcome.steps[-1].measured) == (StepFailure.ALIGNMENT, {})
 
 
-# The port takes a target item: a place into it and a drop above it.
+# The none manipulator refuses a target item as any sequence.
 
 BOWL = TargetItem("wooden_bowl_1-t0", "wooden bowl", (0.337, 0.0), 0.531, 0.443, 0.192)
-
-
-async def test_the_scripted_manipulator_refuses_a_drop_above_a_target_item_before_any_move():
-    manipulator, robot, _ = await started()
-    assert await manipulator.drop(LEFT, CancelToken(), above=BOWL) == Outcome(False, TARGETS_REFUSED)
-    assert robot.calls == []
 
 
 async def test_the_none_manipulator_refuses_a_target_item_as_any_sequence():

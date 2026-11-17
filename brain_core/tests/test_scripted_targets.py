@@ -145,3 +145,55 @@ async def test_a_model_that_gives_up_above_the_bowl_fails_the_place_before_the_l
     outcome = await place_into(manipulator)
     assert outcome == Outcome(False, "the model gave up after 2 steps")
     assert robot.kinds() == ["check", "check", "move"]
+
+
+# A drop above the bowl: the carry to its pre-place point with that point
+# alone in the reach test, the alignment with no descent after it, the jaws
+# opened there, no climb.
+
+async def test_a_drop_above_a_bowl_carries_above_its_rim_and_opens_there_with_no_descent_and_no_climb(caplog):
+    manipulator, robot, _ = await started()
+    with records_of(caplog, LOG) as log:
+        outcome = await manipulator.drop(LEFT, CancelToken(), above=BOWL)
+    assert outcome == Outcome(True)
+    assert robot.calls == [("check", HIGH, Q), ("move", HIGH, Q), ("grip", "left_gripper", 1.0, 0.0)]
+    assert [record.step for record in outcome.steps] == ["carry", "release"]
+    assert outcome.steps[-1].inputs["climb_to"] is None
+    assert [record.getMessage() for record in log.records] == [
+        "drop with gripper 'left_gripper' above item 'wooden_bowl_1-t0': orientation 1 of 8 planned, "
+        "[0.000, 1.000, 0.000, 0.000] (1 check, 0 ms)"
+    ]
+
+
+async def test_a_drop_above_a_bowl_that_no_orientation_reaches_fails_with_its_id_and_keeps_the_item():
+    manipulator, robot, _ = await started()
+    robot.checks.extend([MoveCheck(False, "no plan")] * (2 * len(DOWN)))
+    outcome = await manipulator.drop(LEFT, CancelToken(), above=BOWL)
+    assert outcome.message.startswith("no plan reaches item 'wooden_bowl_1-t0' with gripper 'left_gripper'")
+    assert "grip" not in robot.kinds() and "move" not in robot.kinds()
+
+
+async def test_a_drop_above_a_bowl_with_the_jaws_closed_on_air_carries_nothing_and_opens_where_the_arm_stands():
+    manipulator, robot, _ = await started(opening=0.02)
+    assert await manipulator.drop(LEFT, CancelToken(), above=BOWL) == Outcome(True)
+    assert robot.calls == [("grip", "left_gripper", 1.0, 0.0)]
+
+
+async def test_the_alignment_of_a_drop_above_a_bowl_is_told_no_descent_follows():
+    aligned_pre = (0.35, 0.03, HIGH[2])
+    aligner = FakeAligner(Aligned(aligned_pre, aligned_pre, aligned_pre, Q, steps=1))
+    manipulator, robot, _, _ = await started_with_aligner(aligner)
+    outcome = await manipulator.drop(LEFT, CancelToken(), above=BOWL)
+    assert outcome.success and [record.step for record in outcome.steps] == ["carry", "align", "release"]
+    [request] = aligner.requests
+    assert request.into == BOWL and request.descends is False and (request.pre, request.point) == (HIGH, HIGH)
+    # The jaws open where the aligner left the arm: no move after it.
+    assert robot.kinds()[-1] == "grip"
+
+
+async def test_a_planned_drop_above_a_bowl_plans_to_its_pre_place_point_and_tests_no_line():
+    from test_planned_transit import started as started_with_planner
+
+    manipulator, robot, _ = await started_with_planner()
+    assert (await manipulator.drop(LEFT, CancelToken(), above=BOWL)).success
+    assert [call[0] for call in robot.calls] == ["describe", "plan", "run", "grip"]
