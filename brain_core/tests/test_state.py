@@ -6,7 +6,7 @@ import math
 import pytest
 
 from brain_core.limbs import Limb, parse_limbs
-from brain_core.ports import Coverage, Detection, ItemShape, Refusal
+from brain_core.ports import Coverage, Detection, FailureKind, ItemShape, Refusal, TargetItem
 from brain_core.state import State, best_match, new_run_token
 from brain_core.words import content_words, named_by, normalised
 
@@ -131,6 +131,28 @@ def test_the_holder_rules_for_drop_and_place():
     assert state.holder("right_gripper").name == "right_gripper"
     state.forget_dropped(state.grippers["right_gripper"], "cup_2")
     assert state.snapshot() == (["left_gripper", "right_gripper"], [True, False], ["cup_1", ""])
+
+
+def test_a_target_is_a_known_item_that_no_gripper_holds():
+    state = make_state()
+    bowl, cup = state.remember(
+        [Detection("bowl", (0.40, 0.00, 0.46), 0.9, width_m=0.18, top_z=0.53), Detection("cup", (0.30, 0.20, 0.72), 0.9)],
+        now_ns=1, coverage=EVERY,
+    )
+    left, right = state.grippers["left_gripper"], state.grippers["right_gripper"]
+    state.set_held(left, cup.item_id)
+    assert state.target_item(bowl.item_id, left) == TargetItem(bowl.item_id, "bowl", (0.40, 0.00), 0.53, 0.46, 0.18)
+    with pytest.raises(Refusal, match="unknown item 'mug_1-t0': scan or identify it again") as unknown:
+        state.target_item("mug_1-t0", left)
+    with pytest.raises(Refusal) as itself:
+        state.target_item(cup.item_id, left)
+    assert itself.value.message == "item 'cup_1-t0' is the item that gripper 'left_gripper' holds: it cannot be its own target"
+    with pytest.raises(Refusal) as other:
+        state.target_item(cup.item_id, right)
+    assert other.value.message == "target item 'cup_1-t0' is held by gripper 'left_gripper'"
+    assert (unknown.value.kind, itself.value.kind, other.value.kind) == (
+        FailureKind.REJECTED, FailureKind.REJECTED, FailureKind.PRECONDITION_FAILED,
+    )
 
 
 def test_a_scan_keeps_ids_for_items_that_stayed_and_drops_the_ones_that_left():

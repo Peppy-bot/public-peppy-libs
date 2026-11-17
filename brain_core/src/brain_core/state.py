@@ -69,6 +69,10 @@ Rules written down here because the code depends on them:
   closes, when a grab_item goal addressed it by pose or a place_item put
   it down (`Item.position_is_grasp_point`); a look that sees it again
   makes its position the seen point again.
+- Targets. A place or a drop names the item to put the held item in or
+  on by its id (`target_item`): a known item, not the item the gripper
+  holds, and none that another gripper holds. The target value is what
+  the brain knew of the item when the goal started (`TargetItem.of`).
 - Holding follows results, not jaws. A gripper holds an item after a
   successful grab and stops holding after a successful drop or place.
   Refusals, failures, cancels and aborts leave the flag as it was. A grab
@@ -93,7 +97,7 @@ import secrets
 from typing import Callable, Optional, Sequence
 
 from .limbs import Limb
-from .ports import Coverage, Detection, FailureKind, Gripper, Item, ItemShape, Quat, Refusal, Vec3
+from .ports import Coverage, Detection, FailureKind, Gripper, Item, ItemShape, Quat, Refusal, TargetItem, Vec3
 from .words import content_words, named_by
 
 MATCH_RADIUS_M = 0.05
@@ -289,6 +293,21 @@ class State:
         if holder is not None:
             raise Refusal(FailureKind.PRECONDITION_FAILED, f"item '{item_id}' is held by gripper '{holder.name}'")
         return item
+
+    def target_item(self, target_item_id: str, gripper: Gripper) -> TargetItem:
+        """The target value of the known item that a place or a drop with
+        `gripper` puts the held item in or on (`TargetItem.of`). Refused when
+        the id names no known item, when it names the item `gripper` holds,
+        and when another gripper holds it."""
+        holder = self.holder_of(target_item_id)
+        if holder is gripper:
+            raise Refusal(
+                FailureKind.REJECTED,
+                f"item '{target_item_id}' is the item that gripper '{gripper.name}' holds: it cannot be its own target",
+            )
+        if holder is not None:
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"target item '{target_item_id}' is held by gripper '{holder.name}'")
+        return TargetItem.of(self.item(target_item_id))
 
     def holder_of(self, item_id: str) -> Optional[Gripper]:
         return next((gripper for gripper in self.grippers.values() if gripper.held_item_id == item_id), None)
