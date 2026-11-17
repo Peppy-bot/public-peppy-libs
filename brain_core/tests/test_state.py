@@ -1,6 +1,8 @@
 """The rules in State, each one a test: gripper resolution, the holding
 flag, item ids across looks and runs, and the best match for a description."""
 
+import math
+
 import pytest
 
 from brain_core.limbs import Limb, parse_limbs
@@ -219,7 +221,6 @@ def test_items_sharing_a_place_keep_their_own_ids():
 BOWL_BOX = ItemShape((0.45, 0.0, 0.405), (0.16, 0.16, 0.07), 0.0)
 
 
-@pytest.mark.xfail(strict=True, reason="slice 0c of ROBOTAI-41: State._match measures the distance of two boxes on their footprint")
 @pytest.mark.parametrize("seen_points", [
     # Two fruits placed with no look between them: a rise of 9.1 cm.
     [(0.45, 0.0, 0.381), (0.45, 0.0, 0.472)],
@@ -231,6 +232,72 @@ def test_a_container_keeps_its_id_while_it_fills(seen_points):
     for now_ns, seen in enumerate(seen_points, start=1):
         [bowl] = state.remember([Detection("bowl", seen, 0.9, shape=BOWL_BOX)], now_ns=now_ns, coverage=EVERY)
         assert bowl.item_id == "bowl_1-t0"
+
+
+# The covering scans of the box session of 2026-11-18: the wooden bowl
+# empty, then with one fruit and with two in it. Once a fruit lies in it,
+# the depth step fits the bowl's box around a fruit.
+EMPTY_BOWL_BOX = ItemShape((0.337, 0.000, 0.487), (0.192, 0.196, 0.088), 0.0)
+ONE_FRUIT_BOX = ItemShape((0.334, -0.029, 0.486), (0.065, 0.053, 0.087), math.radians(88))
+TWO_FRUITS_BOX = ItemShape((0.360, -0.021, 0.487), (0.060, 0.050, 0.090), math.radians(88))
+
+
+def test_a_bowl_that_fills_keeps_its_id_and_its_box_and_the_top_follows_the_higher():
+    state = make_state()
+    [bowl] = state.remember([Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX)], now_ns=1, coverage=EVERY)
+    # One fruit: the seen point rose 5.5 cm and moved 5 cm aside, 7.5 cm in
+    # all; the new box, a fruit's, lies inside the bowl's footprint, and its
+    # top (0.5295) is under the bowl's (0.531).
+    [again] = state.remember([Detection("wooden bowl", (0.330, -0.002, 0.516), 0.9, shape=ONE_FRUIT_BOX)], now_ns=2, coverage=EVERY)
+    assert again is bowl and bowl.item_id == "wooden_bowl_1-t0"
+    assert bowl.position == (0.330, -0.002, 0.516) and bowl.shape == EMPTY_BOWL_BOX
+    # Two fruits: the new box's top, 0.532, is the higher one now.
+    state.remember([Detection("wooden bowl", (0.339, -0.003, 0.506), 0.9, shape=TWO_FRUITS_BOX)], now_ns=3, coverage=EVERY)
+    assert bowl.item_id == "wooden_bowl_1-t0"
+    assert bowl.shape.centre[:2] == EMPTY_BOWL_BOX.centre[:2] and bowl.shape.sides[:2] == EMPTY_BOWL_BOX.sides[:2]
+    assert bowl.shape.centre[2] - bowl.shape.sides[2] / 2 == pytest.approx(0.443)
+    assert bowl.shape.centre[2] + bowl.shape.sides[2] / 2 == pytest.approx(0.532)
+    assert set(state.items) == {"wooden_bowl_1-t0"}
+
+
+def test_a_look_with_no_box_matches_by_its_seen_point_in_the_footprint_and_leaves_no_box():
+    state = make_state()
+    [bowl] = state.remember([Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX)], now_ns=1, coverage=EVERY)
+    # 8 cm from the last seen point, inside the footprint.
+    [again] = state.remember([Detection("bowl", (0.300, -0.010, 0.470), 0.9)], now_ns=2, coverage=EVERY)
+    assert again is bowl and bowl.shape is None
+
+
+def test_a_new_box_that_is_not_inside_the_footprint_replaces_the_known_box():
+    state = make_state()
+    [bowl] = state.remember([Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX)], now_ns=1, coverage=EVERY)
+    # The bowl moved 4 cm: its new box sticks out of the old footprint.
+    moved = ItemShape((0.377, 0.000, 0.487), (0.192, 0.196, 0.088), 0.0)
+    [again] = state.remember([Detection("wooden bowl", (0.420, -0.008, 0.461), 0.9, shape=moved)], now_ns=2, coverage=EVERY)
+    assert again is bowl and bowl.shape == moved
+
+
+def test_with_a_known_box_the_footprint_and_not_the_radius_decides():
+    state = make_state()
+    [bowl] = state.remember([Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX)], now_ns=1, coverage=EVERY)
+    # A second bowl, its seen point 3 cm from the first bowl's, its box
+    # centre outside the first bowl's footprint: another bowl.
+    other_box = ItemShape((0.540, 0.000, 0.487), (0.192, 0.196, 0.088), 0.0)
+    first, second = state.remember(
+        [Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX), Detection("wooden bowl", (0.410, -0.008, 0.461), 0.9, shape=other_box)],
+        now_ns=2, coverage=EVERY,
+    )
+    assert first is bowl and second.item_id == "wooden_bowl_2-t0"
+
+
+def test_a_scan_takes_an_item_by_its_place_alone_by_the_radius_and_not_by_the_footprint():
+    state = make_state()
+    state.remember([Detection("wooden bowl", (0.380, -0.008, 0.461), 0.9, shape=EMPTY_BOWL_BOX)], now_ns=1, coverage=EVERY)
+    # The covering scan sees only an apple, inside the bowl's footprint but
+    # 6.9 cm from the bowl's seen point, under words that share none with
+    # the bowl's: the apple is a new item, and the bowl, unseen, is dropped.
+    [apple] = state.remember([Detection("red apple", (0.320, -0.026, 0.521), 0.9)], now_ns=2, coverage=EVERY)
+    assert apple.item_id == "red_apple_1-t0" and set(state.items) == {"red_apple_1-t0"}
 
 
 def test_an_identify_search_takes_no_near_item_whose_label_shares_no_word():
