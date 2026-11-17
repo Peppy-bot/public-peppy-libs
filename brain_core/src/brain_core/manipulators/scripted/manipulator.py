@@ -85,8 +85,8 @@ Each place logs one line before its line down: a pre-place point lower than
 the first, the orientation that planned with the calls it took, and the
 aligner's correction.
 
-A drop opens the gripper where it is. A place into a target item and a
-drop above one end at once with `TARGETS_REFUSED`. A place first reads the gripper's
+A drop opens the gripper where it is; a drop above a target item ends at
+once with `TARGETS_REFUSED`. A place first reads the gripper's
 opening from the latest snapshot: jaws below `hold_opening_min` stand
 closed on air, the item slipped since the grab, and the place fails
 before any move, naming it. It then carries the held item above the
@@ -107,6 +107,19 @@ another kind, or that a stop ended, fails the place, and the gripper still
 holds the item. A place reports where the grasp point stood when the jaws
 opened. A climb that fails is logged, and the place still succeeds: the
 jaws are open and the item is down.
+
+A place into a target item (a `TargetItem`, what the brain knew of the
+item when the goal started) carries the held item from above, at each roll,
+to its pre-place point `above_target_m` over the target's top, or
+`clearance_m` over it where the backbone has no plan that high. The reach
+test checks the line down to the target's bottom, the surface under it.
+With an aligner, the model then corrects the held item's place above the
+target, told the target's label and width. The line down runs from the
+pre-place point to the target's bottom and stops on contact: the item
+rests on the target's floor or on what the target holds, and the jaws open
+where the arm stopped, or at the bottom when the line met nothing; the
+place logs which, and climbs back. A target that no orientation reaches
+fails the place before any move, with the target's id in the words.
 
 A place and a grab carry the arm to their pre point on the carry step:
 the transit and the move there. With an aligner, each then runs the align
@@ -213,8 +226,8 @@ APPROACH_MARGIN_M = 0.015
 OPEN = 1.0
 CLOSED = 0.0
 NOT_STARTED = "the scripted manipulator has not been started"
-# What a place into an item and a drop above one end with.
-TARGETS_REFUSED = "the scripted manipulator places at a pose and drops where the arm stands: it takes no target item"
+# What a drop above an item ends with.
+TARGETS_REFUSED = "the scripted manipulator drops where the arm stands: it takes no target item"
 
 
 class _Failed(Exception):
@@ -453,7 +466,7 @@ class ScriptedManipulator:
         steps: list[StepRecord] = []
         try:
             if isinstance(to, TargetItem):
-                raise _Failed(TARGETS_REFUSED)
+                return await self._place_into(gripper, to, cancel, steps)
             return await self._place(gripper, to, cancel, steps)
         except _Failed as failure:
             return Outcome(False, failure.message, steps=tuple(steps))
@@ -614,11 +627,12 @@ class ScriptedManipulator:
         state = snapshot.arms.get(arm) if snapshot is not None else None
         return state.position if state is not None else None
 
-    async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
+    def _refuse_a_place_before_any_move(self, gripper: Gripper) -> None:
+        """What ends a place before any move: a manipulator not started,
+        jaws closed on air since the grab (the item slipped on the way, and a
+        place would carry nothing; the caller drops to let the brain forget
+        the item), and an aligner that cannot align the arm now."""
         self._require_started()
-        # Jaws closed on air since the grab: the item slipped on the way, and
-        # a place would carry nothing. The caller learns it here, before any
-        # move, and drops to let the brain forget the item.
         opening = self._limb_states.latest.opening(gripper.name)
         if opening is not None and opening < self.hold_opening_min:
             raise _Failed(f"gripper '{gripper.name}' holds nothing now: its jaws stand at {opening:.2f}, closed on air; drop to let it go")
@@ -626,6 +640,9 @@ class ScriptedManipulator:
             reason = self.aligner.why_unavailable(gripper.arm)
             if reason:
                 raise _Failed(f"no alignment: {reason}")
+
+    async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
+        self._refuse_a_place_before_any_move(gripper)
         try:
             orientations = orientations_for(pose.orientation)
         except ValueError as error:
@@ -651,6 +668,46 @@ class ScriptedManipulator:
             logger.info(
                 "place with gripper '%s' ended its line down on contact %s from the place point: it releases there",
                 gripper.name, _offset_cm(landed.position, point),
+            )
+        _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
+        return Outcome(True, "", landed.position, steps=tuple(steps))
+
+    async def _place_into(self, gripper: Gripper, target: TargetItem, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
+        """A place into or onto `target`: the carry to the pre-place point
+        `above_target_m` over the target's top (`clearance_m` where that has
+        no plan), from above at each roll, with the line down to the
+        target's bottom in its reach test; the alignment, told the target;
+        the line down, which ends on contact where the item comes to rest, or
+        at the target's bottom when it meets nothing; the release and the
+        climb back. It reports where the line down left the grasp point."""
+        self._refuse_a_place_before_any_move(gripper)
+        notes: list[str] = []
+        end = (target.centre[0], target.centre[1], target.bottom_z)
+        carried = _passed(
+            await self._carry(
+                gripper, Grasp(end, orientations_for(None)), f"item '{target.item_id}'", cancel, notes,
+                heights_m=(self.above_target_m, self.clearance_m), rise_m=max(0.0, target.top_z - target.bottom_z),
+                height_words=f"the top of item '{target.item_id}'",
+            ),
+            steps,
+        )
+        orientation, (pre, point) = carried.orientation, carried.points
+        if self.aligner is not None:
+            top = (target.centre[0], target.centre[1], target.top_z)
+            request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=top, into=target)
+            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            pre, point, orientation = aligned.pre, aligned.point, aligned.orientation
+        logger.info("place with gripper '%s' into item '%s': %s", gripper.name, target.item_id, "; ".join(notes))
+        landed = _passed(await self._descend(gripper.arm, pre, point, orientation, cancel), steps)
+        if landed.on_contact:
+            logger.info(
+                "place with gripper '%s' into item '%s' ended its line down on contact %s from the item's bottom: it releases there",
+                gripper.name, target.item_id, _offset_cm(landed.position, point),
+            )
+        else:
+            logger.info(
+                "place with gripper '%s' into item '%s' met nothing down to the item's bottom: it releases there",
+                gripper.name, target.item_id,
             )
         _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
         return Outcome(True, "", landed.position, steps=tuple(steps))

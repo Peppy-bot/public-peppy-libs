@@ -353,11 +353,9 @@ async def test_an_alignment_that_cannot_observe_ends_the_place_with_a_failed_ali
 BOWL = TargetItem("wooden_bowl_1-t0", "wooden bowl", (0.337, 0.0), 0.531, 0.443, 0.192)
 
 
-async def test_the_scripted_manipulator_refuses_a_target_item_before_any_move():
+async def test_the_scripted_manipulator_refuses_a_drop_above_a_target_item_before_any_move():
     manipulator, robot, _ = await started()
-    placed = await manipulator.place(LEFT, BOWL, CancelToken())
-    dropped = await manipulator.drop(LEFT, CancelToken(), above=BOWL)
-    assert placed == dropped == Outcome(False, TARGETS_REFUSED)
+    assert await manipulator.drop(LEFT, CancelToken(), above=BOWL) == Outcome(False, TARGETS_REFUSED)
     assert robot.calls == []
 
 
