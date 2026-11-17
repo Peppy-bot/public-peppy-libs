@@ -30,7 +30,7 @@ use frame_tree::{NotFinite, Transform};
 
 /// lidar_2d:v1's range of a ray the sensor could not measure, or of a surface
 /// nearer than `min_range_m`.
-const UNMEASURED_MARK_M: f32 = 0.0;
+pub const UNMEASURED_MARK_M: f32 = 0.0;
 
 /// lidar_2d:v1's range of a ray that met nothing within `max_range_m`, above
 /// every `max_range_m` the contract allows.
