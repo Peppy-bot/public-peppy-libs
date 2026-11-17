@@ -81,6 +81,9 @@ check_arm_move calls ran and their total time; how wide the jaws opened for
 the item's width; where the descent's result put the grasp point against
 the commanded one, and whether the descent ended on contact; limb_state's
 grasp point at the close; the two openings it judged; and the retreat.
+Each place logs one line before its line down: a pre-place point lower than
+the first, the orientation that planned with the calls it took, and the
+aligner's correction.
 
 A drop opens the gripper where it is. A place into a target item and a
 drop above one end at once with `TARGETS_REFUSED`. A place first reads the gripper's
@@ -151,6 +154,12 @@ LIFT_M = 0.075
 # near its body, so where this is too high the pre-place point stands at
 # the clearance alone.
 HELD_ITEM_DEPTH_M = 0.075
+# How high the pre-place point of a place into a target item stands above
+# the item's top, before it tries `clearance_m`: in Waldo the OpenArm has a
+# plan pointing down 12.5 cm above the rim of a bowl near its body with
+# either arm, and 15 cm has none for the left arm (the box session of
+# 2026-11-18).
+ABOVE_TARGET_M = 0.125
 HOLD_OPENING_MIN = 0.05
 # How far the opening may fall from the close to after the lift while the
 # jaws still hold the item. In Waldo a held fruit's fell 0.003 to 0.013 (the
@@ -353,6 +362,7 @@ class ScriptedManipulator:
         clearance_m: float = CLEARANCE_M,
         lift_m: float = LIFT_M,
         held_item_depth_m: float = HELD_ITEM_DEPTH_M,
+        above_target_m: float = ABOVE_TARGET_M,
         hold_opening_min: float = HOLD_OPENING_MIN,
         hold_drop_max: float = HOLD_DROP_MAX,
         snapshot_wait_s: float = SNAPSHOT_WAIT_S,
@@ -379,6 +389,7 @@ class ScriptedManipulator:
         self.clearance_m = clearance_m
         self.lift_m = lift_m
         self.held_item_depth_m = held_item_depth_m
+        self.above_target_m = above_target_m
         self.hold_opening_min = hold_opening_min
         self.hold_drop_max = hold_drop_max
         self.snapshot_wait_s = snapshot_wait_s
@@ -473,7 +484,7 @@ class ScriptedManipulator:
         carried = _passed(
             await self._carry(
                 gripper, grasp, f"item '{item.item_id}'", cancel, notes,
-                heights_m=(self.clearance_m,), with_lift=True, item=item, notes_the_orientation=True,
+                heights_m=(self.clearance_m,), with_lift=True, item=item,
             ),
             steps,
         )
@@ -684,33 +695,37 @@ class ScriptedManipulator:
 
     async def _carry(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
-        heights_m: tuple[float, ...], with_lift: bool = False, item: Optional[Item] = None, notes_the_orientation: bool = False,
+        heights_m: tuple[float, ...], rise_m: float = 0.0, height_words: str = "the pose", with_lift: bool = False,
+        item: Optional[Item] = None,
     ) -> StepRecord[Carried]:
-        """The carry step: the transit to the pre point the first of
-        `heights_m` back along the approach from the grasp point of `grasp`,
-        then the move there; at each next height when no orientation reaches
-        the one before, which `notes` says in a place's words. Its points:
-        the pre point, the grasp point (the pose for a place), and for a grab
-        (`with_lift`) the lifted point. `notes_the_orientation` puts the
-        orientation that planned and the calls it took in `notes`, as a grab
-        logs it. No orientation that reaches at any height fails the step
+        """The carry step: the transit to the pre point `rise_m` and the
+        first of `heights_m` back along the approach from the grasp point of
+        `grasp`, then the move there; at each next height when no orientation
+        reaches the one before, which `notes` says, the heights above
+        `height_words`. `rise_m` is how far the reference of the heights
+        stands above the grasp point: 0 for a grab and for a place at a pose,
+        the depth of the target for a place into it, whose line down ends at
+        its bottom. Its points: the pre point, the grasp point (the end of
+        the line down for a place), and for a grab (`with_lift`) the lifted
+        point. `notes` gets the orientation that planned and the calls it
+        took. No orientation that reaches at any height fails the step
         before anything moves; a transit that does not complete fails it
         and undoes what it added for `item`, and so does a cancel before it
         raises."""
-        inputs = {"reference": grasp.point, "orientations": grasp.orientations, "heights_m": heights_m}
+        inputs = {"reference": grasp.point, "orientations": grasp.orientations, "heights_m": heights_m, "rise_m": rise_m}
         checks = _Checks()
-        transit_notes = notes if notes_the_orientation else []
         for index, height in enumerate(heights_m):
             try:
                 reach = await self._transit(
-                    gripper, grasp, target, cancel, transit_notes, checks, clearance_m=height, with_lift=with_lift, item=item,
+                    gripper, grasp, target, cancel, notes, checks, clearance_m=rise_m + height, with_lift=with_lift, item=item,
                 )
                 break
             except _NoReach as failure:
                 if index + 1 == len(heights_m):
                     return _failed_step("carry", inputs, failure, StepFailure.NO_REACH)
                 notes.append(
-                    f"no plan {100 * height:.1f} cm above the pose: the pre-place point stands {100 * heights_m[index + 1]:.1f} cm above it"
+                    f"no plan {100 * height:.1f} cm above {height_words}: "
+                    f"the pre-place point stands {100 * heights_m[index + 1]:.1f} cm above it"
                 )
             except _Failed as failure:
                 return _failed_step("carry", inputs, failure)

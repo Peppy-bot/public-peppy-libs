@@ -312,7 +312,8 @@ async def test_a_planned_place_plans_to_the_high_pre_place_point_tests_the_line_
         ("move", HIGH, PLACE_Q),
     ]
     assert [record.getMessage() for record in log.records] == [
-        "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.600, 0.000, 0.900]"
+        "planned transit of arm 'left_arm' ran: 2 waypoints to the grasp point [0.600, 0.000, 0.900]",
+        "place with gripper 'left_gripper': orientation 1 of 1 planned, [0.000, 1.000, 0.000, 0.000] (1 plan, 1 reach test, 0 ms)",
     ]
 
 
@@ -325,9 +326,12 @@ async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplo
     assert [call for call in robot.calls if call[0] in ("plan", "move")] == [
         ("plan", HIGH, PLACE_Q), ("plan", LOW, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("move", LOW, PLACE_Q),
     ]
-    assert "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it" in [
-        record.getMessage() for record in log.records
-    ]
+    assert any(
+        record.getMessage().startswith(
+            "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it; orientation 1 of 1"
+        )
+        for record in log.records
+    )
 
 
 async def test_a_place_whose_line_down_does_not_reach_from_the_high_point_tries_the_low_one():

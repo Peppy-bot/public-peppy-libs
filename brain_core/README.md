@@ -441,7 +441,9 @@ stands through the grasp and lifted points. It logs the share of the lines
 that path covers (`checked descent of item ...`) and descends by its lines
 whatever the answer.
 
-Each grab logs one line: the orientation that planned, with the number and
+Each place logs one line before its line down: a pre-place point lower than
+the first, the orientation that planned with the calls it took, and the
+aligner's correction. Each grab logs one line: the orientation that planned, with the number and
 the total time of the check_arm_move calls; how wide the jaws opened for the
 item's width; where the descent's result put the
 grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the

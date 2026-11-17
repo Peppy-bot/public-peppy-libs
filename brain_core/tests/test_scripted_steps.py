@@ -189,7 +189,7 @@ async def test_a_grab_whose_line_down_times_out_ends_with_its_failed_descend_aft
 # tries the pre-place point 15 cm above the pose, then 7.5 cm; a grab the
 # pre-grasp point 7.5 cm back along the approach.
 
-PLACE_CARRY_INPUTS = {"reference": PLACE_POINT, "orientations": (PLACE_Q,), "heights_m": (0.15, 0.075)}
+PLACE_CARRY_INPUTS = {"reference": PLACE_POINT, "orientations": (PLACE_Q,), "heights_m": (0.15, 0.075), "rise_m": 0.0}
 LOW_ABOVE = (0.6, 0.0, 0.75 + 0.075)
 
 
@@ -243,7 +243,7 @@ async def test_a_grab_carries_the_gripper_to_the_pre_grasp_point_with_the_grasp_
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert names(outcome) == ["carry", "descend"]
     carry = record_of(outcome, "carry")
-    assert carry.inputs == {"reference": GRASP, "orientations": DOWN, "heights_m": (0.075,)}
+    assert carry.inputs == {"reference": GRASP, "orientations": DOWN, "heights_m": (0.075,), "rise_m": 0.0}
     assert (carry.result.orientation, carry.result.points) == (DOWN[0], (PRE, GRASP, LIFT))
     assert carry.measured == carry_measured(3, 0.075)
 
