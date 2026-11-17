@@ -126,8 +126,41 @@ def test_each_camera_gives_its_optical_frame():
     cameras = {camera.name: camera for camera in description.cameras}
     assert set(cameras) == {"wrist_left", "wrist_right", "chest"}
     assert cameras["chest"].parent_link == "openarm_body_link0"
+    assert {camera.frame for camera in cameras.values()} == {
+        "wrist_left_optical_frame",
+        "wrist_right_optical_frame",
+        "chest_optical_frame",
+    }
     for camera in cameras.values():
         assert len(camera.xyz) == 3 and len(camera.rpy) == 3
+
+
+@pytest.mark.parametrize(
+    ("name", "root"), [("openarm_v1", "world"), ("openarm_v2", "world"), ("so101", "base_link")]
+)
+def test_the_root_link_is_the_robot_frame(name, root):
+    assert model(name).description().root_link == root
+
+
+@pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101"])
+def test_an_arm_carries_its_grasp_link_and_fingers_and_none_carries_the_root(name):
+    description = model(name).description()
+    assert description.arm_carrying(description.root_link) is None
+    for arm in description.arms:
+        for link in [arm.grasp_link, *(finger.link for finger in arm.gripper.fingers)]:
+            carrier = description.arm_carrying(link)
+            assert carrier is not None and carrier.name == arm.name, link
+    with pytest.raises(KeyError, match='the URDF has no link named "no_such_link"'):
+        description.arm_carrying("no_such_link")
+
+
+def test_an_arm_carries_its_wrist_camera_and_none_carries_the_chest_camera():
+    description = model("openarm_v2").description()
+    carriers = {}
+    for camera in description.cameras:
+        carrier = description.arm_carrying(camera.frame)
+        carriers[camera.name] = None if carrier is None else carrier.name
+    assert carriers == {"wrist_left": "left_arm", "wrist_right": "right_arm", "chest": None}
 
 
 def test_a_depth_camera_gives_the_depths_its_sensor_clips_at():

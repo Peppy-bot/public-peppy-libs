@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use chain_kinematics::{JointKind, Mimic, Tree};
 use urdf_rs::{Joint, JointType, Robot};
 
-use crate::error::{DescriptionError, FingerSpanError, UnknownJoint};
+use crate::error::{DescriptionError, FingerSpanError, UnknownJoint, UnknownLink};
 use crate::gazebo::{self, DepthSensor};
 use crate::srdf::{self, Srdf};
 use crate::states;
@@ -194,6 +194,13 @@ pub struct CameraFrame {
     pub depth_range: Option<DepthRange>,
 }
 
+impl CameraFrame {
+    /// The camera's optical frame: the link `<name>_optical_frame` of the URDF.
+    pub fn frame(&self) -> String {
+        format!("{}{OPTICAL_FRAME_SUFFIX}", self.name)
+    }
+}
+
 /// The depths a camera measures, meters along its view (`+z` of its optical frame): the
 /// `<near>` and `<far>` of its depth sensor's `<clip>`, finite, the nearest above 0 and
 /// below the farthest.
@@ -369,6 +376,31 @@ impl RobotDescription {
     /// the depths it measures where the URDF gives it a depth sensor.
     pub fn cameras(&self) -> &[CameraFrame] {
         &self.cameras
+    }
+
+    /// The URDF's root link, the one link that hangs on no joint: the robot frame.
+    pub fn root_link(&self) -> &str {
+        &self.tree.link(self.tree.root()).name
+    }
+
+    /// The arm whose chain carries the link `link`: of the joints of every arm
+    /// ([`Arm::joints`]), the arm that holds the one nearest above the link, and of two
+    /// arms that hold it the first in the SRDF's order. None for a link that no arm's
+    /// joint moves: one fixed to the root, or one that joints of no arm alone move. A
+    /// link the URDF lacks is refused ([`UnknownLink`]).
+    pub fn arm_carrying(&self, link: &str) -> Result<Option<&Arm>, UnknownLink> {
+        let index = self.tree.link_index(link).ok_or_else(|| UnknownLink {
+            link: link.to_string(),
+        })?;
+        Ok(self
+            .tree
+            .path_to(index)
+            .into_iter()
+            .rev()
+            .find_map(|joint| {
+                let joint = &self.tree.joint(joint).name;
+                self.arms.iter().find(|arm| arm.joints.contains(joint))
+            }))
     }
 }
 
@@ -1730,5 +1762,118 @@ mod tests {
     fn a_urdf_that_does_not_parse_is_refused() {
         let refusal = RobotDescription::parse("<robot", SRDF).expect_err("a refusal");
         assert!(matches!(refusal, DescriptionError::Urdf(_)), "{refusal}");
+    }
+
+    /// The name of the arm `description` gives as carrying `link`.
+    fn carrier<'a>(description: &'a RobotDescription, link: &str) -> Option<&'a str> {
+        description
+            .arm_carrying(link)
+            .expect("a link of the URDF")
+            .map(|arm| arm.name.as_str())
+    }
+
+    #[test]
+    fn the_root_link_is_the_robot_frame_and_a_camera_names_its_optical_frame() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        assert_eq!(description.root_link(), "base");
+        let [camera] = description.cameras() else {
+            panic!("the fixture carries one camera");
+        };
+        assert_eq!(camera.frame(), "eye_optical_frame");
+    }
+
+    #[test]
+    fn a_link_below_an_arms_joint_is_that_arms_and_the_root_and_an_unknown_link_are_not() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        for link in ["upper", "hand", "grasp", "finger_a", "eye_optical_frame"] {
+            assert_eq!(carrier(&description, link), Some("arm"), "{link}");
+        }
+        assert_eq!(carrier(&description, "base"), None);
+        assert_eq!(
+            description.arm_carrying("nowhere"),
+            Err(UnknownLink {
+                link: "nowhere".to_string()
+            })
+        );
+    }
+
+    /// Two arms whose chains share the joint `waist` from `base` to `chest`, each turning
+    /// on a shoulder of its own below it, and a head that the joint `nod`, of no arm,
+    /// turns.
+    const TWO_ARMS_URDF: &str = r#"<robot name="pair">
+  <link name="base"/><link name="chest"/><link name="chest_mount"/><link name="head"/>
+  <link name="left_upper"/><link name="left_grasp"/>
+  <link name="right_upper"/><link name="right_grasp"/>
+  <joint name="waist" type="revolute">
+    <parent link="base"/><child link="chest"/><axis xyz="0 0 1"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="mount" type="fixed"><parent link="chest"/><child link="chest_mount"/></joint>
+  <joint name="nod" type="revolute">
+    <parent link="base"/><child link="head"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="left_shoulder" type="revolute">
+    <parent link="chest"/><child link="left_upper"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="left_tip" type="fixed"><parent link="left_upper"/><child link="left_grasp"/></joint>
+  <joint name="right_shoulder" type="revolute">
+    <parent link="chest"/><child link="right_upper"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="right_tip" type="fixed"><parent link="right_upper"/><child link="right_grasp"/></joint>
+</robot>"#;
+
+    /// The SRDF of [`TWO_ARMS_URDF`] with its arms' groups in the order `arms` names them.
+    fn two_arms_srdf(arms: [&str; 2]) -> String {
+        let groups: String = arms
+            .iter()
+            .map(|arm| {
+                format!(
+                    r#"<group name="{arm}_arm"><chain base_link="base" tip_link="{arm}_grasp"/></group>
+  <group name="{arm}_hand"><link name="{arm}_grasp"/></group>
+  <end_effector name="{arm}_end" parent_link="{arm}_grasp" group="{arm}_hand"/>
+  "#
+                )
+            })
+            .collect();
+        format!("<robot name=\"pair\">\n  {groups}</robot>")
+    }
+
+    #[test]
+    fn of_two_arms_the_one_whose_joint_is_nearest_above_carries_a_link_the_first_on_a_tie() {
+        for (order, first) in [
+            (["left", "right"], "left_arm"),
+            (["right", "left"], "right_arm"),
+        ] {
+            let description = RobotDescription::parse(TWO_ARMS_URDF, &two_arms_srdf(order))
+                .expect("the two arms' description");
+            assert_eq!(
+                description
+                    .arms()
+                    .iter()
+                    .map(|arm| arm.joints.clone())
+                    .collect::<Vec<_>>(),
+                order.map(|arm| vec!["waist".to_string(), format!("{arm}_shoulder")]),
+                "both arms hold the waist"
+            );
+            for link in ["chest", "chest_mount"] {
+                assert_eq!(carrier(&description, link), Some(first), "{link}");
+            }
+            for arm in ["left", "right"] {
+                for link in [format!("{arm}_upper"), format!("{arm}_grasp")] {
+                    let expected = format!("{arm}_arm");
+                    assert_eq!(
+                        carrier(&description, &link),
+                        Some(expected.as_str()),
+                        "{link}"
+                    );
+                }
+            }
+            for link in ["base", "head"] {
+                assert_eq!(carrier(&description, link), None, "{link}");
+            }
+        }
     }
 }

@@ -26,6 +26,14 @@ pub struct UnknownJoint {
     pub joint: String,
 }
 
+/// A link that a lookup by name on a [`RobotDescription`](crate::RobotDescription) is
+/// asked about and the description's URDF lacks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the URDF has no link named {link:?}")]
+pub struct UnknownLink {
+    pub link: String,
+}
+
 /// A URDF and an SRDF that do not make one description.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum DescriptionError {

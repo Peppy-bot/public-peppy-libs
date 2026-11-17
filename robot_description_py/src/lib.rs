@@ -183,6 +183,24 @@ impl PyRobotDescription {
         PyTuple::new(py, self.0.cameras().iter().cloned().map(PyCameraFrame))
     }
 
+    /// The URDF's root link, the robot frame.
+    #[getter]
+    fn root_link(&self) -> &str {
+        self.0.root_link()
+    }
+
+    /// The arm whose chain carries the link `link`: of the joints of every
+    /// arm, the arm that holds the one nearest above the link, the first in
+    /// the SRDF's order of two that hold it. None for a link that no arm's
+    /// joint moves, such as one fixed to the root. A link the URDF lacks
+    /// raises KeyError.
+    fn arm_carrying(&self, link: &str) -> PyResult<Option<PyArm>> {
+        self.0
+            .arm_carrying(link)
+            .map(|arm| arm.cloned().map(PyArm))
+            .map_err(|error| PyKeyError::new_err(error.to_string()))
+    }
+
     /// The limits of the joint `joint`: its position limits, the URDF's,
     /// unbounded for a continuous joint and `[0, 0]` for a fixed one, and the
     /// speed and effort limits the URDF gives it. A joint the URDF lacks raises
@@ -521,6 +539,13 @@ impl PyCameraFrame {
     #[getter]
     fn parent_link(&self) -> &str {
         &self.0.parent_link
+    }
+
+    /// The camera's optical frame: the link `<name>_optical_frame` of the
+    /// URDF.
+    #[getter]
+    fn frame(&self) -> String {
+        self.0.frame()
     }
 
     /// The frame's origin in the parent link's frame, meters.

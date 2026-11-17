@@ -16,10 +16,14 @@
 //! - [`RobotDescription::disabled_pairs`]: the pairs a collision model leaves out, each
 //!   with its [`DisabledReason`].
 //! - [`RobotDescription::cameras`]: the optical frame of each camera the robot carries,
-//!   a link named `<camera>_optical_frame`, and the [`DepthRange`] it measures where the
-//!   URDF gives it a depth sensor in the form of Gazebo's URDF extension: a `<gazebo>`
-//!   element that references the optical frame and holds a `<sensor type="depth">` whose
-//!   `<camera><clip>` gives the `<near>` and `<far>` depths.
+//!   a link named `<camera>_optical_frame` ([`CameraFrame::frame`]), and the
+//!   [`DepthRange`] it measures where the URDF gives it a depth sensor in the form of
+//!   Gazebo's URDF extension: a `<gazebo>` element that references the optical frame and
+//!   holds a `<sensor type="depth">` whose `<camera><clip>` gives the `<near>` and
+//!   `<far>` depths.
+//! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame, and
+//!   [`RobotDescription::arm_carrying`]: the arm whose chain carries a link, such as a
+//!   camera's, or none for a link no arm's joint moves.
 //! - [`RobotDescription::fixed_transforms`] and [`RobotDescription::transforms_at`]: where
 //!   each link stands in its parent link, a [`LinkTransform`] per joint, the fixed joints'
 //!   for the life of the robot and the moving joints' at their positions; and
@@ -69,7 +73,7 @@ pub use description::{
     RobotDescription, mesh_name,
 };
 pub use driven::{Driven, DrivenModels, UndrivenModel};
-pub use error::{DescriptionError, FingerSpanError, UnknownJoint};
+pub use error::{DescriptionError, FingerSpanError, UnknownJoint, UnknownLink};
 pub use shape::{NodeArms, OnShape, UnsupportedShape, on_shape};
 pub use transforms::{LinkTransform, LinkTransformError};
 
