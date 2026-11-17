@@ -323,9 +323,10 @@ class Senses:
     measured limbs, the chest `Perceiver` (its frames and its camera
     model), the `WristFrames` of the cameras the arms carry, and
     `camera_pose`, an async callable that asks the robot where the camera
-    of a given name stands now, giving (position, orientation) in the
-    robot frame or a Refusal. The next sense adds a field here, not an
-    argument to `Manipulator.start`."""
+    of a given name stood at a given time, the time a picture of it was
+    taken, giving its `CameraPose` in the robot frame or a Refusal. The
+    next sense adds a field here, not an argument to
+    `Manipulator.start`."""
 
     robot: object
     limb_states: object

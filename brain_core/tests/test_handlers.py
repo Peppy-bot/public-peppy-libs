@@ -10,8 +10,8 @@ import pytest
 from types import SimpleNamespace
 
 from conftest import (
-    FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
-    rgb_frame, with_frames,
+    ORIGIN, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain,
+    records_of, rgb_frame, with_frames,
 )
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
@@ -315,7 +315,7 @@ async def test_a_placed_item_keeps_its_id_in_the_next_scan():
 
     # Put it where a box in the image's corner points, far from where it was.
     corner = Box("cup", 0.9, 1, 1, 3, 3)
-    target = brain.perceiver.camera.deproject(*corner.centre, 1.0, 16, 12)
+    target = brain.perceiver.camera.with_pose(ORIGIN).deproject(*corner.centre, 1.0, 16, 12)
     ctx = place_goal(list(target))
     await place_item.run(brain, ctx)
     assert ctx.completed["success"] is True and ctx.completed["item_id"] == "cup_1-t0"

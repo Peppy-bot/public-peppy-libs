@@ -4,10 +4,9 @@ lines a switch and a forget leave in the log."""
 
 import fake_peppygen
 import pytest
-from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames
+from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames
 
 from brain_core.handlers import forget, get_model, get_state, list_models, switch_model
-from brain_core.perception.camera import CameraModel
 from brain_core.ports import FailureKind, Refusal, Role
 
 
@@ -67,9 +66,8 @@ async def test_get_model_does_not_wait_for_a_camera_the_robot_does_not_carry():
     loading = FakeDetector(unavailable="perception_model 'fake' is still loading", starting=True)
     brain = await make_brain(detector=loading, manipulator=FakeManipulator())
     with_frames(brain)
-    # The camera has answered its intrinsics; the robot does not place it.
-    brain.perceiver.set_camera(CameraModel().with_intrinsics(CAMERA_16X12))
-    brain.perceiver.pose.update("the robot carries no camera named 'chest' (it carries: wrist_left)", starting=False)
+    # The camera has answered its intrinsics; the robot does not carry it.
+    brain.perceiver.placer.reason.update("the robot carries no camera named 'chest' (its cameras: wrist_left)", starting=False)
     assert get_model.handle(brain, None).starting == ["", ""]
 
 

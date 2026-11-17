@@ -34,10 +34,10 @@ Its entry point builds `Bindings` from its peppygen package and hands them to
 `brain_core.node.setup` with its `ModelSource`, the models the node can run
 for each role. `Bindings.from_generated` finds each module where every
 brain's peppygen puts it, so the node's manifest names its slots
-`limb_motion`, `limb_state`, `camera`, `geometry` and `camera_mounts`, as both
-brains do. A brain that consumes the motion planner names its slot
-`motion_planning` and also consumes limb_motion's `execute_joint_path`; the
-modules of a brain that does not are none:
+`limb_motion`, `limb_state`, `camera`, `geometry`, `sensor_mounts` and
+`transform_lookup`, as both brains do. A brain that consumes the motion
+planner names its slot `motion_planning` and also consumes limb_motion's
+`execute_joint_path`; the modules of a brain that does not are none:
 
 ```python
 import peppygen
@@ -58,14 +58,16 @@ def main() -> None:
     NodeBuilder().run(setup)
 ```
 
-The parameters the core reads are `limbs`, `camera_name`, and the starting
-model of each role, `perception_model` and `manipulation_model`.
+The parameters the core reads are `limbs`, `camera_name`, `lookup_timeout_s`,
+how long a lookup of a camera's pose waits for the transforms of a picture's
+time, and the starting model of each role, `perception_model` and
+`manipulation_model`.
 
 ## The parts
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the pose of a camera at a picture's time), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
@@ -76,7 +78,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, `release_placed` and `release_dropped`, each the held flag of a result and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags, after each of those and at the start of each grab and each place: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
-| `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
+| `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model, the intrinsics learner and the `CameraPlacer` (the robot frame and each camera's frame from sensor_mounts, a camera's pose at a picture's time from transform_lookup), `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
 | `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
@@ -306,6 +308,7 @@ sequenceDiagram
             B->>D: why_unavailable(): checked again
             B->>P: scan(detector, phrases, job.cancel, timeout_s)
             P->>P: the frames and the camera model, checked again
+            P->>P: the camera's pose at the frame's time, from transform_lookup
             P->>D: await detect(image, phrases, deadline)
             D-->>P: boxes, or SearchTimeout, or an ExpectedFailure
             P-->>B: Look, the boxes placed in the robot frame

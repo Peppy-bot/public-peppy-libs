@@ -10,34 +10,54 @@ from types import SimpleNamespace
 import fake_peppygen
 import pytest
 from conftest import (
-    FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, camera_poses, failed_with, make_brain,
-    records_of, with_frames,
+    LOOKUP_TIMEOUT_S, PARAMS, FakeCtx, FakeDetector, FakeManipulator, FakeSource, FakeToken, Ticks, failed_with,
+    lookup_answer, make_brain, records_of, sensors_described, with_frames,
 )
-from fake_peppygen import FakeTopic, answering, fake_bindings, limb_states_message
-from brain_core.brain import RESULT_ENDS, STATUS_ENDS, decider
+from fake_peppygen import (
+    FakeConsumedService, FakeTopic, LookupTransformRequest, answering, fake_bindings, limb_states_message,
+)
+from brain_core.brain import RESULT_ENDS, STATUS_ENDS, Brain, decider
+from brain_core.manipulators.none import NoneManipulator
+from brain_core.perception.camera import CameraPose
+from brain_core.perception.none import NoneDetector
 from brain_core.handlers import abort
 from brain_core.perception.frames import FrameStore
 from brain_core.ports import ExpectedFailure, FailureKind, Refusal, Role
 
 
-async def test_the_geometry_learners_give_the_perceiver_its_camera_and_the_brain_keeps_none():
+async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the_robots_sensors():
     colour = SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
     depth = SimpleNamespace(depth_model="z")
+    lookup = FakeConsumedService("lookup_transform", LookupTransformRequest, producer="robot")
+    lookup.enqueue(lookup_answer((0.3, 0.0, 0.5), (0.0, 0.0, 0.0, 1.0)))
     bindings = fake_bindings(
         get_color_intrinsics=answering("get_color_intrinsics", colour),
         get_depth_intrinsics=answering("get_depth_intrinsics", depth),
-        get_camera_poses=answering("get_camera_poses", camera_poses()),
+        describe_sensors=answering("describe_sensors", sensors_described(("chest", "wrist_left"))),
+        lookup_transform=lookup,
     )
     brain = await make_brain(bindings=bindings)
-    assert not brain.perceiver.camera.ready
+    assert brain.perceiver.camera.intrinsics is None and brain.placer.frames is None
     # The camera slot is vacant, so the frame follower returns at once; the
     # two learners return once they have their answer.
     await asyncio.wait_for(asyncio.gather(*brain.background(FakeToken())), 1.0)
     camera = brain.perceiver.camera
-    assert camera.ready
     assert (camera.intrinsics.fx, camera.intrinsics.cx) == (6.0, 8.0)
-    assert camera.pose.position == (0.0, 0.0, 0.0)
+    assert brain.perceiver.placer is brain.placer and brain.placer.frames.robot_frame == "base_link"
+    # A manipulator asks where a camera stood when its picture was taken.
+    assert await brain.senses.camera_pose("wrist_left", 3.25) == CameraPose((0.3, 0.0, 0.5), (0.0, 0.0, 0.0, 1.0))
+    assert lookup.polled == [
+        LookupTransformRequest("base_link", "wrist_left_color_optical_frame", 3.25, LOOKUP_TIMEOUT_S)
+    ]
     assert not hasattr(brain, "camera") and not hasattr(brain, "frames")
+
+
+async def test_a_lookup_timeout_transform_lookup_does_not_take_stops_the_node_at_its_start():
+    source = FakeSource.of(NoneDetector(), NoneManipulator())
+    for timeout_s in (-1.0, 2.0):
+        params = SimpleNamespace(**{**PARAMS, "lookup_timeout_s": timeout_s})
+        with pytest.raises(ValueError, match=f"^lookup_timeout_s is {timeout_s}: set it from 0 to 1 s"):
+            Brain(params, None, fake_bindings(), source, now=Ticks(), run_token="t0")
 
 
 async def test_the_limb_follower_runs_in_the_background_and_fills_the_brains_store():

@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import synthetic_depth as sd
-from conftest import FakeDetector, rgb_frame
+from conftest import FakeDetector, FixedPlacer, rgb_frame
 
 from brain_core.limbs import parse_limbs
+from brain_core.perception.camera import CameraModel
 from brain_core.perception.frames import FrameStore, decode_depth
 from brain_core.perception.perceiver import MIN_SIDE_M, SURFACE_MARGIN_M, ItemPoints, Look, Perceiver, item_box, item_points
 from brain_core.ports import Box, CancelToken, Coverage, Detection, ItemShape
@@ -220,7 +221,7 @@ async def test_a_scan_gives_each_detection_the_box_around_its_depth_points():
     frames.add_color(rgb_frame(sd.WIDTH, sd.HEIGHT, frame_id=3))
     frames.add_depth(z16(scene.depth_m))
     frames.depth_unit = 0.001
-    perceiver = Perceiver(frames, sd.CHEST)
+    perceiver = Perceiver(frames, CameraModel(intrinsics=sd.CHEST.intrinsics), FixedPlacer(sd.CHEST.pose), "chest")
     box = scene.box(0, label="lime")
     look = await perceiver.scan(FakeDetector([box]), ["lime"], CancelToken(), timeout_s=0.0)
     [lime] = look.detections

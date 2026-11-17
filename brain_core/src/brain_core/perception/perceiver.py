@@ -8,7 +8,8 @@ asks for the description's phrase and lets the core pick the best match
 afterwards (`state.best_match`), so no detector implements selection.
 
 The Perceiver checks what it holds, the frames and the camera model, and
-refuses a search without them with `resource_unavailable`. Whether a
+refuses a search without them with `resource_unavailable`, as it refuses
+one whose frame its placer cannot place the camera for. Whether a
 detector can search is the detector's own answer
 (`Detector.why_unavailable`), which the brain asks first (`Brain.look`).
 A search past its deadline fails with `timeout`.
@@ -38,13 +39,16 @@ import math
 import threading
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 import numpy as np
 
 from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, ItemShape, Refusal, SearchTimeout, iou
-from .camera import CameraModel
+from .camera import CameraModel, CameraPose, Intrinsics
 from .frames import FrameStore, decode_color, decode_depth, depth_at, depth_pixel
+
+if TYPE_CHECKING:
+    from .geometry import CameraPlacer
 
 # The budget of a search whose goal names a timeout_s of 0. A hosted model
 # with reasoning answers a scan in 3 to 10 s and at times later, and a
@@ -170,20 +174,28 @@ class SourceReason:
 
 
 class Perceiver:
-    def __init__(self, frames: FrameStore, camera: CameraModel) -> None:
+    """The frames of the camera `camera_name`, its camera model, which holds
+    its intrinsics once the camera has answered, and the placer that gives
+    the camera's pose at the time of each picture."""
+
+    def __init__(self, frames: FrameStore, camera: CameraModel, placer: "CameraPlacer", camera_name: str) -> None:
         self.frames = frames
         self.camera = camera
+        self.placer = placer
+        self.camera_name = camera_name
         # Why the camera cannot place a pixel yet: its intrinsics, until
-        # the camera has answered, and its pose, until the robot has.
+        # the camera has answered. The placer says why the camera's pose
+        # cannot be had.
         self.intrinsics = SourceReason("the camera's intrinsics have not been received yet")
-        self.pose = SourceReason("the camera's pose has not been received from the robot yet")
 
-    def set_camera(self, camera: CameraModel) -> None:
-        self.camera = camera
-        if camera.intrinsics is not None:
-            self.intrinsics.update("", starting=False)
-        if camera.placed:
-            self.pose.update("", starting=False)
+    def set_intrinsics(self, intrinsics: Intrinsics) -> None:
+        self.camera = self.camera.with_intrinsics(intrinsics)
+        self.intrinsics.update("", starting=False)
+
+    async def pose_at(self, timestamp: float) -> CameraPose:
+        """The camera's pose in the robot frame at `timestamp`, the time a
+        picture of it was taken; a Refusal naming why it cannot be had."""
+        return await self.placer.pose_at(self.camera_name, timestamp)
 
     def why_unavailable(self) -> str:
         """Why the frames or the camera model cannot serve a search yet, or
@@ -206,12 +218,12 @@ class Perceiver:
         return f"no perception source: {reasons[0].reason}"
 
     def _sources(self) -> list[SourceReason]:
-        """The frames, the intrinsics and the pose, each with why it cannot
-        serve a search yet, in the order a search reports them."""
+        """The frames, the intrinsics and the camera's frame on the robot,
+        each with why it cannot serve a search yet, in the order a search
+        reports them."""
         frames = self.frames.why_unavailable()
         intrinsics = self.intrinsics if self.camera.intrinsics is None else SourceReason("", starting=False)
-        pose = self.pose if not self.camera.placed else SourceReason("", starting=False)
-        return [SourceReason(frames, starting=frames == self.frames.starting()), intrinsics, pose]
+        return [SourceReason(frames, starting=frames == self.frames.starting()), intrinsics, self.placer.reason]
 
     def refuse_unless_ready(self) -> None:
         """Raises the Refusal, `resource_unavailable`, of a search the
@@ -223,9 +235,11 @@ class Perceiver:
     async def scan(self, detector: Detector, phrases: Sequence[str], cancel: CancelToken, timeout_s: float) -> Look:
         """Looks once at the latest frame through `detector` for `phrases`,
         or for everything the detector knows when `phrases` is empty, within
-        `timeout_s`, the default budget when that is zero."""
+        `timeout_s`, the default budget when that is zero. The camera is
+        placed where it stood when the frame was taken."""
         self.refuse_unless_ready()
         frame = self.frames.latest()
+        camera = self.camera.with_pose(await self.pose_at(float(frame.color.header.timestamp)))
         image = decode_color(frame.color)
         depth_m = decode_depth(frame.depth, frame.depth_unit)
         deadline = Deadline.after(timeout_s if timeout_s > 0.0 else DEFAULT_TIMEOUT_S)
@@ -244,10 +258,10 @@ class Perceiver:
                 continue
             u, v = box.centre
             width, height = frame.color.width, frame.color.height
-            position = self.camera.deproject(u, v, depth, width, height)
+            position = camera.deproject(u, v, depth, width, height)
             # The box's left and right edges at the depth of its centre.
-            width_m = math.dist(self.camera.deproject(box.x0, v, depth, width, height), self.camera.deproject(box.x1, v, depth, width, height))
-            found = item_points(depth_m, box, width, height, self.camera)
+            width_m = math.dist(camera.deproject(box.x0, v, depth, width, height), camera.deproject(box.x1, v, depth, width, height))
+            found = item_points(depth_m, box, width, height, camera)
             detections.append(
                 Detection(
                     label=box.label,
@@ -255,7 +269,7 @@ class Perceiver:
                     confidence=box.confidence,
                     region=box.xyxy,
                     width_m=width_m,
-                    top_z=top_height(depth_m, box, width, height, self.camera),
+                    top_z=top_height(depth_m, box, width, height, camera),
                     shape=item_box(found) if found is not None else None,
                 )
             )

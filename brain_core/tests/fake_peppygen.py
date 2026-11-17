@@ -8,11 +8,11 @@ its `FailureKind` and `Failure`, which refuse an undeclared kind as the
 generated ones do, and its `GoalDecision`. `ActionHandle.expose` gives an
 action that never receives a goal, and `handle_requests` a service
 that never receives a request, for a node that boots and stops. The
-limb_motion and motion_planning clients are scripted by the test
-(`FakeConsumedAction` for a move or a plan, `FakeConsumedService` and
-`FakeServiceWithoutRequest` for check_arm_move and the planner's services,
-`fake_planner` for the planner's modules together), and so is the
-limb_states topic (`FakeTopic`). Any other consumed service answers what
+limb_motion, motion_planning and transform_lookup clients are scripted by
+the test (`FakeConsumedAction` for a move or a plan, `FakeConsumedService`
+and `FakeServiceWithoutRequest` for check_arm_move, lookup_transform and
+the planner's services, `fake_planner` for the planner's modules together),
+and so is the limb_states topic (`FakeTopic`). Any other consumed service answers what
 the test's `poll` gives (`consumed_service`).
 """
 
@@ -217,6 +217,7 @@ CONSUMED_KINDS = {
     "apply_collision_objects": (),
     "apply_attached_collision_object": (),
     "set_allowed_collision": (),
+    "lookup_transform": ("unknown_frame", "no_chain", "extrapolation", "broken_tree"),
 }
 
 
@@ -341,6 +342,14 @@ def error_reply(kind: str, message: str) -> Callable:
 
 
 @dataclass
+class LookupTransformRequest:
+    target_frame: str
+    source_frame: str
+    time: Optional[float]
+    timeout_s: float
+
+
+@dataclass
 class CheckArmMoveRequest:
     arm_name: str
     position: list[float]
@@ -352,10 +361,11 @@ _NO_DEFAULT = object()
 
 
 class FakeConsumedService:
-    """A generated consumed service of limb_motion or of motion_planning,
-    with its `FailureKind` and `Failure`: each poll records its request and
-    takes the next answer the test enqueued, raising it when it is an
-    exception, such as an error reply of its `Failure`. With the queue
+    """A generated consumed service of limb_motion, of motion_planning or
+    of transform_lookup, with its `FailureKind` and `Failure`: each poll
+    records its request and takes the next answer the test enqueued,
+    raising it when it is an exception, such as an error reply of its
+    `Failure`. With the queue
     empty it answers `default` when one is given. An answer of none is the
     reply of a service with no response fields. `producer` is what its slot
     is bound to, none for a vacant slot, and `item_types` the dataclasses
@@ -671,8 +681,8 @@ class FakeClock:
 
 
 def fake_bindings(**overrides) -> Bindings:
-    """Bindings to the fakes above: the camera, geometry, mounts and
-    limb_state slots vacant, limb_motion scripted, no planner modules, as
+    """Bindings to the fakes above: the camera, geometry, sensor_mounts,
+    transform_lookup and limb_state slots vacant, limb_motion scripted, no planner modules, as
     for a brain that does not consume the motion planner. `overrides`
     replace any of them."""
     modules = dict(
@@ -686,7 +696,8 @@ def fake_bindings(**overrides) -> Bindings:
         depth_stream_info=VacantSlot,
         get_color_intrinsics=VacantSlot,
         get_depth_intrinsics=VacantSlot,
-        get_camera_poses=VacantSlot,
+        describe_sensors=VacantSlot,
+        lookup_transform=VacantSlot,
         scan_items=scan_items,
         identify_item=identify_item,
         grab_item=grab_item,
