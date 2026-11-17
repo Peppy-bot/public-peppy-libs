@@ -473,9 +473,11 @@ ended, fails the place with the jaws closed: the gripper still holds the
 item. A climb that fails is logged and the place still succeeds, since the
 item is down and the jaws are open.
 
-A drop and the release of a place run on the release step of
-`ScriptedManipulator`, which opens the gripper and, for a place, climbs
-back. A step returns its `StepRecord`: its name, what it was asked, its
+The line down of a place and of a grab runs on the descend step of
+`ScriptedManipulator`, which goes through when the line down completes,
+settled or on contact, and measures how far short of its end it stopped.
+A drop and the release of a place run on its release step, which opens the
+gripper and, for a place, climbs back. A step returns its `StepRecord`: its name, what it was asked, its
 result, its `StepFailure` (`no_reach`, `move`, `alignment` or `stopped`)
 with the words, and its measured numbers, the unit in each name. The
 sequence keeps the records in order and stops at the first one with a
