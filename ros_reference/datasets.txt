@@ -1,0 +1,8 @@
+# The datasets that the local-only kinds read, one archive a line: its SHA-256, its
+# address, and the name by which a scenario names it. run.sh --datasets fetches each
+# archive into the dataset cache and checks its digest. The TUM RGB-D sequences are
+# licensed under CC BY 4.0; NOTICE gives their attribution.
+f05a702c9aa0379de7d14067adeade21af1f23939de7cf7e5affa6a9fb896bf6 https://cvg.cit.tum.de/rgbd/dataset/freiburg2/rgbd_dataset_freiburg2_pioneer_slam.tgz pioneer_slam
+35bd9d764e29a52a90c166ae93fe648a1c540f636c5f690d87aca5f884e2c8ce https://cvg.cit.tum.de/rgbd/dataset/freiburg2/rgbd_dataset_freiburg2_pioneer_360.tgz pioneer_360
+67f6c8458e7d9010e0a816ee893f862d27da99fa9d86a711b8c70c4b84e1a077 https://cvg.cit.tum.de/rgbd/dataset/freiburg2/rgbd_dataset_freiburg2_pioneer_slam2.tgz pioneer_slam2
+d5f22fe467dca5ba59e8ba3c654633b367cded2d76c9ad40e5ba4512541e6533 https://cvg.cit.tum.de/rgbd/dataset/freiburg2/rgbd_dataset_freiburg2_pioneer_slam3.tgz pioneer_slam3

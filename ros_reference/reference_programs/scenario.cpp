@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <ostream>
@@ -48,6 +49,38 @@ void Inputs::append_to(const std::filesystem::path& list) const {
   if (!file) {
     throw std::runtime_error("cannot write " + list.string());
   }
+}
+
+std::filesystem::path directory_named_by(const char* variable) {
+  const char* directory = std::getenv(variable);
+  if (directory == nullptr || *directory == '\0') {
+    throw std::runtime_error(std::string("the environment variable ") + variable +
+                             " names no directory");
+  }
+  return directory;
+}
+
+std::filesystem::path Inputs::dataset(const std::string& name, const std::string& path) {
+  // A line of datasets.txt: the SHA-256 of the archive, its address and its name.
+  std::istringstream lines(read("ros_reference/datasets.txt"));
+  for (std::string line; std::getline(lines, line);) {
+    std::istringstream fields(line);
+    std::string sha256, url, listed_name;
+    if (line.empty() || line.front() == '#' || !(fields >> sha256 >> url >> listed_name) ||
+        listed_name != name) {
+      continue;
+    }
+    const auto extracted = directory_named_by("ROS_REFERENCE_DATASETS") / sha256 / "extracted";
+    if (!std::filesystem::exists(extracted / path)) {
+      throw std::runtime_error("the dataset cache holds no " + path + " of the dataset " + name +
+                               "; ros_reference/run.sh --datasets extracts it");
+    }
+    datasets_read_.push_back(name + "/" + path);
+    return extracted / path;
+  }
+  throw std::runtime_error("ros_reference/datasets.txt lists no dataset " + name +
+                           "; add a line `<SHA-256> <address> " + name +
+                           "` for its archive to it, or name a dataset that it lists");
 }
 
 namespace {

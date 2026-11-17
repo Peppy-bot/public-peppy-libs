@@ -3,10 +3,11 @@
 //! A scenario under `scenarios/` is an input that a parity test and a ROS reference
 //! both read. `run.sh` runs the reference of every scenario in the reference image and
 //! writes its output under `reference/`, with the SHA-256 digest of each output in
-//! `reference/SHA256SUMS` and of each file of the repository that the references read
-//! (each scenario and the files it names) in `reference/INPUTS.SHA256SUMS`, and all of
-//! them are committed. A parity test loads a scenario and its reference output through
-//! this crate and compares its own output with the reference, with no ROS on the machine.
+//! `reference/SHA256SUMS` and of each file of the repository that an output depends on
+//! (each scenario and the files it names, which the references read, and the sources of
+//! each local-only kind) in `reference/INPUTS.SHA256SUMS`, and all of them are committed.
+//! A parity test loads a scenario and its reference output through this crate and
+//! compares its own output with the reference, with no ROS on the machine.
 //! Reading a scenario, another input or a reference output checks it against its digest,
 //! so a parity test fails on an output or an input that differs from the files `run.sh`
 //! wrote and read. A change of the digests is a change of the reference, which
@@ -27,11 +28,13 @@ pub mod cartesian_paths;
 pub mod chain_collision;
 pub mod chomp_refinement;
 pub mod forward_kinematics;
+pub mod metrics;
 pub mod occupancy;
 pub mod orientation_constraints;
 pub mod path_timing;
 pub mod planning;
 pub mod planning_scene;
+pub mod room_dataset;
 pub mod self_distance;
 
 use robot_description::{Arm, RobotDescription};
@@ -50,7 +53,7 @@ const REFERENCE_DIRECTORY_VARIABLE: &str = "ROS_REFERENCE_OUTPUTS";
 const OUTPUT_DIGEST_FILE: &str = "SHA256SUMS";
 
 /// The file of a directory of reference outputs that holds the SHA-256 digest of each
-/// input that the references read, by its path from the repository root.
+/// file of the repository that an output depends on, by its path from the repository root.
 const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 
 /// The kind of a scenario: the reference that runs on it, and the module of this crate
@@ -68,6 +71,7 @@ enum Kind {
     PathTiming,
     Planning,
     PlanningScene,
+    RoomDataset,
     SelfDistance,
 }
 
@@ -393,8 +397,7 @@ impl Digests {
     fn check(&self, file: &str, bytes: &[u8]) {
         let expected = self.by_file.get(file).unwrap_or_else(|| {
             panic!(
-                "{} holds no digest of {file}; run ros_reference/run.sh, which writes the \
-                 reference outputs and the digests of them and of their inputs",
+                "{} holds no digest of {file}; {RUN_SH_WRITES_DIGESTS}",
                 self.path.display()
             )
         });
@@ -405,11 +408,136 @@ impl Digests {
         assert_eq!(
             &actual,
             expected,
-            "{file} differs from the file whose digest {} holds; run ros_reference/run.sh, \
-             which writes the reference outputs and the digests of them and of their inputs",
+            "{file} differs from the file whose digest {} holds; {RUN_SH_WRITES_DIGESTS}",
             self.path.display()
         );
     }
+}
+
+/// What a developer runs to write a digest that [`Digests::check`] refuses.
+const RUN_SH_WRITES_DIGESTS: &str = "run ros_reference/run.sh, or ros_reference/run.sh \
+     --datasets when an output of a local-only kind lists the file under its inputs, which \
+     writes the reference outputs and the digests of them and of their inputs";
+
+/// Writes `document` to `path` with a final newline, by the rule that lays out every
+/// scenario and every reference output: a scalar, an array of scalars and a record, an
+/// object whose members are each a scalar or an array of scalars, go on one line; every
+/// other array or object spreads over lines, one member a line, indented by two spaces.
+/// Each float goes as [`shortest_decimal`] writes it, as the reference program writes it.
+fn write_json(path: &Path, document: &serde_json::Value) {
+    let text = format!("{}\n", layout(document, ""));
+    std::fs::write(path, text).unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
+}
+
+fn is_flat(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(members) => {
+            members.iter().all(|m| !m.is_array() && !m.is_object())
+        }
+        serde_json::Value::Object(_) => false,
+        _ => true,
+    }
+}
+
+fn is_one_line(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(members) => members.values().all(is_flat),
+        _ => is_flat(value),
+    }
+}
+
+/// The two decimals of the finite `x` that `std::to_chars` writes the shorter of: its
+/// shortest digits with a point, and in scientific notation, with a sign and at least two
+/// digits of exponent.
+fn shortest_decimals(x: f64) -> [String; 2] {
+    let scientific = format!("{x:e}");
+    let (digits, exponent) = scientific
+        .split_once('e')
+        .expect("a finite double writes an exponent");
+    let exponent: i32 = exponent.parse().expect("the exponent is an integer");
+    let sign = if exponent < 0 { '-' } else { '+' };
+    [
+        format!("{x}"),
+        format!("{digits}e{sign}{:02}", exponent.unsigned_abs()),
+    ]
+}
+
+/// The decimal of `x` that `std::to_chars` writes, the shorter of [`shortest_decimals`],
+/// the one with a point when both are as long. Panics on a NaN or an infinity, which JSON
+/// has no number for.
+fn shortest_decimal(x: f64) -> String {
+    assert!(
+        x.is_finite(),
+        "an output holds the non-finite value {x}, which JSON has no number for"
+    );
+    let [point, scientific] = shortest_decimals(x);
+    if scientific.len() < point.len() {
+        scientific
+    } else {
+        point
+    }
+}
+
+/// The text of `value` on one line, as nlohmann::json dumps it, each float as
+/// [`shortest_decimal`] writes it.
+fn one_line(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Number(number) => match number.as_f64() {
+            Some(x) if number.is_f64() => shortest_decimal(x),
+            _ => number.to_string(),
+        },
+        serde_json::Value::Array(members) => format!(
+            "[{}]",
+            members.iter().map(one_line).collect::<Vec<_>>().join(",")
+        ),
+        serde_json::Value::Object(members) => format!(
+            "{{{}}}",
+            members
+                .iter()
+                .map(|(key, member)| format!(
+                    "{}:{}",
+                    serde_json::Value::from(key.as_str()),
+                    one_line(member)
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        _ => value.to_string(),
+    }
+}
+
+/// The text of `value` by the rule of [`write_json`], its later lines indented by `indent`.
+fn layout(value: &serde_json::Value, indent: &str) -> String {
+    if is_one_line(value) {
+        return one_line(value);
+    }
+    let inner = format!("{indent}  ");
+    let (open, members, close): (char, Vec<String>, char) = match value {
+        serde_json::Value::Object(members) => (
+            '{',
+            members
+                .iter()
+                .map(|(key, member)| {
+                    format!(
+                        "{inner}{}: {}",
+                        serde_json::Value::from(key.as_str()),
+                        layout(member, &inner)
+                    )
+                })
+                .collect(),
+            '}',
+        ),
+        serde_json::Value::Array(members) => (
+            '[',
+            members
+                .iter()
+                .map(|member| format!("{inner}{}", layout(member, &inner)))
+                .collect(),
+            ']',
+        ),
+        _ => unreachable!("a scalar goes on one line"),
+    };
+    format!("{open}\n{}\n{indent}{close}", members.join(",\n"))
 }
 
 /// The transform of `link` in the frame of the URDF root.
@@ -449,22 +577,6 @@ mod tests {
         serde_json::from_str(text)
     }
 
-    /// The two decimals of `x` that `std::to_chars` writes the shorter of: its shortest
-    /// digits with a point, and in scientific notation, with a sign and at least two
-    /// digits of exponent.
-    fn shortest_decimals(x: f64) -> [String; 2] {
-        let scientific = format!("{x:e}");
-        let (digits, exponent) = scientific
-            .split_once('e')
-            .expect("a finite double writes an exponent");
-        let exponent: i32 = exponent.parse().expect("the exponent is an integer");
-        let sign = if exponent < 0 { '-' } else { '+' };
-        [
-            format!("{x}"),
-            format!("{digits}e{sign}{:02}", exponent.unsigned_abs()),
-        ]
-    }
-
     /// The file names of the outputs `names`.
     fn output_files(names: &[String]) -> BTreeSet<String> {
         names.iter().map(|name| format!("{name}.json")).collect()
@@ -494,6 +606,15 @@ mod tests {
         bytes
     }
 
+    #[test]
+    fn the_layout_is_that_of_the_reference_program() {
+        let directory = reference_directory();
+        let path = json_file(&directory, &json_names(&directory)[0]);
+        let text = String::from_utf8(read_bytes(&path)).expect("UTF-8");
+        let document: serde_json::Value = parse(&path, text.as_bytes());
+        assert_eq!(format!("{}\n", layout(&document, "")), text);
+    }
+
     #[hegel::test]
     fn every_finite_double_reads_back_from_its_shortest_decimals(tc: TestCase) {
         let x = f64::from_bits(tc.draw(gs::integers::<u64>()));
@@ -515,6 +636,58 @@ mod tests {
             let read = read_number(decimal).unwrap_or_else(|e| panic!("{decimal}: {e}"));
             assert_eq!(read.to_bits(), bits, "{decimal}");
         }
+    }
+
+    #[test]
+    fn each_double_writes_as_std_to_chars_writes_it() {
+        let written = [
+            (0.1, "0.1"),
+            (0.001, "0.001"),
+            (1e-5, "1e-05"),
+            (1e-7, "1e-07"),
+            (100.0, "100"),
+            (123_456_789_012.0, "123456789012"),
+            (1e21, "1e+21"),
+            (-2.5, "-2.5"),
+        ];
+        for (x, decimal) in written {
+            assert_eq!(shortest_decimal(x), decimal, "{x:e}");
+        }
+        for (bits, decimal) in EDGE_DECIMALS {
+            assert_eq!(shortest_decimal(f64::from_bits(bits)), decimal);
+        }
+    }
+
+    #[hegel::test]
+    fn the_written_decimal_is_the_shorter_of_the_two_and_reads_back(tc: TestCase) {
+        let x = f64::from_bits(tc.draw(gs::integers::<u64>()));
+        tc.assume(x.is_finite());
+        let written = shortest_decimal(x);
+        let [point, scientific] = shortest_decimals(x);
+        assert_eq!(
+            written.len(),
+            point.len().min(scientific.len()),
+            "{written}"
+        );
+        let read = read_number(&written).unwrap_or_else(|e| panic!("{written}: {e}"));
+        assert_eq!(read.to_bits(), x.to_bits(), "{written}");
+    }
+
+    #[test]
+    fn a_line_holds_its_members_as_nlohmann_dumps_them() {
+        let value: serde_json::Value =
+            serde_json::from_str(r#"{"b": [1, 2.5, 1e-7], "a": "x\"y", "c": null}"#)
+                .expect("parses");
+        assert_eq!(
+            one_line(&value),
+            r#"{"a":"x\"y","b":[1,2.5,1e-07],"c":null}"#
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "which JSON has no number for")]
+    fn a_non_finite_value_is_refused_by_the_writer() {
+        shortest_decimal(f64::INFINITY);
     }
 
     #[test]
