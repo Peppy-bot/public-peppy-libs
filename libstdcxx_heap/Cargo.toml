@@ -1,0 +1,13 @@
+[package]
+name = "libstdcxx_heap"
+version = "0.1.0"
+edition = "2024"
+description = "A priority queue of (f32 cost, item) entries that gives entries of equal cost in the order of libstdc++'s std::priority_queue with a greater-than comparator on the cost (GCC 15). No dependencies."
+
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+hegeltest = { version = "0.51", features = ["static-engine"] }
+serde_json = "1"

@@ -26,13 +26,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-/// The repository files of the kind's own code: the reference program's sources of the kind
-/// and the crate's statistics. Each output lists them among its inputs, with the files that
-/// the reference read, so `INPUTS.SHA256SUMS` holds their digests, and a change to one fails
-/// the routine tests until `run.sh --datasets` writes the outputs again.
-const SOURCES: [&str; 10] = [
+/// The repository files of the kind's own code: the reference program's sources of the kind,
+/// the shared reference program it runs (the Nav2 node, whose `set_ros_time` sets each
+/// node's clock), and the crate's statistics. Each output lists them among its inputs, with
+/// the files that the reference read, so `INPUTS.SHA256SUMS` holds their digests, and a
+/// change to one fails the routine tests until `run.sh --datasets` writes the outputs again.
+const SOURCES: [&str; 12] = [
     "ros_reference/reference_programs/amcl_map_cspace.cpp",
     "ros_reference/reference_programs/amcl_map_cspace.hpp",
+    "ros_reference/reference_programs/nav2_node.cpp",
+    "ros_reference/reference_programs/nav2_node.hpp",
     "ros_reference/reference_programs/room_dataset.cpp",
     "ros_reference/reference_programs/room_dataset.hpp",
     "ros_reference/reference_programs/room_dataset_files.cpp",
@@ -778,7 +781,10 @@ mod tests {
                 .file_name()
                 .into_string()
                 .expect("UTF-8");
-            if name.starts_with("room_dataset") || name.starts_with("amcl_map_cspace") {
+            if ["room_dataset", "amcl_map_cspace", "nav2_node"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            {
                 let path = format!("ros_reference/reference_programs/{name}");
                 assert!(SOURCES.contains(&path.as_str()), "SOURCES lists {path}");
             }

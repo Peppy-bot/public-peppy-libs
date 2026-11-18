@@ -4,10 +4,15 @@
 # map monitor, MoveIt's planning pipeline (moveit_ros_planning) with its OMPL planner
 # (moveit_planners_ompl) and its KDL inverse kinematics (moveit_kinematics), MoveIt's
 # CHOMP optimizer (chomp_motion_planner), random_numbers, rclcpp and sensor_msgs,
-# pointcloud_to_laserscan, slam_toolbox, Nav2's AMCL and map server, and libpng, which
-# reads the depth frames of the datasets, and the reference program and its plugins built
-# against them, for amd64 and arm64. Developers run it through run.sh, and the parity tests
-# read the outputs that it wrote.
+# pointcloud_to_laserscan, slam_toolbox, Nav2's AMCL, cost map (nav2_costmap_2d), map
+# server (nav2_map_server), Smac planner (nav2_smac_planner), regulated pure pursuit
+# controller (nav2_regulated_pure_pursuit_controller), controller server plugins
+# (nav2_controller), collision monitor (nav2_collision_monitor) and velocity smoother
+# (nav2_velocity_smoother) with nav2_common, which their CMake packages find, the diff
+# drive controller of ros2_controllers (diff_drive_controller), and libpng, which reads
+# the depth frames of the datasets, and the reference program and its plugins built
+# against them, for amd64 and arm64. Developers run it through run.sh, and the parity
+# tests read the outputs that it wrote.
 #
 # Every input is pinned, so a rebuild gives the same packages: the base image by the
 # digest of its index of both architectures, the ROS packages by a dated snapshot of the
@@ -39,6 +44,7 @@ RUN rm /etc/apt/sources.list.d/ros2.sources \
       libpng-dev \
       nlohmann-json3-dev \
       ros-lyrical-chomp-motion-planner \
+      ros-lyrical-diff-drive-controller \
       ros-lyrical-geometric-shapes \
       ros-lyrical-moveit-core \
       ros-lyrical-moveit-kinematics \
@@ -47,7 +53,14 @@ RUN rm /etc/apt/sources.list.d/ros2.sources \
       ros-lyrical-moveit-ros-perception \
       ros-lyrical-moveit-ros-planning \
       ros-lyrical-nav2-amcl \
+      ros-lyrical-nav2-collision-monitor \
+      ros-lyrical-nav2-common \
+      ros-lyrical-nav2-controller \
+      ros-lyrical-nav2-costmap-2d \
       ros-lyrical-nav2-map-server \
+      ros-lyrical-nav2-regulated-pure-pursuit-controller \
+      ros-lyrical-nav2-smac-planner \
+      ros-lyrical-nav2-velocity-smoother \
       ros-lyrical-ompl \
       ros-lyrical-pointcloud-to-laserscan \
       ros-lyrical-random-numbers \

@@ -1,0 +1,25 @@
+{
+  "cases": [
+    {"action":"stop","allowed":[0,0,0],"cloud_age_ns":null,"now_ns":5000000000,"polygon_name":"invalid source","velocity":[0.4,0,0]},
+    {"action":"stop","allowed":[0,0,0],"cloud_age_ns":600000000,"now_ns":5000000000,"polygon_name":"invalid source","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0.020000000000000004,0,0],"cloud_age_ns":500000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0.13999999999999999,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"do_nothing","allowed":[0.4,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0.16499999999999998,0,0.43999999999999995],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.3,0,0.8]},
+    {"action":"approach","allowed":[0,0,0.15000000000000002],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0,0,1]},
+    {"action":"approach","allowed":[0,0.09,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0,0.3,0]},
+    {"action":"approach","allowed":[0.13999999999999999,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0.24,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.4,0,0]},
+    {"action":"approach","allowed":[0,-0,-0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.43307589839754645,-0.1381225336608914,-0.6566185214132365]},
+    {"action":"approach","allowed":[0,0,0],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.42901025051976205,0.02005375776645671,0.32254058268305696]},
+    {"action":"approach","allowed":[0.2295481997059239,-0.009272828715407787,-0.35943800750428917],"cloud_age_ns":40000000,"now_ns":5000000000,"polygon_name":"FootprintApproach","velocity":[0.3825803328432065,-0.015454714525679647,-0.5990633458404819]}
+  ],
+  "kind": "collision_monitor",
+  "polygon": [
+    [-0.25,-0.1875],
+    [0.25,-0.1875],
+    [0.25,0.1875],
+    [-0.25,0.1875]
+  ]
+}
