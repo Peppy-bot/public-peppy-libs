@@ -11,6 +11,8 @@
 //!   plan with [`PlanError::Check`] and never reaches C++, and so does a panic in a
 //!   binary that unwinds on panic, Rust's default; under `panic = "abort"`, a panic in
 //!   one aborts the process.
+//! - OMPL's warnings and errors go to the caller's `tracing` subscriber, as warnings and
+//!   errors under the target `ompl`.
 //!
 //! A plan makes the request's attempts, as MoveIt makes the attempts of a request: one
 //! on the thread that calls [`plan`], or several on threads of their own,
@@ -41,6 +43,7 @@
 
 mod callbacks;
 mod ffi;
+mod messages;
 
 /// The README, whose quick start runs as a doctest.
 #[cfg(doctest)]

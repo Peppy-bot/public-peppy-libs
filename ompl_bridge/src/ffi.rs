@@ -1,7 +1,9 @@
 //! The boundary with the C++ glue of `bridge.cpp`: one plan request in, one plan
-//! out, and the caller's checks, constraint and goal sampling called back from OMPL.
+//! out, the caller's checks, constraint and goal sampling called back from OMPL, and
+//! OMPL's messages handed to the caller's `tracing` subscriber.
 
 use crate::callbacks::Callbacks;
+use crate::messages::{log_error, log_warning};
 
 #[cxx::bridge(namespace = "ompl_bridge")]
 pub(crate) mod bridge {
@@ -102,6 +104,9 @@ pub(crate) mod bridge {
         fn sample_goal(self: &Callbacks, attempt: u32, goal: &mut [f64]) -> GoalSample;
         fn failed(self: &Callbacks) -> bool;
         fn stopped(self: &Callbacks) -> bool;
+
+        fn log_warning(text: &[u8]);
+        fn log_error(text: &[u8]);
     }
 
     unsafe extern "C++" {
