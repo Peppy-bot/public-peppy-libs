@@ -481,9 +481,7 @@ impl VoxelMap {
                 "column [{x}, {y}] lies outside the map's {size_x} by {size_y} columns"
             );
             let bottom = (x * size_y + y) * size_z;
-            for index in bottom..bottom + size_z {
-                self.log_odds[index] = miss;
-            }
+            self.log_odds[bottom..bottom + size_z].fill(miss);
         }
     }
 
