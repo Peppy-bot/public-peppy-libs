@@ -361,7 +361,7 @@ impl<const N: usize, const D: usize> Constraint for PathOrientations<'_, N, D> {
     fn jacobian(&self, state: &[f64], out: &mut [f64]) -> Result<(), CheckError> {
         let q: [f64; D] = state.try_into()?;
         out.fill(0.0);
-        for (row, held) in out.chunks_exact_mut(D).zip(&self.held) {
+        for (row, held) in out.as_chunks_mut::<D>().0.iter_mut().zip(&self.held) {
             held.write_row(&q, row);
         }
         Ok(())

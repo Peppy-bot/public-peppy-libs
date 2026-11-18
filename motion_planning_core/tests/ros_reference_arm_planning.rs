@@ -748,7 +748,7 @@ fn on_its_side<const N: usize>(case: &Case) {
             positions
                 .into_iter()
                 .zip(&geometries)
-                .zip(c.scene.start.chunks_exact(N))
+                .zip(c.scene.start.as_chunks::<N>().0)
                 .map(|((position, geometry), start)| {
                     (Vector3::from(position)
                         - geometry
