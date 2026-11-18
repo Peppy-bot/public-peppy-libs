@@ -1093,11 +1093,36 @@ PlanResult plan_attempts(const PlanRequest& request, const Callbacks& callbacks,
   return result;
 }
 
+// OMPL's messages, each handed to the caller's `tracing` subscriber through messages.rs,
+// as MoveIt's OMPL planner manager hands each to its logger (moveit2 2.15.2
+// ompl_planner_manager.cpp:59-88): an error as an error, a warning as a warning, after the
+// file and the line of OMPL's source that wrote it. OMPL hands over only the messages at
+// or above its log level, which `plan` sets to warnings.
+class Messages : public ompl::msg::OutputHandler {
+ public:
+  void log(const std::string& text, ompl::msg::LogLevel level, const char* filename,
+           int line) override {
+    const std::string message = std::string(filename) + ":" + std::to_string(line) + " - " + text;
+    const rust::Slice<const std::uint8_t> bytes(
+        reinterpret_cast<const std::uint8_t*>(message.data()), message.size());
+    if (level >= ompl::msg::LOG_ERROR) {
+      log_error(bytes);
+    } else {
+      log_warning(bytes);
+    }
+  }
+};
+
 }  // namespace
 
 PlanResult plan(const PlanRequest& request, const Callbacks& callbacks) {
-  static std::once_flag log_level;
-  std::call_once(log_level, [] { ompl::msg::setLogLevel(ompl::msg::LOG_WARN); });
+  static std::once_flag messages_handed_over;
+  std::call_once(messages_handed_over, [] {
+    // Never destroyed, so OMPL holds a live handler until the process ends.
+    static Messages* const messages = new Messages;
+    ompl::msg::useOutputHandler(messages);
+    ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
+  });
   const Clock::time_point deadline = later_by(Clock::now(), request.time_limit_s);
   const Clock::time_point simplification_deadline =
       later_by(deadline, request.simplification_time_s);

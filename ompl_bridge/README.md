@@ -377,4 +377,6 @@ plan of the parity test the bits of the x86-64 baseline, the seven-dimensional p
 KPIECE1, BKPIECE1, LBKPIECE1 and SBL among them, whose grid placement fuses: a
 measurement of that scenario, which a plan whose fused placement lands on another side
 of a cell's edge does not share.
-OMPL prints its warnings and errors to standard error.
+OMPL's warnings and errors go to the caller's `tracing` subscriber, as warnings and
+errors under the target `ompl`, as MoveIt's OMPL planner manager logs them; a process
+with no subscriber prints none of them.

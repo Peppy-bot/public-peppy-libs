@@ -299,9 +299,27 @@ fn alone() -> bool {
     std::env::var_os(ALONE).is_some()
 }
 
+/// What a test that `run_alone` ran printed.
+struct Printed {
+    stdout: String,
+    stderr: String,
+}
+
+impl Printed {
+    /// The lines the test printed between a line `BEGIN` and a line `END`.
+    fn between_markers(&self) -> Vec<&str> {
+        self.stdout
+            .lines()
+            .skip_while(|line| *line != "BEGIN")
+            .skip(1)
+            .take_while(|line| *line != "END")
+            .collect()
+    }
+}
+
 /// Runs the test `name` alone in another process of this test binary, and answers what
 /// it printed, once it passed.
-fn run_alone(name: &str) -> String {
+fn run_alone(name: &str) -> Printed {
     let output = Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", name, "--nocapture"])
         .env(ALONE, "1")
@@ -312,7 +330,10 @@ fn run_alone(name: &str) -> String {
         "{name} failed in a process of its own: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).expect("UTF-8")
+    Printed {
+        stdout: String::from_utf8(output.stdout).expect("UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("UTF-8"),
+    }
 }
 
 // A plan with seed 1 in another process gives the paths that it gives in this one, of one
@@ -323,13 +344,44 @@ fn a_plan_repeats_in_another_process() {
         println!("BEGIN\n{}\nEND", path_bits());
         return;
     }
-    let stdout = run_alone("a_plan_repeats_in_another_process");
-    let theirs = stdout
-        .split_once("BEGIN\n")
-        .and_then(|(_, rest)| rest.split_once("\nEND"))
-        .map(|(paths, _)| paths)
-        .expect("the other process prints its paths");
-    assert_eq!(theirs, path_bits());
+    let printed = run_alone("a_plan_repeats_in_another_process");
+    assert_eq!(printed.between_markers().join("\n"), path_bits());
+}
+
+// OMPL's error at a goal that RRTConnect cannot sample goes to the caller's tracing
+// subscriber, as an error under the target `ompl`, and the plan prints nothing of its own.
+// The plan runs alone in another process, where no plan reaches the log site before the
+// subscriber is set.
+#[test]
+fn an_ompl_error_goes_to_the_tracing_subscriber() {
+    if alone() {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_test_writer()
+                .with_ansi(false)
+                .without_time()
+                .finish(),
+        );
+        let ends = WallEnds::new(2);
+        let sampled = ScriptedGoals::new(|_, _, _| Ok(GoalSample::Ended));
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        println!("BEGIN");
+        let answer = plan(&request, &wall(2));
+        println!("END");
+        assert_eq!(answer, Err(PlanError::InvalidGoal));
+        return;
+    }
+    let printed = run_alone("an_ompl_error_goes_to_the_tracing_subscriber");
+    let logged = printed.between_markers();
+    assert!(
+        matches!(logged.as_slice(), [line] if line.starts_with("ERROR ompl: ")
+            && line.ends_with(" - RRTConnect: Unable to sample any valid states for goal tree")),
+        "the plan logged {logged:?}"
+    );
+    assert_eq!(printed.stderr, "", "the plan printed to standard error");
 }
 
 // Simplification gives a path at most as long as the planned one, whose states and
