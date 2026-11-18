@@ -24,6 +24,7 @@ use common::footprints::{inside_by, padded};
 use common::layers::{layer, lethal_cells};
 use common::poses::{on_base, planar};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -31,7 +32,7 @@ use navigation_core::costmap::compose;
 use navigation_core::grid::{GridGeometry, LETHAL, UNKNOWN};
 use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
 use navigation_core::saved_grid::{MapThresholds, SavedGrid};
-use occupancy_map::{Bounds, Frame};
+use occupancy_map::Bounds;
 
 /// The side of a voxel and of a cell, in meters.
 const VOXEL_M: f64 = 0.05;
@@ -84,8 +85,8 @@ fn heights() -> ObstacleHeights {
 }
 
 /// The odometry frame, which the live obstacles' map is in.
-fn odom() -> Frame {
-    Frame::parse("odom").expect("a frame name")
+fn odom() -> FrameName {
+    FrameName::parse("odom").expect("a frame name")
 }
 
 /// The bounds of the live obstacles' map: from 1.5 m behind and beside the origin to 2 m

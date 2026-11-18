@@ -21,12 +21,13 @@ use common::footprints::padded;
 use common::layers::layer;
 use common::poses::moved;
 use control_core::twist::Twist;
+use frame_tree::FrameName;
 use navigation_core::PaddedFootprint;
 use navigation_core::obstacles::{
     GridPoses, LiveObstacles, ObstacleHeights, ObstacleHeightsParams,
 };
 use navigation_core::stop::{Stop, StopCause, StopDecision, StopParams};
-use occupancy_map::{Bounds, Frame};
+use occupancy_map::Bounds;
 use ros_reference::collision_monitor::{Action, Case, Cases, PointsAre, PolygonParameters};
 
 /// How far a velocity the stop allows may lie from the collision monitor's.
@@ -88,7 +89,7 @@ fn live_of(cases: &Cases) -> LiveObstacles {
     })
     .expect("the scenario's band and step, of whole voxels");
     LiveObstacles::new(
-        Frame::parse("base").expect("a frame name"),
+        FrameName::parse("base").expect("a frame name"),
         Bounds {
             min: [-1.0, -1.5, -0.5],
             max: [3.0, 1.5, 1.5],

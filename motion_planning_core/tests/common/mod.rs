@@ -19,9 +19,10 @@ use chain_kinematics::{Draws, PRECISION_M, PRECISION_RAD, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use motion_planning_core::{Arm, Arms, Body};
 use nalgebra::{Isometry3, Point3};
-use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
+use occupancy_map::{Bounds, Scan, VoxelBox, VoxelMap};
 use robot_description::ArmId;
 
 use crate::openarm_v2::{self, JOINTS, LEFT, RIGHT};
@@ -121,8 +122,8 @@ pub fn an_hour_from_now() -> Instant {
 }
 
 /// The frame of OpenArm v2's URDF root, which the maps stand in.
-pub fn world() -> Frame {
-    Frame::parse(openarm_v2::root_link()).expect("the URDF root names a frame")
+pub fn world() -> FrameName {
+    FrameName::parse(openarm_v2::root_link()).expect("the URDF root names a frame")
 }
 
 /// A map of `voxel_m` voxels over the cube of half side `half_m` about the robot's

@@ -9,6 +9,7 @@ description = "What a mobile base needs to plan a path around what it sees and t
 [dependencies]
 camera_core = { path = "../camera_core" }
 control_core = { path = "../control_core" }
+frame_tree = { path = "../frame_tree" }
 libstdcxx_heap = { path = "../libstdcxx_heap" }
 occupancy_map = { path = "../occupancy_map" }
 thiserror = "2"

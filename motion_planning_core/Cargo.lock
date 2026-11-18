@@ -411,6 +411,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -691,6 +698,7 @@ dependencies = [
  "chain_kinematics",
  "collision_geometry",
  "control_core",
+ "frame_tree",
  "hegeltest",
  "json5",
  "kinematics_properties",
@@ -812,6 +820,7 @@ dependencies = [
  "camera_core",
  "collision_geometry",
  "control_core",
+ "frame_tree",
  "nalgebra",
  "thiserror 2.0.21",
 ]

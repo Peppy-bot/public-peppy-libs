@@ -230,6 +230,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -506,6 +513,7 @@ dependencies = [
  "chain_kinematics",
  "collision_geometry",
  "control_core",
+ "frame_tree",
  "hegeltest",
  "nalgebra",
  "robot_description",

@@ -5,7 +5,8 @@
 //! intersects cleared, and the distance from any point to the nearest
 //! occupied voxel, with its gradient.
 //!
-//! - [`VoxelMap`]: the map in its [`Frame`] over its [`Bounds`], its voxels
+//! - [`VoxelMap`]: the map in its frame, a
+//!   [`FrameName`](frame_tree::FrameName), over its [`Bounds`], its voxels
 //!   ([`Voxel`], each at a [`Key`]) and their boxes ([`VoxelBox`]), a
 //!   [`Scan`] inserted with the shapes it cuts out ([`Cutout`];
 //!   [`RobotCutout`] is the robot's body as `collision_geometry` places it,
@@ -36,7 +37,6 @@
 
 mod depth;
 mod distance;
-mod frame;
 mod grid;
 mod key;
 mod map;
@@ -45,7 +45,6 @@ mod sensor_model;
 
 pub use depth::{DepthError, depth_points};
 pub use distance::{DistanceField, DistanceGradient, NotANumber};
-pub use frame::{Frame, FrameError};
 pub use key::Key;
 pub use map::{
     Bounds, Columns, Cutout, InsertError, MapError, Reading, RobotCutout, Scan, ShapeCutout, Voxel,

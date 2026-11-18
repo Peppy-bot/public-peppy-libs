@@ -6,13 +6,13 @@ and marking the voxels they hit, with the robot and the collision objects cut ou
 voxels a collision object intersects cleared, and the distance from any point to the
 nearest occupied voxel, with its gradient. No hardware or messaging dependencies.
 
-- `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
-  out, answers each voxel's state, its box and the occupied voxels inside a box,
-  `clear`s, clears the voxels a collision object's shape intersects or touches, gives
-  its voxels seen from above as `Columns` and clears every voxel of a column
-  (`clear_columns`), and gives the map `recentered` over other bounds, each voxel both
-  bounds hold keeping what it held. `Scan::readings` gives each point of a scan in the
-  map's frame as the map inserts it (`Reading`), and `insert_clearing` inserts a scan
+- `VoxelMap` holds the voxels in its frame, a `frame_tree::FrameName`, inserts a `Scan`
+  with the shapes it cuts out, answers each voxel's state, its box and the occupied
+  voxels inside a box, `clear`s, clears the voxels a collision object's shape intersects
+  or touches, gives its voxels seen from above as `Columns` and clears every voxel of a
+  column (`clear_columns`), and gives the map `recentered` over other bounds, each voxel
+  both bounds hold keeping what it held. `Scan::readings` gives each point of a scan in
+  the map's frame as the map inserts it (`Reading`), and `insert_clearing` inserts a scan
   with more points that clear and mark nothing.
 - `RobotCutout` is the robot's body to cut out: its chains placed and the body fixed
   around them, grown by `collision_geometry`, where the robot's URDF root stands in the
@@ -30,9 +30,10 @@ use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
-use occupancy_map::{Bounds, DistanceField, Frame, RobotCutout, Scan, VoxelMap, depth_points};
+use frame_tree::FrameName;
+use occupancy_map::{Bounds, DistanceField, RobotCutout, Scan, VoxelMap, depth_points};
 
-let world = Frame::parse("world")?;
+let world = FrameName::parse("world")?;
 let mut map = VoxelMap::new(
     world.clone(),
     PositiveFinite::parse(0.02)?,
@@ -86,7 +87,8 @@ A map keeps its voxels in the frame it is made in. A scan's points are in its se
 own frame, and its `sensor` pose places that frame in the scan's `frame`; a cutout names
 the frame it stands in. `insert` takes a scan whose frame and cutouts' frames are the
 map's, and refuses any other, naming the frame to give instead and changing nothing. A
-frame's name is one tf takes: not empty, and not starting with `/`.
+frame is a `frame_tree::FrameName`, the name the transform tree knows it by: not empty,
+and matched byte for byte.
 
 ## The voxels
 
