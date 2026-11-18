@@ -145,9 +145,8 @@ impl Pose {
     /// largest double, makes no pose: the error gives the position and the
     /// orientation.
     pub fn interpolated(&self, to: &Pose, ratio: f64) -> Result<Pose, PoseError> {
-        let rest = 1.0 - ratio;
-        let origin = std::array::from_fn(|i| rest * self.origin[i] + ratio * to.origin[i]);
-        let orientation = slerp(self.orientation(), to.orientation(), ratio);
+        let origin = frame_tree::interpolated(self.origin, to.origin, ratio);
+        let orientation = frame_tree::slerp(self.orientation(), to.orientation(), ratio);
         Pose::new(origin, orientation)
     }
 
@@ -166,29 +165,6 @@ impl Pose {
 
 fn dot(row: [f64; 3], point: [f64; 3]) -> f64 {
     row[0] * point[0] + row[1] * point[1] + row[2] * point[2]
-}
-
-fn dot4(a: [f64; 4], b: [f64; 4]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
-}
-
-/// tf2's `Quaternion::slerp` of `from` towards `to` by `ratio`: half the
-/// shortest angle between them (`angleShortestPath`, its arccosine clamped as
-/// `tf2Acos` clamps it), `to` negated when it lies the long way round, and
-/// `from` itself when the angle is 0.
-fn slerp(from: [f64; 4], to: [f64; 4], ratio: f64) -> [f64; 4] {
-    let dot = dot4(from, to);
-    let length = (dot4(from, from) * dot4(to, to)).sqrt();
-    let cosine = (dot.abs() / length).clamp(-1.0, 1.0);
-    let theta = cosine.acos();
-    if theta == 0.0 {
-        return from;
-    }
-    let d = 1.0 / theta.sin();
-    let s0 = ((1.0 - ratio) * theta).sin();
-    let s1 = (ratio * theta).sin();
-    let toward = if dot < 0.0 { to.map(|c| -c) } else { to };
-    std::array::from_fn(|i| (from[i] * s0 + toward[i] * s1) * d)
 }
 
 /// The sine of the pitch at or past which tf2's `getYaw` reads a quaternion's

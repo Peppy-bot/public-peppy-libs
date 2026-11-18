@@ -76,7 +76,7 @@ pub(crate) fn negated(v: Vector) -> Vector {
 }
 
 /// `setInterpolate3`: `v0` blended toward `v1` by `ratio` (Vector3.hpp:222-230).
-pub(crate) fn interpolated(v0: Vector, v1: Vector, ratio: f64) -> Vector {
+pub fn interpolated(v0: [f64; 3], v1: [f64; 3], ratio: f64) -> [f64; 3] {
     let s = 1.0 - ratio;
     [
         s * v0[0] + ratio * v1[0],
@@ -109,7 +109,7 @@ fn angle_shortest_path(q1: Quaternion, q2: Quaternion) -> f64 {
 
 /// `slerp`: `q1` turned toward `q2` by the fraction `t` of the shorter arc between them;
 /// `q1` itself where the two give one rotation (Quaternion.hpp:340-364).
-pub(crate) fn slerp(q1: Quaternion, q2: Quaternion, t: f64) -> Quaternion {
+pub fn slerp(q1: [f64; 4], q2: [f64; 4], t: f64) -> [f64; 4] {
     let theta = angle_shortest_path(q1, q2) / 2.0;
     if theta == 0.0 {
         return q1;
