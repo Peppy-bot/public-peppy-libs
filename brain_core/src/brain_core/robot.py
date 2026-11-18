@@ -86,10 +86,13 @@ class Moved:
 @dataclass(frozen=True)
 class MoveResult(Moved):
     """An arm move's end, and where the grasp point stood when it ended:
-    for a completed or a cancelled move."""
+    for a completed or a cancelled move. `ended_on_contact` is true when a
+    move with a contact gap above 0 completed on contact, the grasp point
+    short of its goal, and false for every other end."""
 
     final_position: Optional[Vec3] = None
     final_orientation: Optional[Quat] = None
+    ended_on_contact: bool = False
 
 
 @dataclass(frozen=True)
@@ -348,8 +351,10 @@ class Robot:
         the pose, the move completes once the measured grasp point stands within
         the settle tolerances at or after the planned end, and fails with
         `timeout` `settle_timeout_s` after it otherwise. `contact_gap_m` is the
-        contract's contact gap of the move, 0 for no contact check.
-        A duration of 0 is the fastest the joint limits allow."""
+        contract's contact gap of the move, 0 for no contact check; with a gap
+        above 0 the move also completes on contact, and the result's
+        `ended_on_contact` says so. A duration of 0 is the fastest the joint
+        limits allow."""
         request = self._move_arm.GoalRequest(
             **_arm_move_fields(arm, position, orientation, duration_s),
             settle_position_tolerance_m=settle_position_tolerance_m,
@@ -361,7 +366,8 @@ class Robot:
         if data is None:
             return MoveResult(moved.end, moved.message, moved.failure_kind)
         return MoveResult(
-            moved.end, moved.message, moved.failure_kind, _vec3(data.final_position), _quat(data.final_orientation)
+            moved.end, moved.message, moved.failure_kind, _vec3(data.final_position), _quat(data.final_orientation),
+            bool(data.ended_on_contact),
         )
 
     async def set_gripper(

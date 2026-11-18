@@ -665,7 +665,9 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
         """The goal's result, the arm put on its target first."""
         request = goal.request
         limbs.left_arm = (tuple(request.position), tuple(request.orientation))
-        return SimpleNamespace(final_position=request.position, final_orientation=request.orientation, action_time=1.0)
+        return SimpleNamespace(
+            final_position=request.position, final_orientation=request.orientation, ended_on_contact=False, action_time=1.0,
+        )
 
     opened = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (opened.request.gripper_name, opened.request.opening) == ("left_gripper", 1.0)

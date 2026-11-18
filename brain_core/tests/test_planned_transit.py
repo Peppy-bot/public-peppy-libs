@@ -27,8 +27,7 @@ from brain_core.manipulators.scripted.manipulator import (
     SETTLE_TIMEOUT_S,
     ScriptedManipulator,
 )
-from brain_core.manipulators.scripted.grasp import lifted
-from brain_core.manipulators.scripted.manipulator import CLEARANCE_M, HELD_ITEM_DEPTH_M, RELEASE_HEIGHT_M
+from brain_core.manipulators.scripted.manipulator import CLEARANCE_M, HELD_ITEM_DEPTH_M
 from brain_core.ports import Cancelled, CancelToken, Gripper, Item, ItemShape, Outcome, Pose, Senses
 from brain_core.robot import (
     ArmDescription,
@@ -491,27 +490,26 @@ async def test_a_check_at_the_pre_grasp_point_that_a_stop_ended_puts_nothing_bac
 
 
 # The planned transit of a place: to the pre-place point 15 cm above the
-# pose, else 7.5 cm above it, the reach of the line down to the release
-# point 5 cm above the pose tested from the end of each plan.
+# pose, else 7.5 cm above it, the reach of the line down to the pose tested
+# from the end of each plan.
 
 PLACE_Q = DOWN[0]
 PLACE_POINT = (0.6, 0.0, 0.75)
 HIGH = (0.6, 0.0, 0.75 + (CLEARANCE_M + HELD_ITEM_DEPTH_M))
 LOW = (0.6, 0.0, 0.75 + CLEARANCE_M)
-RELEASE = lifted(PLACE_POINT, RELEASE_HEIGHT_M)
 
 
 async def test_a_planned_place_plans_to_the_high_pre_place_point_tests_the_line_down_runs_the_plan_and_moves_by_lines(caplog):
     manipulator, robot, _ = await started()
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
-    assert outcome == Outcome(True, "", RELEASE)
+    assert outcome == Outcome(True, "", PLACE_POINT)
     assert robot.calls == [
         ("describe",),
         ("plan", HIGH, PLACE_Q),
-        ("line", (RELEASE,), PLACE_Q, False, AT_PRE),
+        ("line", (PLACE_POINT,), PLACE_Q, False, AT_PRE),
         THE_RUN,
-        ("move", RELEASE, PLACE_Q),
+        ("move", PLACE_POINT, PLACE_Q),
         ("grip", "left_gripper", 1.0, 0.0),
         ("move", HIGH, PLACE_Q),
     ]
@@ -525,9 +523,9 @@ async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplo
     robot.plans.append(no_plan("no_path", "no path joined the goal in 0.5 s"))
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
         outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
-    assert outcome == Outcome(True, "", RELEASE)
+    assert outcome == Outcome(True, "", PLACE_POINT)
     assert [call for call in robot.calls if call[0] in ("plan", "move")] == [
-        ("plan", HIGH, PLACE_Q), ("plan", LOW, PLACE_Q), ("move", RELEASE, PLACE_Q), ("move", LOW, PLACE_Q),
+        ("plan", HIGH, PLACE_Q), ("plan", LOW, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("move", LOW, PLACE_Q),
     ]
     assert "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it" in [
         record.getMessage() for record in log.records
@@ -537,7 +535,7 @@ async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplo
 async def test_a_place_whose_line_down_does_not_reach_from_the_high_point_tries_the_low_one():
     manipulator, robot, _ = await started()
     robot.lines.append(reached(0.4))
-    assert await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken()) == Outcome(True, "", RELEASE)
+    assert await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken()) == Outcome(True, "", PLACE_POINT)
     assert [call[1] for call in robot.calls if call[0] == "plan"] == [HIGH, LOW]
 
 

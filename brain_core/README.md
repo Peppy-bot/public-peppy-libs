@@ -357,10 +357,9 @@ its moves carries the bars of every arm move. It ends `Aligned` with the
 points the grab goes on with, `GaveUp`, `OutOfSteps` or `Stopped` when a
 stop ended a move; the last three fail the grab there, before the descent.
 A place runs the same step above the spot the held item goes to, measured
-from the target point, and then lowers the item until it rests or the
-release point 5 cm above the target is reached: an arm the backbone stops
-short anywhere from the pre-place point down, within 5 cm of the line down,
-has set the item on what is under it, and the place opens there.
+from the target point, and then lowers the item on a line down that stops
+on contact: the place opens where the line down ended, on contact or at the
+target.
 
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
@@ -369,7 +368,14 @@ its pose and settles within `settle_position_m` (2 cm) and
 the OpenArm v2, or fails with `timeout` `settle_timeout_s` (2 s) after
 its planned end, with the backbone's words, such as `still 8.0 mm / 0.02 rad
 from the target, 2.0 s after the planned end`. Every arm move names the
-contract's `contact_gap_m` as 0, no contact check. A check asks with the same
+contract's `contact_gap_m` as 0, no contact check, and the fastest duration,
+but a line down, the descent of a grab and the line down of a place: it
+names `line_down_contact_gap_m` (2 cm, the settle position tolerance, so no
+arm stands between a settle and a contact), and its duration is its length
+divided by `line_down_speed_m_s` (5 cm/s): 1.5 s for the 7.5 cm of a grab's
+descent, 3 s for the 15 cm from the high pre-place point. A grab whose
+descent ends on contact closes there, where the fingers met the item or what
+is under it. A check asks with the same
 pose and duration. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
 jaws to stand still.
 
@@ -388,7 +394,8 @@ sequenceDiagram
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
     Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws go back to their opening before the grab
-    SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
+    SM->>R: move_arm(pre-grasp): settles, or fails
+    SM->>R: move_arm(grasp point), a line down: settles or ends on contact, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
     SM->>R: move_arm(lifted point)
@@ -424,7 +431,7 @@ with no collision check, from the end of that plan through the grasp and
 lifted points, tests the reach of the descent and the lift. The first
 orientation that passes both runs its plan with `execute_joint_path`, the
 plan's start as the expected start, each joint within 0.05 rad at the end,
-with `contact_gap_m` 0, no contact check, as every arm move.
+with `contact_gap_m` 0, no contact check, as every arm move but a line down.
 A grab whose orientations all fail, and that does not take the second path
 below, ends before the arm moves, with the last one's words, the planner's
 kind first (`no_path: ...`): no line takes the place of a plan.
@@ -484,8 +491,9 @@ the total time of the check_arm_move calls; how wide the jaws opened for the
 item's width; the second path, with the planner's words for the start it
 refused with the jaws open; where the descent's result put the
 grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the
-arm settled; limb_state's grasp point at the close; the two openings it
-judged; and the retreat or the put back of the jaws.
+arm settled or ended on contact, and `on contact` when it did; limb_state's
+grasp point at the close; the two openings it judged; and the retreat or
+the put back of the jaws.
 
 A place whose jaws stand closed on air (an opening below `hold_opening_min`
 in the latest snapshot: the item slipped since the grab) fails before any
@@ -494,28 +502,23 @@ carries the item to the pose through its pre-place point,
 `clearance_m` and `held_item_depth_m` (7.5 cm, how far a held item may
 reach below the grasp point) above the pose, so the item clears the floor of
 a container and what already stands in it until the descent, or `clearance_m`
-alone above it where the backbone has no plan that high. The line down ends
-at the release point, `release_height_m` (5 cm) above the pose, so the arm
-does not press the item on what it is set on: the place opens there and
-climbs back to the pre-place point, and the item falls the last part. The
-reach test of the line down and the aligner's checks use the release point,
-and the result reports where the jaws opened, up to 5 cm above where the item
-rests. With the motion planner bound, the
+alone above it where the backbone has no plan that high. The line down runs
+from the pre-place point to the pose and stops on contact, so the arm does
+not press the item on what it is set on. The reach test of the line down and
+the aligner's checks use the pose. With the motion planner bound, the
 transit to the pre-place point is planned as a grab's is: each orientation
 planned to the high pre-place point with the reach of the line down tested
 from the end of the plan, then each to the low one; only a place that no
-orientation reaches at the high point tries the low one. An arm that stops
-short on its way down does not settle, so its move fails with `timeout`. When the latest
-limb_states snapshot puts its grasp point anywhere from the pre-place point
-down to the release point and within 5 cm (`RELEASE_OFF_LINE_M`) of the line
-down, the arm has set the item on what is under it, the rim or the floor of a
-container or the items already in it included (an item slides off a round top by a few
-centimetres before it rests): the place opens there,
-logs how far short it stopped, and reports that point. A stop of the
-descent, or an arm stopped more than 5 cm above the pre-place point or off
-the line down, fails the place with the jaws closed. A climb that fails is
-logged and the place still succeeds, since the item is down and the jaws are
-open.
+orientation reaches at the high point tries the low one. When the line down
+completes, settled at the pose or on contact, the item resting on what is
+under it (the rim or the floor of a container, or the items already in it,
+off whose round tops an item slides a few centimetres before it rests), the
+place opens where the arm stopped, reports that point and climbs back to the
+pre-place point; a contact is logged with where the arm stopped against the
+pose. A line down that fails, with `timeout` or another kind, or that a stop
+ended, fails the place with the jaws closed: the gripper still holds the
+item. A climb that fails is logged and the place still succeeds, since the
+item is down and the jaws are open.
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
 the eight rolls of a grasp from above. Under the centre of the box of an open
