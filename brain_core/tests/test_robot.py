@@ -87,8 +87,10 @@ async def in_flight(robot: Robot) -> None:
         await asyncio.sleep(0)
 
 
-def arm_result():
-    return SimpleNamespace(final_position=[0.51, 0.1, 0.69], final_orientation=[0.0, 0.0, 0.0, 1.0], action_time=0.4)
+def arm_result(ended_on_contact: bool = False):
+    return SimpleNamespace(
+        final_position=[0.51, 0.1, 0.69], final_orientation=[0.0, 0.0, 0.0, 1.0], ended_on_contact=ended_on_contact, action_time=0.4,
+    )
 
 
 async def test_a_completed_move_returns_where_the_limb_stands():
@@ -113,6 +115,17 @@ async def test_a_completed_move_returns_where_the_limb_stands():
     # A gripper that reached its settle timeout still completes: `settled`
     # says so.
     assert await asyncio.wait_for(grip, WAIT) == GripResult(MoveEnd.COMPLETED, "", "", False, 0.21)
+
+
+async def test_a_move_that_ends_on_contact_says_so_and_where_the_limb_stopped():
+    robot, move_arm, _ = backbone()
+    move = asyncio.create_task(robot.move_arm("left_arm", POSITION, ORIENTATION, duration_s=3.0, **{**BARS, "contact_gap_m": 0.02}))
+    goal = await asyncio.wait_for(move_arm.next_goal(), WAIT)
+    assert goal.request.contact_gap_m == 0.02
+    goal.complete(arm_result(ended_on_contact=True))
+    moved = await asyncio.wait_for(move, WAIT)
+    assert moved == MoveResult(MoveEnd.COMPLETED, "", "", (0.51, 0.1, 0.69), (0.0, 0.0, 0.0, 1.0), True)
+    assert moved.completed and moved.ended_on_contact
 
 
 async def test_a_move_the_backbone_refuses_or_fails_says_why_with_its_kind():
