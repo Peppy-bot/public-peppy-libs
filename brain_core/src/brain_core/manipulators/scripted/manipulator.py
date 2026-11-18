@@ -49,18 +49,37 @@ that plan through the points that follow, a test of their reach alone; the
 first orientation that passes both runs its plan with execute_joint_path,
 the plan's start as the expected start. A plan that fails, such as one
 from a start in collision, gives the planner's kind and words, and no line
-replaces it. The descent, the lift, the retreat and the climb stay move_arm
-lines either way. Before a grab plans, it adds the item's object,
-`brain/<item_id>`, to the planning scene at the item's place, the box its
-look measured or a sphere for an item no look measured, and lets the
-gripper's links touch it; the add clears the item's cubes from the
-planner's map, so none stay under the hand after the lift. Each way a grab
-fails or stops removes the object; a grab that holds leaves it for the
-brain to attach. Just before the descent, after the aligner, a grab with
-the planner asks it what a checked descent would answer: a
-plan_cartesian_path with the collision check from where the arm stands
-through the grasp and lifted points. It logs the share of the lines that
-path covers and moves by the lines of today either way.
+replaces it. A grab plans with the jaws open as it opened them, so the
+planner examines the open hand for the full transit. A refused start
+(`start_in_collision`) ends the search at its orientation: the start is
+where the arm stands, the same for each orientation. The grab then takes
+its second path: it closes the jaws and plans each orientation again with
+the hand closed. A grab takes a gripper that holds nothing, so the
+close is safe, also when a place left the jaws open. The run of that plan
+ends at the pre-grasp point, where the jaws open for the item and the grab
+asks the planner whether the arm is clear where it stands, with the request
+of the checked descent below: its start is where the arm stands, and the
+planner refuses a start in collision as it refuses that of a plan. A path
+in the answer lets the grab go on as on the first path. Any other answer
+fails the grab with the planner's words, the arm stays at the pre-grasp
+point, and the grab tries no other orientation: a start in collision says
+that the arm is not clear, and any other answer that the planner cannot
+tell, since the plan examined the closed hand alone. A refusal with the hand
+closed too fails the grab with the planner's words before the arm moves.
+Without the planner, a grab has the first path alone. The descent, the
+lift, the retreat and the climb stay move_arm lines either way. Before a
+grab plans, it adds the item's object, `brain/<item_id>`, to the planning
+scene at the item's place, the box its look measured or a sphere for an
+item no look measured, and lets the gripper's links touch it; the add
+clears the item's cubes from the planner's map, so none stay under the
+hand after the lift. Each way a grab fails or stops removes the object; a
+grab that holds leaves it for the brain to attach. Just before the
+descent, after the aligner, a grab with the planner asks it what a checked
+descent would answer: a plan_cartesian_path with the collision check from
+where the arm stands through the grasp and lifted points. On the second
+path with no aligner, the check at the pre-grasp point is that request
+from the same place, and the log reads its answer. It logs the share of
+the lines that path covers and moves by the lines of today either way.
 
 Each step that fails ends the grab with the backbone's own words. A grab
 or a place that no orientation plans names the last orientation it tried,
@@ -71,16 +90,24 @@ the gripper opens and the arm moves straight back up to the pre-grasp
 point, so the jaws let go of what they touch and the next look sees the
 item. A retreat that stops short adds why to the failure. A step whose
 goal a stop ended (the brain's stop or the backbone's stop service)
-retreats from nothing: the arm stays where the stop left it. A step that
-fails before the descent leaves the arm where the backbone stopped it; a
-grab that no orientation reaches leaves the jaws open, since a grab takes
-a gripper that holds nothing.
+retreats from nothing: the arm stays where the stop left it, and the jaws
+stay as they are. A step that fails after the jaws opened and before the
+descent, a grab that no orientation reaches included, leaves the arm where
+the backbone stopped it and puts the jaws back to the opening that the
+latest limb_states snapshot gave before the grab. Once the arm moved toward
+the item, the put back does not open the jaws wider there: it closes them
+to that opening when it is narrower than the opening of the latest
+snapshot, and they stay as they stand otherwise. A put back that stops
+short adds why to the failure, and one that a stop ended ends the grab as
+a stop.
 
 Each grab leaves one log line: the orientation that planned, with how many
 check_arm_move calls ran and their total time; how wide the jaws opened for
-the item's width; where the descent's result put the grasp point against
-the commanded one, and whether the descent ended on contact; limb_state's
-grasp point at the close; the two openings it judged; and the retreat.
+the item's width; the second path and why the grab took it; where the
+descent's result put the grasp point against the commanded one, and
+whether the descent ended on contact; limb_state's grasp point at the
+close; the two openings it judged; and the retreat or the put back of the
+jaws.
 
 A drop opens the gripper where it is. A place first reads the gripper's
 opening from the latest snapshot: jaws below `hold_opening_min` stand
@@ -113,12 +140,12 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Optional, Sequence
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
-from ...robot import ArmDescription, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
+from ...robot import ArmDescription, CartesianPath, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
 from ...waiting import until
 from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps
 from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
@@ -173,6 +200,9 @@ FULL_REACH = 1.0 - 1e-9
 # transit, names: limb_motion's 0, no contact check, so a move ends by its
 # settle alone.
 NO_CONTACT_CHECK_M = 0.0
+# The motion_planning failure kind of a plan or a path whose start keeps a
+# part of the robot nearer to a thing than the clearance of the planner.
+START_IN_COLLISION = "start_in_collision"
 # A line down, the descent of a grab or of a place, has its own contact gap
 # and its own speed. The gap is the settle position tolerance, 2 cm, so no
 # arm stands between a settle and a contact. The duration of a line down is
@@ -205,8 +235,28 @@ class _Failed(Exception):
 
 
 class _NoReach(_Failed):
-    """No orientation of a grasp reaches: nothing moved, and a place tries
-    its lower pre-place point."""
+    """No orientation of a grasp reaches: the arm did not move, and a place
+    tries its lower pre-place point. `start_refused` when the planner
+    refused the start of the plan to the pre point: where the arm stands,
+    with the jaws as they stand, a part of it is too near a thing. The
+    start is the same for each orientation, so no other orientation
+    plans."""
+
+    def __init__(self, message: str, *, start_refused: bool = False) -> None:
+        super().__init__(message)
+        self.start_refused = start_refused
+
+
+@dataclass(frozen=True)
+class _Refused:
+    """The first point of the moves of an orientation that does not pass
+    its reach test: its index among the points, the words for it, and
+    whether the planner refused the start of the plan to the pre point
+    (`start_in_collision`)."""
+
+    point: int
+    words: str
+    start_refused: bool = False
 
 
 @dataclass
@@ -230,18 +280,21 @@ class _Reach:
     """The first orientation of a grasp whose moves reach, as `_transit`
     finds it: the orientation, the points of its moves in order, the pre
     point first, `go`, the transit, the move that takes the arm to the pre
-    point, `abandon` and `log_descent`."""
+    point (on the second path of a grab, also the open of the jaws there and
+    the check that the arm is clear, whose answer it returns), `abandon`
+    and `log_descent`."""
 
     orientation: Quat
     points: tuple[Vec3, ...]
-    go: Callable[[CancelToken], Awaitable[object]]
+    go: Callable[[CancelToken], Awaitable[Optional[CartesianPath]]]
     # What a grab that fails or stops undoes of the transit: the item's
     # object it added to the planning scene, nothing with no planner.
     abandon: Callable[[], Awaitable[None]]
     # The log of what a checked descent from where the arm stands would
-    # answer, given the grasp point, the lifted point and the orientation;
+    # answer, given the grasp point, the lifted point, the orientation and
+    # the answer that `go` returned from where the arm stands, if any;
     # nothing with no planner.
-    log_descent: Callable[[Vec3, Vec3, Quat, CancelToken], Awaitable[None]]
+    log_descent: Callable[[Vec3, Vec3, Quat, Optional[CartesianPath], CancelToken], Awaitable[None]]
 
 
 async def _nothing(*_) -> None:
@@ -353,8 +406,9 @@ class ScriptedManipulator:
     async def _grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, notes: list[str]) -> Outcome:
         self._require_started()
         # Before any move: a gripper limb_states does not name could never
-        # be judged after the lift.
-        _opening_of(self._limb_states.latest, gripper.name)
+        # be judged after the lift. A grab that fails before its descent
+        # puts the jaws back to this opening.
+        opening_before = _opening_of(self._limb_states.latest, gripper.name)
         if self.aligner is not None:
             reason = self.aligner.why_unavailable(gripper.arm)
             if reason:
@@ -366,37 +420,100 @@ class ScriptedManipulator:
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
-        reach = await self._transit(
-            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True, item=item,
-        )
         try:
-            return await self._run_grab(item, gripper, max_effort, reach, cancel, notes)
+            reach = await self._transit(
+                gripper, grasp, f"item '{item.item_id}'", cancel, notes,
+                clearance_m=self.clearance_m, with_lift=True, item=item, opening=opening,
+            )
+        except _Failed as failure:
+            raise await self._put_jaws_back(failure, gripper, opening_before, cancel, notes) from None
+        try:
+            reach = await self._approach(item, gripper, reach, cancel, notes)
+        except _Failed as failure:
+            raise await self._put_jaws_back_where_moved(failure, gripper, opening_before, cancel, notes) from None
+        try:
+            return await self._descend_or_retreat(item, gripper, max_effort, reach, cancel, notes)
         except (_Failed, Cancelled):
             await reach.abandon()
             raise
 
-    async def _run_grab(
+    async def _approach(self, item: Item, gripper: Gripper, reach: _Reach, cancel: CancelToken, notes: list[str]) -> _Reach:
+        """The grab from its transit to its descent: the run of the transit
+        of `reach` to the pre-grasp point, then the aligner's correction above
+        the item and the log of the checked descent. Returns the reach with
+        the points and the orientation that the descent goes on with. A step
+        that fails removes the item's object."""
+        try:
+            checked = await reach.go(cancel)
+            if self.aligner is not None:
+                pre, point, _ = reach.points
+                pre, point, lift, orientation = await self._align(item, gripper, pre, point, reach.orientation, cancel, notes)
+                reach = replace(reach, orientation=orientation, points=(pre, point, lift))
+                # The aligner moved the arm: an answer of the run is for
+                # another start.
+                checked = None
+            _, point, lift = reach.points
+            await reach.log_descent(point, lift, reach.orientation, checked, cancel)
+        except (_Failed, Cancelled):
+            await reach.abandon()
+            raise
+        return reach
+
+    async def _put_jaws_back(
+        self, failure: _Failed, gripper: Gripper, opening: float, cancel: CancelToken, notes: list[str]
+    ) -> _Failed:
+        """The failure that ends a grab that failed before its descent, once
+        the jaws of `gripper` went back to `opening`, the opening that they
+        had before the grab: `failure` itself when they got there, or
+        `failure` with why not (`_after_undo`). A failure that a stop ended
+        puts nothing back. A cancel raises Cancelled."""
+        if failure.stopped:
+            return failure
+        # A measured opening can stand a little outside the 0 to 1 that a
+        # gripper move takes.
+        opening = min(OPEN, max(CLOSED, opening))
+        try:
+            await self._grip(gripper.name, opening, 0.0, cancel)
+        except _Failed as undo:
+            undone: Optional[_Failed] = undo
+        else:
+            undone = None
+        return _after_undo(
+            failure, undone, notes, undo=f"putting the jaws back to {opening:.2f}", done=f"put the jaws back to {opening:.2f}",
+        )
+
+    async def _put_jaws_back_where_moved(
+        self, failure: _Failed, gripper: Gripper, opening_before: float, cancel: CancelToken, notes: list[str]
+    ) -> _Failed:
+        """`_put_jaws_back` for a grab that failed after its arm moved toward
+        the item: the jaws close to `opening_before` when it is narrower than
+        the opening that the latest limb_states snapshot gives, and stay as
+        they are otherwise, so that they never open wider where the arm
+        stopped, above the item."""
+        standing = _opening_of(self._limb_states.latest, gripper.name)
+        if opening_before < standing:
+            return await self._put_jaws_back(failure, gripper, opening_before, cancel, notes)
+        notes.append(
+            f"the jaws stay at {standing:.2f}: the put back to {opening_before:.2f} does not open them wider where the arm stopped"
+        )
+        return failure
+
+    async def _descend_or_retreat(
         self, item: Item, gripper: Gripper, max_effort: float, reach: _Reach, cancel: CancelToken, notes: list[str]
     ) -> Outcome:
-        """The grab from its transit on: the transit, the alignment, then the
-        descent, the close and the lift, with the retreat after a step from
-        the descent on that fails."""
+        """The grab from its descent on: the descent, the close and the lift
+        at the points of `reach`, with the retreat after a step that
+        fails."""
         orientation, (pre, point, lift) = reach.orientation, reach.points
-        await reach.go(cancel)
-        if self.aligner is not None:
-            pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
-        await reach.log_descent(point, lift, orientation, cancel)
         try:
             return await self._descend_close_lift(item, gripper, max_effort, orientation, pre, point, lift, cancel, notes)
         except _Failed as failure:
             if failure.stopped:
                 raise
-            short = await self._retreat(gripper, pre, orientation, cancel)
-            if short:
-                notes.append(f"the retreat stopped short: {short}")
-                raise _Failed(f"{failure.message}; the retreat to the pre-grasp point failed: {short}") from None
-            notes.append("retreated to the pre-grasp point")
-            raise
+            undone = await self._retreat(gripper, pre, orientation, cancel)
+            raise _after_undo(
+                failure, undone, notes, undo="the retreat to the pre-grasp point", done="retreated to the pre-grasp point",
+            ) from None
 
     async def _descend_close_lift(
         self, item: Item, gripper: Gripper, max_effort: float, orientation: Quat, pre: Vec3, point: Vec3, lift: Vec3,
@@ -477,16 +594,17 @@ class ScriptedManipulator:
             return OPEN
         return min(OPEN, (item.width_m + 2 * self.approach_margin_m) / self.jaw_travel_m)
 
-    async def _retreat(self, gripper: Gripper, pre: Vec3, orientation: Quat, cancel: CancelToken) -> str:
+    async def _retreat(self, gripper: Gripper, pre: Vec3, orientation: Quat, cancel: CancelToken) -> Optional[_Failed]:
         """Opens `gripper` and moves its arm straight up to `pre`, after a
-        grab that failed past its descent. Returns "" once there, or why the
-        retreat stopped short; a cancel raises Cancelled."""
+        grab that failed past its descent. Returns None once there, or the
+        failure of the step that stopped the retreat short; a cancel raises
+        Cancelled."""
         try:
             await self._grip(gripper.name, OPEN, 0.0, cancel)
             await self._move(gripper.arm, pre, orientation, cancel)
         except _Failed as failure:
-            return failure.message
-        return ""
+            return failure
+        return None
 
     def _arm_position(self, arm: str) -> Optional[Vec3]:
         """The grasp point of `arm` in the latest limb_states snapshot."""
@@ -564,6 +682,7 @@ class ScriptedManipulator:
     async def _transit(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
         clearance_m: float, with_lift: bool = False, item: Optional[Item] = None,
+        opening: Optional[float] = None,
     ) -> _Reach:
         """The first orientation of `grasp` whose moves reach, as
         `_first_reach` finds it, with its transit. The only place that asks
@@ -572,46 +691,153 @@ class ScriptedManipulator:
         from where the arm is commanded now to the pre point. With it, a
         grab's `item` first gets its object in the planning scene, each
         orientation is planned (`_planned_reach`), and the transit runs the
-        plan; abandoning the reach removes the object. A failure that no
-        orientation reaches is raised before anything moves, the object
-        removed."""
-        if not self._robot.has_planner:
-            orientation, points, _ = await self._first_reach(
+        plan; a grab, which gives the `opening` of its jaws above the item,
+        can take the second path (`_planned_transit`). Abandoning the reach
+        removes the object. A failure that no orientation reaches is raised
+        before the arm moves, the object removed."""
+
+        def first_reach(
+            test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[Optional[_Refused], object]]],
+        ) -> Awaitable[tuple[Quat, tuple[Vec3, ...], object]]:
+            return self._first_reach(
                 gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
-                test=lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
+                test=test,
             )
-            return _Reach(
-                orientation, points,
-                go=lambda cancel: self._move(gripper.arm, points[0], orientation, cancel), abandon=_nothing, log_descent=_nothing,
+
+        if not self._robot.has_planner:
+            orientation, points, _ = await first_reach(
+                lambda points, orientation, checks: self._checked_reach(gripper.arm, points, orientation, cancel, checks),
             )
+
+            async def move_to_pre(cancel: CancelToken) -> None:
+                await self._move(gripper.arm, points[0], orientation, cancel)
+
+            return _Reach(orientation, points, go=move_to_pre, abandon=_nothing, log_descent=_nothing)
         arm = await self._planner_arm(gripper)
         object_id = await self._add_item_object(item, arm) if item is not None else None
         try:
-            orientation, points, plan = await self._first_reach(
-                gripper, grasp, target, cancel, notes, clearance_m=clearance_m, with_lift=with_lift,
-                test=lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
+            orientation, points, go = await self._planned_transit(
+                arm, gripper, opening, cancel, notes,
+                plan=lambda: first_reach(
+                    lambda points, orientation, checks: self._planned_reach(arm, points, orientation, cancel, checks),
+                ),
             )
         except (_Failed, Cancelled):
             await self._remove_item_object(object_id)
             raise
         return _Reach(
             orientation, points,
-            go=lambda cancel: self._run_plan(gripper.arm, plan, cancel),
+            go=go,
             abandon=lambda: self._remove_item_object(object_id),
-            log_descent=lambda point, lift, orientation, cancel: self._log_checked_descent(arm, target, point, lift, orientation, cancel),
+            log_descent=lambda point, lift, orientation, checked, cancel: self._log_checked_descent(
+                arm, target, point, lift, orientation, checked, cancel,
+            ),
         )
 
-    async def _log_checked_descent(
-        self, arm: ArmDescription, target: str, point: Vec3, lift: Vec3, orientation: Quat, cancel: CancelToken
-    ) -> None:
-        """Logs what a checked descent would answer: the share of the lines
-        from where the arm stands down to `point` and up to `lift` that a
-        plan_cartesian_path with the collision check covers. Log only: the
-        grab descends by its lines whatever the answer."""
+    async def _planned_transit(
+        self, arm: ArmDescription, gripper: Gripper, opening: Optional[float], cancel: CancelToken, notes: list[str], *,
+        plan: Callable[[], Awaitable[tuple[Quat, tuple[Vec3, ...], JointPlan]]],
+    ) -> tuple[Quat, tuple[Vec3, ...], Callable[[CancelToken], Awaitable[Optional[CartesianPath]]]]:
+        """The transit with the planner: the orientation and the points that
+        `plan` finds, from where the arm stands with the jaws as they stand,
+        and the run of their plan. The first path is that plan. A grab,
+        which gives `opening`, takes the second path
+        (`_closed_jaws_transit`) only when the planner refuses the start,
+        where the arm stands; a place, and a refusal of another kind, fail
+        with the planner's words."""
+        try:
+            orientation, points, joint_plan = await plan()
+        except _NoReach as refused:
+            if opening is None or not refused.start_refused:
+                raise
+            return await self._closed_jaws_transit(arm, gripper, opening, refused, cancel, notes, plan=plan)
+        async def run(cancel: CancelToken) -> None:
+            await self._run_plan(gripper.arm, joint_plan, cancel)
+
+        return orientation, points, run
+
+    async def _closed_jaws_transit(
+        self, arm: ArmDescription, gripper: Gripper, opening: float, refused: _NoReach, cancel: CancelToken, notes: list[str], *,
+        plan: Callable[[], Awaitable[tuple[Quat, tuple[Vec3, ...], JointPlan]]],
+    ) -> tuple[Quat, tuple[Vec3, ...], Callable[[CancelToken], Awaitable[Optional[CartesianPath]]]]:
+        """The second path of a grab, after the planner `refused` the start
+        with the jaws open. The jaws close, as they
+        stand after a place too: a grab takes a gripper that holds nothing,
+        so the close is safe. `plan` then searches again with the jaws
+        closed. Its run ends at the pre-grasp point, where the jaws open to
+        `opening` and the planner must find the arm clear
+        (`_open_where_clear`); it returns the planner's answer there. A
+        search with the jaws closed that finds no orientation fails with the
+        planner's words, before the arm moves."""
+        notes.append(f"with the jaws open, {refused.message}")
+        notes.append("the second path: the jaws close for the transit and open at the pre-grasp point")
+        await self._grip(gripper.name, CLOSED, 0.0, cancel)
+        try:
+            orientation, points, joint_plan = await plan()
+        except _NoReach as closed:
+            raise _NoReach(
+                f"the planner refuses the start where the arm stands with the jaws open, and with the jaws closed {closed.message}"
+            ) from None
+
+        async def run_then_open(cancel: CancelToken) -> CartesianPath:
+            await self._run_plan(gripper.arm, joint_plan, cancel)
+            return await self._open_where_clear(arm, gripper, opening, points, orientation, cancel, notes)
+
+        return orientation, points, run_then_open
+
+    async def _open_where_clear(
+        self, arm: ArmDescription, gripper: Gripper, opening: float, points: tuple[Vec3, ...], orientation: Quat,
+        cancel: CancelToken, notes: list[str],
+    ) -> CartesianPath:
+        """The end of the second path at the pre-grasp point, the first of
+        `points`: opens the jaws to `opening`, then asks the planner whether
+        the arm is clear where it stands, the open jaws included, with the
+        request of the checked descent (`_checked_descent`), and returns its
+        answer. Its start is where the arm stands, and the planner refuses a
+        start in collision as it refuses that of a plan. A path in the
+        answer lets the grab go on. Any other answer fails the grab with the
+        planner's words, the arm at the pre-grasp point, and no other
+        orientation is tried: a start in collision says that the arm is not
+        clear, and any other answer that the planner cannot tell, since the
+        plan of the transit examined the closed hand alone."""
+        pre, point, lift = points
+        await self._grip(gripper.name, opening, 0.0, cancel)
+        checked = await self._checked_descent(arm, point, lift, orientation, cancel)
+        if checked.cancelled:
+            raise _Failed(checked.message or "plan_cartesian_path was cancelled", stopped=True)
+        if checked.completed:
+            notes.append("the jaws opened at the pre-grasp point, and the planner finds the arm clear there")
+            return checked
+        where = f"at the pre-grasp point {_numbers(pre)} with the jaws of gripper '{gripper.name}' open"
+        words = checked.words or "plan_cartesian_path gave no answer"
+        if checked.failure_kind == START_IN_COLLISION:
+            raise _Failed(f"the planner does not find the arm clear {where}: {words}")
+        raise _Failed(f"the planner cannot tell whether the arm is clear {where}: {words}")
+
+    async def _checked_descent(
+        self, arm: ArmDescription, point: Vec3, lift: Vec3, orientation: Quat, cancel: CancelToken
+    ) -> CartesianPath:
+        """The planner's answer for a checked descent: a plan_cartesian_path
+        with the collision check from where the arm stands, with the jaws as
+        they stand, down to `point` and up to `lift`."""
         checked = await self._robot.plan_cartesian_path(
             arm.name, arm.grasp_link, [(point, orientation), (lift, orientation)], avoid_collisions=True,
         )
         cancel.check()
+        return checked
+
+    async def _log_checked_descent(
+        self, arm: ArmDescription, target: str, point: Vec3, lift: Vec3, orientation: Quat,
+        checked: Optional[CartesianPath], cancel: CancelToken,
+    ) -> None:
+        """Logs what a checked descent would answer: the share of the lines
+        from where the arm stands down to `point` and up to `lift` that a
+        plan_cartesian_path with the collision check covers. `checked` is
+        that answer when the transit already asked for it from where the
+        arm stands; with none, the log asks. Log only: the grab descends by
+        its lines whatever the answer."""
+        if checked is None:
+            checked = await self._checked_descent(arm, point, lift, orientation, cancel)
         if checked.completed:
             answer = f"cover {checked.fraction:.2f} of their lines"
         else:
@@ -665,19 +891,19 @@ class ScriptedManipulator:
 
     async def _checked_reach(
         self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
-    ) -> tuple[tuple[int, str] | None, None]:
+    ) -> tuple[Optional[_Refused], None]:
         """The reach test of an orientation with no planner: check_arm_move
         of each point, the first that has no plan with its words."""
         return await self._first_refused_point(arm, points, orientation, cancel, checks), None
 
     async def _planned_reach(
         self, arm: ArmDescription, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
-    ) -> tuple[tuple[int, str] | None, Optional[JointPlan]]:
+    ) -> tuple[Optional[_Refused], Optional[JointPlan]]:
         """The reach test of an orientation with the planner: a plan of the
         transit to the pre point, then the reach of the lines through the
         points that follow it, from the end of that plan, with no collision
-        check. The index of the first point that does not pass with the
-        planner's words, or none and the plan."""
+        check. The first point that does not pass with the planner's words,
+        or none and the plan."""
         started = self._clock()
         plan = await self._robot.plan_joint_path(
             arm.name, arm.grasp_link, points[0], orientation,
@@ -690,7 +916,8 @@ class ScriptedManipulator:
         if plan.cancelled:
             raise _Failed(plan.message or "plan_joint_path was cancelled", stopped=True)
         if not plan.completed:
-            return (0, plan.words or "plan_joint_path found no path"), None
+            words = plan.words or "plan_joint_path found no path"
+            return _Refused(0, words, start_refused=plan.failure_kind == START_IN_COLLISION), None
         started = self._clock()
         line = await self._robot.plan_cartesian_path(
             arm.name, arm.grasp_link, [(point, orientation) for point in points[1:]],
@@ -702,11 +929,11 @@ class ScriptedManipulator:
         if line.cancelled:
             raise _Failed(line.message or "plan_cartesian_path was cancelled", stopped=True)
         if not line.completed:
-            return (1, line.words or "plan_cartesian_path gave no path"), None
+            return _Refused(1, line.words or "plan_cartesian_path gave no path"), None
         if line.fraction < FULL_REACH:
             lines = len(points) - 1
             short = min(lines, 1 + int(line.fraction * lines))
-            return (short, f"plan_cartesian_path reaches {line.fraction:.2f} of the lines from the end of the plan"), None
+            return _Refused(short, f"plan_cartesian_path reaches {line.fraction:.2f} of the lines from the end of the plan"), None
         return None, plan
 
     async def _run_plan(self, arm: str, plan: JointPlan, cancel: CancelToken) -> None:
@@ -729,7 +956,7 @@ class ScriptedManipulator:
     async def _first_reach(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
         clearance_m: float, with_lift: bool = False,
-        test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[tuple[int, str] | None, object]]],
+        test: Callable[[tuple[Vec3, ...], Quat, _Checks], Awaitable[tuple[Optional[_Refused], object]]],
     ) -> tuple[Quat, tuple[Vec3, ...], object]:
         """The first orientation of `grasp` whose moves all pass `test`, with
         the points of those moves in order and what `test` gave for them.
@@ -737,7 +964,9 @@ class ScriptedManipulator:
         the grasp point; then the grasp point, the pose for a place; then for
         a grab (`with_lift`) the lifted point. With none, the failure names
         the last orientation tried, its point that does not pass and the
-        words for it."""
+        words for it. A refusal of the start (`_Refused.start_refused`) ends
+        the search at its orientation: the start is where the arm stands, the
+        same for each orientation."""
         names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "place point")
         last_refusal = ""
         checks = _Checks()
@@ -750,11 +979,12 @@ class ScriptedManipulator:
             if refused is None:
                 notes.append(f"{tried} planned, {_numbers(orientation)} ({checks})")
                 return orientation, points, found
-            point, words = refused
             last_refusal = (
-                f"{tried}, {_numbers(orientation)}, has no plan to its {names[point]} "
-                f"{_numbers(points[point])}: {words}"
+                f"{tried}, {_numbers(orientation)}, has no plan to its {names[refused.point]} "
+                f"{_numbers(points[refused.point])}: {refused.words}"
             )
+            if refused.start_refused:
+                raise _NoReach(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}", start_refused=True)
         raise _NoReach(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}")
 
     async def _first_refusal(
@@ -764,14 +994,14 @@ class ScriptedManipulator:
         for, or "" when it has a plan for each. Each check counts in
         `checks`."""
         refused = await self._first_refused_point(arm, points, orientation, cancel, checks)
-        return "" if refused is None else refused[1]
+        return "" if refused is None else refused.words
 
     async def _first_refused_point(
         self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
-    ) -> tuple[int, str] | None:
-        """The index of the first of `points` the backbone has no plan for,
-        with its words, or None when it has a plan for each. Each check
-        counts in `checks`."""
+    ) -> Optional[_Refused]:
+        """The first of `points` the backbone has no plan for, with its
+        words, or None when it has a plan for each. Each check counts in
+        `checks`."""
         for index, point in enumerate(points):
             started = self._clock()
             check = await until(
@@ -784,7 +1014,7 @@ class ScriptedManipulator:
             checks.seconds += self._clock() - started
             cancel.check()
             if not check.reachable:
-                return index, check.reason or "check_arm_move found no plan"
+                return _Refused(index, check.reason or "check_arm_move found no plan")
         return None
 
     async def _move(
@@ -841,6 +1071,22 @@ class ScriptedManipulator:
         if after is None:
             raise _Failed("no limb_states snapshot after the lift")
         return after
+
+
+def _after_undo(failure: _Failed, undone: Optional[_Failed], notes: list[str], *, undo: str, done: str) -> _Failed:
+    """The failure that ends a grab after `undo`, the step that puts back
+    what the grab moved: `failure` itself when the undo went through
+    (`undone` is None), which `notes` says with `done`, or `failure` with
+    why the undo did not go through. An undo that a stop ended ends the
+    grab as a stop."""
+    if undone is None:
+        notes.append(done)
+        return failure
+    if undone.stopped:
+        notes.append(f"{undo} was stopped: {undone.message}")
+        return _Failed(f"{failure.message}; {undo} was stopped: {undone.message}", stopped=True)
+    notes.append(f"{undo} stopped short: {undone.message}")
+    return _Failed(f"{failure.message}; {undo} failed: {undone.message}")
 
 
 def line_down_duration_s(start: Vec3, end: Vec3, speed_m_s: float) -> float:

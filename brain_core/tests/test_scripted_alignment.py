@@ -51,6 +51,7 @@ class FakeAligner:
 
 async def started(aligner, **kwargs):
     robot, store = FakeRobot(), LimbStateStore()
+    robot.limb_states = store
     store.add(limb_states_message(1.0, left_gripper=1.0))
     manipulator = ScriptedManipulator(CentreProposer(), aligner=aligner, clock=FakeClock(), **kwargs)
     senses = Senses(robot, store, SimpleNamespace(), SimpleNamespace(), None)
@@ -103,7 +104,9 @@ async def test_a_model_that_gives_up_or_runs_out_ends_the_grab_before_the_descen
     manipulator, robot, _, _ = await started(FakeAligner(ending))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
     assert outcome == Outcome(False, message)
-    # The open, the checks and the move to the pre-grasp point; nothing after.
+    # The open, the checks and the move to the pre-grasp point; the jaws
+    # stand open as wide as before the grab, so they stay, and the arm stays
+    # there.
     assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
