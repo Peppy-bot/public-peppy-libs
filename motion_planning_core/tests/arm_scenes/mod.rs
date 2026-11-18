@@ -19,6 +19,7 @@ use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
     ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
@@ -26,7 +27,7 @@ use motion_planning_core::{
     StartFault, iteration_bound, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
 };
 use nalgebra::Isometry3;
-use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
+use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use robot_description::{Arm as DescribedArm, RobotDescription};
 use ros_reference::Robot;
@@ -122,7 +123,7 @@ pub fn default_openings<const K: usize>(description: &RobotDescription) -> [f64;
                     .any(|joint| joint.name == finger.joint && joint.mimic.is_none())
             })
             .unwrap_or_else(|| panic!("{} has a finger that mimics none", arm.gripper.name));
-        (DEFAULT_POSITION - leading.closed) / (leading.open - leading.closed)
+        leading.span.opening_at(DEFAULT_POSITION)
     })
 }
 
@@ -526,7 +527,7 @@ fn planning_scene_of<const N: usize>(
 /// The map of the voxels of `boxes` at the voxel size `size`, each occupied, over the cube of
 /// half side `half` about the robot's origin.
 pub fn map_of(size: f64, half: f64, boxes: &[VoxelBox]) -> VoxelMap {
-    let frame = Frame::parse(ROOT_FRAME).expect("a frame name");
+    let frame = FrameName::parse(ROOT_FRAME).expect("a frame name");
     let mut map = VoxelMap::new(
         frame.clone(),
         PositiveFinite::parse(size).expect("a positive voxel size"),

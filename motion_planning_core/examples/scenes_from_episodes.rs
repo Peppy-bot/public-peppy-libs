@@ -49,13 +49,14 @@ use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget,
     PositionTarget, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
     term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
-use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
+use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
 use robot_description::{ArmId, PerArm};
 use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
@@ -529,7 +530,7 @@ fn pose_goal(goal: &PoseGoal) -> Result<Goal, String> {
 
 /// The map the planner builds of `episode`'s frames, and how many it took.
 fn map_of_episode(planner: &Planner, robot: &Robot, episode: &Episode) -> (VoxelMap, usize) {
-    let root = MapFrame::parse(root_link()).expect("the URDF root names a frame");
+    let root = FrameName::parse(root_link()).expect("the URDF root names a frame");
     let mut map =
         VoxelMap::new(root.clone(), planner.voxel_size, planner.bounds).expect("the planner's map");
     // The replay keeps the whole recording, so every frame's stamp the limb_states reach

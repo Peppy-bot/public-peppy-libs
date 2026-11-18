@@ -729,10 +729,11 @@ mod tests {
     use chain_kinematics::{ChainSpec, JointSelection};
     use collision_geometry::chain::ChainGeometry;
     use control_core::positive_finite::PositiveFinite;
+    use frame_tree::FrameName;
     use hegel::TestCase;
     use hegel::generators as gs;
     use kinematics_properties::unit_vectors;
-    use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
+    use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
 
     use super::*;
     use crate::arm::{Arm, SelfModel};
@@ -805,7 +806,7 @@ mod tests {
     /// A map of `voxel_m` voxels over the cube of half side 1 m about the origin, each
     /// voxel of `points` occupied, and its distance field.
     fn world(voxel_m: f64, points: &[[f64; 3]]) -> (VoxelMap, DistanceField) {
-        let frame = Frame::parse("world").expect("a frame name");
+        let frame = FrameName::parse("world").expect("a frame name");
         let mut map = VoxelMap::new(
             frame.clone(),
             PositiveFinite::parse(voxel_m).expect("positive"),

@@ -23,7 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
-use occupancy_map::{Bounds, Frame, Scan, Voxel, VoxelMap};
+use frame_tree::FrameName;
+use occupancy_map::{Bounds, Scan, Voxel, VoxelMap};
 use ros_reference::Outputs;
 use ros_reference::occupancy::{Cases, Cloud};
 
@@ -88,7 +89,7 @@ fn nearest_to_the_surface(cases: &Cases) -> f64 {
 
 /// The map after the clouds of `cases`, with its sphere cut out.
 fn map_after(cases: &Cases) -> VoxelMap {
-    let frame = Frame::parse("map").expect("a frame name");
+    let frame = FrameName::parse("map").expect("a frame name");
     let voxel_size = PositiveFinite::parse(cases.voxel_size).expect("a positive voxel size");
     let mut map = VoxelMap::new(frame.clone(), voxel_size, BOUNDS).expect("a valid map");
     let ball = Ball {

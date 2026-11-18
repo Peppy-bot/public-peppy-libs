@@ -17,7 +17,9 @@ from hypothesis import settings
 
 from brain_core.brain import Brain
 from brain_core.manipulators.none import NoneManipulator
-from brain_core.perception.camera import Intrinsics
+from brain_core.perception.camera import CameraPose, Intrinsics
+from brain_core.perception.geometry import NOT_DESCRIBED
+from brain_core.perception.perceiver import SourceReason
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role
 
@@ -27,17 +29,25 @@ from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, 
 settings.register_profile("brain_core", deadline=None, derandomize=True, database=None)
 settings.load_profile("brain_core")
 
+# How long a lookup of the camera's pose waits for the transforms of a
+# picture's time: the parameter a launcher sets, set here for the tests.
+LOOKUP_TIMEOUT_S = 0.5
+
 PARAMS = {
     "limbs": "left_arm:left_gripper,right_arm:right_gripper",
     "perception_model": "none",
     "manipulation_model": "none",
     "camera_name": "chest",
+    "lookup_timeout_s": LOOKUP_TIMEOUT_S,
 }
 
 # The colour intrinsics camera_geometry gives for a 16 x 12 camera with a
 # 90 degree lens and none of its distortion: one focal length is half the
 # image height, and the principal point is the image centre.
 CAMERA_16X12 = Intrinsics(16, 12, 6.0, 6.0, 8.0, 6.0)
+
+# The camera's pose at the robot frame's origin, looking along its +Z.
+ORIGIN = CameraPose.parse((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 
 # A deadline no search reaches, and one every search has passed.
 NEVER = Deadline(at=float("inf"), budget_s=float("inf"))
@@ -261,14 +271,41 @@ def failed_with(ctx: FakeCtx, kind: FailureKind, message: str) -> bool:
     return ctx.completed is None and ctx.cancelled is None and ctx.failed == ctx.action.Failure(kind.value, message)
 
 
-def camera_poses(names=("chest",)):
-    """The robot's get_camera_poses response: every camera of `names` at
-    the origin, its optical frame the robot frame's."""
+def sensors_described(names=("chest",), kinds=None, robot_frame="base_link"):
+    """The robot's describe_sensors response: each sensor of `names` an
+    rgbd camera fixed to the base unless `kinds` names its kind, its frame
+    `<name>_color_optical_frame`."""
     return SimpleNamespace(
-        timestamp=7.0, camera_names=list(names),
-        positions=[0.0, 0.0, 0.0] * len(names), orientations=[0.0, 0.0, 0.0, 1.0] * len(names),
+        robot_frame=robot_frame,
+        sensor_names=list(names),
+        sensor_kinds=list(kinds) if kinds is not None else ["rgbd_camera"] * len(names),
+        sensor_frames=[f"{name}_color_optical_frame" for name in names],
         carried_by=[""] * len(names),
     )
+
+
+def lookup_answer(position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 0.0, 1.0), timestamp=None):
+    """The robot's lookup_transform response: the source frame at
+    `position` and `orientation` in the target frame."""
+    return SimpleNamespace(position=list(position), orientation=list(orientation), timestamp=timestamp)
+
+
+class FixedPlacer:
+    """A CameraPlacer whose robot has described its sensors and stands
+    every camera at `pose` at every time; each (camera, time) it is asked
+    for is kept in `asked`. With no pose, the robot has not described its
+    sensors yet, and every ask is refused with that reason."""
+
+    def __init__(self, pose: Optional[CameraPose] = ORIGIN) -> None:
+        self.pose = pose
+        self.asked: list[tuple[str, float]] = []
+        self.reason = SourceReason("" if pose is not None else NOT_DESCRIBED, starting=pose is None)
+
+    async def pose_at(self, camera_name: str, timestamp: float) -> CameraPose:
+        self.asked.append((camera_name, timestamp))
+        if self.pose is None:
+            raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, self.reason.reason)
+        return self.pose
 
 
 def rgb_frame(width: int = 16, height: int = 12, *, frame_id: int = 1, align_mode: str = "depth_to_color"):
@@ -295,15 +332,14 @@ def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float =
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
-    """The camera's frames, `depth_m` deep everywhere, its intrinsics and
-    its pose, as the slots give them to a running brain: a 90 degree lens
-    at the origin, looking along +Z."""
+    """The camera's frames, `depth_m` deep everywhere, and its intrinsics,
+    as the slots give them to a running brain, and a placer that stands the
+    camera at the origin, looking along +Z: a 90 degree lens there."""
     brain.perceiver.frames.add_color(rgb_frame(16, 12))
     brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
     brain.perceiver.frames.depth_unit = 0.001
-    brain.perceiver.set_camera(
-        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-    )
+    brain.perceiver.set_intrinsics(CAMERA_16X12)
+    brain.perceiver.placer = FixedPlacer()
 
 
 class Ticks:

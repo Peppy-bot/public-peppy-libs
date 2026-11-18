@@ -98,13 +98,16 @@ impl<const N: usize> Chain<N> {
         }
 
         let actuated = select_joints(&tree, &path, spec.joints)?;
-        let axes_local = std::array::from_fn(|i| match tree.joint(path[actuated[i]]).kind {
-            JointKind::Revolute { axis } | JointKind::Prismatic { axis } => axis.into_inner(),
-            JointKind::Fixed => unreachable!("select_joints only returns movable joints"),
-        });
+        let axes_local =
+            std::array::from_fn(|i| match tree.joint(path[actuated[i]]).placement.kind {
+                JointKind::Revolute { axis }
+                | JointKind::Continuous { axis }
+                | JointKind::Prismatic { axis } => axis.into_inner(),
+                JointKind::Fixed => unreachable!("select_joints only returns movable joints"),
+            });
         let limits = actuated_limits::<N>(&tree, &path, &actuated)?;
         refuse_mimic_coupling(&tree, &path, &actuated)?;
-        let kinds = std::array::from_fn(|i| tree.joint(path[actuated[i]]).kind);
+        let kinds = std::array::from_fn(|i| tree.joint(path[actuated[i]]).placement.kind);
         let seg = |i: usize| tree.link(tree.joint(path[actuated[i]]).child);
         let mut masses: [f64; N] = std::array::from_fn(|i| seg(i).mass);
         let mut coms_local: [Vector3<f64>; N] = std::array::from_fn(|i| seg(i).com);
@@ -172,7 +175,7 @@ impl<const N: usize> Chain<N> {
         let mut here = Isometry3::identity();
         for &j in &self.path {
             let joint = self.tree.joint(j);
-            here *= joint.origin * joint.kind.motion(0.0);
+            here *= joint.pose_at(0.0);
             if joint.child == link {
                 return here;
             }
@@ -256,7 +259,7 @@ impl<const N: usize> Chain<N> {
             // and contribute a constant offset.
             let driven = self.driven_by[slot];
             let value = driven.map_or(0.0, |i| q[i]);
-            here *= joint.origin * joint.kind.motion(value);
+            here *= joint.pose_at(value);
             if let Some(i) = driven {
                 joint_world[i] = here;
             }
@@ -381,7 +384,7 @@ impl<const N: usize> Posed<'_, N> {
         let cols: [Vector6<f64>; N] = std::array::from_fn(|i| {
             let z = self.axis_base(i);
             match self.chain.kinds[i] {
-                JointKind::Revolute { .. } => {
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
                     let linear = z.cross(&(p_ee - self.origin_base(i)));
                     Vector6::new(linear.x, linear.y, linear.z, z.x, z.y, z.z)
                 }
@@ -413,7 +416,9 @@ impl<const N: usize> Posed<'_, N> {
             }
             let z = self.axis_world(j);
             match self.chain.kinds[j] {
-                JointKind::Revolute { .. } => z.cross(&(point.coords - self.origin_world(j))),
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
+                    z.cross(&(point.coords - self.origin_world(j)))
+                }
                 JointKind::Prismatic { .. } => z,
                 JointKind::Fixed => Vector3::zeros(),
             }
@@ -433,11 +438,10 @@ impl<const N: usize> Posed<'_, N> {
 
 /// The actuated joints' position limits, or a refusal.
 ///
-/// An absent or unbounded range is refused rather than defaulted. A limit that
-/// is not a real bound cannot be clamped into, seeded from, or checked against,
-/// and inventing one (the conventional +/-pi) silently confines a joint the
-/// mechanism turns freely: the chain would then refuse motion the robot can do,
-/// which is worse than refusing to load it.
+/// A chain clamps into, seeds from and checks against each actuated joint's range, so
+/// an actuated joint that is continuous, or whose lower and upper limits are equal, as
+/// an absent `<limit>` leaves them, is refused ([`ChainError::NoRange`]). The tree refuses limits that are
+/// not finite and in order ([`TreeError::JointLimits`](crate::TreeError::JointLimits)).
 fn actuated_limits<const N: usize>(
     tree: &Tree,
     path: &[usize],
@@ -446,15 +450,13 @@ fn actuated_limits<const N: usize>(
     let mut limits = [Limit { lo: 0.0, hi: 0.0 }; N];
     for (i, limit) in limits.iter_mut().enumerate() {
         let joint = tree.joint(path[actuated[i]]);
-        let unusable = |lo: f64, hi: f64| ChainError::UnusableLimit {
-            joint: joint.name.clone(),
-            lo,
-            hi,
-        };
-        let (lo, hi) = joint.limit.ok_or_else(|| unusable(0.0, 0.0))?;
-        if !(lo.is_finite() && hi.is_finite() && lo < hi) {
-            return Err(unusable(lo, hi));
-        }
+        let (lo, hi) =
+            joint
+                .limit
+                .filter(|(lo, hi)| lo < hi)
+                .ok_or_else(|| ChainError::NoRange {
+                    joint: joint.name.clone(),
+                })?;
         *limit = Limit { lo, hi };
     }
     Ok(limits)
@@ -477,7 +479,7 @@ fn refuse_mimic_coupling<const N: usize>(
         .map(|&slot| tree.joint(path[slot]).name.as_str())
         .collect();
     let coupled = tree.joints().iter().find_map(|j| {
-        let leader = j.mimic.as_deref()?;
+        let leader = j.mimic.as_ref()?.joint();
         (driven.contains(&j.name.as_str()) || driven.contains(&leader)).then(|| {
             ChainError::MimicCoupling {
                 follower: j.name.clone(),
@@ -498,7 +500,7 @@ fn select_joints<const N: usize>(
         JointSelection::PathOrder => path
             .iter()
             .enumerate()
-            .filter(|(_, j)| tree.joint(**j).kind.is_movable())
+            .filter(|(_, j)| tree.joint(**j).placement.kind.is_movable())
             .map(|(slot, _)| slot)
             .collect(),
         JointSelection::Named(names) => names
@@ -512,6 +514,7 @@ fn select_joints<const N: usize>(
                     .ok_or_else(|| ChainError::JointNotOnPath((*name).to_string()))
                     .and_then(|slot| {
                         tree.joint(path[slot])
+                            .placement
                             .kind
                             .is_movable()
                             .then_some(slot)

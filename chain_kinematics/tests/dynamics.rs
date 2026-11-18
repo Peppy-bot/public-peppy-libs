@@ -4,7 +4,7 @@
 mod common;
 
 use chain_kinematics::nalgebra::{Point3, Vector3};
-use chain_kinematics::{Chain, ChainSpec, JointKind, JointSelection};
+use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use common::properties::{chain_of, named_chain_of, permutations};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -172,9 +172,7 @@ fn the_coriolis_torques_are_lagrange_equations_of_the_kinetic_energy(tc: TestCas
                             .map(|(column, rate)| column * *rate)
                             .sum();
                         let spin: Vector3<f64> = (0..=segment)
-                            .filter(|&joint| {
-                                matches!(posed.kind(joint), JointKind::Revolute { .. })
-                            })
+                            .filter(|&joint| posed.kind(joint).turns())
                             .map(|joint| posed.axis_world(joint) * qdot[joint])
                             .sum();
                         0.5 * (posed.mass(segment) * velocity.norm_squared()

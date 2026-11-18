@@ -207,27 +207,21 @@ mod tests {
                 ] {
                     let values = description
                         .state(&arm.name, posture)
-                        .unwrap_or_else(|| panic!("{} {}: {posture}", bundled.id(), arm.name));
+                        .unwrap_or_else(|unknown| panic!("{}: {unknown}", bundled.id()));
                     assert_eq!(values.len(), arm.joints.len());
                 }
                 for finger in &arm.gripper.fingers {
-                    let joint = description
-                        .robot()
-                        .joints
-                        .iter()
-                        .find(|joint| joint.name == finger.joint)
+                    let limits = description
+                        .position_limits(&finger.joint)
                         .expect("a finger's joint");
-                    let limits = crate::position_limits(joint);
+                    let (closed, open) = (finger.span.closed(), finger.span.open());
                     assert!(
-                        limits.contains(&finger.closed) && limits.contains(&finger.open),
-                        "{} {}: {} shuts at {} and opens at {}, its limits {limits:?}",
+                        limits.contains(&closed) && limits.contains(&open),
+                        "{} {}: {} shuts at {closed} and opens at {open}, its limits {limits:?}",
                         bundled.id(),
                         arm.name,
                         finger.joint,
-                        finger.closed,
-                        finger.open
                     );
-                    assert_ne!(finger.closed, finger.open, "{}", finger.joint);
                 }
             }
         }
@@ -239,51 +233,25 @@ mod tests {
         description: &RobotDescription,
         positions: &[(&str, f64)],
     ) -> std::collections::HashMap<String, nalgebra::Isometry3<f64>> {
-        use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
-        use urdf_rs::JointType;
-
-        let joints = &description.robot().joints;
-        let roots = description
-            .robot()
-            .links
-            .iter()
-            .filter(|link| joints.iter().all(|joint| joint.child.link != link.name))
-            .map(|link| (link.name.clone(), Isometry3::identity()));
-        let mut poses: std::collections::HashMap<String, Isometry3<f64>> = roots.collect();
-        let mut placed = poses.len();
-        loop {
-            for joint in joints {
-                let Some(parent) = poses.get(&joint.parent.link).copied() else {
-                    continue;
-                };
-                let [x, y, z] = *joint.origin.xyz;
-                let [roll, pitch, yaw] = *joint.origin.rpy;
-                let origin = Isometry3::from_parts(
-                    Translation3::new(x, y, z),
-                    UnitQuaternion::from_euler_angles(roll, pitch, yaw),
-                );
-                let q = positions
-                    .iter()
-                    .find(|(name, _)| *name == joint.name)
-                    .map_or(0.0, |(_, q)| *q);
-                let axis = Unit::new_normalize(Vector3::from(*joint.axis.xyz));
-                let motion = match joint.joint_type {
-                    JointType::Revolute | JointType::Continuous => Isometry3::from_parts(
-                        Translation3::identity(),
-                        UnitQuaternion::from_axis_angle(&axis, q),
-                    ),
-                    JointType::Prismatic => {
-                        Isometry3::translation(axis.x * q, axis.y * q, axis.z * q)
-                    }
-                    _ => Isometry3::identity(),
-                };
-                poses.insert(joint.child.link.clone(), parent * origin * motion);
-            }
-            if poses.len() == placed {
-                return poses;
-            }
-            placed = poses.len();
-        }
+        let tree = chain_kinematics::Tree::from_robot(description.robot())
+            .expect("a bundled URDF is a tree");
+        let position = |joint: usize| {
+            positions
+                .iter()
+                .find(|(name, _)| *name == tree.joint(joint).name)
+                .map_or(0.0, |(_, q)| *q)
+        };
+        let root = tree.root();
+        std::iter::once((
+            tree.link(root).name.clone(),
+            nalgebra::Isometry3::identity(),
+        ))
+        .chain(
+            tree.subtree_from(root, &position)
+                .into_iter()
+                .map(|(link, pose)| (tree.link(link).name.clone(), pose)),
+        )
+        .collect()
     }
 
     /// The links the joint `joint` moves: its child and every link below it.
@@ -336,7 +304,7 @@ mod tests {
                     arm.name
                 );
                 let openings: [fn(&Finger) -> f64; 2] =
-                    [|finger| finger.closed, |finger| finger.open];
+                    [|finger| finger.span.closed(), |finger| finger.span.open()];
                 for opening in openings {
                     let fingers: Vec<(&str, f64)> = arm
                         .gripper

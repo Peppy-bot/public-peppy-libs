@@ -87,6 +87,7 @@ impl<const N: usize, const K: usize> Driven<N, K> {
             let arm_name = self.arms.arm_name(arm);
             self.description
                 .state(arm_name, name)
+                .ok()
                 .and_then(|values| values.try_into().ok())
                 .ok_or(arm_name)
         })

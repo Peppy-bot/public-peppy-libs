@@ -69,6 +69,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::test_support::Logged;
 
     const PERIOD: Duration = Duration::from_millis(5);
     /// Ticks to let run before judging what was published.
@@ -151,6 +152,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_failing_send_keeps_the_stream_running() {
+        let (_logged, _guard) = Logged::capture();
         let sent = Arc::new(AtomicUsize::new(0));
         let (cancel, cancelled) = cancellation();
         let stream = {

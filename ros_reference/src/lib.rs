@@ -43,6 +43,7 @@ pub mod pure_pursuit;
 pub mod room_dataset;
 pub mod self_distance;
 pub mod smac_2d;
+pub mod transform_lookup;
 pub mod velocity_smoother;
 
 use robot_description::{Arm, RobotDescription};
@@ -89,6 +90,7 @@ enum Kind {
     SelfDistance,
     #[serde(rename = "smac_2d")]
     Smac2d,
+    TransformLookup,
     VelocitySmoother,
 }
 
@@ -278,9 +280,7 @@ impl Robot {
     pub fn group_arms(&self, name: &str, group: &str) -> Vec<Arm> {
         self.description
             .group_arms(group)
-            .unwrap_or_else(|| {
-                panic!("{name}: the group {group} is neither an arm nor a group of arms")
-            })
+            .unwrap_or_else(|unknown| panic!("{name}: {unknown}"))
             .into_iter()
             .cloned()
             .collect()

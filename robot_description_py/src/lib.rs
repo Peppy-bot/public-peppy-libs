@@ -2,14 +2,16 @@
 //! Python imports as `robot_description_py`. Its types are in
 //! `robot_description_py.pyi`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
+use robot_description::chain_kinematics::Mimic;
 use robot_description::{
-    Arm, CameraFrame, DepthRange, Finger, Gripper, Mimic, Model, RobotDescription, position_limits,
-    states,
+    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, LinkTransform, Model,
+    RobotDescription, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
@@ -32,7 +34,9 @@ fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyArm>()?;
     module.add_class::<PyGripper>()?;
     module.add_class::<PyFinger>()?;
+    module.add_class::<PyFingerSpan>()?;
     module.add_class::<PyMimic>()?;
+    module.add_class::<PyLinkTransform>()?;
     module.add_class::<PyCameraFrame>()?;
     module.add_class::<PyDepthRange>()?;
     module.add_class::<PyJointLimits>()?;
@@ -166,10 +170,13 @@ impl PyRobotDescription {
     }
 
     /// The state `name` of the group `group`: a position for each joint of
-    /// the group that moves of its own, in the group's order, or None for a
-    /// state the SRDF does not give.
-    fn state(&self, group: &str, name: &str) -> Option<Vec<f64>> {
-        self.0.state(group, name).map(<[f64]>::to_vec)
+    /// the group that moves of its own, in the group's order. A state the
+    /// SRDF does not give the group raises KeyError.
+    fn state(&self, group: &str, name: &str) -> PyResult<Vec<f64>> {
+        self.0
+            .state(group, name)
+            .map(<[f64]>::to_vec)
+            .map_err(|unknown| PyKeyError::new_err(unknown.to_string()))
     }
 
     /// The optical frame of each camera the robot carries, with the depths
@@ -179,21 +186,132 @@ impl PyRobotDescription {
         PyTuple::new(py, self.0.cameras().iter().cloned().map(PyCameraFrame))
     }
 
-    /// The limits of the joint `joint`: its position limits, the URDF's,
-    /// unbounded for a continuous joint, and the speed and effort limits the
-    /// URDF gives it. A joint the URDF lacks raises KeyError.
-    fn joint_limits(&self, joint: &str) -> PyResult<PyJointLimits> {
+    /// The URDF's root link, the robot frame.
+    #[getter]
+    fn root_link(&self) -> &str {
+        self.0.root_link()
+    }
+
+    /// The arm whose chain carries the link `link`: of the joints of every
+    /// arm, the arm that holds the one nearest above the link, the first in
+    /// the SRDF's order of two that hold it. None for a link that no arm's
+    /// joint moves, such as one fixed to the root. A link the URDF lacks
+    /// raises KeyError.
+    fn arm_carrying(&self, link: &str) -> PyResult<Option<PyArm>> {
         self.0
+            .arm_carrying(link)
+            .map(|arm| arm.cloned().map(PyArm))
+            .map_err(|error| PyKeyError::new_err(error.to_string()))
+    }
+
+    /// The limits of the joint `joint`: its position limits, the URDF's,
+    /// unbounded for a continuous joint and `[0, 0]` for a fixed one, and the
+    /// speed and effort limits the URDF gives it. A joint the URDF lacks raises
+    /// KeyError.
+    fn joint_limits(&self, joint: &str) -> PyResult<PyJointLimits> {
+        let position = self
+            .0
+            .position_limits(joint)
+            .map_err(|unknown| PyKeyError::new_err(unknown.to_string()))?;
+        let found = self
+            .0
             .robot()
             .joints
             .iter()
             .find(|candidate| candidate.name == joint)
-            .map(|found| PyJointLimits {
-                position: position_limits(found),
-                velocity: found.limit.velocity,
-                effort: found.limit.effort,
-            })
-            .ok_or_else(|| PyKeyError::new_err(format!("the URDF has no joint named {joint:?}")))
+            .expect("every joint of the tree is a joint of the URDF");
+        Ok(PyJointLimits {
+            position,
+            velocity: found.limit.velocity,
+            effort: found.limit.effort,
+        })
+    }
+
+    /// The transform of every fixed joint of the URDF, in the URDF's order
+    /// of joints.
+    fn fixed_transforms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(
+            py,
+            self.0.fixed_transforms().iter().map(PyLinkTransform::of),
+        )
+    }
+
+    /// The transform of every joint of the URDF that moves and has a
+    /// position, in the URDF's order of joints, with `positions` by joint
+    /// name, radians or meters. A joint that follows another stands where its
+    /// mimic puts it when `positions` holds the followed joint, and at its own
+    /// position otherwise; a joint with neither has no transform.
+    fn transforms_at<'py>(
+        &self,
+        py: Python<'py>,
+        positions: HashMap<String, f64>,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let positions: HashMap<&str, f64> = positions
+            .iter()
+            .map(|(joint, position)| (joint.as_str(), *position))
+            .collect();
+        PyTuple::new(
+            py,
+            self.0
+                .transforms_at(&positions)
+                .iter()
+                .map(PyLinkTransform::of),
+        )
+    }
+}
+
+/// Where a child link stands in its parent link: a point p of the child
+/// link's frame stands at R(orientation) * p + position of the parent link's.
+#[pyclass(name = "LinkTransform", module = "robot_description_py", frozen)]
+struct PyLinkTransform {
+    parent: String,
+    child: String,
+    position: Vector3,
+    orientation: (f64, f64, f64, f64),
+}
+
+impl PyLinkTransform {
+    fn of(transform: &LinkTransform) -> Self {
+        let position = transform.pose.translation.vector;
+        let orientation = transform.pose.rotation;
+        Self {
+            parent: transform.parent.to_string(),
+            child: transform.child.to_string(),
+            position: (position.x, position.y, position.z),
+            orientation: (orientation.i, orientation.j, orientation.k, orientation.w),
+        }
+    }
+}
+
+#[pymethods]
+impl PyLinkTransform {
+    /// The parent link.
+    #[getter]
+    fn parent(&self) -> &str {
+        &self.parent
+    }
+
+    /// The child link.
+    #[getter]
+    fn child(&self) -> &str {
+        &self.child
+    }
+
+    /// The child link's origin in the parent link's frame, meters.
+    #[getter]
+    fn position(&self) -> Vector3 {
+        self.position
+    }
+
+    /// The child link's orientation in the parent link's frame, a unit
+    /// quaternion `(x, y, z, w)`.
+    #[getter]
+    fn orientation(&self) -> (f64, f64, f64, f64) {
+        self.orientation
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<LinkTransform {} in {}>", self.child, self.parent)
     }
 }
 
@@ -257,13 +375,23 @@ impl PyGripper {
         PyTuple::new(py, self.0.fingers.iter().cloned().map(PyFinger))
     }
 
+    /// The position of every finger joint at opening fraction `opening`, by
+    /// joint name: 0 at the `closed` state and 1 at the `open` one, a finger
+    /// that mimics another included.
+    fn finger_positions_at(&self, opening: f64) -> HashMap<String, f64> {
+        self.0
+            .finger_positions_at(opening)
+            .map(|(joint, position)| (joint.to_string(), position))
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         format!("<Gripper {}>", self.0.name)
     }
 }
 
-/// One finger of a gripper: its joint, the link the joint moves, where the
-/// gripper's `closed` and `open` states put the joint, and the finger it
+/// One finger of a gripper: its joint, the link the joint moves, the span the
+/// gripper's `closed` and `open` states give the joint, and the finger it
 /// follows where its URDF gives the joint a mimic.
 #[pyclass(name = "Finger", module = "robot_description_py", frozen)]
 struct PyFinger(Finger);
@@ -280,14 +408,10 @@ impl PyFinger {
         &self.0.link
     }
 
+    /// Where the gripper's `closed` and `open` states put the joint.
     #[getter]
-    fn closed(&self) -> f64 {
-        self.0.closed
-    }
-
-    #[getter]
-    fn open(&self) -> f64 {
-        self.0.open
+    fn span(&self) -> PyFingerSpan {
+        PyFingerSpan(self.0.span)
     }
 
     /// The finger joint this one follows, or None for a joint that moves of
@@ -302,33 +426,102 @@ impl PyFinger {
     }
 }
 
+/// Where a finger joint stands between its gripper's `closed` and `open`
+/// states, two finite positions in the joint's unit farther apart than
+/// robot_description's least finger travel: an opening
+/// fraction places the joint on the line through them, 0 at `closed` and 1 at
+/// `open`.
+#[pyclass(name = "FingerSpan", module = "robot_description_py", frozen, eq)]
+#[derive(PartialEq)]
+struct PyFingerSpan(FingerSpan);
+
+#[pymethods]
+impl PyFingerSpan {
+    /// The span from `closed` to `open`. Ends that are not finite, or a
+    /// travel between them too small for an opening to scale, raise
+    /// ValueError with robot_description's message.
+    #[new]
+    fn new(closed: f64, open: f64) -> PyResult<Self> {
+        FingerSpan::new(closed, open)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[getter]
+    fn closed(&self) -> f64 {
+        self.0.closed()
+    }
+
+    #[getter]
+    fn open(&self) -> f64 {
+        self.0.open()
+    }
+
+    /// The signed distance from `closed` to `open`, larger in magnitude than
+    /// robot_description's least finger travel.
+    #[getter]
+    fn travel(&self) -> f64 {
+        self.0.travel()
+    }
+
+    /// The joint's position at opening fraction `opening`.
+    fn position_at(&self, opening: f64) -> f64 {
+        self.0.position_at(opening)
+    }
+
+    /// The opening fraction at which the joint stands at `position`.
+    fn opening_at(&self, position: f64) -> f64 {
+        self.0.opening_at(position)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<FingerSpan {} to {}>", self.0.closed(), self.0.open())
+    }
+}
+
 /// How a finger joint follows another finger joint of its gripper, one that
 /// moves of its own: it stands at `multiplier` times that joint's position
 /// plus `offset`, in the joints' unit.
-#[pyclass(name = "Mimic", module = "robot_description_py", frozen)]
+#[pyclass(name = "Mimic", module = "robot_description_py", frozen, eq)]
+#[derive(PartialEq)]
 struct PyMimic(Mimic);
 
 #[pymethods]
 impl PyMimic {
+    /// The mimic of the joint `joint` at `multiplier` and `offset`, both
+    /// finite; a value that is not raises ValueError.
+    #[new]
+    fn new(joint: String, multiplier: f64, offset: f64) -> PyResult<Self> {
+        Mimic::new(joint, multiplier, offset)
+            .map(Self)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// The position of the following joint when the followed one stands at
+    /// `leader`.
+    fn position_from(&self, leader: f64) -> f64 {
+        self.0.position_from(leader)
+    }
+
     /// The joint followed.
     #[getter]
     fn joint(&self) -> &str {
-        &self.0.joint
+        self.0.joint()
     }
 
     #[getter]
     fn multiplier(&self) -> f64 {
-        self.0.multiplier
+        self.0.multiplier()
     }
 
     /// Radians or meters, the joints' unit.
     #[getter]
     fn offset(&self) -> f64 {
-        self.0.offset
+        self.0.offset()
     }
 
     fn __repr__(&self) -> String {
-        format!("<Mimic of {}>", self.0.joint)
+        format!("<Mimic of {}>", self.0.joint())
     }
 }
 
@@ -349,6 +542,13 @@ impl PyCameraFrame {
     #[getter]
     fn parent_link(&self) -> &str {
         &self.0.parent_link
+    }
+
+    /// The camera's optical frame: the link `<name>_optical_frame` of the
+    /// URDF.
+    #[getter]
+    fn frame(&self) -> String {
+        self.0.frame()
     }
 
     /// The frame's origin in the parent link's frame, meters.
@@ -402,7 +602,8 @@ impl PyDepthRange {
 }
 
 /// The limits of a joint: its position limits, the URDF's, unbounded for a
-/// continuous joint, and the speed and effort limits the URDF gives it.
+/// continuous joint and `[0, 0]` for a fixed one, and the speed and effort
+/// limits the URDF gives it.
 #[pyclass(name = "JointLimits", module = "robot_description_py", frozen)]
 struct PyJointLimits {
     position: [f64; 2],

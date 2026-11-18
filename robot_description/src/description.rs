@@ -4,9 +4,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chain_kinematics::{JointKind, Mimic, Tree};
 use urdf_rs::{Joint, JointType, Robot};
 
-use crate::error::DescriptionError;
+use crate::error::{
+    DescriptionError, FingerSpanError, UnknownGroup, UnknownJoint, UnknownLink, UnknownState,
+};
 use crate::gazebo::{self, DepthSensor};
 use crate::srdf::{self, Srdf};
 use crate::states;
@@ -72,8 +75,8 @@ pub struct Arm {
     pub grasp_link: String,
     /// The joints of the chain that move of their own, base to tip.
     pub joints: Vec<String>,
-    /// Each joint's [`position_limits`], `[lower, upper]` in the joint's unit, in the order
-    /// of `joints`.
+    /// Each joint's [`RobotDescription::position_limits`], `[lower, upper]` in the joint's
+    /// unit, in the order of `joints`.
     pub limits: Vec<[f64; 2]>,
     /// The end effector's group.
     pub gripper: Gripper,
@@ -88,30 +91,90 @@ pub struct Gripper {
     pub fingers: Vec<Finger>,
 }
 
+impl Gripper {
+    /// The position of every finger joint of the gripper at opening fraction `opening`,
+    /// by joint name: 0 at the gripper's `closed` state and 1 at its `open` one, a
+    /// finger that mimics another included.
+    pub fn finger_positions_at(&self, opening: f64) -> impl Iterator<Item = (&str, f64)> {
+        self.fingers
+            .iter()
+            .map(move |finger| (finger.joint.as_str(), finger.span.position_at(opening)))
+    }
+}
+
 /// One moving joint of a gripper and the link it carries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finger {
     pub joint: String,
     pub link: String,
-    /// The joint's position where the gripper's `closed` state puts it.
-    pub closed: f64,
-    /// The joint's position where the gripper's `open` state puts it.
-    pub open: f64,
+    /// Where the gripper's `closed` and `open` states put the joint.
+    pub span: FingerSpan,
     /// The finger joint this one follows, as its URDF `<mimic>` gives it; none for a joint
     /// that moves of its own.
     pub mimic: Option<Mimic>,
 }
 
-/// How a finger joint follows another finger joint of its gripper, one that moves of its
-/// own: it stands at `multiplier` times that joint's position plus `offset`, the URDF
-/// `<mimic>`'s, 1 and 0 where it gives none.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Mimic {
-    /// The joint followed.
-    pub joint: String,
-    pub multiplier: f64,
-    /// In the joints' unit, radians or meters.
-    pub offset: f64,
+/// Where a finger joint stands between its gripper's `closed` and `open` states: two
+/// finite positions more than [`LEAST_FINGER_TRAVEL`] apart, in the joint's unit,
+/// radians or meters. An opening fraction places the joint on the line through them: 0
+/// at `closed`, 1 at `open`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FingerSpan {
+    closed: f64,
+    open: f64,
+}
+
+/// The least travel a finger span takes, in the joint's unit, radians or meters: a
+/// nanoradian or a nanometer, far below the travel of any finger. Above it,
+/// [`FingerSpan::opening_at`] of a position within 1e3 of `closed`, past the range of any
+/// joint, stays within 1e12 and finite. It is the floor sim_robot_core held a finger's
+/// travel to.
+pub(crate) const LEAST_FINGER_TRAVEL: f64 = 1e-9;
+
+impl FingerSpan {
+    /// The span from `closed` to `open`, refused ([`FingerSpanError`]) when either is not
+    /// finite, or the travel between them is not finite or at most
+    /// [`LEAST_FINGER_TRAVEL`].
+    pub fn new(closed: f64, open: f64) -> Result<Self, FingerSpanError> {
+        let travel = open - closed;
+        if closed.is_finite()
+            && open.is_finite()
+            && travel.is_finite()
+            && travel.abs() > LEAST_FINGER_TRAVEL
+        {
+            Ok(Self { closed, open })
+        } else {
+            Err(FingerSpanError { closed, open })
+        }
+    }
+
+    /// The joint's position at the gripper's `closed` state.
+    pub fn closed(self) -> f64 {
+        self.closed
+    }
+
+    /// The joint's position at the gripper's `open` state.
+    pub fn open(self) -> f64 {
+        self.open
+    }
+
+    /// The signed distance from `closed` to `open`, larger than [`LEAST_FINGER_TRAVEL`]
+    /// in magnitude.
+    pub fn travel(self) -> f64 {
+        self.open - self.closed
+    }
+
+    /// The joint's position at opening fraction `opening`, on the line through `closed`
+    /// at 0 and `open` at 1.
+    pub fn position_at(self, opening: f64) -> f64 {
+        self.closed + opening * self.travel()
+    }
+
+    /// The opening fraction at which the joint stands at `position`: the inverse of
+    /// [`FingerSpan::position_at`].
+    pub fn opening_at(self, position: f64) -> f64 {
+        (position - self.closed) / self.travel()
+    }
 }
 
 /// The optical frame of a camera the robot carries: a link named
@@ -131,6 +194,13 @@ pub struct CameraFrame {
     /// The depths the camera measures, as the depth sensor the URDF's Gazebo extension
     /// gives on its optical frame; none for a camera the URDF gives no depth sensor.
     pub depth_range: Option<DepthRange>,
+}
+
+impl CameraFrame {
+    /// The camera's optical frame: the link `<name>_optical_frame` of the URDF.
+    pub fn frame(&self) -> String {
+        format!("{}{OPTICAL_FRAME_SUFFIX}", self.name)
+    }
 }
 
 /// The depths a camera measures, meters along its view (`+z` of its optical frame): the
@@ -168,6 +238,8 @@ pub struct RobotDescription {
     urdf: String,
     srdf: String,
     robot: Robot,
+    /// The URDF's links and joints, which every lookup by name reads.
+    pub(crate) tree: Tree,
     arms: Vec<Arm>,
     /// Each group that holds other groups and nothing else, with them, in the SRDF's order.
     group_sets: Vec<(String, Vec<String>)>,
@@ -205,13 +277,17 @@ impl RobotDescription {
                 urdf: robot.name,
             });
         }
-        let tree = Tree::of(&robot)?;
+        let tree = Tree::from_robot(&robot)?;
+        let model = Urdf {
+            robot: &robot,
+            tree: &tree,
+        };
         mesh_names(&robot)?;
-        let groups = Groups::resolve(&semantics.groups, &tree)?;
-        let states = states(&semantics.states, &groups, &tree)?;
-        let arms = arms(&semantics, &groups, &states, &tree)?;
+        let groups = Groups::resolve(&semantics.groups, &model)?;
+        let states = states(&semantics.states, &groups, &model)?;
+        let arms = arms(&semantics, &groups, &states, &model)?;
         for joint in &semantics.passive_joints {
-            tree.joint("passive_joint", joint)?;
+            model.joint("passive_joint", joint)?;
         }
         let group_sets = semantics
             .groups
@@ -224,12 +300,13 @@ impl RobotDescription {
             })
             .map(|group| (group.name.clone(), group.subgroups.clone()))
             .collect();
-        let disabled_pairs = disabled_pairs(semantics.disabled_pairs, &tree)?;
-        let cameras = cameras(&robot, &tree, &depth_sensors)?;
+        let disabled_pairs = disabled_pairs(semantics.disabled_pairs, &model)?;
+        let cameras = cameras(&robot, &model, &depth_sensors)?;
         Ok(Self {
             urdf: urdf.to_string(),
             srdf: srdf.to_string(),
             robot,
+            tree,
             arms,
             group_sets,
             states,
@@ -253,6 +330,16 @@ impl RobotDescription {
         &self.robot
     }
 
+    /// The position limits of the joint named `joint`, `[lower, upper]` in the joint's
+    /// unit: the URDF's, unbounded for a continuous joint, and `[0, 0]` for a fixed joint,
+    /// which stands at 0. A joint the URDF lacks is refused ([`UnknownJoint`]).
+    pub fn position_limits(&self, joint: &str) -> Result<[f64; 2], UnknownJoint> {
+        let index = self.tree.joint_index(joint).ok_or_else(|| UnknownJoint {
+            joint: joint.to_string(),
+        })?;
+        Ok(limits_of(self.tree.joint(index)))
+    }
+
     /// The robot's arms, in the order the SRDF gives their groups.
     pub fn arms(&self) -> &[Arm] {
         &self.arms
@@ -260,25 +347,40 @@ impl RobotDescription {
 
     /// The arms of the group `name`, in the order a state of the group holds their joints:
     /// the group itself when it is an arm, else the groups it holds, each an arm, in the
-    /// SRDF's order of them. None for a group that is neither, or for no group.
-    pub fn group_arms(&self, name: &str) -> Option<Vec<&Arm>> {
+    /// SRDF's order of them. A group that is neither, and a group the SRDF lacks, are
+    /// refused ([`UnknownGroup`]).
+    pub fn group_arms(&self, name: &str) -> Result<Vec<&Arm>, UnknownGroup> {
+        let unknown = || UnknownGroup {
+            group: name.to_string(),
+        };
         if let Some(arm) = self.arms.iter().find(|arm| arm.name == name) {
-            return Some(vec![arm]);
+            return Ok(vec![arm]);
         }
-        let (_, subgroups) = self.group_sets.iter().find(|(group, _)| group == name)?;
+        let (_, subgroups) = self
+            .group_sets
+            .iter()
+            .find(|(group, _)| group == name)
+            .ok_or_else(unknown)?;
         subgroups
             .iter()
             .map(|subgroup| self.arms.iter().find(|arm| arm.name == *subgroup))
-            .collect()
+            .collect::<Option<_>>()
+            .ok_or_else(unknown)
     }
 
     /// The state `name` of `group`: a position for each joint of the group that moves of
-    /// its own, in the group's order, which for an arm is the order of [`Arm::joints`].
-    pub fn state(&self, group: &str, name: &str) -> Option<&[f64]> {
+    /// its own, in the group's order, which for an arm is the order of [`Arm::joints`]. A
+    /// state the SRDF does not give the group, as for a group the SRDF lacks, is refused
+    /// ([`UnknownState`]).
+    pub fn state(&self, group: &str, name: &str) -> Result<&[f64], UnknownState> {
         self.states
             .iter()
             .find(|state| state.group == group && state.name == name)
             .map(|state| state.values.as_slice())
+            .ok_or_else(|| UnknownState {
+                group: group.to_string(),
+                state: name.to_string(),
+            })
     }
 
     /// The pairs of links whose collisions are disabled, each of two links with collision
@@ -292,75 +394,96 @@ impl RobotDescription {
     pub fn cameras(&self) -> &[CameraFrame] {
         &self.cameras
     }
-}
 
-/// The URDF's links and joints by name, and the joint each link hangs on.
-struct Tree<'a> {
-    links: HashSet<&'a str>,
-    with_geometry: HashSet<&'a str>,
-    joints: HashMap<&'a str, &'a Joint>,
-    parent_joint: HashMap<&'a str, &'a Joint>,
-}
-
-impl<'a> Tree<'a> {
-    /// The tree of `robot`'s links, refused when chain_kinematics refuses it
-    /// ([`chain_kinematics::Tree::from_robot`]): each link and each joint named once,
-    /// each joint naming two of the URDF's links and taking one position, and every link
-    /// but one root hanging on one joint, with no loop.
-    fn of(robot: &'a Robot) -> Result<Self, DescriptionError> {
-        chain_kinematics::Tree::from_robot(robot)?;
-        Ok(Self {
-            links: robot.links.iter().map(|link| link.name.as_str()).collect(),
-            with_geometry: robot
-                .links
-                .iter()
-                .filter(|link| !link.collision.is_empty())
-                .map(|link| link.name.as_str())
-                .collect(),
-            joints: robot
-                .joints
-                .iter()
-                .map(|joint| (joint.name.as_str(), joint))
-                .collect(),
-            parent_joint: robot
-                .joints
-                .iter()
-                .map(|joint| (joint.child.link.as_str(), joint))
-                .collect(),
-        })
+    /// The URDF's root link, the one link that hangs on no joint: the robot frame.
+    pub fn root_link(&self) -> &str {
+        &self.tree.link(self.tree.root()).name
     }
 
-    fn link(&self, element: &'static str, link: &str) -> Result<(), DescriptionError> {
-        if self.links.contains(link) {
-            return Ok(());
-        }
-        Err(DescriptionError::NoSuchLink {
-            element,
+    /// The arm whose chain carries the link `link`: of the joints of every arm
+    /// ([`Arm::joints`]), the arm that holds the one nearest above the link, and of two
+    /// arms that hold it the first in the SRDF's order. None for a link that no arm's
+    /// joint moves: one fixed to the root, or one that joints of no arm alone move. A
+    /// link the URDF lacks is refused ([`UnknownLink`]).
+    pub fn arm_carrying(&self, link: &str) -> Result<Option<&Arm>, UnknownLink> {
+        let index = self.tree.link_index(link).ok_or_else(|| UnknownLink {
             link: link.to_string(),
-        })
+        })?;
+        Ok(self
+            .tree
+            .path_to(index)
+            .into_iter()
+            .rev()
+            .find_map(|joint| {
+                let joint = &self.tree.joint(joint).name;
+                self.arms.iter().find(|arm| arm.joints.contains(joint))
+            }))
+    }
+}
+
+/// The URDF and its tree of links and joints (chain_kinematics' [`Tree`]), from which
+/// every lookup of a link or a joint by name, and of the joint a link hangs on, is
+/// read. The tree holds the links and the joints in the URDF's order.
+struct Urdf<'a> {
+    robot: &'a Robot,
+    tree: &'a Tree,
+}
+
+impl<'a> Urdf<'a> {
+    fn link(&self, element: &'static str, link: &str) -> Result<(), DescriptionError> {
+        self.tree
+            .link_index(link)
+            .map(|_| ())
+            .ok_or_else(|| DescriptionError::NoSuchLink {
+                element,
+                link: link.to_string(),
+            })
     }
 
     fn joint(&self, element: &'static str, joint: &str) -> Result<&'a Joint, DescriptionError> {
-        self.joints
-            .get(joint)
-            .copied()
+        self.tree
+            .joint_index(joint)
+            .map(|index| &self.robot.joints[index])
             .ok_or_else(|| DescriptionError::NoSuchJoint {
                 element,
                 joint: joint.to_string(),
             })
     }
 
+    /// The joint `link` hangs on; none for the root and for a link the URDF lacks.
+    fn parent_joint(&self, link: &str) -> Option<&'a Joint> {
+        let joint = self.tree.parent_joint(self.tree.link_index(link)?)?;
+        Some(&self.robot.joints[joint])
+    }
+
+    /// Whether `link` has collision geometry.
+    fn has_geometry(&self, link: &str) -> bool {
+        self.tree
+            .link_index(link)
+            .is_some_and(|index| !self.robot.links[index].collision.is_empty())
+    }
+
     /// The joints from `base` down to `tip`, or none when `tip` is not below `base`.
     fn path(&self, base: &str, tip: &str) -> Option<Vec<&'a Joint>> {
+        let base = self.tree.link_index(base)?;
+        let mut link = self.tree.link_index(tip)?;
         let mut joints = Vec::new();
-        let mut link = tip;
         while link != base {
-            let joint = self.parent_joint.get(link)?;
-            joints.push(*joint);
-            link = joint.parent.link.as_str();
+            let joint = self.tree.parent_joint(link)?;
+            joints.push(&self.robot.joints[joint]);
+            link = self.tree.parent_of(joint);
         }
         joints.reverse();
         Some(joints)
+    }
+
+    /// The tree's reading of `joint`, a joint of the URDF.
+    fn tree_joint(&self, joint: &Joint) -> &'a chain_kinematics::Joint {
+        let index = self
+            .tree
+            .joint_index(&joint.name)
+            .expect("every joint of the URDF is a joint of its tree");
+        self.tree.joint(index)
     }
 }
 
@@ -406,12 +529,14 @@ fn moves_of_its_own(joint: &Joint) -> bool {
     moves(joint) && joint.mimic.is_none()
 }
 
-/// The position limits of `joint`, `[lower, upper]` in the joint's unit: the URDF's,
-/// unbounded for a continuous joint.
-pub fn position_limits(joint: &Joint) -> [f64; 2] {
-    match joint.joint_type {
-        JointType::Continuous => [f64::NEG_INFINITY, f64::INFINITY],
-        _ => [joint.limit.lower, joint.limit.upper],
+/// The position limits of `joint`, `[lower, upper]` in the joint's unit, from the range
+/// the tree reads ([`chain_kinematics::Joint::limit`]): unbounded for a continuous joint,
+/// and `[0, 0]` for a fixed joint, which stands at 0.
+fn limits_of(joint: &chain_kinematics::Joint) -> [f64; 2] {
+    match (joint.placement.kind, joint.limit) {
+        (JointKind::Continuous { .. }, _) => [f64::NEG_INFINITY, f64::INFINITY],
+        (_, Some((lower, upper))) => [lower, upper],
+        (_, None) => [0.0, 0.0],
     }
 }
 
@@ -422,7 +547,7 @@ struct Groups<'a> {
 }
 
 impl<'a> Groups<'a> {
-    fn resolve(groups: &'a [srdf::Group], tree: &Tree<'a>) -> Result<Self, DescriptionError> {
+    fn resolve(groups: &'a [srdf::Group], urdf: &Urdf<'a>) -> Result<Self, DescriptionError> {
         let mut by_name: HashMap<&str, &srdf::Group> = HashMap::new();
         for group in groups {
             if by_name.insert(group.name.as_str(), group).is_some() {
@@ -431,7 +556,7 @@ impl<'a> Groups<'a> {
         }
         let resolved = groups
             .iter()
-            .map(|group| Ok((group, joints_of(group, &by_name, tree, &mut Vec::new())?)))
+            .map(|group| Ok((group, joints_of(group, &by_name, urdf, &mut Vec::new())?)))
             .collect::<Result<_, DescriptionError>>()?;
         Ok(Self { resolved })
     }
@@ -454,7 +579,7 @@ impl<'a> Groups<'a> {
 fn joints_of<'a>(
     group: &'a srdf::Group,
     by_name: &HashMap<&str, &'a srdf::Group>,
-    tree: &Tree<'a>,
+    urdf: &Urdf<'a>,
     holding: &mut Vec<&'a str>,
 ) -> Result<Vec<&'a Joint>, DescriptionError> {
     if holding.contains(&group.name.as_str()) {
@@ -464,10 +589,10 @@ fn joints_of<'a>(
     }
     let mut joints = Vec::new();
     for (base, tip) in &group.chains {
-        tree.link("chain", base)?;
-        tree.link("chain", tip)?;
+        urdf.link("chain", base)?;
+        urdf.link("chain", tip)?;
         joints.extend(
-            tree.path(base, tip)
+            urdf.path(base, tip)
                 .ok_or_else(|| DescriptionError::TipNotBelowBase {
                     group: group.name.clone(),
                     base: base.clone(),
@@ -476,11 +601,11 @@ fn joints_of<'a>(
         );
     }
     for joint in &group.joints {
-        joints.push(tree.joint("group", joint)?);
+        joints.push(urdf.joint("group", joint)?);
     }
     for link in &group.links {
-        tree.link("group", link)?;
-        joints.extend(tree.parent_joint.get(link.as_str()).copied());
+        urdf.link("group", link)?;
+        joints.extend(urdf.parent_joint(link));
     }
     holding.push(&group.name);
     for subgroup in &group.subgroups {
@@ -490,7 +615,7 @@ fn joints_of<'a>(
                 element: "group",
                 group: subgroup.clone(),
             })?;
-        joints.extend(joints_of(held, by_name, tree, holding)?);
+        joints.extend(joints_of(held, by_name, urdf, holding)?);
     }
     holding.pop();
     Ok(joints)
@@ -499,7 +624,7 @@ fn joints_of<'a>(
 fn states(
     states: &[srdf::GroupState],
     groups: &Groups,
-    tree: &Tree,
+    urdf: &Urdf,
 ) -> Result<Vec<State>, DescriptionError> {
     let mut read: Vec<State> = Vec::new();
     for state in states {
@@ -520,7 +645,7 @@ fn states(
             .collect();
         let mut values: Vec<Option<f64>> = vec![None; own.len()];
         for (name, text) in &state.joints {
-            tree.joint("group_state", name)?;
+            urdf.joint("group_state", name)?;
             let Some(index) = own.iter().position(|joint| &joint.name == name) else {
                 return Err(DescriptionError::StateJointOffTheGroup {
                     group: state.group.clone(),
@@ -539,7 +664,7 @@ fn states(
                     joint: name.clone(),
                     value: text.clone(),
                 })?;
-            let [lower, upper] = position_limits(own[index]);
+            let [lower, upper] = limits_of(urdf.tree_joint(own[index]));
             if !(lower..=upper).contains(&value) {
                 return Err(DescriptionError::StateOutsideLimits {
                     group: state.group.clone(),
@@ -584,7 +709,7 @@ fn arms(
     semantics: &Srdf,
     groups: &Groups,
     states: &[State],
-    tree: &Tree,
+    urdf: &Urdf,
 ) -> Result<Vec<Arm>, DescriptionError> {
     // Each end effector with the group it stands on.
     let mut standing: Vec<(&srdf::EndEffector, &srdf::Group)> = Vec::new();
@@ -597,7 +722,7 @@ fn arms(
                 end_effector.name.clone(),
             ));
         }
-        tree.link("end_effector", &end_effector.parent_link)?;
+        urdf.link("end_effector", &end_effector.parent_link)?;
         let mut chains = semantics.groups.iter().filter(|group| {
             matches!(group.chains.as_slice(), [(_, tip)] if *tip == end_effector.parent_link)
                 && group.joints.is_empty()
@@ -656,8 +781,11 @@ fn arms(
                 base_link: base_link.clone(),
                 grasp_link: grasp_link.clone(),
                 joints: moving.iter().map(|joint| joint.name.clone()).collect(),
-                limits: moving.iter().map(|joint| position_limits(joint)).collect(),
-                gripper: gripper(&end_effector.group, groups, states)?,
+                limits: moving
+                    .iter()
+                    .map(|joint| limits_of(urdf.tree_joint(joint)))
+                    .collect(),
+                gripper: gripper(&end_effector.group, groups, states, urdf)?,
             })
         })
         .collect()
@@ -666,7 +794,12 @@ fn arms(
 /// The gripper of the group `name`: each joint of the group that moves, where the
 /// group's `closed` and `open` states put it. A joint that mimics another stands where
 /// its leader's position puts it.
-fn gripper(name: &str, groups: &Groups, states: &[State]) -> Result<Gripper, DescriptionError> {
+fn gripper(
+    name: &str,
+    groups: &Groups,
+    states: &[State],
+    urdf: &Urdf,
+) -> Result<Gripper, DescriptionError> {
     let moving: Vec<&Joint> = groups
         .joints("end_effector", name)?
         .iter()
@@ -698,15 +831,10 @@ fn gripper(name: &str, groups: &Groups, states: &[State]) -> Result<Gripper, Des
     let fingers = moving
         .iter()
         .map(|joint| {
-            let mimic = joint.mimic.as_ref().map(|mimic| Mimic {
-                joint: mimic.joint.clone(),
-                multiplier: mimic.multiplier.unwrap_or(1.0),
-                offset: mimic.offset.unwrap_or(0.0),
-            });
-            let (leader, multiplier, offset) = match &mimic {
-                Some(mimic) => (mimic.joint.as_str(), mimic.multiplier, mimic.offset),
-                None => (joint.name.as_str(), 1.0, 0.0),
-            };
+            let mimic = urdf.tree_joint(joint).mimic.clone();
+            let leader = mimic
+                .as_ref()
+                .map_or(joint.name.as_str(), |mimic| mimic.joint());
             let index = own
                 .iter()
                 .position(|candidate| candidate.name == leader)
@@ -715,15 +843,22 @@ fn gripper(name: &str, groups: &Groups, states: &[State]) -> Result<Gripper, Des
                     joint: joint.name.clone(),
                     leader: leader.to_string(),
                 })?;
-            let (closed, open) = (
-                multiplier * closed[index] + offset,
-                multiplier * open[index] + offset,
-            );
+            let position = |state: &[f64]| {
+                mimic
+                    .as_ref()
+                    .map_or(state[index], |mimic| mimic.position_from(state[index]))
+            };
+            let (closed, open) = (position(closed), position(open));
+            let span =
+                FingerSpan::new(closed, open).map_err(|error| DescriptionError::FingerSpan {
+                    gripper: name.to_string(),
+                    joint: joint.name.clone(),
+                    error,
+                })?;
             Ok(Finger {
                 joint: joint.name.clone(),
                 link: joint.child.link.clone(),
-                closed,
-                open,
+                span,
                 mimic,
             })
         })
@@ -736,13 +871,13 @@ fn gripper(name: &str, groups: &Groups, states: &[State]) -> Result<Gripper, Des
 
 fn disabled_pairs(
     pairs: Vec<DisabledPair>,
-    tree: &Tree,
+    urdf: &Urdf,
 ) -> Result<Vec<DisabledPair>, DescriptionError> {
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
     for pair in &pairs {
         for link in [&pair.link1, &pair.link2] {
-            tree.link("disable_collisions", link)?;
-            if !tree.with_geometry.contains(link.as_str()) {
+            urdf.link("disable_collisions", link)?;
+            if !urdf.has_geometry(link) {
                 return Err(DescriptionError::PairWithoutGeometry { link: link.clone() });
             }
         }
@@ -771,7 +906,7 @@ fn disabled_pairs(
 /// no camera's optical frame, and two sensors of one camera, are refused.
 fn cameras(
     robot: &Robot,
-    tree: &Tree,
+    urdf: &Urdf,
     depth_sensors: &[DepthSensor],
 ) -> Result<Vec<CameraFrame>, DescriptionError> {
     let optical_frames: Vec<(&str, &str)> = robot
@@ -784,7 +919,7 @@ fn cameras(
         .collect();
     let mut depth_ranges: HashMap<&str, DepthRange> = HashMap::new();
     for sensor in depth_sensors {
-        tree.link("gazebo", &sensor.reference)?;
+        urdf.link("gazebo", &sensor.reference)?;
         let &(camera, _) = optical_frames
             .iter()
             .find(|(_, frame)| *frame == sensor.reference)
@@ -800,11 +935,11 @@ fn cameras(
     optical_frames
         .into_iter()
         .map(|(name, frame)| {
-            let joint = tree.parent_joint.get(frame).ok_or_else(|| {
-                DescriptionError::CameraFrameUnmounted {
-                    frame: frame.to_string(),
-                }
-            })?;
+            let joint =
+                urdf.parent_joint(frame)
+                    .ok_or_else(|| DescriptionError::CameraFrameUnmounted {
+                        frame: frame.to_string(),
+                    })?;
             if moves(joint) {
                 return Err(DescriptionError::CameraFrameMoves {
                     frame: frame.to_string(),
@@ -892,21 +1027,18 @@ mod tests {
                         Finger {
                             joint: "pinch".to_string(),
                             link: "finger_a".to_string(),
-                            closed: 0.0,
-                            open: 0.04,
+                            span: FingerSpan::new(0.0, 0.04).expect("a span"),
                             mimic: None,
                         },
                         // The mimic's multiplier and offset place it off its leader.
                         Finger {
                             joint: "pinch_mirror".to_string(),
                             link: "finger_b".to_string(),
-                            closed: 0.01,
-                            open: -0.03,
-                            mimic: Some(Mimic {
-                                joint: "pinch".to_string(),
-                                multiplier: -1.0,
-                                offset: 0.01,
-                            }),
+                            span: FingerSpan::new(0.01, -0.03).expect("a span"),
+                            mimic: Some(
+                                Mimic::new("pinch".to_string(), -1.0, 0.01)
+                                    .expect("a finite mimic"),
+                            ),
                         },
                     ],
                 },
@@ -927,9 +1059,15 @@ mod tests {
                 .group_arms(group)
                 .map(|arms| arms.iter().map(|arm| arm.name.as_str()).collect::<Vec<_>>())
         };
-        assert_eq!(names("arm"), Some(vec!["arm"]));
+        assert_eq!(names("arm"), Ok(vec!["arm"]));
         for group in ["all", "gripper", "no_such_group"] {
-            assert_eq!(names(group), None, "{group}");
+            assert_eq!(
+                names(group),
+                Err(UnknownGroup {
+                    group: group.to_string()
+                }),
+                "{group}"
+            );
         }
         let both = crate::model("openarm_v2")
             .expect("a bundled model")
@@ -957,11 +1095,7 @@ mod tests {
                 assert_eq!(first.mimic, None, "{id}: {}", first.joint);
                 assert_eq!(
                     second.mimic,
-                    Some(Mimic {
-                        joint: first.joint.clone(),
-                        multiplier: 1.0,
-                        offset: 0.0,
-                    }),
+                    Some(Mimic::new(first.joint.clone(), 1.0, 0.0).expect("a finite mimic")),
                     "{id}: {}",
                     second.joint
                 );
@@ -977,18 +1111,40 @@ mod tests {
     }
 
     #[test]
+    fn a_joints_limits_are_the_urdfs_and_a_joint_the_urdf_lacks_is_refused() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        assert_eq!(description.position_limits("turn"), Ok([-2.0, 2.0]));
+        assert_eq!(description.position_limits("grasp_joint"), Ok([0.0, 0.0]));
+        assert_eq!(
+            description.position_limits("nowhere"),
+            Err(UnknownJoint {
+                joint: "nowhere".to_string()
+            })
+        );
+    }
+
+    #[test]
     fn a_state_gives_the_groups_own_joints_in_the_groups_order() {
         let description = RobotDescription::parse(URDF, SRDF).expect("the description");
         assert_eq!(
             description.state("arm", "ready"),
-            Some([0.5, -0.25].as_slice())
+            Ok([0.5, -0.25].as_slice())
         );
-        assert_eq!(
-            description.state("gripper", "open"),
-            Some([0.04].as_slice())
-        );
-        assert_eq!(description.state("arm", "open"), None);
-        assert_eq!(description.state("gripper", "ready"), None);
+        assert_eq!(description.state("gripper", "open"), Ok([0.04].as_slice()));
+        for (group, state) in [
+            ("arm", "open"),
+            ("gripper", "ready"),
+            ("no_such_group", "ready"),
+        ] {
+            assert_eq!(
+                description.state(group, state),
+                Err(UnknownState {
+                    group: group.to_string(),
+                    state: state.to_string()
+                }),
+                "{group} {state}"
+            );
+        }
     }
 
     #[test]
@@ -1369,6 +1525,80 @@ mod tests {
         );
     }
 
+    /// A joint that mimics another stands where its mimic puts it from the joint it
+    /// follows, the transform of `pinch_mirror` at a drawn position of `pinch` being the
+    /// one at `-pinch + 0.01` of its own; a joint with no position and nothing to follow
+    /// has no transform.
+    #[hegel::test]
+    fn a_mimic_joint_stands_where_its_mimic_puts_it(tc: hegel::TestCase) {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        let pinch: f64 = tc.draw(hegel::generators::floats().min_value(0.0).max_value(0.04));
+        let mirror = |transforms: Vec<crate::LinkTransform>| {
+            transforms
+                .into_iter()
+                .find(|transform| transform.child == "finger_b")
+                .map(|transform| transform.pose)
+        };
+        let followed = mirror(description.transforms_at(&HashMap::from([("pinch", pinch)])));
+        let own =
+            mirror(description.transforms_at(&HashMap::from([("pinch_mirror", -pinch + 0.01)])));
+        assert_eq!(followed, own);
+        assert!(followed.is_some(), "pinch_mirror follows pinch");
+        assert_eq!(mirror(description.transforms_at(&HashMap::new())), None);
+    }
+
+    #[test]
+    fn a_finger_that_stands_still_between_closed_and_open_is_refused() {
+        assert_eq!(
+            srdf_refusal(
+                r#"<group_state name="open" group="gripper"><joint name="pinch" value="0.04"/>"#,
+                r#"<group_state name="open" group="gripper"><joint name="pinch" value="0"/>"#
+            ),
+            "the states \"closed\" and \"open\" of the gripper \"gripper\" put its finger joint \
+             \"pinch\" where no span stands: a finger span stands at two finite positions more \
+             than 0.000000001 apart, and 0 and 0 are not"
+        );
+    }
+
+    #[test]
+    fn a_span_places_its_joint_on_the_line_through_closed_and_open() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        let fingers = &description.arms()[0].gripper.fingers;
+        let (leader, mimic) = (fingers[0].span, fingers[1].span);
+        for opening in [-0.5, 0.0, 0.25, 1.0, 1.5] {
+            assert_eq!(leader.opening_at(leader.position_at(opening)), opening);
+            // The mimic stands where its URDF <mimic> puts it off its leader.
+            assert_eq!(
+                mimic.position_at(opening),
+                -leader.position_at(opening) + 0.01
+            );
+        }
+        assert_eq!(
+            (leader.closed(), leader.open(), leader.travel()),
+            (0.0, 0.04, 0.04)
+        );
+    }
+
+    #[test]
+    fn a_span_needs_two_finite_ends_far_enough_apart() {
+        for (closed, open) in [
+            (0.3, 0.3),
+            (0.0, LEAST_FINGER_TRAVEL),
+            (f64::NAN, 0.3),
+            (0.0, f64::INFINITY),
+            (-f64::MAX, f64::MAX),
+        ] {
+            let error = FingerSpan::new(closed, open).expect_err("no span stands there");
+            assert_eq!(
+                (error.closed.to_bits(), error.open.to_bits()),
+                (closed.to_bits(), open.to_bits()),
+                "{closed} {open}"
+            );
+        }
+        assert!(FingerSpan::new(0.3, -0.3).is_ok());
+        assert!(FingerSpan::new(0.0, 2.0 * LEAST_FINGER_TRAVEL).is_ok());
+    }
+
     #[test]
     fn a_gripper_without_its_ends_is_refused() {
         assert_eq!(
@@ -1564,5 +1794,118 @@ mod tests {
     fn a_urdf_that_does_not_parse_is_refused() {
         let refusal = RobotDescription::parse("<robot", SRDF).expect_err("a refusal");
         assert!(matches!(refusal, DescriptionError::Urdf(_)), "{refusal}");
+    }
+
+    /// The name of the arm `description` gives as carrying `link`.
+    fn carrier<'a>(description: &'a RobotDescription, link: &str) -> Option<&'a str> {
+        description
+            .arm_carrying(link)
+            .expect("a link of the URDF")
+            .map(|arm| arm.name.as_str())
+    }
+
+    #[test]
+    fn the_root_link_is_the_robot_frame_and_a_camera_names_its_optical_frame() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        assert_eq!(description.root_link(), "base");
+        let [camera] = description.cameras() else {
+            panic!("the fixture carries one camera");
+        };
+        assert_eq!(camera.frame(), "eye_optical_frame");
+    }
+
+    #[test]
+    fn a_link_below_an_arms_joint_is_that_arms_and_the_root_and_an_unknown_link_are_not() {
+        let description = RobotDescription::parse(URDF, SRDF).expect("the description");
+        for link in ["upper", "hand", "grasp", "finger_a", "eye_optical_frame"] {
+            assert_eq!(carrier(&description, link), Some("arm"), "{link}");
+        }
+        assert_eq!(carrier(&description, "base"), None);
+        assert_eq!(
+            description.arm_carrying("nowhere"),
+            Err(UnknownLink {
+                link: "nowhere".to_string()
+            })
+        );
+    }
+
+    /// Two arms whose chains share the joint `waist` from `base` to `chest`, each turning
+    /// on a shoulder of its own below it, and a head that the joint `nod`, of no arm,
+    /// turns.
+    const TWO_ARMS_URDF: &str = r#"<robot name="pair">
+  <link name="base"/><link name="chest"/><link name="chest_mount"/><link name="head"/>
+  <link name="left_upper"/><link name="left_grasp"/>
+  <link name="right_upper"/><link name="right_grasp"/>
+  <joint name="waist" type="revolute">
+    <parent link="base"/><child link="chest"/><axis xyz="0 0 1"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="mount" type="fixed"><parent link="chest"/><child link="chest_mount"/></joint>
+  <joint name="nod" type="revolute">
+    <parent link="base"/><child link="head"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="left_shoulder" type="revolute">
+    <parent link="chest"/><child link="left_upper"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="left_tip" type="fixed"><parent link="left_upper"/><child link="left_grasp"/></joint>
+  <joint name="right_shoulder" type="revolute">
+    <parent link="chest"/><child link="right_upper"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <joint name="right_tip" type="fixed"><parent link="right_upper"/><child link="right_grasp"/></joint>
+</robot>"#;
+
+    /// The SRDF of [`TWO_ARMS_URDF`] with its arms' groups in the order `arms` names them.
+    fn two_arms_srdf(arms: [&str; 2]) -> String {
+        let groups: String = arms
+            .iter()
+            .map(|arm| {
+                format!(
+                    r#"<group name="{arm}_arm"><chain base_link="base" tip_link="{arm}_grasp"/></group>
+  <group name="{arm}_hand"><link name="{arm}_grasp"/></group>
+  <end_effector name="{arm}_end" parent_link="{arm}_grasp" group="{arm}_hand"/>
+  "#
+                )
+            })
+            .collect();
+        format!("<robot name=\"pair\">\n  {groups}</robot>")
+    }
+
+    #[test]
+    fn of_two_arms_the_one_whose_joint_is_nearest_above_carries_a_link_the_first_on_a_tie() {
+        for (order, first) in [
+            (["left", "right"], "left_arm"),
+            (["right", "left"], "right_arm"),
+        ] {
+            let description = RobotDescription::parse(TWO_ARMS_URDF, &two_arms_srdf(order))
+                .expect("the two arms' description");
+            assert_eq!(
+                description
+                    .arms()
+                    .iter()
+                    .map(|arm| arm.joints.clone())
+                    .collect::<Vec<_>>(),
+                order.map(|arm| vec!["waist".to_string(), format!("{arm}_shoulder")]),
+                "both arms hold the waist"
+            );
+            for link in ["chest", "chest_mount"] {
+                assert_eq!(carrier(&description, link), Some(first), "{link}");
+            }
+            for arm in ["left", "right"] {
+                for link in [format!("{arm}_upper"), format!("{arm}_grasp")] {
+                    let expected = format!("{arm}_arm");
+                    assert_eq!(
+                        carrier(&description, &link),
+                        Some(expected.as_str()),
+                        "{link}"
+                    );
+                }
+            }
+            for link in ["base", "head"] {
+                assert_eq!(carrier(&description, link), None, "{link}");
+            }
+        }
     }
 }

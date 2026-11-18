@@ -2093,9 +2093,10 @@ pub(crate) mod tests {
     use collision_geometry::chain::ChainGeometry;
     use collision_geometry::gjk::Placed;
     use control_core::positive_finite::PositiveFinite;
+    use frame_tree::FrameName;
     use hegel::TestCase;
     use hegel::generators as gs;
-    use occupancy_map::{Bounds, Frame, Scan};
+    use occupancy_map::{Bounds, Scan};
 
     use super::*;
     use crate::arm::{Arm, Body, SelfModel};
@@ -2242,7 +2243,7 @@ pub(crate) mod tests {
         max: [f64; 3],
         points: &[[f64; 3]],
     ) -> (VoxelMap, DistanceField) {
-        let frame = Frame::parse("world").expect("a frame name");
+        let frame = FrameName::parse("world").expect("a frame name");
         let mut map = VoxelMap::new(
             frame.clone(),
             PositiveFinite::parse(voxel_m).expect("positive"),

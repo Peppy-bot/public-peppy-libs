@@ -103,14 +103,12 @@ impl TryFrom<&ShapeFields> for ObjectShape {
                 Shape::mesh(
                     fields
                         .mesh_vertices
-                        .chunks_exact(3)
-                        .map(|v| Point3::new(v[0], v[1], v[2]))
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .map(|&[x, y, z]| Point3::new(x, y, z))
                         .collect(),
-                    fields
-                        .mesh_triangles
-                        .chunks_exact(3)
-                        .map(|t| [t[0], t[1], t[2]])
-                        .collect(),
+                    fields.mesh_triangles.as_chunks::<3>().0.to_vec(),
                 )
             }
             kind => {

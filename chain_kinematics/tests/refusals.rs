@@ -67,8 +67,8 @@ fn an_actuated_joint_with_no_declared_range_is_refused() {
     let err = build::<2>(&urdf("", ""), JointSelection::PathOrder)
         .expect_err("a joint with no <limit> has no range to clamp into");
     assert!(
-        matches!(&err, ChainError::UnusableLimit { joint, .. } if joint == "j_b"),
-        "expected an unusable-limit refusal, got {err}"
+        matches!(&err, ChainError::NoRange { joint } if joint == "j_b"),
+        "expected a no-range refusal, got {err}"
     );
 }
 
@@ -80,9 +80,25 @@ fn an_unbounded_actuated_joint_is_refused() {
     let err = build::<2>(&urdf(unbounded, ""), JointSelection::PathOrder)
         .expect_err("an infinite bound is not a bound");
     assert!(
-        matches!(&err, ChainError::UnusableLimit { joint, lo, hi }
-            if joint == "j_b" && lo.is_infinite() && hi.is_infinite()),
-        "expected an unusable-limit refusal, got {err}"
+        matches!(&err, ChainError::Tree(TreeError::JointLimits { joint, lower, upper })
+            if joint == "j_b" && lower.is_infinite() && upper.is_infinite()),
+        "expected a limits refusal, got {err}"
+    );
+}
+
+#[test]
+fn an_actuated_continuous_joint_is_refused_for_its_range() {
+    // A continuous joint declares no range, whatever <limit> it carries.
+    let continuous = urdf(BOUNDED, "").replacen(
+        r#"<joint name="j_b" type="revolute">"#,
+        r#"<joint name="j_b" type="continuous">"#,
+        1,
+    );
+    let err = build::<2>(&continuous, JointSelection::PathOrder)
+        .expect_err("a continuous joint has no range to clamp into");
+    assert!(
+        matches!(&err, ChainError::NoRange { joint } if joint == "j_b"),
+        "expected a no-range refusal, got {err}"
     );
 }
 
@@ -150,6 +166,74 @@ fn a_multi_slot_joint_anywhere_is_refused() {
         ),
         "expected a multi-slot refusal, got {err}"
     );
+}
+
+/// The two-joint fixture with `edit` applied to its joint `j_b` after parsing, so a
+/// value no URDF text parses into, such as a NaN, reaches the tree.
+fn build_with_j_b(edit: impl FnOnce(&mut urdf_rs::Joint)) -> Result<Chain<2>, ChainError> {
+    let mut robot = urdf_rs::read_from_string(&urdf(BOUNDED, "")).expect("parse fixture");
+    edit(
+        robot
+            .joints
+            .iter_mut()
+            .find(|joint| joint.name == "j_b")
+            .expect("the fixture's j_b"),
+    );
+    Chain::<2>::from_urdf(
+        &robot,
+        &ChainSpec {
+            base_link: None,
+            tip_link: "tip",
+            joints: JointSelection::PathOrder,
+        },
+    )
+}
+
+#[test]
+fn a_joint_whose_axis_gives_no_direction_is_refused() {
+    // Normalizing such an axis gives NaN, and every pose below the joint with it.
+    for axis in [
+        [0.0, 0.0, 0.0],
+        [1e-13, 0.0, 0.0],
+        [f64::NAN, 0.0, 1.0],
+        [0.0, f64::INFINITY, 0.0],
+    ] {
+        let err = build_with_j_b(|joint| joint.axis.xyz = urdf_rs::Vec3(axis))
+            .expect_err("an axis with no direction cannot be turned about");
+        assert!(
+            matches!(
+                &err,
+                ChainError::Tree(TreeError::JointAxis { joint, axis: refused })
+                    if joint == "j_b" && refused.iter().zip(axis).all(|(a, b)| a.total_cmp(&b).is_eq())
+            ),
+            "expected an axis refusal for {axis:?}, got {err}"
+        );
+    }
+}
+
+#[test]
+fn a_moving_joint_whose_limits_are_not_finite_and_in_order_is_refused() {
+    // A joint confined between such limits has no position a caller can name.
+    for (lower, upper) in [
+        (1.0, -1.0),
+        (f64::NAN, 1.0),
+        (-1.0, f64::INFINITY),
+        (f64::NEG_INFINITY, 1.0),
+    ] {
+        let err = build_with_j_b(|joint| {
+            joint.limit.lower = lower;
+            joint.limit.upper = upper;
+        })
+        .expect_err("limits out of order or not finite bound no range");
+        assert!(
+            matches!(
+                &err,
+                ChainError::Tree(TreeError::JointLimits { joint, lower: l, upper: u })
+                    if joint == "j_b" && l.total_cmp(&lower).is_eq() && u.total_cmp(&upper).is_eq()
+            ),
+            "expected a limits refusal for [{lower}, {upper}], got {err}"
+        );
+    }
 }
 
 #[test]

@@ -1,11 +1,21 @@
 """A description from Python: read from its two files, its arms with their
-grippers, its named states, its cameras and its joint limits."""
+grippers, its named states, its cameras, its joint limits and its transforms."""
 
 import xml.etree.ElementTree as ET
 
 import pytest
 
-from robot_description_py import CLOSED, HOME, OPEN, READY, START, RobotDescription, model
+from robot_description_py import (
+    CLOSED,
+    HOME,
+    OPEN,
+    READY,
+    START,
+    FingerSpan,
+    Mimic,
+    RobotDescription,
+    model,
+)
 
 
 def test_files_of_two_robots_do_not_make_one_description():
@@ -41,8 +51,7 @@ def test_each_arm_gives_its_chain_and_its_gripper():
         ]
         closed = description.state(arm.gripper.name, CLOSED)
         opened = description.state(arm.gripper.name, OPEN)
-        assert closed is not None and opened is not None
-        assert fingers[0].closed == closed[0] and fingers[0].open == opened[0]
+        assert fingers[0].span.closed == closed[0] and fingers[0].span.open == opened[0]
         # The second finger follows the first one to one, as the URDF's <mimic> gives it.
         assert fingers[0].mimic is None
         mimic = fingers[1].mimic
@@ -50,14 +59,66 @@ def test_each_arm_gives_its_chain_and_its_gripper():
         assert (mimic.joint, mimic.multiplier, mimic.offset) == (fingers[0].joint, 1.0, 0.0)
 
 
-def test_a_state_gives_one_position_per_joint_or_none():
+def test_a_span_places_its_joint_between_closed_and_open():
+    description = model("so101").description()
+    (arm,) = description.arms
+    span = arm.gripper.fingers[0].span
+    for opening in (-0.5, 0.0, 0.25, 1.0, 1.5):
+        assert span.opening_at(span.position_at(opening)) == pytest.approx(opening)
+    assert span.position_at(0.0) == span.closed and span.position_at(1.0) == pytest.approx(span.open)
+    assert span.travel == span.open - span.closed
+    assert FingerSpan(span.closed, span.open) == span
+    mirrored = FingerSpan(0.0, -1.5708)
+    assert mirrored.position_at(0.5) == pytest.approx(-0.7854)
+
+
+@pytest.mark.parametrize("ends", [(0.3, 0.3), (0.0, 1e-10), (float("nan"), 0.3), (0.0, float("inf"))])
+def test_a_span_needs_two_finite_ends_far_enough_apart(ends):
+    with pytest.raises(ValueError, match="a finger span stands at two finite positions"):
+        FingerSpan(*ends)
+
+
+def test_the_transforms_place_every_link_but_the_root():
+    description = model("so101").description()
+    (arm,) = description.arms
+    positions = dict(zip(arm.joints, [0.1] * len(arm.joints), strict=True))
+    positions.update(arm.gripper.finger_positions_at(0.5))
+    transforms = description.fixed_transforms() + description.transforms_at(positions)
+    children = [transform.child for transform in transforms]
+    assert len(children) == len(set(children))
+    assert "base_link" not in children
+    (jaw,) = arm.gripper.fingers
+    for opening, state in [(0.0, CLOSED), (1.0, OPEN)]:
+        values = description.state(arm.gripper.name, state)
+        assert len(values) == 1
+        assert arm.gripper.finger_positions_at(opening) == {jaw.joint: pytest.approx(values[0])}
+    for transform in transforms:
+        x, y, z, w = transform.orientation
+        assert x * x + y * y + z * z + w * w == pytest.approx(1.0)
+        assert len(transform.position) == 3
+
+
+def test_a_mimic_places_its_joint_off_the_one_it_follows():
+    mimic = Mimic("leader", -1.0, 0.01)
+    assert mimic.position_from(0.02) == pytest.approx(-0.01)
+    assert mimic == Mimic(joint="leader", multiplier=-1.0, offset=0.01)
+
+
+@pytest.mark.parametrize("values", [(float("nan"), 0.0), (1.0, float("inf"))])
+def test_a_mimic_needs_a_finite_multiplier_and_offset(values):
+    with pytest.raises(ValueError, match="a mimic's multiplier and offset are finite"):
+        Mimic("leader", *values)
+
+
+def test_a_state_gives_one_position_per_joint_and_an_unknown_one_raises():
     description = model("so101").description()
     (arm,) = description.arms
     for posture in [READY, HOME, START]:
-        positions = description.state(arm.name, posture)
-        assert positions is not None and len(positions) == len(arm.joints)
-    assert description.state(arm.name, "no_such_state") is None
-    assert description.state("no_such_group", READY) is None
+        assert len(description.state(arm.name, posture)) == len(arm.joints)
+    for group, state in [(arm.name, "no_such_state"), ("no_such_group", READY)]:
+        refusal = f'the SRDF gives the group "{group}" no state named "{state}"'
+        with pytest.raises(KeyError, match=refusal):
+            description.state(group, state)
 
 
 def test_each_camera_gives_its_optical_frame():
@@ -65,8 +126,41 @@ def test_each_camera_gives_its_optical_frame():
     cameras = {camera.name: camera for camera in description.cameras}
     assert set(cameras) == {"wrist_left", "wrist_right", "chest"}
     assert cameras["chest"].parent_link == "openarm_body_link0"
+    assert {camera.frame for camera in cameras.values()} == {
+        "wrist_left_optical_frame",
+        "wrist_right_optical_frame",
+        "chest_optical_frame",
+    }
     for camera in cameras.values():
         assert len(camera.xyz) == 3 and len(camera.rpy) == 3
+
+
+@pytest.mark.parametrize(
+    ("name", "root"), [("openarm_v1", "world"), ("openarm_v2", "world"), ("so101", "base_link")]
+)
+def test_the_root_link_is_the_robot_frame(name, root):
+    assert model(name).description().root_link == root
+
+
+@pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101"])
+def test_an_arm_carries_its_grasp_link_and_fingers_and_none_carries_the_root(name):
+    description = model(name).description()
+    assert description.arm_carrying(description.root_link) is None
+    for arm in description.arms:
+        for link in [arm.grasp_link, *(finger.link for finger in arm.gripper.fingers)]:
+            carrier = description.arm_carrying(link)
+            assert carrier is not None and carrier.name == arm.name, link
+    with pytest.raises(KeyError, match='the URDF has no link named "no_such_link"'):
+        description.arm_carrying("no_such_link")
+
+
+def test_an_arm_carries_its_wrist_camera_and_none_carries_the_chest_camera():
+    description = model("openarm_v2").description()
+    carriers = {}
+    for camera in description.cameras:
+        carrier = description.arm_carrying(camera.frame)
+        carriers[camera.name] = None if carrier is None else carrier.name
+    assert carriers == {"wrist_left": "left_arm", "wrist_right": "right_arm", "chest": None}
 
 
 def test_a_depth_camera_gives_the_depths_its_sensor_clips_at():
@@ -99,5 +193,5 @@ def test_joint_limits_are_the_urdfs():
             assert (limits.lower, limits.upper) == (float(limit.get("lower")), float(limit.get("upper")))
             assert limits.velocity == float(limit.get("velocity"))
             assert limits.effort == float(limit.get("effort"))
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match='the URDF has no joint named "no_such_joint"'):
         description.joint_limits("no_such_joint")

@@ -360,7 +360,7 @@ mod tests {
                 assert_eq!(arms.gripper_names()[arm.place()], of.gripper.name, "{id}");
                 assert_eq!(limits[arm].as_slice(), of.limits, "{id}");
                 assert_eq!(
-                    Some(ready[arm].as_slice()),
+                    Ok(ready[arm].as_slice()),
                     description.state(&of.name, states::READY),
                     "{id}"
                 );

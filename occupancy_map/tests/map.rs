@@ -17,12 +17,13 @@ use collision_geometry::chain::{BodyGeometry, Padding};
 use collision_geometry::gjk::Vertex;
 use collision_geometry::shapes::{PlacedShape, Shape};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use hegel::TestCase;
 use hegel::generators as gs;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{
-    Bounds, Columns, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, Reading,
-    RobotCutout, Scan, ShapeCutout, Voxel, VoxelMap, depth_points,
+    Bounds, Columns, Cutout, DistanceField, InsertError, Key, NotANumber, Reading, RobotCutout,
+    Scan, ShapeCutout, Voxel, VoxelMap, depth_points,
 };
 
 #[path = "common/arms.rs"]
@@ -49,8 +50,8 @@ const EDGE_M: f64 = 2.0;
 /// How far two computations of one distance may differ by rounding alone.
 const ROUNDING_M: f64 = 1e-9;
 
-fn frame() -> Frame {
-    Frame::parse(MAP).expect("a frame name")
+fn frame() -> FrameName {
+    FrameName::parse(MAP).expect("a frame name")
 }
 
 fn range(meters: f64) -> PositiveFinite {
@@ -376,7 +377,7 @@ fn a_scan_reads_each_point_as_a_return_or_no_return_at_the_range(tc: TestCase) {
 
 /// The scan of `points` a sensor at `sensor` reads out to `max_range_m`.
 fn scan_of<'a>(
-    frame: &'a Frame,
+    frame: &'a FrameName,
     sensor: Pose,
     points: &'a [[f32; 3]],
     max_range_m: f64,
@@ -471,7 +472,7 @@ fn a_point_that_clears_frees_its_ray_up_to_its_voxel_and_marks_nothing() {
     }
 
     let before = voxels(&map);
-    let elsewhere = Frame::parse("elsewhere").expect("a frame name");
+    let elsewhere = FrameName::parse("elsewhere").expect("a frame name");
     assert!(matches!(
         map.insert_clearing(&scan_of(&elsewhere, sensor, &[hit], RANGE_M), &[clearing]),
         Err(InsertError::ScanFrame { .. })
@@ -630,7 +631,7 @@ fn a_point_inside_the_robots_body_is_cut_out() {
 #[test]
 fn a_map_refuses_a_scan_or_a_cutout_in_another_frame() {
     let mut map = map();
-    let (ours, other) = (frame(), Frame::parse("camera").expect("a frame name"));
+    let (ours, other) = (frame(), FrameName::parse("camera").expect("a frame name"));
     let points = [[0.0_f32, 0.0, 1.0]];
     let scan = |frame| Scan {
         frame,

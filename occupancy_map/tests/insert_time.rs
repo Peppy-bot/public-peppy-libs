@@ -14,10 +14,9 @@ use chain_kinematics::Tree;
 use collision_geometry::chain::Padding;
 use collision_geometry::gjk::Placed;
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
-use occupancy_map::{
-    Bounds, Cutout, DistanceField, Frame, RobotCutout, Scan, VoxelMap, depth_points,
-};
+use occupancy_map::{Bounds, Cutout, DistanceField, RobotCutout, Scan, VoxelMap, depth_points};
 use robot_description::states;
 
 #[path = "common/arms.rs"]
@@ -147,7 +146,7 @@ fn median(mut times: Vec<Duration>) -> Duration {
 #[ignore = "a measurement: it prints the times on the machine that runs it"]
 fn time_one_640x360_frame() {
     let tree = Tree::from_robot(OPENARM_V2.robot()).expect("the URDF is one tree");
-    let root = Frame::parse(&tree.link(tree.root()).name).expect("the URDF root names a frame");
+    let root = FrameName::parse(&tree.link(tree.root()).name).expect("the URDF root names a frame");
     // The chest camera's optical frame in the URDF root's, over the fixed joints that
     // hold it.
     let chest = OPENARM_V2

@@ -48,7 +48,7 @@ fn opening(configuration: &Configuration, arm: &Arm) -> f64 {
         .iter()
         .find_map(|finger| Some((finger, *configuration.positions.get(&finger.joint)?)))
         .unwrap_or_else(|| panic!("the configuration poses a finger of {}", arm.gripper.name));
-    (position - finger.closed) / (finger.open - finger.closed)
+    finger.span.opening_at(position)
 }
 
 #[test]

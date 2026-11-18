@@ -84,6 +84,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 name = "control_core"
 version = "0.1.0"
 dependencies = [
+ "frame_tree",
  "hegeltest",
  "ros_reference",
  "thiserror 2.0.21",
@@ -150,6 +151,13 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -522,6 +530,7 @@ name = "robot_description"
 version = "0.1.0"
 dependencies = [
  "chain_kinematics",
+ "frame_tree",
  "roxmltree",
  "sha2",
  "thiserror 2.0.21",

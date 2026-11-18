@@ -23,8 +23,8 @@ locked = true
 
 [tool.uv]
 # uv builds the package again when one of these changes: the Rust sources of
-# the bindings and of control_core and the types of the module, not only this
-# manifest.
+# the bindings, of control_core and of frame_tree, which control_core builds
+# on, and the types of the module, not only this manifest.
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "Cargo.toml" },
@@ -33,6 +33,8 @@ cache-keys = [
     { file = "path_timing_py.pyi" },
     { file = "../control_core/Cargo.toml" },
     { file = "../control_core/src/**/*.rs" },
+    { file = "../frame_tree/Cargo.toml" },
+    { file = "../frame_tree/src/**/*.rs" },
 ]
 
 [tool.pytest.ini_options]

@@ -2,6 +2,54 @@
 //! message is actionable without reading this crate.
 
 use crate::DisabledReason;
+use crate::description::LEAST_FINGER_TRAVEL;
+
+/// The ends of a finger span that [`FingerSpan::new`](crate::FingerSpan::new) refuses:
+/// one is not finite, or the travel between them is not finite or at most
+/// `LEAST_FINGER_TRAVEL`, too small for an opening to scale.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error(
+    "a finger span stands at two finite positions more than {} apart, and {closed} and \
+     {open} are not",
+    LEAST_FINGER_TRAVEL
+)]
+pub struct FingerSpanError {
+    pub closed: f64,
+    pub open: f64,
+}
+
+/// A joint that a lookup by name on a [`RobotDescription`](crate::RobotDescription) is
+/// asked about and the description's URDF lacks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the URDF has no joint named {joint:?}")]
+pub struct UnknownJoint {
+    pub joint: String,
+}
+
+/// A link that a lookup by name on a [`RobotDescription`](crate::RobotDescription) is
+/// asked about and the description's URDF lacks.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the URDF has no link named {link:?}")]
+pub struct UnknownLink {
+    pub link: String,
+}
+
+/// A group that [`RobotDescription::group_arms`](crate::RobotDescription::group_arms) is
+/// asked about and that is no arm and no group of arms of the description's SRDF.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the SRDF has no arm and no group of arms named {group:?}")]
+pub struct UnknownGroup {
+    pub group: String,
+}
+
+/// A state that [`RobotDescription::state`](crate::RobotDescription::state) is asked
+/// about and the description's SRDF does not give the group.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the SRDF gives the group {group:?} no state named {state:?}")]
+pub struct UnknownState {
+    pub group: String,
+    pub state: String,
+}
 
 /// A URDF and an SRDF that do not make one description.
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -160,6 +208,15 @@ pub enum DescriptionError {
         gripper: String,
         joint: String,
         leader: String,
+    },
+    #[error(
+        "the states \"closed\" and \"open\" of the gripper {gripper:?} put its finger joint \
+         {joint:?} where no span stands: {error}"
+    )]
+    FingerSpan {
+        gripper: String,
+        joint: String,
+        error: FingerSpanError,
     },
     #[error(
         "<disable_collisions> gives the reason {reason:?}; the reasons are {}",

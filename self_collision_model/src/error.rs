@@ -77,6 +77,13 @@ pub enum BuildError {
     #[error("the gripper finger '{link}' rides no moving joint off a chain link")]
     NoSuchFinger { link: String },
 
+    /// A gripper finger hangs on a continuous joint, which bounds no travel.
+    #[error(
+        "the gripper finger '{link}' hangs on the continuous joint '{joint}', which bounds no \
+         travel; a finger turns on a revolute joint or slides on a prismatic one"
+    )]
+    ContinuousFinger { link: String, joint: String },
+
     /// A body's pieces could not be fitted from its mesh; see [`GeometryError`] for the
     /// specific reason.
     #[error(transparent)]

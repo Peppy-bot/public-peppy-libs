@@ -4,8 +4,9 @@ peppygen is generated per node from the node's own manifest, so a shared
 library cannot import it. A node hands `Bindings.from_generated(peppygen)`
 to `node.setup`; each part of the core takes the modules it uses from
 there. Every brain implements the same contracts and names its slots
-alike (limb_motion, limb_state, camera, geometry, camera_mounts), so every
-brain's peppygen has these modules under the same names. A brain may also
+alike (limb_motion, limb_state, camera, geometry, sensor_mounts,
+transform_lookup), so every brain's peppygen has these modules under the
+same names. A brain may also
 consume the motion planner on a `motion_planning` slot, with limb_motion's
 execute_joint_path, which runs a plan; a brain whose manifest consumes
 neither has none of those modules.
@@ -30,7 +31,8 @@ GENERATED_MODULES = {
     "depth_stream_info": "consumed_services.camera.depth_stream_info",
     "get_color_intrinsics": "consumed_services.geometry.get_color_intrinsics",
     "get_depth_intrinsics": "consumed_services.geometry.get_depth_intrinsics",
-    "get_camera_poses": "consumed_services.camera_mounts.get_camera_poses",
+    "describe_sensors": "consumed_services.sensor_mounts.describe_sensors",
+    "lookup_transform": "consumed_services.transform_lookup.lookup_transform",
     "wrist_video_stream": "consumed_topics.wrist_cameras.video_stream",
     "execute_joint_path": "consumed_actions.limb_motion.execute_joint_path",
     "plan_joint_path": "consumed_actions.motion_planning.plan_joint_path",
@@ -80,9 +82,12 @@ class Bindings:
     get_color_intrinsics: Any
     get_depth_intrinsics: Any
 
-    # The robot's camera mounts, camera_mounts:v1
-    # (peppygen.consumed_services.camera_mounts).
-    get_camera_poses: Any
+    # The frames of the robot's sensors, sensor_mounts:v1
+    # (peppygen.consumed_services.sensor_mounts), and the lookups in the
+    # robot's tree of frames, transform_lookup:v1
+    # (peppygen.consumed_services.transform_lookup).
+    describe_sensors: Any
+    lookup_transform: Any
 
     # item_perception:v1 (peppygen.exposed_actions.item_perception).
     scan_items: Any

@@ -43,12 +43,12 @@ The SRDF of every model gives:
   that touch with every joint at zero, `Always` for two that touch wherever the
   robot stands.
 
-A camera the robot carries is a link `<camera>_optical_frame` of the URDF, on
-a fixed joint, in the optical frame of REP-103: +z along the view, +x to the
-right of the picture and +y down it. A camera that measures depth carries a
-depth sensor in the form of Gazebo's URDF extension, on its optical frame: the
-`<near>` and `<far>` of its `<clip>` are the nearest and the farthest depths it
-measures, meters along its view ([`DepthRange`]):
+A camera the robot carries is a link `<camera>_optical_frame` of the URDF
+([`CameraFrame::frame`]), on a fixed joint, in the optical frame of REP-103: +z
+along the view, +x to the right of the picture and +y down it. A camera that
+measures depth carries a depth sensor in the form of Gazebo's URDF extension, on
+its optical frame: the `<near>` and `<far>` of its `<clip>` are the nearest and
+the farthest depths it measures, meters along its view ([`DepthRange`]):
 
 ```xml
 <gazebo reference="chest_optical_frame">
@@ -64,7 +64,7 @@ measures, meters along its view ([`DepthRange`]):
 let model = robot_description::model("openarm_v2")?;
 let description = model.description();
 for arm in description.arms() {
-    let ready = description.state(&arm.name, robot_description::states::READY);
+    let ready = description.state(&arm.name, robot_description::states::READY)?;
     println!("{}: {:?} from {} to {}", arm.name, ready, arm.base_link, arm.grasp_link);
 }
 ```
@@ -73,14 +73,30 @@ for arm in description.arms() {
 attach goal of simulation_robot carries. The reader is strict: an element or
 an attribute of the SRDF or of a `<gazebo>` element of the URDF that it does
 not read, and a name the URDF lacks, is a refusal ([`DescriptionError`]) that
-names it. The URDF's links and joints are held to
-one tree by the rules of chain_kinematics, which poses every chain of it.
-[`position_limits`] gives a joint's position limits, the URDF's, unbounded for
-a continuous joint, the limits each [`Arm`] carries. [`Model::digest`] is the
-SHA-256 of a model's URDF, SRDF and meshes, which robot_identity answers beside
-the files, and [`Model::directory`] the directory of `models/` the build
-bundled the model from, for a reader on the building machine that takes the
-files from disk.
+names it. The URDF's links and joints are held to one tree by the rules of
+chain_kinematics, which poses every chain of it.
+[`RobotDescription::position_limits`] gives a joint's position limits, the
+URDF's, unbounded for a continuous joint and `[0, 0]` for a fixed one, the
+limits each [`Arm`] carries. [`RobotDescription::fixed_transforms`] and
+[`RobotDescription::transforms_at`] give where each link stands in its parent
+link, a [`LinkTransform`] per joint: the fixed joints' for the life of the
+robot, and the moving joints' at their positions by joint name, a joint that
+mimics another standing where its mimic puts it from the followed joint's
+position. [`LinkTransform::frame_transform`] gives one as the transforms
+contract carries it, a `frame_tree::FrameTransform` checked as frame_tree checks
+each transform it takes, or a [`LinkTransformError`] that names the joint's two
+links and the reason; robot_description depends on frame_tree for it.
+[`Gripper::finger_positions_at`] gives each finger joint's position at
+an opening, for a publisher that holds a gripper's opening alone.
+[`RobotDescription::root_link`] gives the URDF's root link, the robot frame,
+and [`RobotDescription::arm_carrying`] the arm whose chain carries a link: of
+the joints of every arm, the arm that holds the one nearest above the link, the
+first in the SRDF's order of two that hold it, and none for a link no arm's
+joint moves, such as one fixed to the root.
+[`Model::digest`] is the SHA-256 of a model's URDF, SRDF and meshes, which
+robot_identity answers beside the files, and [`Model::directory`] the directory
+of `models/` the build bundled the model from, for a reader on the building
+machine that takes the files from disk.
 
 The `meshes` feature embeds the collision meshes: [`Model::meshes`] gives them
 and [`Model::write_meshes_to`] writes them where a builder of the URDF's

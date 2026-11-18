@@ -11,7 +11,7 @@ from robot_description_py import HOME, RobotDescription, model
 
 from sim_robot_core import models as models_module
 from sim_robot_core.errors import ModelEntryError
-from sim_robot_core.models import FingerSpan, Models, hold_to_bundled, shipped_entry
+from sim_robot_core.models import Models, hold_to_bundled, shipped_entry
 from sim_robot_core.pairs import Held
 
 OPENARM_LIMBS = Held(
@@ -97,18 +97,8 @@ class TestFromTheDescription:
             assert gripper.name == arm.gripper.name
             fingers = arm.gripper.fingers
             assert gripper.joints == tuple(finger.joint for finger in fingers)
-            for span, finger in zip(gripper.spans, fingers, strict=True):
-                assert span.position(0.0) == finger.closed
-                assert span.position(1.0) == pytest.approx(finger.open)
-            for mimic, finger in zip(gripper.mimics, fingers, strict=True):
-                described = finger.mimic
-                assert (mimic is None) == (described is None), finger.joint
-                if described is not None:
-                    assert (mimic.joint, mimic.multiplier, mimic.offset) == (
-                        described.joint,
-                        described.multiplier,
-                        described.offset,
-                    )
+            assert gripper.spans == tuple(finger.span for finger in fingers)
+            assert gripper.mimics == tuple(finger.mimic for finger in fingers)
 
     @pytest.mark.parametrize(
         ("name", "driven", "followers"),
@@ -136,7 +126,7 @@ class TestFromTheDescription:
         expected = {}
         for arm in description.arms:
             expected.update(zip(arm.joints, description.state(arm.name, HOME), strict=True))
-            expected.update((finger.joint, finger.closed) for finger in arm.gripper.fingers)
+            expected.update((finger.joint, finger.span.closed) for finger in arm.gripper.fingers)
         posture = bundled(name).start_posture
         assert posture == expected
         assert set(posture) == set(bundled(name).joints())
@@ -145,29 +135,6 @@ class TestFromTheDescription:
         description = so101_with_srdf('<group_state name="home" group="arm">', '<group_state name="rest" group="arm">')
         with pytest.raises(ModelEntryError, match="^model so101: the description gives the arm 'arm' no home state$"):
             shipped_entry("so101", description)
-
-    def test_a_finger_that_does_not_travel_is_refused(self):
-        so101 = model("so101")
-        closed = so101.description().arms[0].gripper.fingers[0].closed
-        open_value = so101.description().arms[0].gripper.fingers[0].open
-        description = so101_with_srdf(f'value="{open_value:g}"', f'value="{closed:g}"')
-        with pytest.raises(
-            ModelEntryError, match="^model so101: finger joint 'gripper' of 'gripper' closes at .* it has no travel$"
-        ):
-            shipped_entry("so101", description)
-
-
-
-class TestFingerSpan:
-    def test_an_opening_sits_on_the_travel_from_closed(self):
-        jaw = FingerSpan(closed=-0.174533, travel=1.74533 + 0.174533)
-        assert jaw.position(0.0) == pytest.approx(-0.174533)
-        assert jaw.position(1.0) == pytest.approx(1.74533)
-        assert jaw.opening(jaw.position(0.25)) == pytest.approx(0.25)
-
-    def test_a_finger_that_opens_below_its_closed_position_travels_negative(self):
-        mirrored = FingerSpan(closed=0.0, travel=-1.5708)
-        assert mirrored.position(0.5) == pytest.approx(-0.7854)
 
 
 class TestTheMatch:

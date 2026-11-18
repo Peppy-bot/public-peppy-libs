@@ -31,6 +31,7 @@ use common::footprints::padded;
 use common::layers::{layer, lethal_cells};
 use common::poses::{moved, on_base, planar};
 use control_core::twist::Twist;
+use frame_tree::FrameName;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -38,7 +39,7 @@ use navigation_core::obstacles::{
     GridPoses, LiveObstacles, ObstacleHeights, ObstacleHeightsParams,
 };
 use navigation_core::stop::{Stop, StopCause, StopDecision, StopError, StopParams, UnknownSource};
-use occupancy_map::{Bounds, Frame};
+use occupancy_map::Bounds;
 
 /// The front of the footprint, in meters ahead of the base's center.
 const FRONT: f64 = 0.25;
@@ -93,7 +94,7 @@ fn live_obstacles(padded_footprint: PaddedFootprint, sources: usize) -> LiveObst
     })
     .expect("heights of whole voxels");
     LiveObstacles::new(
-        Frame::parse("odom").expect("a frame name"),
+        FrameName::parse("odom").expect("a frame name"),
         Bounds {
             min: [-1.5, -1.5, -0.5],
             max: [3.0, 1.5, 1.5],

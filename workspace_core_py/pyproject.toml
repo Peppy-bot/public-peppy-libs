@@ -25,8 +25,8 @@ locked = true
 # uv builds the package again when one of these changes: the Rust sources of
 # the bindings and of each crate here that they build (workspace_core,
 # camera_core, and for the arm bodies robot_description, self_collision_model,
-# collision_geometry and chain_kinematics) and the types of the module, not
-# only this manifest.
+# collision_geometry, chain_kinematics and frame_tree) and the types of the
+# module, not only this manifest.
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "Cargo.toml" },
@@ -46,6 +46,8 @@ cache-keys = [
     { file = "../collision_geometry/src/**/*.rs" },
     { file = "../chain_kinematics/Cargo.toml" },
     { file = "../chain_kinematics/src/**/*.rs" },
+    { file = "../frame_tree/Cargo.toml" },
+    { file = "../frame_tree/src/**/*.rs" },
 ]
 
 [tool.pytest.ini_options]

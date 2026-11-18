@@ -153,7 +153,8 @@ use std::ops::RangeInclusive;
 use camera_core::laser_scan::{LaserScan, Sweep};
 use camera_core::pose::{PlanarPose, Pose};
 use control_core::positive_finite::PositiveFinite;
-use occupancy_map::{Bounds, Frame, MapError, Reading, Scan, VoxelMap};
+use frame_tree::FrameName;
+use occupancy_map::{Bounds, MapError, Reading, Scan, VoxelMap};
 
 use crate::footprint::PaddedFootprint;
 use crate::grid::{Cell, CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, UNKNOWN};
@@ -434,7 +435,7 @@ impl LiveObstacles {
     /// Bounds of more columns on an axis than a cost grid's axis holds, or
     /// whose columns reach past single precision's range, are refused.
     pub fn new(
-        frame: Frame,
+        frame: FrameName,
         bounds: Bounds,
         heights: ObstacleHeights,
         padded_footprint: PaddedFootprint,
@@ -973,8 +974,8 @@ mod tests {
     use control_core::footprint::Footprint;
     use control_core::non_negative_finite::NonNegativeFinite;
 
-    fn odom() -> Frame {
-        Frame::parse("odom").unwrap()
+    fn odom() -> FrameName {
+        FrameName::parse("odom").unwrap()
     }
 
     fn bounds() -> Bounds {
@@ -1488,7 +1489,7 @@ mod tests {
                 min: [x, 0.0, 0.0],
                 max: [x, 0.0, 0.0],
             };
-            columns_of(&VoxelMap::new(Frame::parse("odom").unwrap(), side, one_voxel).unwrap())
+            columns_of(&VoxelMap::new(FrameName::parse("odom").unwrap(), side, one_voxel).unwrap())
         };
         for x in [1e39, 3.4025e38] {
             let refused = columns_at(x).unwrap_err();

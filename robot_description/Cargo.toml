@@ -11,6 +11,7 @@ meshes = []
 
 [dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
+frame_tree = { path = "../frame_tree" }
 roxmltree = "0.21"
 thiserror = "2"
 urdf-rs = "0.10"
@@ -19,5 +20,7 @@ urdf-rs = "0.10"
 sha2 = "0.11"
 
 [dev-dependencies]
+hegeltest = { version = "0.51", features = ["static-engine"] }
+kinematics_properties = { path = "../kinematics_properties" }
 nalgebra = "0.35"
 sha2 = "0.11"

@@ -17,6 +17,7 @@ use common::properties::{
     COST_TOLERANCE, corner, grids, obstacle_costs, passable, passable_cells, with_cost,
 };
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -25,7 +26,7 @@ use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeights
 use navigation_core::planner::{
     CostTravelMultiplier, PlanError, PlannerParams, SearchParams, plan, search,
 };
-use occupancy_map::{Bounds, Frame};
+use occupancy_map::Bounds;
 
 /// The largest side of a grid the exhaustive search runs on.
 const SMALL_SIDE: u32 = 8;
@@ -373,7 +374,7 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
     })
     .expect("whole voxels");
     let live = LiveObstacles::new(
-        Frame::parse("odom").expect("a frame name"),
+        FrameName::parse("odom").expect("a frame name"),
         bounds([-1.0, -1.0], [1.0, 1.0]),
         heights,
         small_footprint(),

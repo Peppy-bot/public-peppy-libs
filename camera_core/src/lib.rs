@@ -28,6 +28,8 @@
 //! - [`relay`]: the pieces of a simulated camera's relay: the camera a relay
 //!   is in its copy, the timestamp check of a relayed frame, why a forwarded
 //!   call has no answer, and the bounds and messages of the relay.
+//! - [`sensor_mounts`]: the robot frame and a camera's frame in the robot's
+//!   tree, as sensor_mounts:v1's `describe_sensors` names them.
 
 pub mod controls;
 pub mod encoding;
@@ -36,6 +38,7 @@ pub mod laser_scan;
 pub mod pinhole;
 pub mod pose;
 pub mod relay;
+pub mod sensor_mounts;
 pub mod v4l2;
 
 #[cfg(test)]

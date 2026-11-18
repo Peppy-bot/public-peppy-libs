@@ -41,7 +41,7 @@ from .limbs import parse_limbs
 from .manipulators import Manipulator
 from .perception.camera import CameraModel
 from .perception.frames import FrameStore
-from .perception.geometry import MOUNTS_VACANT, camera_pose, learn_camera_pose, learn_intrinsics
+from .perception.geometry import CameraPlacer, learn_intrinsics, parse_lookup_timeout
 from .perception.none import NoneDetector
 from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
@@ -159,13 +159,17 @@ class Brain:
         )
         # The robot's measured limbs, which a manipulator reads.
         self.limb_states = LimbStateStore()
+        # Where the robot's cameras stand at the time of each picture.
+        self.placer = CameraPlacer(
+            node_runner, bindings.describe_sensors, bindings.lookup_transform, parse_lookup_timeout(params.lookup_timeout_s)
+        )
         # The perceiver alone holds the frames and the camera model: the
-        # geometry learners give it each new camera model.
-        self.perceiver = Perceiver(FrameStore(), CameraModel())
+        # intrinsics learner gives it the camera's intrinsics.
+        self.perceiver = Perceiver(FrameStore(), CameraModel(), self.placer, params.camera_name)
         # The wrist cameras, by arm: a brain whose parameters name none has
         # no wrist pictures.
         self.wrists = WristFrames(parse_wrist_cameras(getattr(params, "wrist_cameras", ""), [limb.arm for limb in limbs]))
-        self.senses = Senses(self.robot, self.limb_states, self.perceiver, self.wrists, self._camera_pose)
+        self.senses = Senses(self.robot, self.limb_states, self.perceiver, self.wrists, self.placer.pose_at)
         self.sequencer = Sequencer(stopper=self._stop_lane)
         self.models = Models(source, self.sequencer, self.senses)
         self._now = now or bindings.clock.now_ns
@@ -188,8 +192,8 @@ class Brain:
     def background(self, token) -> list[asyncio.Task]:
         """The loops that run beside the action loops: the camera follower,
         the one asking the camera where its pixels point, the one asking
-        the robot where the camera stands, the follower of the robot's
-        measured limbs, and the follower of the wrist cameras."""
+        the robot for the frames of its sensors, the follower of the
+        robot's measured limbs, and the follower of the wrist cameras."""
         b = self.bindings
         return [
             asyncio.create_task(
@@ -198,22 +202,10 @@ class Brain:
             asyncio.create_task(
                 learn_intrinsics(self.node_runner, token, self.perceiver, b.get_color_intrinsics, b.get_depth_intrinsics)
             ),
-            asyncio.create_task(
-                learn_camera_pose(self.node_runner, token, self.perceiver, self.params.camera_name, b.get_camera_poses)
-            ),
+            asyncio.create_task(self.placer.learn(token, self.params.camera_name)),
             asyncio.create_task(self.limb_states.run(self.node_runner, token, b.limb_states)),
             asyncio.create_task(self.wrists.run(self.node_runner, token, b.wrist_video_stream)),
         ]
-
-    async def _camera_pose(self, camera_name: str):
-        """Where `camera_name` stands on the robot now, (position,
-        orientation) in the robot frame from camera_mounts; a Refusal when
-        the slot is vacant or the robot cannot say."""
-        module = self.bindings.get_camera_poses
-        producer = module.bound_producer(self.node_runner)
-        if producer is None:
-            raise Refusal(MOUNTS_VACANT)
-        return await camera_pose(self.node_runner, producer, camera_name, module)
 
     async def shutdown(self) -> None:
         """The shutdown hook: refuse every new goal first, so none finds a
