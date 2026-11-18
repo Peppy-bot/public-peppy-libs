@@ -271,11 +271,11 @@ async def test_a_planned_grab_whose_transit_run_fails_records_the_failed_carry_a
     assert robot.calls[-1] == ("remove", "brain/cup_1-t0")
 
 
-async def test_a_carry_the_planner_cannot_describe_fails_as_a_move_with_no_try_of_the_low_point():
+async def test_a_carry_the_planner_cannot_describe_fails_as_a_plan_failure_with_no_try_of_the_low_point():
     manipulator, robot, _ = await started_with_planner()
     robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
     outcome = await place(manipulator)
-    assert [(record.step, record.failure) for record in outcome.steps] == [("carry", StepFailure.MOVE)]
+    assert [(record.step, record.failure) for record in outcome.steps] == [("carry", StepFailure.PLAN)]
     assert robot.kinds() == ["describe"]
 
 

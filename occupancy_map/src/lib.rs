@@ -10,10 +10,15 @@
 //!   [`Scan`] inserted with the shapes it cuts out ([`Cutout`];
 //!   [`RobotCutout`] is the robot's body as `collision_geometry` places it,
 //!   and a [`ShapeCutout`] a collision object's shape grown by a padding),
+//!   each point of a scan read in the map's frame as the map inserts it
+//!   ([`Reading`]), a scan inserted with points that clear and mark nothing
+//!   (`insert_clearing`),
 //!   the occupied voxels inside a box, `clear`, `clear_intersecting`,
 //!   which clears the voxels a collision object's shape intersects or
-//!   touches, and `occupy_intersecting`, which marks the same voxels
-//!   occupied.
+//!   touches, `occupy_intersecting`, which marks the same voxels
+//!   occupied, the map seen from above as [`Columns`], with
+//!   `clear_columns`, which clears every voxel of a column, and the map
+//!   `recentered` over other bounds, keeping the voxels both hold.
 //! - [`depth_points`]: the points a z16 depth frame reads, from its stream's
 //!   pinhole model.
 //! - [`DistanceField`]: the distances of a map as it stands, and their
@@ -43,6 +48,6 @@ pub use distance::{DistanceField, DistanceGradient, NotANumber};
 pub use frame::{Frame, FrameError};
 pub use key::Key;
 pub use map::{
-    Bounds, Cutout, InsertError, MapError, RobotCutout, Scan, ShapeCutout, Voxel, VoxelBox,
-    VoxelMap,
+    Bounds, Columns, Cutout, InsertError, MapError, Reading, RobotCutout, Scan, ShapeCutout, Voxel,
+    VoxelBox, VoxelMap,
 };

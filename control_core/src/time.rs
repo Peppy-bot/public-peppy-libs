@@ -1,10 +1,17 @@
-//! Durations a loop can actually sleep for, and waits a cancel ends.
+//! Durations a loop can actually sleep for, waits a cancel ends, and times on
+//! a ROS clock.
 //!
 //! A configured rate or a seconds value is a number; a tick period is a
 //! `Duration` the loop waits on. These convert one into the other or refuse
 //! it. What the number is called, where it came from, and what a caller does
 //! with a refusal are the caller's concerns: each failure here describes only
 //! the value.
+//!
+//! A time on a ROS clock, and a duration between two of them, is integer
+//! nanoseconds, as ROS compares them: [`nanoseconds`] makes one from seconds
+//! as rclcpp's `Duration::from_seconds` makes it (rclcpp src/duration.cpp),
+//! [`seconds`] gives one in seconds as rclcpp's `Duration::seconds` does, and
+//! [`elapsed_ns`] gives the time between two times on a caller's clock.
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -77,6 +84,23 @@ pub fn duration_from_secs(secs: f64) -> Result<Duration, DurationError> {
         .ok_or(DurationError::Underflow(secs))
 }
 
+/// The nanoseconds from `from_ns` to `to_ns`, below 0 for a clock that went
+/// back, saturated at the ends of the range.
+pub fn elapsed_ns(from_ns: i64, to_ns: i64) -> i64 {
+    to_ns.saturating_sub(from_ns)
+}
+
+/// `seconds` in nanoseconds: the product with 1e9, truncated toward zero.
+pub fn nanoseconds(seconds: f64) -> i64 {
+    (seconds * NANOS_PER_SECOND as f64) as i64
+}
+
+/// `nanoseconds` in seconds: the quotient by 1e9, as rclcpp's
+/// `Duration::seconds` gives it.
+pub fn seconds(nanoseconds: i64) -> f64 {
+    nanoseconds as f64 / NANOS_PER_SECOND as f64
+}
+
 /// Waits out `duration` unless `cancelled` resolves first. Returns `true`
 /// when the whole duration passed and `false` on a cancel, so a loop that
 /// backs off after an error ends at once when its node stops.
@@ -122,6 +146,32 @@ mod tests {
 
     /// The sleep the cancellation tests wait on.
     const SLEEP: Duration = Duration::from_millis(100);
+
+    // The product truncates: 0.00052 s times 1e9 is 519999.99999999994 in
+    // double precision, so the duration is a nanosecond short.
+    #[test]
+    fn seconds_become_nanoseconds_truncated() {
+        assert_eq!(nanoseconds(0.5), 500_000_000);
+        assert_eq!(nanoseconds(0.00052), 519_999);
+        assert_eq!(nanoseconds(0.0), 0);
+    }
+
+    // The time between two times, below 0 for a clock that went back,
+    // saturates at the ends of the range.
+    #[test]
+    fn elapsed_time_goes_back_with_the_clock_and_saturates() {
+        assert_eq!(elapsed_ns(3, 5), 2);
+        assert_eq!(elapsed_ns(5, 3), -2);
+        assert_eq!(elapsed_ns(-1, i64::MAX), i64::MAX);
+        assert_eq!(elapsed_ns(1, i64::MIN), i64::MIN);
+    }
+
+    #[test]
+    fn nanoseconds_become_seconds() {
+        assert_eq!(seconds(500_000_000), 0.5);
+        assert_eq!(seconds(519_999), 0.000519999);
+        assert_eq!(seconds(0), 0.0);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_sleep_runs_its_whole_duration_when_nothing_cancels_it() {

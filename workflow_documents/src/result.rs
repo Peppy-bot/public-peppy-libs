@@ -285,8 +285,69 @@ pub struct IncidentRecord {
     pub anomaly: Option<Anomaly>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert: Option<AlertCause>,
+    /// The result of the call of the step, for a step that failed because
+    /// its `done_when` is false; none for each other failure. A reader that
+    /// gets no result knows no cause of the failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<IncidentResult>,
     pub affected_lanes: Vec<Name>,
     pub safe_state: Vec<SafeStateResult>,
+}
+
+/// The largest JSON text of the result of a call that an incident holds, in
+/// bytes ([`IncidentResult`]).
+pub const INCIDENT_RESULT_LIMIT_BYTES: usize = 8 * 1024;
+
+/// What an incident holds of the result of the call of its step: the result
+/// when its JSON text is [`INCIDENT_RESULT_LIMIT_BYTES`] or less, else the
+/// size of that text. The `call` line of the step in the journal of the run
+/// holds each result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IncidentResult {
+    /// The result of the call.
+    Value(serde_json::Value),
+    /// A result whose JSON text is larger than the limit.
+    TooLarge {
+        /// The size of the JSON text of the result, in bytes.
+        bytes: usize,
+    },
+}
+
+impl IncidentResult {
+    /// What an incident holds of `result`, the result of the call of its
+    /// step: a copy of the result, or its size when its compact JSON text is
+    /// larger than [`INCIDENT_RESULT_LIMIT_BYTES`]. The size is counted as
+    /// the text is written, with no text kept, and a result too large is
+    /// not copied.
+    pub fn of(result: &serde_json::Value) -> IncidentResult {
+        let bytes = compact_json_bytes(result);
+        match bytes <= INCIDENT_RESULT_LIMIT_BYTES {
+            true => IncidentResult::Value(result.clone()),
+            false => IncidentResult::TooLarge { bytes },
+        }
+    }
+}
+
+/// The size of the compact JSON text of `value`, in bytes.
+fn compact_json_bytes(value: &serde_json::Value) -> usize {
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, value).expect("a writer that keeps nothing never fails");
+    counter.0
+}
+
+/// A writer that counts the bytes written to it and keeps none of them.
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The result of a run: its ending and what it did, with no ground truth.
@@ -430,8 +491,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DifferenceKind, Ending, RefusalCause, RunRefusal, RunResult, RunState, SafeStateOutcome,
-        SafeStateResult,
+        DifferenceKind, Ending, INCIDENT_RESULT_LIMIT_BYTES, IncidentRecord, IncidentResult,
+        RefusalCause, RunRefusal, RunResult, RunState, SafeStateOutcome, SafeStateResult,
+        compact_json_bytes,
     };
 
     /// A run result reads and writes the fields its readers read, each
@@ -510,6 +572,69 @@ mod tests {
         ];
         assert!(ended.iter().all(|state| state.has_ended()));
         assert!(going.iter().all(|state| !state.has_ended()));
+    }
+
+    /// An incident writes the result of the call of its step under
+    /// `result`, and an incident with no result reads as one with no cause.
+    #[test]
+    fn an_incident_holds_the_result_of_its_call_and_one_with_none_reads_without_it() {
+        let text = json!({
+            "step": "alpha.grab_apple",
+            "lane": "alpha",
+            "failure_kind": "attempt_failed",
+            "message": "`done_when` of `grab_apple` is false",
+            "observations": {},
+            "result": { "value": { "success": false, "message": "start_in_collision: the start keeps a link 0.0176 m from the map" } },
+            "affected_lanes": ["alpha"],
+            "safe_state": [],
+        });
+        let incident: IncidentRecord = serde_json::from_value(text.clone()).unwrap();
+        assert_eq!(
+            incident.result,
+            Some(IncidentResult::Value(text["result"]["value"].clone()))
+        );
+        assert_eq!(serde_json::to_value(&incident).unwrap(), text);
+        let mut too_large = text.clone();
+        too_large["result"] = json!({ "too_large": { "bytes": 9000 } });
+        let incident: IncidentRecord = serde_json::from_value(too_large.clone()).unwrap();
+        assert_eq!(
+            incident.result,
+            Some(IncidentResult::TooLarge { bytes: 9000 })
+        );
+        assert_eq!(serde_json::to_value(&incident).unwrap(), too_large);
+        let mut no_result = text;
+        no_result.as_object_mut().unwrap().remove("result");
+        let incident: IncidentRecord = serde_json::from_value(no_result.clone()).unwrap();
+        assert_eq!(incident.result, None);
+        assert_eq!(serde_json::to_value(&incident).unwrap(), no_result);
+    }
+
+    /// The size of a result is the length of its compact JSON text, its
+    /// strings escaped as that text writes them.
+    #[test]
+    fn the_size_of_a_result_is_the_length_of_its_compact_json_text() {
+        let result =
+            json!({ "message": "a \"quoted\" line\nand é", "values": [1, 2.5, null, true] });
+        assert_eq!(compact_json_bytes(&result), result.to_string().len());
+    }
+
+    /// An incident holds a result whose JSON text is at the limit, and only
+    /// the size of a result one byte larger.
+    #[test]
+    fn an_incident_holds_a_result_up_to_the_limit_and_the_size_of_a_larger_one() {
+        // The JSON text of a string is the string and its two quotes.
+        let of_size = |bytes: usize| json!("x".repeat(bytes - 2));
+        let at_limit = of_size(INCIDENT_RESULT_LIMIT_BYTES);
+        assert_eq!(
+            IncidentResult::of(&at_limit),
+            IncidentResult::Value(at_limit)
+        );
+        assert_eq!(
+            IncidentResult::of(&of_size(INCIDENT_RESULT_LIMIT_BYTES + 1)),
+            IncidentResult::TooLarge {
+                bytes: INCIDENT_RESULT_LIMIT_BYTES + 1
+            }
+        );
     }
 
     #[test]

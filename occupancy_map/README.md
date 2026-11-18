@@ -8,7 +8,12 @@ nearest occupied voxel, with its gradient. No hardware or messaging dependencies
 
 - `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
   out, answers each voxel's state, its box and the occupied voxels inside a box,
-  `clear`s, and clears the voxels a collision object's shape intersects or touches.
+  `clear`s, clears the voxels a collision object's shape intersects or touches, gives
+  its voxels seen from above as `Columns` and clears every voxel of a column
+  (`clear_columns`), and gives the map `recentered` over other bounds, each voxel both
+  bounds hold keeping what it held. `Scan::readings` gives each point of a scan in the
+  map's frame as the map inserts it (`Reading`), and `insert_clearing` inserts a scan
+  with more points that clear and mark nothing.
 - `RobotCutout` is the robot's body to cut out: its chains placed and the body fixed
   around them, grown by `collision_geometry`, where the robot's URDF root stands in the
   map's frame; a `ShapeCutout` is a collision object's shape to cut out.
@@ -108,6 +113,19 @@ reads. It goes in by the rules of MoveIt's point cloud updater
 - In one scan each voxel takes one update: a cut-out voxel is free, else a hit voxel is
   a hit, else a crossed voxel is a miss.
 
+`Scan::readings` gives each point as the map reads it, in the map's frame: a
+`Reading::Return` where a point within `max_range_m` lies, and a `Reading::NoReturn` at
+`max_range_m` along the ray of a point beyond it. A navigator reads a frame's rays from
+it as the map does (`navigation_core`).
+
+`insert_clearing` inserts a scan with no shape cut out, together with more points in the
+scan's sensor frame that clear and mark nothing: each voxel the ray of such a point within
+`max_range_m` crosses up to the center of its voxel is a miss, as a hit's ray is, and its
+own voxel takes nothing from it; one beyond `max_range_m` clears to the range as any
+point beyond it does. Each voxel still takes one update: a hit voxel is a hit, else a
+crossed voxel is a miss. A navigator inserts the returns of a robot's own body so
+(`navigation_core`).
+
 A cut-out shape is any `Cutout`. A `RobotCutout` is the robot's body: a `PlacedMask`
 from `collision_geometry` for each of its chains, the chain's links at the frame's joint
 positions, and for the body fixed around them (`BodyGeometry`), each grown by a padding,
@@ -118,6 +136,16 @@ root's pose in the map's frame.
 A `ShapeCutout` is a collision object's shape (`collision_geometry::shapes`) placed in
 the map's frame and grown by a padding by the same rule: a point inside it is the sensor
 seeing the object.
+
+## Columns
+
+`columns` gives the map seen from above: a grid of square columns of the voxel's side, one
+column for each pair of x and y keys the map holds, the first with its corner at the
+lowest x and y the map holds, each from the map's bottom, the lowest z the map holds, to
+its top. `clear_columns` clears every voxel of each column it is given, from the
+map's bottom to its top: each takes one miss's log-odds, so it reads free and the next hit
+marks it occupied again. A navigator clears the columns under a mobile base's footprint
+with it (`navigation_core`).
 
 ## Collision objects
 
