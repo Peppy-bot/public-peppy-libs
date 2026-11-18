@@ -1,0 +1,22 @@
+[package]
+name = "mapping_core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Room maps from 2-D scans, as Nav2's pointcloud_to_laserscan projects depth points and slam_toolbox maps and localizes. No hardware or messaging deps."
+
+[workspace]
+
+[dependencies]
+camera_core = { path = "../camera_core" }
+control_core = { path = "../control_core" }
+faer = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+
+[dev-dependencies]
+hegeltest = { version = "0.51", features = ["static-engine"] }
+
+[profile.dev]
+opt-level = 1

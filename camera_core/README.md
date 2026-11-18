@@ -2,8 +2,8 @@
 
 What the camera nodes and the crates that read them share, free of peppy types:
 `occupancy_map` reads their depth frames, `workspace_core` sees a perception
-camera through their pinhole model, and `navigation_core` reads the scans of a 2-D lidar
-and the poses of a base. Each node maps these onto its own generated
+camera through their pinhole model, and `navigation_core` and `mapping_core` read the
+scans of a 2-D lidar and the poses of a base. Each node maps these onto its own generated
 contract members.
 
 | Module | What it holds |
