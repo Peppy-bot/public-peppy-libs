@@ -58,32 +58,36 @@ change of the reference, which `run.sh --check` proves.
 ros_reference/run.sh             # writes what the reference image gives
 ros_reference/run.sh --check     # fails when that differs from the committed files
 ros_reference/run.sh --datasets  # runs the local-only kinds too, in either mode
+ros_reference/run.sh --jobs 4    # runs at most 4 references at once, in either mode
 ```
 
 The script builds the reference image for the architecture of the host, and runs the
-reference program on each scenario in it. It runs the image by the id that its build
+reference program on each scenario in it, each scenario in a container of its own, at most
+`--jobs` of them at once, as many as the CPUs `nproc` counts without it, so a run takes
+about the time of its longest scenario. It prints the run time of each reference as it
+ends, and the output of a reference that fails. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. It names each container that it starts
 `ros_reference-<checkout>-<digest>-<step>`: the checkout's path, each character outside
 letters, digits, `_`, `.` and `-` written as `-` and its leading dashes dropped; the first
 12 hexadecimal digits of the SHA-256 of that path, which tell apart paths that the
-rewriting makes alike; and the step, `references` or `digests`. A run holds an flock on
-`target/run.lock` of the harness from start to end, through a descriptor that the
-processes it starts inherit, and refuses to start while another run holds it or a
-container of either name exists; the kernel releases the lock when the run and those
-processes end, however they end. When it starts, it takes the digest of each file of the
-checkout outside `.git` and the `target/` directories: `INPUTS.SHA256SUMS` holds those
-digests of the files that the outputs it writes depend on, and the run fails, naming the
-file, when one of them differs from its digest at the end. When it exits, on an error or
-on SIGTERM as well, it removes the containers that it started and its scratch directory.
-On a host without the base image, the build fetches about
-751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB; and 355 MB of
-packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the image takes
-about 3.7 GB of disk on amd64 and 2.6 GB on arm64.
-The reference outputs and their checks run on the developer's machine; the Tests
-workflow runs the parity tests on the committed outputs.
+rewriting makes alike; and the step, `reference-<scenario>`, the scenario's file name
+without `.json`, or `digests`. A run holds an flock on `target/run.lock` of the harness
+from start to end, through a descriptor that the processes it starts inherit, and refuses
+to start while another run holds it or a container of its names exists; the kernel
+releases the lock when the run and those processes end, however they end. When it starts,
+it takes the digest of each file of the checkout outside `.git` and the `target/`
+directories: `INPUTS.SHA256SUMS` holds those digests of the files that the outputs it
+writes depend on, and the run fails, naming the file, when one of them differs from its
+digest at the end. When it exits, on an error or on SIGTERM as well, it removes the
+containers that it started and its scratch directory. On a host without the base image,
+the build fetches about 751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB;
+and 355 MB of packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the
+image takes about 3.7 GB of disk on amd64 and 2.6 GB on arm64. The reference outputs and
+their checks run on the developer's machine; the Tests workflow runs the parity tests on
+the committed outputs.
 
-The host runs bash and a container engine as the `docker` command: Docker, rootful or
+The host runs bash 5.1 or later and a container engine as the `docker` command: Docker, rootful or
 rootless, with buildx (its default builder or one of the docker-container driver) or with
 its legacy builder; or Podman, rootful or rootless, which names itself in
 `docker --version`, as the podman-docker package installs it. The container writes its
