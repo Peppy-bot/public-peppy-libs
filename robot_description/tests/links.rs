@@ -1,5 +1,6 @@
 //! The links a description names on the bundled models: the root link, the joint each
-//! link hangs on, each camera's optical frame, and the arm that carries each link.
+//! link hangs on, each camera's optical frame, the botshare base's lidar on its scan frame,
+//! and the arm that carries each link.
 
 use std::collections::{HashMap, HashSet};
 
@@ -107,6 +108,31 @@ fn a_cameras_frame_is_the_link_its_fixed_joint_holds_on_its_parent_link() {
         }
     }
     assert_eq!(cameras, 4, "openarm_v2's three cameras and so101's one");
+}
+
+#[test]
+fn the_botshare_bases_lidar_is_its_scan_frame_on_lidar_link_with_the_s3s_range() {
+    let description = description("botshare_base");
+    let [lidar] = description.lidars() else {
+        panic!("one lidar: {:?}", description.lidars());
+    };
+    assert_eq!(
+        (lidar.name.as_str(), lidar.frame.as_str()),
+        ("lidar", "lidar_frame")
+    );
+    assert_eq!((lidar.range.min(), lidar.range.max()), (0.05, 40.0));
+    let joint = description
+        .robot()
+        .joints
+        .iter()
+        .find(|joint| joint.child.link == lidar.frame)
+        .expect("the scan frame hangs on a joint");
+    assert_eq!(joint.joint_type, JointType::Fixed);
+    assert_eq!(joint.parent.link, "lidar_link");
+    assert_eq!(
+        (joint.origin.xyz.0, joint.origin.rpy.0),
+        ([0.0; 3], [0.0; 3])
+    );
 }
 
 /// On a bundled model, whose arms hold no joint in common, the arm that carries a link is
