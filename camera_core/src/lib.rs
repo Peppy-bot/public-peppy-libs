@@ -1,7 +1,8 @@
 //! What the camera nodes and the crates that read them share, free of peppy
-//! types: occupancy_map reads their depth frames, and workspace_core sees a
-//! perception camera through their pinhole model. Each node maps these onto
-//! its own generated contract members.
+//! types: occupancy_map reads their depth frames, workspace_core sees a
+//! perception camera through their pinhole model, and navigation_core reads
+//! the scans of a 2-D lidar and the poses of a base. Each node maps these
+//! onto its own generated contract members.
 //!
 //! - [`controls`]: why a control write gave no value, by the failure kind of
 //!   peppy, the value a control answers when it has none, and the auto/manual
@@ -20,7 +21,10 @@
 //!   optical frame: the ray of a pixel, the pixel that shows a point, the
 //!   point of a depth reading and the reading of a point.
 //! - [`pose`]: where one frame sits in another, as camera_geometry:v1 carries
-//!   the depth-to-color transform, applied, composed and inverted as tf2 does.
+//!   the depth-to-color transform, applied, composed and inverted as tf2 does,
+//!   interpolated between two poses, and where a frame sits on the floor plane.
+//! - [`laser_scan`]: the scans of a 2-D lidar as lidar_2d:v1 carries them,
+//!   each ray's hit placed where the sensor stood at the ray's time.
 //! - [`relay`]: the pieces of a simulated camera's relay: the camera a relay
 //!   is in its copy, the timestamp check of a relayed frame, why a forwarded
 //!   call has no answer, and the bounds and messages of the relay.
@@ -28,6 +32,7 @@
 pub mod controls;
 pub mod encoding;
 pub mod geometry;
+pub mod laser_scan;
 pub mod pinhole;
 pub mod pose;
 pub mod relay;

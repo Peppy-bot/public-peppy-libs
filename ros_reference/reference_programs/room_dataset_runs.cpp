@@ -1,7 +1,8 @@
 // The runs of a room dataset scenario, each in a process of its own: every node's
-// callbacks are called on this program's thread, no executor spins and no node
-// activates, the odometry enters each node's tf buffer at each scan's stamp, and each
-// node's clock reads each scan's stamp.
+// callbacks are called on this program's thread, no executor spins but each tf listener's
+// own, which spins the listener's subscriptions on a thread of its own, no node activates,
+// the odometry enters each node's tf buffer at each scan's stamp, and each node's clock
+// reads each scan's stamp.
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -9,7 +10,6 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -22,7 +22,6 @@
 #include <nav2_amcl/amcl_node.hpp>
 #include <nav2_map_server/map_io.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
-#include <rcl/time.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rcutils/logging.h>
 #include <slam_toolbox/slam_toolbox_localization.hpp>
@@ -34,6 +33,8 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "amcl_map_cspace.hpp"
+#include "nav2_node.hpp"
+#include "private_member.hpp"
 #include "room_dataset.hpp"
 #include "room_dataset_files.hpp"
 #include "scenario.hpp"
@@ -71,16 +72,6 @@ void use_one_solver_thread(karto::ScanSolver* solver) {
                              "slam_toolbox 2.10.0");
   }
   options.num_threads = 1;
-}
-
-// Sets the clock of a node, and so of its tf buffer, to `stamp_ns`.
-void set_time(const rclcpp::Clock::SharedPtr& clock, std::int64_t stamp_ns) {
-  std::lock_guard<std::mutex> lock(clock->get_clock_mutex());
-  rcl_clock_t* handle = clock->get_clock_handle();
-  if (rcl_enable_ros_time_override(handle) != RCL_RET_OK ||
-      rcl_set_ros_time_override(handle, stamp_ns) != RCL_RET_OK) {
-    throw std::runtime_error("a node's clock does not take the scan's stamp");
-  }
 }
 
 // The base's pose in the odometry frame at `stamp_ns`.
@@ -138,6 +129,16 @@ class SlamToolboxReference : public Toolbox {
  public:
   using Toolbox::Toolbox;
 
+  // on_configure makes a tf listener that spins an executor on a thread of its own
+  // (slam_toolbox 2.10.0 slam_toolbox_common.cpp:134), which ~SlamToolbox destroys
+  // (:305), canceling that executor and joining the thread (tf2_ros 0.45.10
+  // transform_listener.cpp:67-72): the reference waits until the executor spins.
+  ~SlamToolboxReference() override {
+    if (this->tfL_) {
+      wait_until_spinning(*this->tfL_);
+    }
+  }
+
   // Sets up what on_activate sets up and the runs read: the scan's interfaces, and the
   // identity as the transform from a continued session's odometry, which every scan's
   // odometry passes through; and the solver on one thread.
@@ -157,7 +158,7 @@ class MappingReference : public SlamToolboxReference<slam_toolbox::SynchronousSl
   // The scan that `scan` added to the map, or none.
   karto::LocalizedRangeScan* add(std::int64_t stamp_ns, const PlanarPose& odometry,
                                  const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
-    set_time(get_clock(), stamp_ns);
+    set_ros_time(get_clock(), stamp_ns);
     tf_->setTransform(odometry_transform(stamp_ns, odometry), tf_authority, false);
     laserCallback(scan);
     karto::LocalizedRangeScan* added = nullptr;
@@ -236,7 +237,7 @@ class LocalizationReference
   // The pose of `scan` in the map, when slam_toolbox added it.
   std::optional<PlanarPose> localize(std::int64_t stamp_ns, const PlanarPose& odometry,
                                      const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
-    set_time(get_clock(), stamp_ns);
+    set_ros_time(get_clock(), stamp_ns);
     tf_->setTransform(odometry_transform(stamp_ns, odometry), tf_authority, false);
     added_.reset();
     laserCallback(scan);
@@ -263,6 +264,16 @@ class LocalizationReference
 class GlobalLocalizationReference : public nav2_amcl::AmclNode {
  public:
   using AmclNode::AmclNode;
+
+  // initTransforms makes a tf listener that spins an executor on a thread of its own
+  // (nav2_amcl 1.5.2 amcl_node.cpp:1382), which dies with the node, canceling that
+  // executor and joining the thread (tf2_ros 0.45.10 transform_listener.cpp:67-72): the
+  // reference waits until the executor spins.
+  ~GlobalLocalizationReference() override {
+    if (tf_listener_) {
+      wait_until_spinning(*tf_listener_);
+    }
+  }
 
   void prepare() {
     callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
@@ -314,7 +325,7 @@ class GlobalLocalizationReference : public nav2_amcl::AmclNode {
   // published its first pose (:546-556, :590).
   std::optional<Estimate> receive(std::int64_t stamp_ns, const PlanarPose& odometry,
                                   const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
-    set_time(get_clock(), stamp_ns);
+    set_ros_time(get_clock(), stamp_ns);
     tf_buffer_->setTransform(odometry_transform(stamp_ns, odometry), tf_authority, false);
     laserReceived(scan);
     if (last_published_pose_.header.stamp != scan->header.stamp) {
