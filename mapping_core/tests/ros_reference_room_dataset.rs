@@ -1,20 +1,24 @@
-//! Parity with slam_toolbox 2.10.0 on the room dataset scenarios of the lidar drive, on
-//! the scans and the seeded odometries that the reference prepared, which both sides
-//! read. slam_toolbox reads each heading of the odometry through tf2's buffer, whose
-//! rounding this crate does not reproduce to the last bit, and a match whose candidates lie
-//! on the edges of cells can take the neighboring cell from a difference in the last bit, so
-//! each comparison is of the statistics of the ten seeds, scored by `ros_reference::metrics`
-//! as the committed statistics are: the mean of ours lies at most twice the standard error
-//! of the reference's ten values above their mean. On each side, a run of a seed localizes
-//! in the map that the same seed made, so the seeds sample the maps too. Each test prints
-//! every seed's values and their difference.
+//! Parity with slam_toolbox 2.10.0 and Nav2 1.5.2's AMCL on the room dataset scenarios of
+//! the lidar drive, on the scans and the seeded odometries that the reference prepared,
+//! which both sides read. slam_toolbox reads each heading of the odometry through tf2's
+//! buffer, whose rounding this crate does not reproduce to the last bit, and a match whose
+//! candidates lie on the edges of cells can take the neighboring cell from a difference in
+//! the last bit, so each comparison is of the statistics of the ten seeds, scored by
+//! `ros_reference::metrics` as the committed statistics are: the mean of ours lies at most
+//! twice the standard error of the reference's ten values above their mean. On each side, a
+//! run of a seed localizes in the map that the same seed made, so the seeds sample the maps
+//! too. Each test prints every seed's values and their difference.
 //!
 //! The tests that compare with a reference on the same scans take every ray at its scan's
 //! stamp, as the references take it: the trajectory error of mapping, the error of
-//! localization in each seed's map of the mapping scenario, and on the drive spliced
-//! from two places of the map the error and the position deviation of the localization
-//! after the splice. The other test takes each ray at the time the drive cast it, as the
-//! library runs on a base: the first seed's map, saved and loaded, closes its loop.
+//! localization in each seed's map of the mapping scenario, on the drive spliced from
+//! two places of the map the error and the position deviation of the localization after the
+//! splice, and, from the first scan of each localization scenario, the search's
+//! convergence, its time to converge and its final error. The other tests take each ray at
+//! the time the drive cast it, as the library runs on a base: the first seed's map, saved
+//! and loaded, closes its loop; and a search started at the first scan of each localization
+//! scenario, and one started at the splice, localize the base, their final errors within
+//! the largest of AMCL's ten runs.
 //!
 //! The scenarios of the room dataset kind run on a developer's machine alone, through
 //! `ros_reference/run.sh --datasets`, which names the results directory of the references
@@ -23,23 +27,27 @@
 use camera_core::laser_scan::{LaserScan, Sweep};
 use camera_core::pose::PlanarPose;
 use mapping_core::{
-    Localization, LocalizationParameters, Mapping, MappingParameters, PlacedScan, RoomMap,
+    GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
+    LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan, RoomMap, SearchStep,
 };
 use ros_reference::metrics::PlanarPose as HarnessPose;
 use ros_reference::metrics::{self, Mean, PlanarMotion};
 use ros_reference::results_directory;
 use ros_reference::room_dataset::{
-    LidarDrive, LocalizationSeed, MappingSeed, Prepared, PreparedScan, ScanPose, Scenario, Source,
-    Statistics, Task, TaskStatistics, localization_errors, map_from_truth, read_odometry,
-    read_prepared, reference_map_from_truth, reference_mapping_poses,
-    reference_spliced_localization, scenarios, trajectory_errors_of,
+    GlobalLocalizationSeed, LidarDrive, LocalizationSeed, MappingSeed, Prepared, PreparedScan,
+    ScanPose, Scenario, Source, Statistics, Task, TaskStatistics, localization_errors,
+    map_from_truth, read_odometry, read_prepared, reference_map_from_truth,
+    reference_mapping_poses, reference_spliced_localization, scenarios, trajectory_errors_of,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
 
 mod common;
 use common::properties::{compose, relative};
-use common::{localization_parameters, matching_limits, placed, scratch_directory};
+use common::{
+    amcl_parameters, localization_parameters, matching_limits, placed, scratch_directory,
+};
+use control_core::positive_finite::PositiveFinite;
 
 /// The parameters of slam_toolbox's node that name its ROS interfaces, its solver plugin
 /// and its logging, each with the value that the port follows, or none for any value.
@@ -284,12 +292,14 @@ fn statistics_of(name: &str) -> TaskStatistics {
 #[derive(Debug, Clone, Copy)]
 enum Reference {
     SlamToolbox,
+    Amcl,
 }
 
 impl Reference {
     fn name(self) -> &'static str {
         match self {
             Reference::SlamToolbox => "slam_toolbox",
+            Reference::Amcl => "AMCL",
         }
     }
 }
@@ -755,6 +765,334 @@ fn localization_is_no_worse_than_slam_toolboxs() {
             statistic,
             compare(Reference::SlamToolbox, &scenario.name, statistic, &rows),
         ));
+    }
+    assert_all_hold(&held, "localizes");
+}
+
+/// A limit of a scenario as the search takes it.
+fn limits_of(limits: metrics::LocalizationLimits) -> LocalizationLimits {
+    let limit = |value: f64| PositiveFinite::parse(value).expect("a positive limit");
+    LocalizationLimits {
+        position_std_m: limit(limits.position_std_m),
+        yaw_std_rad: limit(limits.yaw_std_rad),
+    }
+}
+
+/// A localization scenario of the drive, whose first scan a search starts at, with what the
+/// search on it reads: our map of each seed of its map scenario, by the seed, its rays
+/// standing as the maps' do, the scenario's search parameters and AMCL's committed
+/// statistics, every one of whose ten runs localized by the search limits.
+struct Searched<'a> {
+    scenario: &'a Scenario,
+    maps: BTreeMap<i64, (RoomMap, PlanarMotion)>,
+    prepared: Prepared,
+    rays: RayTimes,
+    parameters: GlobalLocalizationParameters,
+    localized_within: metrics::LocalizedWithin,
+    amcl: Vec<GlobalLocalizationSeed>,
+}
+
+/// The localization scenarios of the drive, each searched with its rays standing as
+/// `rays_of` gives for it.
+fn searched_starts<'a>(
+    results: &Path,
+    all: &'a [Scenario],
+    rays_of: fn(&Scenario) -> RayTimes,
+) -> Vec<Searched<'a>> {
+    let maps = our_maps(results, all, rays_of);
+    all.iter()
+        .filter_map(|scenario| {
+            let (
+                Task::Localization {
+                    map_scenario,
+                    amcl,
+                    localized_within,
+                    search_limits,
+                },
+                Some(_),
+            ) = (&scenario.task, drive_of(scenario))
+            else {
+                return None;
+            };
+            let maps_of_seeds = scenario
+                .seeds
+                .iter()
+                .map(|&seed| (seed, map_named(&maps, map_scenario, seed).clone()))
+                .collect();
+            let TaskStatistics::Localization(statistics) = statistics_of(&scenario.name) else {
+                panic!("{} localizes", scenario.name);
+            };
+            assert!(
+                statistics
+                    .amcl
+                    .iter()
+                    .all(|seed| seed.localized_by_limits_after_s.is_some()),
+                "{}: AMCL localizes the base from its first scan in each of its runs",
+                scenario.name
+            );
+            Some(Searched {
+                scenario,
+                maps: maps_of_seeds,
+                prepared: read_prepared(results, &scenario.name),
+                rays: rays_of(scenario),
+                parameters: GlobalLocalizationParameters {
+                    amcl: amcl_parameters(&scenario.name, amcl),
+                    search_limits: limits_of(*search_limits),
+                    localization: localization_parameters_of(scenario),
+                },
+                localized_within: *localized_within,
+                amcl: statistics.amcl,
+            })
+        })
+        .collect()
+}
+
+impl Searched<'_> {
+    /// Our map that a run of `seed` searches, and the motion that carries the ground truth
+    /// into it.
+    fn map_of(&self, seed: i64) -> &(RoomMap, PlanarMotion) {
+        self.maps
+            .get(&seed)
+            .unwrap_or_else(|| panic!("{}: no map of seed {seed}", self.scenario.name))
+    }
+}
+
+/// A search started at the scan `start`, then the localization it ends in: the answer to
+/// each scan, by its index, and the index of the scan at which the search ended.
+struct SearchRun {
+    answers: Vec<(usize, MapPose)>,
+    found_at: Option<usize>,
+}
+
+fn search_run(
+    searched: &Searched,
+    prepared: &Prepared,
+    odometry: &[HarnessPose],
+    start: usize,
+    seed: i64,
+) -> SearchRun {
+    let name = &searched.scenario.name;
+    let (map, _) = searched.map_of(seed);
+    let draw_seed = u32::try_from(seed).expect("a seed of the drive fits the search's seed");
+    let mut search = Some(
+        GlobalLocalization::start(map, searched.parameters, draw_seed)
+            .unwrap_or_else(|e| panic!("{name}: {e}")),
+    );
+    let mut localization: Option<Localization> = None;
+    let mut found_at = None;
+    let mut answers = Vec::new();
+    let scans = placed_scans(prepared, odometry, searched.rays);
+    for (index, scan) in scans.iter().enumerate().skip(start) {
+        if let Some(kept) = localization.as_mut() {
+            if let Some(pose) = kept
+                .add(scan)
+                .unwrap_or_else(|e| panic!("{name} scan {index}: {e}"))
+            {
+                answers.push((index, pose));
+            }
+            continue;
+        }
+        match search.take().expect("a search").add(scan) {
+            SearchStep::Searching(going_on, pose) => {
+                search = Some(going_on);
+                answers.extend(pose.map(|pose| (index, pose)));
+            }
+            SearchStep::Found(kept, pose) => {
+                localization = Some(kept);
+                found_at = Some(index);
+                answers.push((index, pose));
+            }
+        }
+    }
+    SearchRun { answers, found_at }
+}
+
+impl SearchRun {
+    /// The position (m) and heading (rad) errors of the last answer against `truths`.
+    fn final_errors(&self, truths: &[PlanarPose]) -> (f64, f64) {
+        let (index, pose) = self.answers.last().expect("an answer");
+        metrics::pose_error(harness(pose.pose), harness(truths[*index]))
+    }
+
+    /// The index of the scan of the first answer from which every answer is localized and
+    /// lies within `within` of `truths`, by `metrics`' rule of a run localized for good; none
+    /// when the last answer does not.
+    fn localized_from(
+        &self,
+        truths: &[PlanarPose],
+        within: metrics::LocalizedWithin,
+    ) -> Option<usize> {
+        let localized: Vec<bool> = self
+            .answers
+            .iter()
+            .map(|(_, pose)| pose.localized)
+            .collect();
+        let near: Vec<bool> = self
+            .answers
+            .iter()
+            .map(|(index, pose)| within.holds(harness(pose.pose), harness(truths[*index])))
+            .collect();
+        metrics::localized_for_good_from(&localized, &near).map(|first| self.answers[first].0)
+    }
+}
+
+/// The largest final position and heading errors of AMCL's ten runs.
+fn amcl_largest_final_errors(searched: &Searched) -> (f64, f64) {
+    searched
+        .amcl
+        .iter()
+        .fold((0.0, 0.0), |(position, yaw), seed| {
+            (
+                f64::max(position, seed.final_position_error_m),
+                f64::max(yaw, seed.final_yaw_error_rad),
+            )
+        })
+}
+
+/// Whether the search `run` localizes the base for good against `truths`, its final errors
+/// within AMCL's largest from the same scan, printing what it found.
+fn localizes_within_amcls_errors(
+    searched: &Searched,
+    run: &SearchRun,
+    truths: &[PlanarPose],
+    from: &str,
+) -> bool {
+    let name = &searched.scenario.name;
+    let localized = run.localized_from(truths, searched.localized_within);
+    let (position, yaw) = run.final_errors(truths);
+    let (largest_position, largest_yaw) = amcl_largest_final_errors(searched);
+    println!(
+        "{name}: the search from {from} ended at scan {:?}, localized from scan \
+         {localized:?}, final errors {position:.3} m and {yaw:.3} rad against AMCL's largest \
+         {largest_position:.3} m and {largest_yaw:.3} rad",
+        run.found_at
+    );
+    localized.is_some() && position <= largest_position && yaw <= largest_yaw
+}
+
+// On the map of the drive, a search started at the first scan of each localization
+// scenario, from which AMCL localizes the base in each of its ten runs, localizes the base
+// for good by the scenario's limits before the drive ends, its final errors within the
+// largest of AMCL's ten runs.
+#[test]
+#[ignore = "reads the local datasets: run.sh --datasets runs it"]
+fn from_each_start_a_search_localizes_the_base_within_amcls_largest_errors() {
+    let results = results_directory();
+    let all = scenarios();
+    let searched = searched_starts(&results, &all, RayTimes::as_cast);
+    assert!(
+        !searched.is_empty(),
+        "a room dataset scenario localizes on the drive"
+    );
+    let missed: Vec<&String> = searched
+        .iter()
+        .filter(|start| {
+            let seed = start.scenario.seeds[0];
+            let odometry = read_odometry(&results, &start.scenario.name, seed);
+            let run = search_run(start, &start.prepared, &odometry, 0, seed);
+            let truths = truths_of(&start.prepared.scans, start.map_of(seed).1);
+            !localizes_within_amcls_errors(start, &run, &truths, "its first scan")
+        })
+        .map(|start| &start.scenario.name)
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "the search does not localize the base on {missed:?}"
+    );
+}
+
+// On the drive's whole second lap, the longest localization scenario, spliced from two
+// places of its map, a search started at the splice localizes the base at the new place
+// before the drive ends, its final errors within the largest of AMCL's ten runs.
+#[test]
+#[ignore = "reads the local datasets: run.sh --datasets runs it"]
+fn a_search_started_at_the_splice_localizes_the_base_at_the_new_place() {
+    let results = results_directory();
+    let all = scenarios();
+    let searched = searched_starts(&results, &all, RayTimes::as_cast);
+    assert!(
+        !searched.is_empty(),
+        "a room dataset scenario localizes on the drive"
+    );
+    let lap = searched
+        .iter()
+        .max_by_key(|start| start.prepared.scans.len())
+        .expect("a localization scenario of the drive");
+    let seed = lap.scenario.seeds[0];
+    let Spliced {
+        prepared,
+        odometry,
+        splice,
+        ..
+    } = spliced(
+        &lap.prepared,
+        &read_odometry(&results, &lap.scenario.name, seed),
+    );
+    let run = search_run(lap, &prepared, &odometry, splice, seed);
+    let truths = truths_of(&prepared.scans, lap.map_of(seed).1);
+    assert!(
+        localizes_within_amcls_errors(lap, &run, &truths, &format!("the splice, scan {splice}")),
+        "{}: the search from the splice does not localize the base at the new place",
+        lap.scenario.name
+    );
+}
+
+// From the first scan of each localization scenario of the drive, over the ten seeds, a run
+// counting as converged on either side when it localizes the base for good by the scenario's
+// limits: every run of the search converges, as every run of AMCL does, and its mean time to
+// converge and its mean final error are no higher than AMCL's mean plus twice the standard
+// error of its ten values; every seed's difference is printed.
+#[test]
+#[ignore = "reads the local datasets: run.sh --datasets runs it"]
+fn from_each_start_the_search_converges_as_amcl_does() {
+    let results = results_directory();
+    let all = scenarios();
+    let searched = searched_starts(&results, &all, |_| RayTimes::AtTheStamp);
+    let mut held = Vec::new();
+    for start in &searched {
+        let name = &start.scenario.name;
+        let scans = &start.prepared.scans;
+        let mut times = Vec::new();
+        let mut errors = Vec::new();
+        let mut failed = Vec::new();
+        for (&seed, amcl) in start.scenario.seeds.iter().zip(&start.amcl) {
+            assert_eq!(
+                amcl.seed, seed,
+                "{name}: AMCL's statistics pair with the seeds"
+            );
+            let odometry = read_odometry(&results, name, seed);
+            let run = search_run(start, &start.prepared, &odometry, 0, seed);
+            let truths = truths_of(scans, start.map_of(seed).1);
+            let Some(localized) = run.localized_from(&truths, start.localized_within) else {
+                failed.push(seed);
+                continue;
+            };
+            let time_s = (scans[localized].stamp_ns - scans[0].stamp_ns) as f64 * 1e-9;
+            let amcl_time_s = amcl
+                .localized_by_limits_after_s
+                .expect("AMCL localized in each run");
+            times.push((seed, time_s, amcl_time_s));
+            errors.push((
+                seed,
+                run.final_errors(&truths).0,
+                amcl.final_position_error_m,
+            ));
+        }
+        held.push((name.clone(), "every run converges", failed.is_empty()));
+        if !failed.is_empty() {
+            println!("{name}: the search does not converge with the seeds {failed:?}");
+            continue;
+        }
+        for (statistic, rows) in [
+            ("time to converge (s)", &times),
+            ("final position error (m)", &errors),
+        ] {
+            held.push((
+                name.clone(),
+                statistic,
+                compare(Reference::Amcl, name, statistic, rows),
+            ));
+        }
     }
     assert_all_hold(&held, "localizes");
 }

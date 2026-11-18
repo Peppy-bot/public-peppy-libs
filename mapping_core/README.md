@@ -133,14 +133,21 @@ let localization = loop {
 harness and compares every scan with the one pointcloud_to_laserscan wrote, bit for bit on
 amd64. `tests/ros_reference_map_export.rs` exports the grids of the harness and compares
 each image and description with those Nav2's map saver wrote, byte for byte.
+`tests/ros_reference_amcl_global_localization.rs` searches the maps of the drawn rooms of
+the harness, whose grids are karto's of the same scans cell for cell, and compares each
+answer with the `amcl_pose` that Nav2's AMCL published after the same scan, within the
+bound the test states.
 `tests/ros_reference_room_dataset.rs` maps and localizes on the harness's lidar drive, on
 the scans and the seeded odometries that the room dataset references prepared. With every
 ray at its scan's stamp, as the references take it, it compares over ten seeds the
 trajectory error of mapping and the error of localization with slam_toolbox's, and on the
 drive spliced from two places of its map the error and the position deviation after the
-splice. With each ray at the time the drive cast it, it checks that the first seed's map
-closes its loop. It reads the results of the local-only references, so
-`ros_reference/run.sh --datasets` runs it.
+splice; and from the first scan of each localization scenario, the search's convergence,
+time to converge and final error with AMCL's global localization. With each ray at the time
+the drive cast it, it checks that the first seed's map closes its loop, and that searches
+started at those first scans and at the splice end within the final errors of AMCL's ten
+runs. It reads the results of the local-only references, so `ros_reference/run.sh
+--datasets` runs it.
 
 ## License
 

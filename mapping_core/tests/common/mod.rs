@@ -12,9 +12,11 @@ use camera_core::laser_scan::{LaserScan, Sweep};
 use camera_core::pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
-    LocalizationLimits, LocalizationParameters, Mapping, MappingParameters, PlacedScan, RoomMap,
+    AmclParameters, LocalizationLimits, LocalizationParameters, Mapping, MappingParameters,
+    PlacedScan, RoomMap,
 };
 use properties::Room;
+use ros_reference::room_dataset::RosParameters;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -114,4 +116,103 @@ pub fn placed(stamp_ns: i64, odometry: PlanarPose, scan: &LaserScan) -> PlacedSc
         last_ray: odometry,
     };
     PlacedScan::new(stamp_ns, scan, &still, odometry).expect("a still laser's scan")
+}
+
+/// AMCL's parameters of the node that the search does not read: its beam model's and its beam
+/// skipping's, which the likelihood field model leaves unread, its transform tolerance, and
+/// its recovery rates, which the search holds at 0.
+pub const AMCL_UNREAD: [&str; 11] = [
+    "beam_skip_distance",
+    "beam_skip_error_threshold",
+    "beam_skip_threshold",
+    "do_beamskip",
+    "lambda_short",
+    "laser_model_type",
+    "recovery_alpha_fast",
+    "recovery_alpha_slow",
+    "transform_tolerance",
+    "z_max",
+    "z_short",
+];
+
+/// AMCL's parameters `amcl` of the scenario `name`, as the search takes them; panics on a parameter
+/// that the search neither reads nor lists in [`AMCL_UNREAD`], and on a model or a
+/// recovery rate that the search does not run.
+pub fn amcl_parameters(name: &str, amcl: &RosParameters) -> AmclParameters {
+    let number = |key: &str| {
+        amcl.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_else(|| panic!("{name}: AMCL's {key} is a number"))
+    };
+    let count = |key: &str| {
+        amcl.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_else(|| panic!("{name}: AMCL's {key} is a count"))
+    };
+    assert_eq!(
+        amcl.get("laser_model_type"),
+        Some(&serde_json::json!("likelihood_field")),
+        "{name}: AMCL weighs by the likelihood field model"
+    );
+    assert_eq!(
+        amcl.get("do_beamskip"),
+        Some(&serde_json::json!(false)),
+        "{name}: AMCL skips no beam"
+    );
+    for recovery in ["recovery_alpha_fast", "recovery_alpha_slow"] {
+        assert_eq!(number(recovery), 0.0, "{name}: AMCL's {recovery} is 0");
+    }
+    let parameters = AmclParameters {
+        alpha1: number("alpha1"),
+        alpha2: number("alpha2"),
+        alpha3: number("alpha3"),
+        alpha4: number("alpha4"),
+        alpha5: number("alpha5"),
+        laser_likelihood_max_dist: number("laser_likelihood_max_dist"),
+        laser_max_range: number("laser_max_range"),
+        laser_min_range: number("laser_min_range"),
+        max_beams: count("max_beams"),
+        max_particles: count("max_particles"),
+        min_particles: count("min_particles"),
+        pf_err: number("pf_err"),
+        pf_z: number("pf_z"),
+        resample_interval: count("resample_interval"),
+        robot_model_type: serde_json::from_value(amcl["robot_model_type"].clone())
+            .unwrap_or_else(|e| panic!("{name}: AMCL's robot_model_type: {e}")),
+        sigma_hit: number("sigma_hit"),
+        update_min_a: number("update_min_a"),
+        update_min_d: number("update_min_d"),
+        z_hit: number("z_hit"),
+        z_rand: number("z_rand"),
+    };
+    const READ: [&str; 20] = [
+        "alpha1",
+        "alpha2",
+        "alpha3",
+        "alpha4",
+        "alpha5",
+        "laser_likelihood_max_dist",
+        "laser_max_range",
+        "laser_min_range",
+        "max_beams",
+        "max_particles",
+        "min_particles",
+        "pf_err",
+        "pf_z",
+        "resample_interval",
+        "robot_model_type",
+        "sigma_hit",
+        "update_min_a",
+        "update_min_d",
+        "z_hit",
+        "z_rand",
+    ];
+    for key in amcl.keys() {
+        assert!(
+            READ.contains(&key.as_str()) || AMCL_UNREAD.contains(&key.as_str()),
+            "{name}: the search reads AMCL's {key}"
+        );
+    }
+    parameters
 }

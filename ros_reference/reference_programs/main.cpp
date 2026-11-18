@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "amcl_global_localization.hpp"
 #include "arm_planning.hpp"
 #include "cartesian_paths.hpp"
 #include "chain_collision.hpp"
@@ -45,6 +46,7 @@ namespace {
 using Reference = nlohmann::json (*)(const nlohmann::json&, ros_reference::Inputs&);
 
 const std::map<std::string, Reference> references = {
+    {"amcl_global_localization", ros_reference::amcl_global_localization},
     {"arm_planning", ros_reference::arm_planning},
     {"cartesian_paths", ros_reference::cartesian_paths},
     {"chain_collision", ros_reference::chain_collision},

@@ -74,6 +74,7 @@ find_path(POINTCLOUD_TO_LASERSCAN_INCLUDE_DIR pointcloud_to_laserscan/pointcloud
 
 add_executable(ros_reference
   reference_programs/main.cpp
+  reference_programs/amcl_global_localization.cpp
   reference_programs/amcl_map_cspace.cpp
   reference_programs/amcl_node.cpp
   reference_programs/scenario.cpp
