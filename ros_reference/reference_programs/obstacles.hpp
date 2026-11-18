@@ -14,6 +14,8 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/buffer.hpp>
 
+#include "point_cloud.hpp"
+
 namespace ros_reference {
 
 // The frame of the grid, the layered costmap's global frame.
@@ -34,10 +36,6 @@ class ObstacleLayerOfOneSource : public nav2_costmap_2d::ObstacleLayer {
 // The pose of the sensor frame in the grid's frame, from a scenario's sensor, its position
 // and its orientation as a unit quaternion [x, y, z, w], as a static transform.
 geometry_msgs::msg::TransformStamped sensor_transform(const nlohmann::json& sensor);
-
-// The points of a scenario's cloud, in the sensor's frame, as a PointCloud2 of float x, y
-// and z.
-sensor_msgs::msg::PointCloud2::SharedPtr cloud_of(const nlohmann::json& points);
 
 // The points of `cloud` transformed into the grid's frame by tf2, as the observation
 // buffer transforms them, each coordinate in single precision.

@@ -465,7 +465,30 @@ def _layout(value, indent):
     return "[\n" + ",\n".join(members) + "\n" + indent + "]"
 
 
+def point_to_segment(p, a, b):
+    """The distance (m) from the point p to the segment ab."""
+    ax, ay = b[0] - a[0], b[1] - a[1]
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * ax + (p[1] - a[1]) * ay) / (ax * ax + ay * ay)))
+    return math.dist(p, (a[0] + t * ax, a[1] + t * ay))
+
+
+def segment_distance(a, b, c, d):
+    """The distance (m) between the segments ab and cd: 0 when they cross."""
+
+    def side(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    if side(a, b, c) * side(a, b, d) < 0.0 and side(c, d, a) * side(c, d, b) < 0.0:
+        return 0.0
+    return min(point_to_segment(a, c, d), point_to_segment(b, c, d), point_to_segment(c, a, b), point_to_segment(d, a, b))
+
+
 def write(name, scenario):
-    path = SCENARIOS / f"{name}.json"
-    path.write_text(_layout(scenario, "") + "\n")
+    write_input(SCENARIOS / f"{name}.json", scenario)
+
+
+def write_input(path, value):
+    """Writes `value` to `path`, a scenario or a file that scenarios name, laid out as a
+    scenario is."""
+    path.write_text(_layout(value, "") + "\n")
     print(f"wrote {path.relative_to(REPOSITORY)}")

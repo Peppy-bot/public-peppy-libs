@@ -1,12 +1,14 @@
-// Reading the inputs of a reference and writing its output: what every reference of the
-// harness shares.
+// Reading the inputs of a reference, setting a scenario's parameters on a ROS node, and
+// writing its output: what every reference of the harness shares.
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <rclcpp/parameter.hpp>
 
 namespace ros_reference {
 
@@ -73,5 +75,13 @@ void check_shortest_decimals();
 // the host's user, whom the image may give no home directory. ROS messages still go to
 // the console.
 void start_ros();
+
+// The value of a scenario's parameter of a ROS node, of the type that its JSON value has:
+// a bool, an integer, a double or a string; none for another JSON value.
+std::optional<rclcpp::ParameterValue> scalar_value_of(const nlohmann::json& value);
+
+// A scenario's parameter of a ROS node, of the type that its JSON value has: a bool, an
+// integer, a double or a string.
+rclcpp::Parameter parameter_of(const std::string& name, const nlohmann::json& value);
 
 }  // namespace ros_reference

@@ -92,6 +92,21 @@ if let Some(map_pose) = localization.add(&next_scan)? {
 }
 ```
 
+## Parity
+
+`tests/ros_reference_laser_projection.rs` projects the clouds of the ROS reference
+harness and compares every scan with the one pointcloud_to_laserscan wrote, bit for bit on
+amd64. `tests/ros_reference_map_export.rs` exports the grids of the harness and compares
+each image and description with those Nav2's map saver wrote, byte for byte.
+`tests/ros_reference_room_dataset.rs` maps and localizes on the harness's lidar drive, on
+the scans and the seeded odometries that the room dataset references prepared. With every
+ray at its scan's stamp, as the references take it, it compares over ten seeds the
+trajectory error of mapping and the error of localization with slam_toolbox's, and on the
+drive spliced from two places of its map the error and the position deviation after the
+splice. With each ray at the time the drive cast it, it checks that the first seed's map
+closes its loop. It reads the results of the local-only references, so
+`ros_reference/run.sh --datasets` runs it.
+
 ## License
 
 mapping_core is licensed under the GNU General Public License, version 3 or any later version,

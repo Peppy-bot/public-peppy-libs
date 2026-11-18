@@ -1,0 +1,38 @@
+{
+  "datasets_read": [],
+  "inputs": ["ros_reference/drives/l_room.json","ros_reference/reference_programs/amcl_map_cspace.cpp","ros_reference/reference_programs/amcl_map_cspace.hpp","ros_reference/reference_programs/amcl_node.cpp","ros_reference/reference_programs/amcl_node.hpp","ros_reference/reference_programs/laser_projection.cpp","ros_reference/reference_programs/laser_projection.hpp","ros_reference/reference_programs/nav2_node.cpp","ros_reference/reference_programs/nav2_node.hpp","ros_reference/reference_programs/point_cloud.cpp","ros_reference/reference_programs/point_cloud.hpp","ros_reference/reference_programs/room_dataset.cpp","ros_reference/reference_programs/room_dataset.hpp","ros_reference/reference_programs/room_dataset_files.cpp","ros_reference/reference_programs/room_dataset_files.hpp","ros_reference/reference_programs/room_dataset_runs.cpp","ros_reference/scenarios/room_dataset_l_room.json","ros_reference/scenarios/room_dataset_l_room_lap2_at_00.json","ros_reference/src/bin/statistics.rs","ros_reference/src/metrics.rs","ros_reference/src/room_dataset.rs"],
+  "kind": "room_dataset",
+  "runs": ["localization","global_localization","spliced_localization"],
+  "scans": 1086,
+  "source": {
+    "lidar_drive": {}
+  },
+  "task": {
+    "localization": {
+      "amcl": [
+        {"converged_estimates":0,"estimates":139,"final_position_error_m":0.08517896938088894,"final_yaw_error_rad":0.0046366824950272445,"least_position_std_m":0.17918073767135806,"least_yaw_std_rad":0.1943095602359947,"localized_after_s":null,"localized_by_limits_after_s":21.5,"seed":0,"within_limits_estimates":109},
+        {"converged_estimates":0,"estimates":136,"final_position_error_m":0.0900336812970044,"final_yaw_error_rad":0.008163027409664458,"least_position_std_m":0.1620991956206216,"least_yaw_std_rad":0.17410244152275683,"localized_after_s":null,"localized_by_limits_after_s":24.6,"seed":1,"within_limits_estimates":103},
+        {"converged_estimates":0,"estimates":138,"final_position_error_m":0.0992301625064405,"final_yaw_error_rad":0.040782718086469494,"least_position_std_m":0.1606254259371459,"least_yaw_std_rad":0.17315404381381844,"localized_after_s":null,"localized_by_limits_after_s":21,"seed":2,"within_limits_estimates":109},
+        {"converged_estimates":0,"estimates":139,"final_position_error_m":0.09603042446969363,"final_yaw_error_rad":0.00047173332204275553,"least_position_std_m":0.1556273803151392,"least_yaw_std_rad":0.19162900835366184,"localized_after_s":null,"localized_by_limits_after_s":25.700000000000003,"seed":3,"within_limits_estimates":104},
+        {"converged_estimates":0,"estimates":139,"final_position_error_m":0.1014913224484085,"final_yaw_error_rad":0.05565692402500133,"least_position_std_m":0.16406951193914657,"least_yaw_std_rad":0.1870450207689015,"localized_after_s":null,"localized_by_limits_after_s":21.900000000000002,"seed":4,"within_limits_estimates":108},
+        {"converged_estimates":0,"estimates":142,"final_position_error_m":0.08887561330885334,"final_yaw_error_rad":0.023112002008570887,"least_position_std_m":0.15490667242845144,"least_yaw_std_rad":0.16651751558606082,"localized_after_s":null,"localized_by_limits_after_s":27,"seed":5,"within_limits_estimates":105},
+        {"converged_estimates":0,"estimates":140,"final_position_error_m":0.0943775024764275,"final_yaw_error_rad":0.003093593408289852,"least_position_std_m":0.15532191712984963,"least_yaw_std_rad":0.17027105214610844,"localized_after_s":null,"localized_by_limits_after_s":19.1,"seed":6,"within_limits_estimates":119},
+        {"converged_estimates":0,"estimates":139,"final_position_error_m":0.08313862888721356,"final_yaw_error_rad":0.012418287755850965,"least_position_std_m":0.16092123173273096,"least_yaw_std_rad":0.16956478620331772,"localized_after_s":null,"localized_by_limits_after_s":11.3,"seed":7,"within_limits_estimates":120},
+        {"converged_estimates":1,"estimates":140,"final_position_error_m":0.07847394921915467,"final_yaw_error_rad":0.007483424435301256,"least_position_std_m":0.15287111609867365,"least_yaw_std_rad":0.1808420235138139,"localized_after_s":null,"localized_by_limits_after_s":13.8,"seed":8,"within_limits_estimates":118},
+        {"converged_estimates":0,"estimates":138,"final_position_error_m":0.04141330461933436,"final_yaw_error_rad":0.038951487927163964,"least_position_std_m":0.1642032019198308,"least_yaw_std_rad":0.1754798303871501,"localized_after_s":null,"localized_by_limits_after_s":22,"seed":9,"within_limits_estimates":107}
+      ],
+      "slam_toolbox": [
+        {"localization_max_m":0.017956349066721236,"localization_rmse_m":0.011774298707835635,"localization_yaw_rmse_rad":0.006428402654101007,"localized_scans":30,"seed":0},
+        {"localization_max_m":0.02198301209064484,"localization_rmse_m":0.014673089627740162,"localization_yaw_rmse_rad":0.00663538987813491,"localized_scans":30,"seed":1},
+        {"localization_max_m":0.02215075512111688,"localization_rmse_m":0.01245758054318339,"localization_yaw_rmse_rad":0.006983255706326869,"localized_scans":29,"seed":2},
+        {"localization_max_m":0.021671129362654796,"localization_rmse_m":0.013037267071325053,"localization_yaw_rmse_rad":0.006698452267879464,"localized_scans":29,"seed":3},
+        {"localization_max_m":0.017924221875134323,"localization_rmse_m":0.012327489875445683,"localization_yaw_rmse_rad":0.007224469461704764,"localized_scans":29,"seed":4},
+        {"localization_max_m":0.021394653399971934,"localization_rmse_m":0.01357347843495938,"localization_yaw_rmse_rad":0.006507179601662845,"localized_scans":29,"seed":5},
+        {"localization_max_m":0.02288703722331891,"localization_rmse_m":0.013337186357089446,"localization_yaw_rmse_rad":0.0068422644284386385,"localized_scans":30,"seed":6},
+        {"localization_max_m":0.02258809503752812,"localization_rmse_m":0.01347669435641273,"localization_yaw_rmse_rad":0.006707229292323921,"localized_scans":29,"seed":7},
+        {"localization_max_m":0.01794129452594244,"localization_rmse_m":0.012423836414503493,"localization_yaw_rmse_rad":0.006478460104259775,"localized_scans":29,"seed":8},
+        {"localization_max_m":0.02036865623716447,"localization_rmse_m":0.011425636959401912,"localization_yaw_rmse_rad":0.007336973701665368,"localized_scans":29,"seed":9}
+      ]
+    }
+  }
+}

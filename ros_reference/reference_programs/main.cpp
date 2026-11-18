@@ -24,6 +24,8 @@
 #include "forward_kinematics.hpp"
 #include "global_costmap.hpp"
 #include "inflation.hpp"
+#include "laser_projection.hpp"
+#include "map_export.hpp"
 #include "obstacle_projection.hpp"
 #include "occupancy.hpp"
 #include "orientation_constraints.hpp"
@@ -52,6 +54,8 @@ const std::map<std::string, Reference> references = {
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"global_costmap", ros_reference::global_costmap},
     {"inflation", ros_reference::inflation},
+    {"laser_projection", ros_reference::laser_projection},
+    {"map_export", ros_reference::map_export},
     {"obstacle_projection", ros_reference::obstacle_projection},
     {"occupancy", ros_reference::occupancy},
     {"orientation_constraints", ros_reference::orientation_constraints},

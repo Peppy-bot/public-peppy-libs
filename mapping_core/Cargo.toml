@@ -17,6 +17,7 @@ thiserror = "2"
 
 [dev-dependencies]
 hegeltest = { version = "0.51", features = ["static-engine"] }
+ros_reference = { path = "../ros_reference" }
 
 [profile.dev]
 opt-level = 1

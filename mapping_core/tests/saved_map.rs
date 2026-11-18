@@ -1,6 +1,8 @@
 //! A saved map loads as the pose graph, the grid and the summary that it saved; a
 //! directory whose files disagree with its pose graph is refused, by the file and the
 //! field; and a resolution that makes no grid is refused, by the file and the field.
+//! `ros_reference_map_export.rs` checks the image and the description against Nav2's map
+//! saver.
 
 use hegel::TestCase;
 use mapping_core::{LoadError, RoomMap};

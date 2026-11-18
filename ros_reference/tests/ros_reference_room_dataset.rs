@@ -11,7 +11,8 @@
 use ros_reference::metrics::{self, LocalizationLimits, LocalizedWithin, Mean};
 use ros_reference::room_dataset::{
     Camera, GlobalLocalizationSeed, LocalizationSeed, LocalizationStatistics, MappingSeed,
-    Scenario, Statistics, Task, TaskStatistics, scenarios,
+    Scenario, Source, SourceRead, Statistics, Task, TaskStatistics, TumRgbd, TumRgbdRead,
+    scenarios,
 };
 use std::fmt::Write as _;
 
@@ -200,32 +201,31 @@ fn field_of_view_degrees(camera: &Camera) -> f64 {
     2.0 * (camera.cx + 0.5).atan2(camera.fx).to_degrees()
 }
 
-/// What every room dataset scenario shares, which the report states once.
-fn setup_paragraph(scenarios: &[Scenario]) -> String {
-    let first = scenarios
+/// What every scenario of a TUM sequence shares, which the report states once.
+fn setup_paragraph(sequences: &[Sequence]) -> String {
+    let Sequence {
+        scenario: first_scenario,
+        tum: first,
+        ..
+    } = sequences
         .first()
-        .expect("scenarios/ holds a room dataset scenario");
-    for scenario in scenarios {
+        .expect("scenarios/ holds a room dataset scenario of a TUM sequence");
+    for Sequence { scenario, tum, .. } in sequences {
         assert!(
-            scenario.seeds == first.seeds
-                && scenario.scan_period_s == first.scan_period_s
-                && scenario.max_ground_truth_gap_s == first.max_ground_truth_gap_s
-                && scenario.camera == first.camera
-                && scenario.laser_scan == first.laser_scan
-                && scenario.odometry_noise == first.odometry_noise,
+            scenario.seeds == first_scenario.seeds
+                && tum.scan_period_s == first.scan_period_s
+                && tum.max_ground_truth_gap_s == first.max_ground_truth_gap_s
+                && tum.camera == first.camera
+                && tum.laser_scan == first.laser_scan
+                && scenario.odometry_noise == first_scenario.odometry_noise,
             "{} keeps, projects and drives as {} does, as the report states once",
             scenario.name,
-            first.name
+            first_scenario.name
         );
     }
-    let number = |name: &str| {
-        first.laser_scan[name]
-            .as_f64()
-            .unwrap_or_else(|| panic!("the scan parameter {name} is a number"))
-    };
     let camera = &first.camera;
     let field_of_view = field_of_view_degrees(camera);
-    let noise = &first.odometry_noise;
+    let noise = &first_scenario.odometry_noise;
     format!(
         "Every sequence runs {} seeds. It keeps the first depth frame at or after each {} s, \
          drops a frame whose ground truth has a gap over {} s, and projects each depth pixel \
@@ -234,7 +234,7 @@ fn setup_paragraph(scenarios: &[Scenario]) -> String {
          points {} m to {} m above the floor, {} m to {} m away, in {} rad steps from {} \
          rad. The odometry noise of each motion between two kept frames is the noise of AMCL's \
          differential motion model with alpha1 {}, alpha2 {}, alpha3 {} and alpha4 {}.\n",
-        first.seeds.len(),
+        first_scenario.seeds.len(),
         first.scan_period_s,
         first.max_ground_truth_gap_s,
         camera.fx,
@@ -242,12 +242,12 @@ fn setup_paragraph(scenarios: &[Scenario]) -> String {
         camera.cx,
         camera.cy,
         camera.depth_counts_per_meter,
-        number("min_height"),
-        number("max_height"),
-        number("range_min"),
-        number("range_max"),
-        number("angle_increment"),
-        number("angle_min"),
+        first.laser_scan.min_height,
+        first.laser_scan.max_height,
+        first.laser_scan.range_min,
+        first.laser_scan.range_max,
+        first.laser_scan.angle_increment,
+        first.laser_scan.angle_min,
         noise.alpha1,
         noise.alpha2,
         noise.alpha3,
@@ -258,18 +258,25 @@ fn setup_paragraph(scenarios: &[Scenario]) -> String {
 /// The section "The numbers" of the report, rendered from the scenarios and their
 /// statistics.
 fn numbers_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
-    let mut out = format!("{NUMBERS_HEADING}\n{}", setup_paragraph(scenarios));
-    for (scenario, statistics) in paired(scenarios, all) {
-        let mount = &statistics.mount;
+    let sequences = sequences(scenarios, all);
+    let mut out = format!("{NUMBERS_HEADING}\n{}", setup_paragraph(&sequences));
+    for Sequence {
+        scenario,
+        statistics,
+        read,
+        ..
+    } in &sequences
+    {
+        let mount = &read.mount;
         writeln!(
             out,
             "\n### {}\n\n{} depth frames, {} scans kept, {} dropped in gaps of the ground \
              truth. Fitted mount: camera {} m above the floor, pitched {} deg down, rolled \
              {} deg.\n",
-            statistics.sequence,
-            statistics.depth_frames,
+            read.sequence,
+            read.depth_frames,
             statistics.scans,
-            statistics.dropped_scans.len(),
+            read.dropped_scans.len(),
             meters(mount.height),
             degrees(mount.pitch),
             degrees(mount.roll)
@@ -286,7 +293,8 @@ fn numbers_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
                 };
                 writeln!(
                     out,
-                    "slam_toolbox localization in the map of {map_scenario}'s first seed:\n"
+                    "slam_toolbox localization, each seed in the map of {map_scenario} that the \
+                     same seed made:\n"
                 )
                 .unwrap();
                 localization_table(&mut out, &localization.slam_toolbox);
@@ -316,9 +324,36 @@ fn paired<'a>(
     })
 }
 
-/// A localization scenario's statistics, the bound within which an estimate of AMCL counts
-/// as localized, the search limits, and the scenario of the map it localizes in.
+/// A scenario of a TUM sequence with its statistics, and what the reference read of the
+/// sequence.
+struct Sequence<'a> {
+    scenario: &'a Scenario,
+    tum: &'a TumRgbd,
+    statistics: &'a Statistics,
+    read: &'a TumRgbdRead,
+}
+
+/// The scenarios of TUM sequences, each with its statistics, in the order of their names.
+fn sequences<'a>(scenarios: &'a [Scenario], all: &'a [Statistics]) -> Vec<Sequence<'a>> {
+    paired(scenarios, all)
+        .filter_map(
+            |(scenario, statistics)| match (&scenario.source, &statistics.source) {
+                (Source::TumRgbd(tum), SourceRead::TumRgbd(read)) => Some(Sequence {
+                    scenario,
+                    tum,
+                    statistics,
+                    read,
+                }),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// A localization scenario's sequence and statistics, the bound within which an estimate of
+/// AMCL counts as localized, the search limits, and the scenario of the map it localizes in.
 struct Localization<'a> {
+    sequence: &'a str,
     statistics: &'a Statistics,
     results: &'a LocalizationStatistics,
     within: LocalizedWithin,
@@ -326,11 +361,17 @@ struct Localization<'a> {
     map_scenario: &'a str,
 }
 
-/// The localization scenarios, in the order of their names.
+/// The localization scenarios of TUM sequences, in the order of their names.
 fn localizations<'a>(scenarios: &'a [Scenario], all: &'a [Statistics]) -> Vec<Localization<'a>> {
-    paired(scenarios, all)
+    sequences(scenarios, all)
+        .into_iter()
         .filter_map(
-            |(scenario, statistics)| match (&scenario.task, &statistics.task) {
+            |Sequence {
+                 scenario,
+                 statistics,
+                 read,
+                 ..
+             }| match (&scenario.task, &statistics.task) {
                 (
                     Task::Localization {
                         map_scenario,
@@ -340,6 +381,7 @@ fn localizations<'a>(scenarios: &'a [Scenario], all: &'a [Statistics]) -> Vec<Lo
                     },
                     TaskStatistics::Localization(results),
                 ) => Some(Localization {
+                    sequence: &read.sequence,
                     statistics,
                     results,
                     within: *localized_within,
@@ -378,17 +420,17 @@ fn bound_text(within: LocalizedWithin) -> String {
     )
 }
 
-/// The sentence of slam_toolbox's localization of `sequence` in the map of `map_scenario`'s
-/// first seed over `seeds`: the mean errors over the seeds that localized a scan, or that
-/// none did.
+/// The sentence of slam_toolbox's localization of `sequence` over `seeds`, each seed in the
+/// map of `map_scenario` that the same seed made: the mean errors over the seeds that
+/// localized a scan, or that none did.
 fn slam_toolbox_localization_sentence(
     sequence: &str,
     map_scenario: &str,
     seeds: &[LocalizationSeed],
 ) -> String {
     let localizes = format!(
-        "On {sequence}, slam_toolbox localizes in the map of {map_scenario}'s first seed, from \
-         the ground truth carried into that map,"
+        "On {sequence}, slam_toolbox localizes, each seed in the map of {map_scenario} that the \
+         same seed made, from the ground truth carried into that map,"
     );
     let errors = present_values(seeds, |s| s.localization_rmse_m);
     if errors.is_empty() {
@@ -467,16 +509,21 @@ fn localized_by(
 /// The section "What the numbers say" of the report, rendered from the scenarios and the
 /// statistics: what each sequence gives under each measure.
 fn summary_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
-    let camera = &scenarios
+    let sequences = sequences(scenarios, all);
+    let camera = &sequences
         .first()
-        .expect("scenarios/ holds a room dataset scenario")
+        .expect("scenarios/ holds a room dataset scenario of a TUM sequence")
+        .tum
         .camera;
     let mut out = format!(
         "{SUMMARY_HEADING}\nThe depth camera's scans hold the bearings within {:.1} deg \
          ahead of the base, where a 2-D lidar sees 360 deg.\n\n",
         field_of_view_degrees(camera)
     );
-    for (_, statistics) in paired(scenarios, all) {
+    for Sequence {
+        statistics, read, ..
+    } in &sequences
+    {
         let TaskStatistics::Mapping(seeds) = &statistics.task else {
             continue;
         };
@@ -484,7 +531,7 @@ fn summary_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
             out,
             "On {}, slam_toolbox maps with a trajectory error of {} m and a heading error of \
              {} deg RMS, mean ± standard error over its {} seeds.\n",
-            statistics.sequence,
+            read.sequence,
             mean_of(&values(seeds, |s| s.trajectory_rmse_m), meters),
             mean_of(&values(seeds, |s| s.trajectory_yaw_rmse_rad), degrees),
             seeds.len()
@@ -493,7 +540,7 @@ fn summary_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
     }
     let localizations = localizations(scenarios, all);
     for Localization {
-        statistics,
+        sequence,
         results,
         map_scenario,
         ..
@@ -502,16 +549,12 @@ fn summary_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
         writeln!(
             out,
             "{}\n",
-            slam_toolbox_localization_sentence(
-                &statistics.sequence,
-                map_scenario,
-                &results.slam_toolbox
-            )
+            slam_toolbox_localization_sentence(sequence, map_scenario, &results.slam_toolbox)
         )
         .unwrap();
     }
     for Localization {
-        statistics,
+        sequence,
         results,
         within,
         limits,
@@ -531,7 +574,7 @@ fn summary_section(scenarios: &[Scenario], all: &[Statistics]) -> String {
              m and {} deg, at {} of {messages}. The least position deviation of a seed is {} \
              m, and its least heading deviation {} deg. The last amcl_pose of a seed lies at \
              most {} from the truth.\n",
-            statistics.sequence,
+            sequence,
             bound_text(*within),
             localized_by("by its convergence test", &every, |s| s.localized_after_s),
             localized_by("by the search limits", &every, |s| s
@@ -731,8 +774,8 @@ fn the_localization_sentence_counts_the_seeds_that_localized_a_scan() {
         localization_seed(2, Some(2.0)),
     ];
     let none = [localization_seed(0, None), localization_seed(1, None)];
-    let opening = "On s, slam_toolbox localizes in the map of m's first seed, from the ground \
-                   truth carried into that map,";
+    let opening = "On s, slam_toolbox localizes, each seed in the map of m that the same seed \
+                   made, from the ground truth carried into that map,";
     assert_eq!(
         slam_toolbox_localization_sentence("s", "m", &every),
         format!(

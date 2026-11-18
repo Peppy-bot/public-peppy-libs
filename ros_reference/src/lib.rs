@@ -32,6 +32,8 @@ pub mod diff_drive_odometry;
 pub mod forward_kinematics;
 pub mod global_costmap;
 pub mod inflation;
+pub mod laser_projection;
+pub mod map_export;
 pub mod metrics;
 pub mod obstacle_projection;
 pub mod occupancy;
@@ -79,6 +81,8 @@ enum Kind {
     ForwardKinematics,
     GlobalCostmap,
     Inflation,
+    LaserProjection,
+    MapExport,
     ObstacleProjection,
     Occupancy,
     OrientationConstraints,
@@ -134,6 +138,24 @@ impl Outputs {
             Outputs::Named(directory) => directory,
         }
     }
+}
+
+/// The environment variable that names the results directory of the local-only
+/// references, which `run.sh --datasets` sets for the parity tests of the local-only kinds.
+const RESULTS_VARIABLE: &str = "ROS_REFERENCE_RESULTS";
+
+/// The results directory of the local-only references, which `ROS_REFERENCE_RESULTS`
+/// names: the inputs that they prepared and the runs that they ran, under each scenario's
+/// name. Panics when it names none: `run.sh --datasets` runs the tests that read it.
+pub fn results_directory() -> PathBuf {
+    std::env::var_os(RESULTS_VARIABLE)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "{RESULTS_VARIABLE} names no results directory; ros_reference/run.sh --datasets \
+             runs the references and then this test with it"
+            )
+        })
 }
 
 /// The directory of the reference outputs that the parity tests read.

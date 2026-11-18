@@ -75,6 +75,7 @@ find_path(POINTCLOUD_TO_LASERSCAN_INCLUDE_DIR pointcloud_to_laserscan/pointcloud
 add_executable(ros_reference
   reference_programs/main.cpp
   reference_programs/amcl_map_cspace.cpp
+  reference_programs/amcl_node.cpp
   reference_programs/scenario.cpp
   reference_programs/robot.cpp
   reference_programs/forward_kinematics.cpp
@@ -89,6 +90,9 @@ add_executable(ros_reference
   reference_programs/cartesian_paths.cpp
   reference_programs/chomp_refinement.cpp
   reference_programs/planning_scene.cpp
+  reference_programs/point_cloud.cpp
+  reference_programs/laser_projection.cpp
+  reference_programs/map_export.cpp
   reference_programs/room_dataset.cpp
   reference_programs/room_dataset_files.cpp
   reference_programs/room_dataset_runs.cpp

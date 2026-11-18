@@ -17,7 +17,8 @@ The ROS reference harness fetches the sequences by address and SHA-256
 (`ros_reference/datasets.txt`) into a cache on the developer's machine, and the scenarios
 `ros_reference/scenarios/room_dataset_*.json` hold every parameter. pioneer_slam and
 pioneer_360 map the room; pioneer_slam2 and pioneer_slam3, which share pioneer_slam's
-motion capture frame, localize in the map of pioneer_slam's first seed.
+motion capture frame, localize in pioneer_slam's maps, each seed in the map that the same
+seed made.
 
 Each scenario keeps a depth frame each scan period, puts every depth pixel through the
 pinhole model with the ROS default intrinsics that TUM recommends, places the points in the
@@ -34,11 +35,11 @@ slam_toolbox 2.10.0 maps in its synchronous mode with the parameters of its
 `mapper_params_online_sync.yaml`, but for the departures that a section below lists, and
 the trajectory error is the error of the optimized pose of each scan it added, after the
 rigid motion that best aligns the ground truth with them. slam_toolbox then localizes each
-localization sequence in the saved map of pioneer_slam's first seed with the parameters of
-its `mapper_params_localization.yaml`, starting from the sequence's first ground truth pose
-carried into the map by that alignment. Nav2 1.5.2's AMCL, with the parameters of Nav2's
-`nav2_params.yaml`, localizes globally in the same map, exported as nav2_map_server writes
-it, from particles spread over the map's free cells.
+seed of each localization sequence in the saved map of the same seed of pioneer_slam with
+the parameters of its `mapper_params_localization.yaml`, starting from the sequence's first
+ground truth pose carried into the map by that alignment. Nav2 1.5.2's AMCL, with the
+parameters of Nav2's `nav2_params.yaml`, localizes globally in the same map, exported as
+nav2_map_server writes it, from particles spread over the map's free cells.
 
 The statistics take each pose that AMCL publishes on `amcl_pose`, with the covariance of
 its whole filter that the message carries. AMCL publishes after each scan at which its
@@ -69,13 +70,13 @@ On pioneer_360, slam_toolbox maps with a trajectory error of 0.957 ± 0.048 m an
 
 On pioneer_slam, slam_toolbox maps with a trajectory error of 0.663 ± 0.087 m and a heading error of 16.2 ± 0.8 deg RMS, mean ± standard error over its 10 seeds.
 
-On pioneer_slam2, slam_toolbox localizes in the map of room_dataset_pioneer_slam's first seed, from the ground truth carried into that map, with an error of 5.026 ± 0.251 m and 104.1 ± 7.1 deg RMS of heading, mean ± standard error over its 10 seeds.
+On pioneer_slam2, slam_toolbox localizes, each seed in the map of room_dataset_pioneer_slam that the same seed made, from the ground truth carried into that map, with an error of 4.429 ± 0.631 m and 99.4 ± 18.6 deg RMS of heading, mean ± standard error over its 10 seeds.
 
-On pioneer_slam3, slam_toolbox localizes in the map of room_dataset_pioneer_slam's first seed, from the ground truth carried into that map, with an error of 1.871 ± 0.278 m and 29.5 ± 1.1 deg RMS of heading, mean ± standard error over its 10 seeds.
+On pioneer_slam3, slam_toolbox localizes, each seed in the map of room_dataset_pioneer_slam that the same seed made, from the ground truth carried into that map, with an error of 2.248 ± 0.516 m and 29.2 ± 7.6 deg RMS of heading, mean ± standard error over its 10 seeds.
 
-On pioneer_slam2, AMCL localizes, within 0.5 m and 20.1 deg of the truth from some amcl_pose to the end, by its convergence test in 0 of 10 seeds, and by the search limits in 0 of 10 seeds. Its convergence test holds at 0 of 1195 amcl_pose messages, and the deviations of its whole filter lie within the search limits, 0.3 m and 17.2 deg, at 0 of 1195. The least position deviation of a seed is 0.303 to 0.345 m, and its least heading deviation 14.3 to 16.6 deg. The last amcl_pose of a seed lies at most 0.806 m and 22.0 deg from the truth.
+On pioneer_slam2, AMCL localizes, within 0.5 m and 20.1 deg of the truth from some amcl_pose to the end, by its convergence test in 0 of 10 seeds, and by the search limits in 0 of 10 seeds. Its convergence test holds at 0 of 1195 amcl_pose messages, and the deviations of its whole filter lie within the search limits, 0.3 m and 17.2 deg, at 2 of 1195. The least position deviation of a seed is 0.238 to 0.796 m, and its least heading deviation 14.3 to 22.9 deg. The last amcl_pose of a seed lies at most 1.039 m and 29.7 deg from the truth.
 
-On pioneer_slam3, AMCL localizes, within 0.5 m and 20.1 deg of the truth from some amcl_pose to the end, by its convergence test in 0 of 10 seeds, and by the search limits in 0 of 10 seeds. Its convergence test holds at 0 of 1069 amcl_pose messages, and the deviations of its whole filter lie within the search limits, 0.3 m and 17.2 deg, at 0 of 1069. The least position deviation of a seed is 0.326 to 0.421 m, and its least heading deviation 14.7 to 17.1 deg. The last amcl_pose of a seed lies at most 0.789 m and 15.1 deg from the truth.
+On pioneer_slam3, AMCL localizes, within 0.5 m and 20.1 deg of the truth from some amcl_pose to the end, by its convergence test in 0 of 10 seeds, and by the search limits in 0 of 10 seeds. Its convergence test holds at 0 of 1069 amcl_pose messages, and the deviations of its whole filter lie within the search limits, 0.3 m and 17.2 deg, at 2 of 1069. The least position deviation of a seed is 0.279 to 0.602 m, and its least heading deviation 12.7 to 23.8 deg. The last amcl_pose of a seed lies at most 1.452 m and 16.9 deg from the truth.
 
 The error bound for ROBOTCTRL-62 and ROBOTCTRL-65, the largest final error of the seeds that AMCL localized on the localization sequences: by its convergence test, none: it localized 0 of 20 seeds; by the search limits, none: it localized 0 of 20 seeds.
 
@@ -210,68 +211,68 @@ slam_toolbox mapping:
 
 2075 depth frames, 537 scans kept, 7 dropped in gaps of the ground truth. Fitted mount: camera 0.559 m above the floor, pitched 5.4 deg down, rolled 0.5 deg.
 
-slam_toolbox localization in the map of room_dataset_pioneer_slam's first seed:
+slam_toolbox localization, each seed in the map of room_dataset_pioneer_slam that the same seed made:
 
 | Seed | Scans localized | RMSE (m) | Largest error (m) | Heading RMSE (deg) |
 |---|---|---|---|---|
 | 0 | 29 | 5.846 | 9.141 | 118.1 |
-| 1 | 28 | 4.814 | 7.451 | 142.5 |
-| 2 | 27 | 5.869 | 9.325 | 132.3 |
-| 3 | 28 | 4.831 | 7.442 | 87.1 |
-| 4 | 27 | 4.283 | 6.657 | 84.4 |
-| 5 | 28 | 5.062 | 7.781 | 100.0 |
-| 6 | 29 | 3.804 | 6.314 | 79.1 |
-| 7 | 28 | 4.137 | 6.991 | 80.9 |
-| 8 | 29 | 6.074 | 9.009 | 98.9 |
-| 9 | 28 | 5.534 | 8.715 | 117.8 |
-| Mean ± standard error | 28.1 ± 0.2 | 5.026 ± 0.251 | 7.883 ± 0.346 | 104.1 ± 7.1 |
+| 1 | 28 | 4.420 | 7.229 | 142.8 |
+| 2 | 27 | 3.567 | 5.395 | 29.4 |
+| 3 | 28 | 7.833 | 11.542 | 162.4 |
+| 4 | 27 | 3.555 | 5.588 | 55.6 |
+| 5 | 28 | 6.039 | 8.719 | 159.1 |
+| 6 | 29 | 1.356 | 2.273 | 22.0 |
+| 7 | 28 | 1.669 | 2.877 | 30.1 |
+| 8 | 29 | 4.541 | 7.085 | 156.7 |
+| 9 | 28 | 5.460 | 8.611 | 118.0 |
+| Mean ± standard error | 28.1 ± 0.2 | 4.429 ± 0.631 | 6.846 ± 0.910 | 99.4 ± 18.6 |
 
 AMCL global localization in that map:
 
 | Seed | amcl_pose messages | Convergence test held | Within the search limits | Least position deviation (m) | Least heading deviation (deg) | Localized by the test after (s) | Localized by the limits after (s) | Final position error (m) | Final heading error (deg) |
 |---|---|---|---|---|---|---|---|---|---|
 | 0 | 119 | 0 | 0 | 0.323 | 14.3 | never | never | 0.806 | 22.0 |
-| 1 | 120 | 0 | 0 | 0.345 | 16.2 | never | never | 0.636 | 16.9 |
-| 2 | 120 | 0 | 0 | 0.317 | 15.6 | never | never | 0.672 | 14.6 |
-| 3 | 118 | 0 | 0 | 0.316 | 16.6 | never | never | 0.700 | 19.7 |
-| 4 | 121 | 0 | 0 | 0.308 | 15.7 | never | never | 0.519 | 11.5 |
-| 5 | 120 | 0 | 0 | 0.314 | 14.7 | never | never | 0.633 | 16.3 |
-| 6 | 117 | 0 | 0 | 0.344 | 14.8 | never | never | 0.538 | 14.2 |
-| 7 | 120 | 0 | 0 | 0.344 | 16.0 | never | never | 0.787 | 20.4 |
-| 8 | 121 | 0 | 0 | 0.303 | 14.4 | never | never | 0.577 | 15.3 |
-| 9 | 119 | 0 | 0 | 0.341 | 15.1 | never | never | 0.543 | 14.1 |
+| 1 | 120 | 0 | 0 | 0.298 | 14.7 | never | never | 0.597 | 11.6 |
+| 2 | 120 | 0 | 0 | 0.305 | 21.3 | never | never | 0.811 | 5.2 |
+| 3 | 118 | 0 | 0 | 0.350 | 16.5 | never | never | 0.645 | 13.3 |
+| 4 | 121 | 0 | 0 | 0.304 | 14.7 | never | never | 0.612 | 3.9 |
+| 5 | 120 | 0 | 0 | 0.320 | 15.4 | never | never | 0.752 | 16.4 |
+| 6 | 117 | 0 | 0 | 0.796 | 22.9 | never | never | 0.928 | 19.3 |
+| 7 | 120 | 0 | 0 | 0.630 | 20.1 | never | never | 0.578 | 29.7 |
+| 8 | 121 | 0 | 2 | 0.238 | 15.6 | never | never | 1.039 | 25.3 |
+| 9 | 119 | 0 | 0 | 0.346 | 17.0 | never | never | 1.026 | 20.1 |
 
 ### pioneer_slam3
 
 2531 depth frames, 517 scans kept, 16 dropped in gaps of the ground truth. Fitted mount: camera 0.559 m above the floor, pitched 5.3 deg down, rolled 0.7 deg.
 
-slam_toolbox localization in the map of room_dataset_pioneer_slam's first seed:
+slam_toolbox localization, each seed in the map of room_dataset_pioneer_slam that the same seed made:
 
 | Seed | Scans localized | RMSE (m) | Largest error (m) | Heading RMSE (deg) |
 |---|---|---|---|---|
 | 0 | 28 | 1.376 | 2.495 | 29.6 |
-| 1 | 26 | 2.954 | 5.275 | 28.7 |
-| 2 | 27 | 1.499 | 2.473 | 34.3 |
-| 3 | 28 | 1.362 | 2.407 | 25.6 |
-| 4 | 27 | 1.502 | 2.605 | 32.3 |
-| 5 | 26 | 1.277 | 2.203 | 28.5 |
-| 6 | 26 | 3.788 | 7.546 | 35.4 |
-| 7 | 29 | 1.366 | 2.307 | 28.9 |
-| 8 | 27 | 2.379 | 4.885 | 25.9 |
-| 9 | 27 | 1.206 | 2.028 | 25.5 |
-| Mean ± standard error | 27.1 ± 0.3 | 1.871 ± 0.278 | 3.422 ± 0.584 | 29.5 ± 1.1 |
+| 1 | 26 | 3.558 | 5.426 | 36.0 |
+| 2 | 27 | 2.560 | 4.009 | 60.4 |
+| 3 | 28 | 1.539 | 2.424 | 12.9 |
+| 4 | 27 | 1.030 | 2.471 | 8.5 |
+| 5 | 26 | 0.497 | 0.907 | 7.1 |
+| 6 | 26 | 3.643 | 5.557 | 19.8 |
+| 7 | 29 | 1.154 | 2.283 | 15.6 |
+| 8 | 27 | 5.766 | 8.380 | 80.4 |
+| 9 | 27 | 1.353 | 2.225 | 21.4 |
+| Mean ± standard error | 27.1 ± 0.3 | 2.248 ± 0.516 | 3.618 ± 0.707 | 29.2 ± 7.6 |
 
 AMCL global localization in that map:
 
 | Seed | amcl_pose messages | Convergence test held | Within the search limits | Least position deviation (m) | Least heading deviation (deg) | Localized by the test after (s) | Localized by the limits after (s) | Final position error (m) | Final heading error (deg) |
 |---|---|---|---|---|---|---|---|---|---|
 | 0 | 106 | 0 | 0 | 0.394 | 16.1 | never | never | 0.637 | 12.3 |
-| 1 | 108 | 0 | 0 | 0.356 | 15.0 | never | never | 0.658 | 7.6 |
-| 2 | 107 | 0 | 0 | 0.326 | 14.7 | never | never | 0.638 | 3.2 |
-| 3 | 106 | 0 | 0 | 0.362 | 15.8 | never | never | 0.789 | 7.7 |
-| 4 | 107 | 0 | 0 | 0.410 | 16.4 | never | never | 0.618 | 15.1 |
-| 5 | 108 | 0 | 0 | 0.421 | 16.9 | never | never | 0.775 | 9.6 |
-| 6 | 104 | 0 | 0 | 0.381 | 15.6 | never | never | 0.643 | 11.1 |
-| 7 | 107 | 0 | 0 | 0.412 | 17.1 | never | never | 0.675 | 5.1 |
-| 8 | 108 | 0 | 0 | 0.417 | 16.4 | never | never | 0.641 | 11.0 |
-| 9 | 108 | 0 | 0 | 0.391 | 15.7 | never | never | 0.781 | 10.3 |
+| 1 | 108 | 0 | 0 | 0.318 | 14.3 | never | never | 0.605 | 2.4 |
+| 2 | 107 | 0 | 0 | 0.442 | 16.5 | never | never | 0.230 | 11.8 |
+| 3 | 106 | 0 | 0 | 0.370 | 15.0 | never | never | 0.763 | 5.0 |
+| 4 | 107 | 0 | 2 | 0.279 | 12.7 | never | never | 0.397 | 6.9 |
+| 5 | 108 | 0 | 0 | 0.322 | 13.0 | never | never | 0.830 | 4.3 |
+| 6 | 104 | 0 | 0 | 0.602 | 23.8 | never | never | 1.452 | 16.9 |
+| 7 | 107 | 0 | 0 | 0.513 | 17.3 | never | never | 1.053 | 1.8 |
+| 8 | 108 | 0 | 0 | 0.335 | 17.8 | never | never | 0.791 | 14.0 |
+| 9 | 108 | 0 | 0 | 0.354 | 17.3 | never | never | 0.880 | 11.1 |

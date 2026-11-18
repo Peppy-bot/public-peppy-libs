@@ -18,7 +18,9 @@
 //! - [`LaserProjection`]: depth points to a [`ProjectedScan`], the scan that `lidar_2d`'s
 //!   `scan_stream` carries, as pointcloud_to_laserscan 2.1.1 projects a cloud: the points
 //!   inside a height band and range limits, binned by bearing, the nearest point of each
-//!   bin, and the no-return mark in a bin with no point.
+//!   bin, and the no-return mark in a bin with no point. After the clouds of the ROS reference
+//!   harness, the scans hold pointcloud_to_laserscan's ranges bit for bit on amd64
+//!   (`tests/ros_reference_laser_projection.rs`).
 //! - [`PlacedScan`]: a scan of `camera_core::laser_scan` with each ray placed where the
 //!   sensor stood at the ray's time, in the base's frame at the scan's timestamp.
 //! - [`Mapping`]: a room mapped from scans and odometry as slam_toolbox 2.10.0 maps in its

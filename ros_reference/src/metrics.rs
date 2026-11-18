@@ -171,6 +171,14 @@ pub struct LocalizedWithin {
     pub yaw_rad: f64,
 }
 
+impl LocalizedWithin {
+    /// Whether `pose` lies within this bound of `truth`.
+    pub fn holds(&self, pose: PlanarPose, truth: PlanarPose) -> bool {
+        let (position, yaw) = pose_error(pose, truth);
+        position <= self.position_m && yaw <= self.yaw_rad
+    }
+}
+
 /// The outcome of a global localization run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlobalOutcome {
@@ -195,6 +203,22 @@ pub struct GlobalOutcome {
     pub final_yaw_error_rad: f64,
 }
 
+/// The index of the first of a run's estimates from which every estimate `held` and lay
+/// `near` the truth, as a run counts as localized for good; none when the last did not.
+pub fn localized_for_good_from(held: &[bool], near: &[bool]) -> Option<usize> {
+    assert_eq!(
+        held.len(),
+        near.len(),
+        "a flag of each kind for each estimate"
+    );
+    let first_of_last_run = held
+        .iter()
+        .zip(near)
+        .rposition(|(&held, &near)| !(held && near))
+        .map_or(0, |last_miss| last_miss + 1);
+    (first_of_last_run < held.len()).then_some(first_of_last_run)
+}
+
 /// The outcome of the estimates `estimates` against `truths`, pair by pair, an estimate
 /// localized when its pose lies `within` the truth and, by the convergence test, the test
 /// held or, by the search limits, its deviations lay within `limits`. Panics on no
@@ -217,26 +241,15 @@ pub fn global_outcome(
     let near: Vec<bool> = estimates
         .iter()
         .zip(truths)
-        .map(|(estimate, &truth)| {
-            let (position, yaw) = pose_error(estimate.pose, truth);
-            position <= within.position_m && yaw <= within.yaw_rad
-        })
+        .map(|(estimate, &truth)| within.holds(estimate.pose, truth))
         .collect();
     let converged: Vec<bool> = estimates.iter().map(|e| e.converged).collect();
     let within_limits: Vec<bool> = estimates
         .iter()
         .map(|e| limits.hold(e.deviations))
         .collect();
-    // The time of the first estimate from which every estimate held and lay near the
-    // truth, or None when the last did not.
-    let localized_for_good_after_s = |held: &[bool]| {
-        let first_of_last_run = held
-            .iter()
-            .zip(&near)
-            .rposition(|(&held, &near)| !(held && near))
-            .map_or(0, |last_miss| last_miss + 1);
-        estimates.get(first_of_last_run).map(|e| e.time_s)
-    };
+    let localized_for_good_after_s =
+        |held: &[bool]| localized_for_good_from(held, &near).map(|first| estimates[first].time_s);
     let count = |held: &[bool]| held.iter().filter(|&&held| held).count();
     let least = |deviation: fn(&Deviations) -> f64| {
         estimates
@@ -292,6 +305,21 @@ pub fn mean(values: &[f64]) -> Option<Mean> {
 mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_2, PI};
+
+    #[test]
+    fn a_run_is_localized_for_good_from_the_estimate_after_its_last_miss() {
+        let every = [true; 4];
+        assert_eq!(localized_for_good_from(&every, &every), Some(0));
+        assert_eq!(
+            localized_for_good_from(&[true, false, true, true], &every),
+            Some(2)
+        );
+        assert_eq!(
+            localized_for_good_from(&every, &[true, true, true, false]),
+            None
+        );
+        assert_eq!(localized_for_good_from(&[], &[]), None);
+    }
 
     fn pose(x: f64, y: f64, yaw: f64) -> PlanarPose {
         PlanarPose { x, y, yaw }

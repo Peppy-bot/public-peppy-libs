@@ -22,9 +22,9 @@
 # from the digests taken as they were extracted, and mounts the cache read-only in the
 # container, which writes the runs of the local-only references, in either mode, to
 # ros_reference/target/results/ of the checkout that holds this script; the crate's
-# statistics program then scores them into their reference outputs. Without --datasets,
-# the committed outputs of the local-only kinds stand, with the committed digests of the
-# inputs that they list.
+# statistics program then scores them into their reference outputs, and the parity tests
+# of the local-only kinds run on the results. Without --datasets, the committed outputs of
+# the local-only kinds stand, with the committed digests of the inputs that they list.
 #
 # On amd64, the image gives the reference outputs under reference/, with the SHA-256
 # digest of each output in SHA256SUMS and of each file of the repository that an output
@@ -535,6 +535,22 @@ else
     cp "$outputs"/reference/* "$harness/reference/"
   fi
   echo "wrote what the $platform image gives"
+fi
+
+# With --datasets, the parity tests of the local-only kinds, tests/ros_reference_<kind>.rs
+# of each crate, which read the results of the references, whose directory
+# ROS_REFERENCE_RESULTS names to them, and which print the statistics they compare.
+if ((datasets)); then
+  shopt -s nullglob
+  for kind in "${local_only_kinds[@]}"; do
+    for parity_test in "$repository"/*/tests/ros_reference_"$kind".rs; do
+      (cd "$(dirname "$(dirname "$parity_test")")" &&
+        ROS_REFERENCE_RESULTS=$results \
+          cargo test --locked --release --test "ros_reference_$kind" -- --ignored \
+          --show-output) || failed=1
+    done
+  done
+  shopt -u nullglob
 fi
 
 if [[ $platform == arm64 ]]; then

@@ -11,6 +11,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <array>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -23,13 +26,13 @@
 
 #include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
-#include <pointcloud_to_laserscan/pointcloud_to_laserscan_node.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <std_msgs/msg/header.hpp>
 
-#include "private_member.hpp"
+#include "laser_projection.hpp"
+#include "point_cloud.hpp"
 #include "room_dataset_files.hpp"
 #include "scenario.hpp"
 
@@ -40,16 +43,6 @@ namespace ros_reference {
 namespace {
 
 using namespace room_dataset_files;
-using pointcloud_to_laserscan::PointCloudToLaserScanNode;
-
-// pointcloud_to_laserscan takes a cloud only from its subscription, through its private
-// cloudCallback; no public method reaches it. The reference calls it on each cloud itself,
-// on its own thread, through the tag below and PrivateMember (private_member.hpp).
-struct CloudCallback {
-  using type = void (PointCloudToLaserScanNode::*)(sensor_msgs::msg::PointCloud2::ConstSharedPtr);
-  friend type pointer(CloudCallback);
-};
-template struct PrivateMember<CloudCallback, &PointCloudToLaserScanNode::cloudCallback>;
 
 // A stamp of the TUM files, seconds with a decimal fraction, in nanoseconds, read from
 // its digits.
@@ -355,71 +348,11 @@ sensor_msgs::msg::PointCloud2::SharedPtr cloud_of(const DepthImage& image, const
       points.push_back((base_from_optical * optical).cast<float>());
     }
   }
-  auto cloud = std::make_shared<sensor_msgs::msg::PointCloud2>();
-  cloud->header.frame_id = base_frame;
-  cloud->header.stamp = stamp_of_nanoseconds(stamp_ns);
-  sensor_msgs::PointCloud2Modifier modifier(*cloud);
-  modifier.setPointCloud2FieldsByString(1, "xyz");
-  modifier.resize(points.size());
-  sensor_msgs::PointCloud2Iterator<float> x(*cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> y(*cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> z(*cloud, "z");
-  for (const auto& point : points) {
-    *x = point.x();
-    *y = point.y();
-    *z = point.z();
-    ++x;
-    ++y;
-    ++z;
-  }
-  return cloud;
+  std_msgs::msg::Header header;
+  header.frame_id = base_frame;
+  header.stamp = stamp_of_nanoseconds(stamp_ns);
+  return float_cloud(points, header);
 }
-
-// pointcloud_to_laserscan's node, which projects a cloud to a scan with the scenario's
-// height band, angles and ranges and no target frame, and the node that takes each scan it
-// publishes. Both use intra-process communication, so publishing a scan puts it in the
-// subscription's queue before cloudCallback returns, and spinning the taking node's own
-// executor once hands it over.
-class ScanProjector {
- public:
-  explicit ScanProjector(const nlohmann::json& laser_scan) {
-    std::vector<rclcpp::Parameter> overrides;
-    for (const auto& [name, value] : laser_scan.items()) {
-      overrides.push_back(parameter_of(name, value));
-    }
-    overrides.emplace_back("target_frame", "");
-    projector_ = std::make_shared<PointCloudToLaserScanNode>(
-        rclcpp::NodeOptions().use_intra_process_comms(true).parameter_overrides(overrides));
-    for (const auto& [name, value] : laser_scan.items()) {
-      if (!projector_->has_parameter(name)) {
-        throw std::runtime_error("pointcloud_to_laserscan declares no parameter " + name);
-      }
-    }
-    taker_ = std::make_shared<rclcpp::Node>(
-        "scan_taker", rclcpp::NodeOptions().use_intra_process_comms(true));
-    subscription_ = taker_->create_subscription<sensor_msgs::msg::LaserScan>(
-        "scan", rclcpp::SensorDataQoS(),
-        [this](sensor_msgs::msg::LaserScan::UniquePtr scan) { taken_ = std::move(scan); });
-    executor_.add_node(taker_);
-  }
-
-  sensor_msgs::msg::LaserScan project(sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-    taken_.reset();
-    (projector_.get()->*pointer(CloudCallback{}))(cloud);
-    executor_.spin_some();
-    if (!taken_) {
-      throw std::runtime_error("pointcloud_to_laserscan published no scan for a cloud");
-    }
-    return *taken_;
-  }
-
- private:
-  std::shared_ptr<PointCloudToLaserScanNode> projector_;
-  rclcpp::Node::SharedPtr taker_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr subscription_;
-  rclcpp::executors::SingleThreadedExecutor executor_;
-  sensor_msgs::msg::LaserScan::UniquePtr taken_;
-};
 
 // The scan parameters as cloudCallback writes the scenario's into a scan, in single
 // precision.
@@ -531,27 +464,29 @@ void run_in_own_process(const std::string& run, const std::string& scenario_path
   }
 }
 
-}  // namespace
+// What a source of scans prepares: the kept scans with their ground truth, the base's pose
+// at each kept scan to which each seed's odometry adds its noise, and what the output says of
+// the source.
+struct SourcePrepared {
+  Prepared prepared;
+  std::vector<PlanarPose> odometry;
+  nlohmann::json described;
+};
 
-nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto sequence = scenario.at("sequence").get<std::string>();
-  // The scenario's task: an object of one member, mapping or localization.
-  const auto& task_json = scenario.at("task");
-  const auto task = task_json.size() == 1 ? task_json.begin().key() : std::string();
-  const auto seeds = scenario.at("seeds").get<std::vector<int>>();
-  const auto& camera_json = scenario.at("camera");
+// A TUM RGB-D sequence: one depth frame a scan period, each projected to a scan by
+// pointcloud_to_laserscan from the base frame of the mount fitted from the ground truth, a
+// frame inside a gap of the ground truth dropped. Each seed's odometry adds its noise to
+// the ground truth.
+SourcePrepared tum_rgbd(const nlohmann::json& source, Inputs& inputs) {
+  const auto sequence = source.at("sequence").get<std::string>();
+  const auto& camera_json = source.at("camera");
   const Camera camera{camera_json.at("fx").get<double>(), camera_json.at("fy").get<double>(),
                       camera_json.at("cx").get<double>(), camera_json.at("cy").get<double>(),
                       camera_json.at("depth_counts_per_meter").get<double>()};
   const auto period_ns = static_cast<std::int64_t>(
-      std::llround(scenario.at("scan_period_s").get<double>() * nanoseconds_per_second));
+      std::llround(source.at("scan_period_s").get<double>() * nanoseconds_per_second));
   const auto max_gap_ns = static_cast<std::int64_t>(
-      std::llround(scenario.at("max_ground_truth_gap_s").get<double>() * nanoseconds_per_second));
-  if (seeds.empty() || (task != "mapping" && task != "localization")) {
-    throw std::runtime_error("a room dataset scenario names seeds and a task, mapping or "
-                             "localization");
-  }
-
+      std::llround(source.at("max_ground_truth_gap_s").get<double>() * nanoseconds_per_second));
   const auto truth = read_ground_truth(inputs.dataset(sequence, "groundtruth.txt"));
   const auto frames = list_depth_frames(inputs.dataset(sequence, "depth"));
   if (frames.empty()) {
@@ -559,17 +494,11 @@ nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
   }
   const auto mount = fit_mount(truth);
   const auto base_from_optical = mount.base_from_optical();
-  const auto parameters = scan_parameters_of(scenario.at("laser_scan"));
+  const auto parameters = scan_parameters_of(source.at("laser_scan"));
   check_scan_size(parameters);
-  // The scenario's file holds the scenario under its own name, which names its results.
-  const auto name = scenario.at("name").get<std::string>();
-  const std::string scenario_path = "ros_reference/scenarios/" + name + ".json";
-  if (nlohmann::json::parse(inputs.read(scenario_path)) != scenario) {
-    throw std::runtime_error(scenario_path + " does not hold the scenario named " + name);
-  }
 
   start_ros();
-  std::optional<ScanProjector> projector(std::in_place, scenario.at("laser_scan"));
+  std::optional<ScanProjector> projector(std::in_place, source.at("laser_scan"));
   Prepared prepared{};
   auto dropped = nlohmann::json::array();
   for (const auto& frame : one_frame_a_period(frames, period_ns)) {
@@ -590,21 +519,176 @@ nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
   }
   projector.reset();
   rclcpp::shutdown();
-  if (prepared.scans.size() < 2) {
-    throw std::runtime_error("the dataset " + sequence + " gives fewer than two scans");
-  }
   prepared.parameters = parameters;
+  std::vector<PlanarPose> truth_at_scans;
+  for (const auto& scan : prepared.scans) {
+    truth_at_scans.push_back(scan.truth);
+  }
+  return {std::move(prepared),
+          std::move(truth_at_scans),
+          {{"tum_rgbd",
+            {{"sequence", sequence},
+             {"mount",
+              {{"floor_normal",
+                {mount.floor_normal.x(), mount.floor_normal.y(), mount.floor_normal.z()}},
+               {"height", mount.height},
+               {"pitch", mount.pitch},
+               {"roll", mount.roll}}},
+             {"depth_frames", frames.size()},
+             {"dropped_scans", dropped}}}}};
+}
+
+// lidar_2d's range of a ray the sensor could not measure, or of a surface nearer than its
+// nearest range, and of a ray that met nothing within its farthest range.
+constexpr float unmeasured_mark_m = 0.0f;
+constexpr float no_return_mark_m = 10000.0f;
+
+// Each record of `json`, an array of arrays of N numbers.
+template <std::size_t N>
+std::vector<std::array<double, N>> records_of(const nlohmann::json& json, const char* what) {
+  std::vector<std::array<double, N>> records;
+  for (const auto& record : json) {
+    const auto values = record.get<std::vector<double>>();
+    if (values.size() != N) {
+      throw std::runtime_error(std::string(what) + " does not hold " + std::to_string(N) +
+                               " numbers");
+    }
+    std::array<double, N> fixed{};
+    std::copy(values.begin(), values.end(), fixed.begin());
+    records.push_back(fixed);
+  }
+  return records;
+}
+
+// The base's pose at `t` (s) on a route of timed poses [t, x, y, yaw], in the order of
+// their times: the two poses around `t` interpolated, the heading by its shortest turn.
+PlanarPose on_route(const std::vector<std::array<double, 4>>& route, double t) {
+  const auto after = std::lower_bound(
+      route.begin(), route.end(), t,
+      [](const std::array<double, 4>& pose, double time) { return pose[0] < time; });
+  if (after == route.end() || (after == route.begin() && (*after)[0] != t)) {
+    throw std::runtime_error("the drive's route does not cover " + std::to_string(t) + " s");
+  }
+  if ((*after)[0] == t) {
+    return {(*after)[1], (*after)[2], (*after)[3]};
+  }
+  const auto& a = *std::prev(after);
+  const auto& b = *after;
+  const double s = (t - a[0]) / (b[0] - a[0]);
+  return {a[1] + s * (b[1] - a[1]), a[2] + s * (b[2] - a[2]),
+          wrapped(a[3] + s * wrapped(b[3] - a[3]))};
+}
+
+// The distance from `from` along the heading `angle` to the nearest of the walls, each
+// [x0, y0, x1, y1], or infinity when the ray meets none.
+double distance_to_walls(const std::vector<std::array<double, 4>>& walls, const PlanarPose& from,
+                         double angle) {
+  const double dx = std::cos(angle);
+  const double dy = std::sin(angle);
+  double nearest = std::numeric_limits<double>::infinity();
+  for (const auto& [x0, y0, x1, y1] : walls) {
+    const double ex = x1 - x0;
+    const double ey = y1 - y0;
+    const double denominator = dx * ey - dy * ex;
+    if (denominator == 0.0) {
+      continue;
+    }
+    const double wx = x0 - from.x;
+    const double wy = y0 - from.y;
+    const double along_ray = (wx * ey - wy * ex) / denominator;
+    const double along_wall = (wx * dy - wy * dx) / denominator;
+    if (along_ray >= 0.0 && along_wall >= 0.0 && along_wall <= 1.0) {
+      nearest = std::min(nearest, along_ray);
+    }
+  }
+  return nearest;
+}
+
+// A lidar drive, which the README describes: the scans that the source keeps, each ray cast
+// at its own time from the base's pose on the drive's route, the lidar above the base
+// frame's origin facing the way the base faces, its range in single precision, or
+// lidar_2d's mark 0 for a wall nearer than the nearest range, or 10000 for no wall within
+// the farthest range. Each seed's odometry adds its noise to the route's pose at each kept
+// scan.
+SourcePrepared lidar_drive(const nlohmann::json& source, Inputs& inputs) {
+  const auto drive = nlohmann::json::parse(inputs.read(source.at("drive").get<std::string>()));
+  const auto& lidar = drive.at("lidar");
+  const auto rays = lidar.at("rays").get<std::size_t>();
+  const auto number = [&](const char* name) { return lidar.at(name).get<double>(); };
+  const double min_angle = number("min_angle_rad");
+  const double increment = number("angle_increment_rad");
+  const double time_increment = number("time_increment_s");
+  const double min_range = number("min_range_m");
+  const double max_range = number("max_range_m");
+  const double period = number("scan_period_s");
+  const auto walls = records_of<4>(drive.at("walls"), "a wall");
+  const auto route = records_of<4>(drive.at("route"), "a timed pose of the route");
+  const auto kept = source.at("scans").get<std::vector<std::size_t>>();
+  if (rays < 2 || kept.size() != 2 || kept[0] >= kept[1]) {
+    throw std::runtime_error("a lidar drive casts at least two rays a scan, and its source keeps "
+                             "[first, end) of its scans");
+  }
+  const ScanParameters parameters{static_cast<float>(min_angle),
+                                  static_cast<float>(min_angle + (rays - 1) * increment),
+                                  static_cast<float>(increment),
+                                  static_cast<float>(min_range),
+                                  static_cast<float>(max_range),
+                                  static_cast<float>(period)};
+  Prepared prepared{parameters, {}};
+  std::vector<PlanarPose> truth_at_scans;
+  for (std::size_t k = kept[0]; k < kept[1]; ++k) {
+    const double stamp_s = static_cast<double>(k) * period;
+    std::vector<float> ranges;
+    for (std::size_t i = 0; i < rays; ++i) {
+      const auto base = on_route(route, stamp_s + static_cast<double>(i) * time_increment);
+      const double hit =
+          distance_to_walls(walls, base, base.yaw + min_angle + static_cast<double>(i) * increment);
+      ranges.push_back(hit >= max_range   ? no_return_mark_m
+                       : hit < min_range ? unmeasured_mark_m
+                                         : static_cast<float>(hit));
+    }
+    const auto truth = on_route(route, stamp_s);
+    prepared.scans.push_back(
+        {std::llround(stamp_s * nanoseconds_per_second), truth, std::move(ranges)});
+    truth_at_scans.push_back(truth);
+  }
+  return {std::move(prepared), std::move(truth_at_scans), {{"lidar_drive", nlohmann::json::object()}}};
+}
+
+}  // namespace
+
+nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
+  // The scenario's source and task: objects of one member each.
+  const auto& source_json = scenario.at("source");
+  const auto source = source_json.size() == 1 ? source_json.begin().key() : std::string();
+  const auto& task_json = scenario.at("task");
+  const auto task = task_json.size() == 1 ? task_json.begin().key() : std::string();
+  const auto seeds = scenario.at("seeds").get<std::vector<int>>();
+  if (seeds.empty() || (task != "mapping" && task != "localization") ||
+      (source != "tum_rgbd" && source != "lidar_drive")) {
+    throw std::runtime_error("a room dataset scenario names seeds, a source, tum_rgbd or "
+                             "lidar_drive, and a task, mapping or localization");
+  }
+  // The scenario's file holds the scenario under its own name, which names its results.
+  const auto name = scenario.at("name").get<std::string>();
+  const std::string scenario_path = "ros_reference/scenarios/" + name + ".json";
+  if (nlohmann::json::parse(inputs.read(scenario_path)) != scenario) {
+    throw std::runtime_error(scenario_path + " does not hold the scenario named " + name);
+  }
+  auto prepared_source = source == "tum_rgbd" ? tum_rgbd(source_json.at(source), inputs)
+                                              : lidar_drive(source_json.at(source), inputs);
+  const auto& prepared = prepared_source.prepared;
+  if (prepared.scans.size() < 2) {
+    throw std::runtime_error(name + " gives fewer than two scans");
+  }
 
   const auto results = results_of(name);
   std::filesystem::remove_all(results);
   std::filesystem::create_directories(results);
   write_prepared(results, prepared);
-  std::vector<PlanarPose> truth_at_scans;
-  for (const auto& scan : prepared.scans) {
-    truth_at_scans.push_back(scan.truth);
-  }
   for (const int seed : seeds) {
-    write_odometry(results, seed, noisy_odometry(truth_at_scans, scenario.at("odometry_noise"), seed));
+    write_odometry(results, seed,
+                   noisy_odometry(prepared_source.odometry, scenario.at("odometry_noise"), seed));
   }
 
   if (task == "localization") {
@@ -615,9 +699,12 @@ nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
       throw std::runtime_error(name + " localizes in a scenario that maps no room");
     }
   }
-  const auto runs = task == "mapping" ? std::vector<std::string>{"mapping"}
-                                      : std::vector<std::string>{"localization",
-                                                                 "global_localization"};
+  // A localization on a lidar drive runs on the drive spliced from two places too.
+  auto runs = task == "mapping" ? std::vector<std::string>{"mapping"}
+                                : std::vector<std::string>{"localization", "global_localization"};
+  if (task == "localization" && source == "lidar_drive") {
+    runs.push_back("spliced_localization");
+  }
   for (const auto& run : runs) {
     for (const int seed : seeds) {
       run_in_own_process(run, scenario_path, seed, inputs.repository_root().string());
@@ -631,18 +718,11 @@ nlohmann::json room_dataset(const nlohmann::json& scenario, Inputs& inputs) {
   read.erase(std::unique(read.begin(), read.end()), read.end());
   return {
       {"kind", "room_dataset"},
-      {"sequence", sequence},
+      {"source", prepared_source.described},
       {"task", task},
       {"inputs", read},
       {"datasets_read", inputs.datasets_read()},
-      {"mount",
-       {{"floor_normal", {mount.floor_normal.x(), mount.floor_normal.y(), mount.floor_normal.z()}},
-        {"height", mount.height},
-        {"pitch", mount.pitch},
-        {"roll", mount.roll}}},
-      {"depth_frames", frames.size()},
       {"scans", prepared.scans.size()},
-      {"dropped_scans", dropped},
       {"seeds", seeds},
       {"runs", runs},
   };

@@ -1,15 +1,18 @@
 // The files that the reference of a room dataset scenario writes under the directory that
-// ROS_REFERENCE_RESULTS names, and what its preparation and its runs share.
+// ROS_REFERENCE_RESULTS names, and what its preparation and its runs share with the AMCL
+// global localization reference.
 #pragma once
 
 #include <cstdint>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nlohmann/json.hpp>
-#include <rclcpp/parameter.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 
 namespace ros_reference::room_dataset_files {
@@ -75,6 +78,29 @@ void write_odometry(const std::filesystem::path& results, int seed,
                     const std::vector<PlanarPose>& poses);
 std::vector<PlanarPose> read_odometry(const std::filesystem::path& results, int seed);
 
+// The scenario's parameters of a node, with the parameters that this program sets.
+rclcpp::NodeOptions options_of(const nlohmann::json& parameters,
+                               std::vector<rclcpp::Parameter> program_parameters);
+
+// Throws unless `node` declared each of the scenario's parameters `parameters`, which it
+// then read.
+template <typename Node>
+void check_declared(const Node& node, const nlohmann::json& parameters, const char* reference) {
+  for (const auto& [name, value] : parameters.items()) {
+    if (!node.has_parameter(name)) {
+      throw std::runtime_error(std::string(reference) + " declares no parameter " + name);
+    }
+  }
+}
+
+// The writer of the tf transforms that the runs put in each node's buffer.
+inline constexpr const char* tf_authority = "room_dataset";
+
+// The base's pose in the odometry frame at `stamp_ns`, as a transform of `base_frame` in
+// `odometry_frame`.
+geometry_msgs::msg::TransformStamped odometry_transform(std::int64_t stamp_ns,
+                                                        const PlanarPose& pose);
+
 // The scan `scan` as pointcloud_to_laserscan published it.
 sensor_msgs::msg::LaserScan::SharedPtr laser_scan_of(const ScanParameters& parameters,
                                                      const PreparedScan& scan);
@@ -91,11 +117,8 @@ std::filesystem::path run_file(const std::filesystem::path& results, const std::
                                int seed);
 std::vector<RecordedPose> read_recorded_poses(const std::filesystem::path& file);
 
-// A scenario's parameter of a ROS node, of the type that its JSON value has.
-rclcpp::Parameter parameter_of(const std::string& name, const nlohmann::json& value);
-
-// The base name, without extension, of the first seed's map of a mapping scenario: its
+// The base name, without extension, of the map that `seed` of a mapping scenario made: its
 // pose graph (`.posegraph`, `.data`) and its grid (`.yaml`, `.pgm`).
-std::filesystem::path map_of(const std::filesystem::path& results);
+std::filesystem::path map_of(const std::filesystem::path& results, int seed);
 
 }  // namespace ros_reference::room_dataset_files
