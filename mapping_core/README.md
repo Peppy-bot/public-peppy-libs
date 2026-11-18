@@ -39,14 +39,31 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
 - A `MapPose` carries the standard deviations of its match, the square roots of the larger
   eigenvalue of the match's 2 x 2 position covariance and of its yaw variance, and the base
   is localized while they lie within the localization's matching limits.
+- `GlobalLocalization` finds the base's pose in a map from no known pose, as Nav2 1.5.2's
+  AMCL localizes globally once `reinitialize_global_localization` starts it:
+  `max_particles` particles spread over the free cells of the map's grid, weighed by AMCL's
+  likelihood field model, moved by its differential or omnidirectional motion model
+  (`robot_model_type`) and resampled by KLD sampling between `min_particles` and
+  `max_particles`, every random draw on glibc's `drand48` stream of a seed. Each scan that
+  AMCL publishes a pose after answers the mean of the heaviest cluster of particles, its
+  `MapPose` carrying the deviations of the whole filter's covariance as `amcl_pose` carries
+  it; once they lie within the search limits, the search ends in the `Localization` that
+  keeps the pose within its matching limits. The search runs AMCL with recovery rates of 0,
+  as Nav2's parameters set them, so no random particle joins the cloud: when the particles
+  drawn at the start favor a pose that the map scores close to the true one, the cloud can
+  settle there (in drawn L-shaped rooms, the pose turned by pi scored 0.77 to 0.84 of the
+  true pose's likelihood).
+  `tests/global_localization.rs` counts the rooms of a fixed drawn set in which the search
+  localizes the base near its true pose.
 
 ## Quick start
 
 ```rust
 use camera_core::laser_scan::Sweep;
 use mapping_core::{
-    InitialPose, LaserProjection, LaserProjectionParameters, Localization,
-    LocalizationParameters, Mapping, PlacedScan, RoomMap,
+    GlobalLocalization, GlobalLocalizationParameters, InitialPose, LaserProjection,
+    LaserProjectionParameters, Localization, LocalizationParameters, Mapping, PlacedScan,
+    RoomMap, SearchStep,
 };
 
 let projection = LaserProjection::new(LaserProjectionParameters {
@@ -90,6 +107,24 @@ let (mut localization, matched) = Localization::from_initial_pose(
 if let Some(map_pose) = localization.add(&next_scan)? {
     // map_pose.pose, map_pose.deviations, map_pose.localized
 }
+
+// From no known pose: AMCL's parameters, each by its name in Nav2's amcl parameters, the
+// search limits, the parameters of the localization that keeps the pose once the search
+// ends, and the seed of the random draws.
+let parameters = GlobalLocalizationParameters {
+    amcl,
+    search_limits,
+    localization: localization_parameters,
+};
+let mut search = GlobalLocalization::start(&map, parameters, seed)?;
+let localization = loop {
+    match search.add(&next_scan) {
+        // AMCL's pose after the scan, when it publishes one, outside the search limits.
+        SearchStep::Searching(going_on, _map_pose) => search = going_on,
+        // The search ended at map_pose: the localization keeps the pose from the next scan.
+        SearchStep::Found(localization, _map_pose) => break localization,
+    }
+};
 ```
 
 ## Parity
@@ -112,16 +147,20 @@ closes its loop. It reads the results of the local-only references, so
 mapping_core is licensed under the GNU General Public License, version 3 or any later version,
 in `COPYING`. It translates into Rust the code of the upstream files in the table below.
 slam_toolbox 2.10.0 holds its own files under the GNU Lesser General Public License, version
-2.1; section 3 of that license lets a copy of such code take the GNU General Public License,
-version 3 or later, in its place. slam_toolbox 2.10.0 carries karto's files, lib/karto_sdk,
-under the GNU Lesser General Public License, version 3 or later, which is the GNU General Public
-License, version 3, with additional permissions that a copy may leave out. The BSD licenses of
-Ceres Solver, map_io.cpp and pointcloud_to_laserscan let their code go into a work under the GNU
-General Public License, version 3.
+2.1, and Nav2 1.5.2 holds nav2_amcl, as glibc 2.43 holds its `drand48`, under version 2.1 or any
+later version of that license; section 3 of the GNU Lesser General Public License, version 2.1,
+lets a copy of such code take the GNU General Public License, version 3 or later, in its place.
+slam_toolbox 2.10.0 carries karto's files, lib/karto_sdk, under the GNU Lesser General Public
+License, version 3 or later, which is the GNU General Public License, version 3, with additional
+permissions that a copy may leave out. The BSD licenses of Ceres Solver, map_io.cpp and
+pointcloud_to_laserscan let their code go into a work under the GNU General Public License,
+version 3.
 
 Each file under `src/` keeps the copyright and license notice of every upstream file it
-translates. `src/cholesky.rs`, which translates Eigen 3.4.0's Cholesky factorization, is under
-the Mozilla Public License, version 2.0, the license of Eigen's code.
+translates. In the notices of nav2_amcl and glibc, the GNU General Public License, version 3 or
+later, takes the place of the GNU Lesser General Public License, version 2.1 or later, as
+section 3 of that license asks. `src/cholesky.rs`, which translates Eigen 3.4.0's Cholesky
+factorization, is under the Mozilla Public License, version 2.0, the license of Eigen's code.
 
 | Module | Upstream files | License |
 |---|---|---|
@@ -137,7 +176,16 @@ the Mozilla Public License, version 2.0, the license of Eigen's code.
 | `optimizer` | slam_toolbox 2.10.0: solvers/ceres_solver.cpp, solvers/ceres_utils.h; Ceres Solver 2.2.0: examples/slam/pose_graph_2d/normalize_angle.h, examples/slam/pose_graph_2d/angle_manifold.h, examples/slam/pose_graph_2d/pose_graph_2d_error_term.h, internal/ceres/trust_region_minimizer.cc, internal/ceres/levenberg_marquardt_strategy.cc, internal/ceres/trust_region_step_evaluator.cc, internal/ceres/dynamic_sparse_normal_cholesky_solver.cc, internal/ceres/compressed_row_sparse_matrix.cc, internal/ceres/problem_impl.cc, internal/ceres/program.cc, include/ceres/types.h, include/ceres/solver.h | LGPL-2.1-only (slam_toolbox's own files); BSD-3-Clause (Ceres Solver) |
 | `cholesky` | Eigen 3.4.0: Eigen/src/Cholesky/LLT.h | MPL-2.0 (Eigen's LLT.h) |
 | `laser_projection` | pointcloud_to_laserscan 2.1.1: src/pointcloud_to_laserscan_node.cpp | BSD-3-Clause (pointcloud_to_laserscan) |
-| `lib`, `map_pose`, `placed_scan`, `saved_map`, `slam_toolbox_parameters` | none: mapping_core's own code | GPL-3.0-or-later |
+| `global_localization::amcl` | Nav2 1.5.2: nav2_amcl/src/amcl_node.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::cspace` | Nav2 1.5.2: nav2_amcl/src/map/map_cspace.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::drand48` | Nav2 1.5.2: nav2_amcl/src/pf/pf_pdf.c; glibc 2.43: stdlib/drand48.c, stdlib/drand48-iter.c, stdlib/erand48_r.c, stdlib/srand48.c, stdlib/srand48_r.c | LGPL-2.1-or-later (nav2_amcl, glibc) |
+| `global_localization::kdtree` | Nav2 1.5.2: nav2_amcl/src/pf/pf_kdtree.c | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::likelihood_field` | Nav2 1.5.2: nav2_amcl/src/sensors/laser/likelihood_field_model.cpp, nav2_amcl/src/amcl_node.cpp, nav2_amcl/include/nav2_amcl/sensors/laser/laser.hpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::map` | Nav2 1.5.2: nav2_amcl/include/nav2_amcl/map/map.hpp, nav2_amcl/src/amcl_node.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::motion_model` | Nav2 1.5.2: nav2_amcl/src/motion_model/differential_motion_model.cpp, nav2_amcl/src/motion_model/omni_motion_model.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::particle_filter` | Nav2 1.5.2: nav2_amcl/src/pf/pf.c, nav2_amcl/src/amcl_node.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `global_localization::pose_arithmetic` | Nav2 1.5.2: nav2_amcl/src/pf/pf_vector.c, nav2_amcl/include/nav2_amcl/angleutils.hpp, nav2_amcl/src/amcl_node.cpp | LGPL-2.1-or-later (nav2_amcl) |
+| `lib`, `map_pose`, `placed_scan`, `saved_map`, `slam_toolbox_parameters`, `global_localization`, `global_localization::parameters` | none: mapping_core's own code | GPL-3.0-or-later |
 
 `COPYING` is the GNU General Public License, version 3. `LICENSE-MPL-2.0` is the Mozilla
 Public License, version 2.0, of `src/cholesky.rs`. `NOTICE` holds the BSD notices of Ceres

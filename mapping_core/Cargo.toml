@@ -3,7 +3,7 @@ name = "mapping_core"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "Room maps from 2-D scans, as Nav2's pointcloud_to_laserscan projects depth points and slam_toolbox maps and localizes. No hardware or messaging deps."
+description = "Room maps from 2-D scans, as Nav2's pointcloud_to_laserscan projects depth points, slam_toolbox maps and localizes, and AMCL localizes globally. No hardware or messaging deps."
 
 [workspace]
 
@@ -11,11 +11,13 @@ description = "Room maps from 2-D scans, as Nav2's pointcloud_to_laserscan proje
 camera_core = { path = "../camera_core" }
 control_core = { path = "../control_core" }
 faer = "0.24"
+libstdcxx_heap = { path = "../libstdcxx_heap" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 
 [dev-dependencies]
+chain_kinematics = { path = "../chain_kinematics" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
 ros_reference = { path = "../ros_reference" }
 

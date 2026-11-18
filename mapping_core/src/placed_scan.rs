@@ -50,6 +50,12 @@ impl ScanGeometry {
     pub fn angle_max(&self) -> f32 {
         self.angle_min + (self.rays - 1) as f32 * self.angle_increment
     }
+
+    /// The angle of ray `index` in the sensor's frame, as
+    /// `camera_core::laser_scan::PlacedRay::angle_rad` gives it.
+    pub fn ray_angle(&self, index: usize) -> f64 {
+        f64::from(self.angle_min) + index as f64 * f64::from(self.angle_increment)
+    }
 }
 
 /// A scan with each ray placed where the sensor stood at the ray's time, and the base's
@@ -181,6 +187,20 @@ mod tests {
                 (end.x - WALL_X).abs() <= 2e-6,
                 "ray {index} lands at {end:?}, off the wall at x = {WALL_X}"
             );
+        }
+    }
+
+    #[test]
+    fn the_geometry_gives_each_ray_the_angle_of_its_ray_in_the_scan() {
+        let (angle_min, angle_increment) = (-3.1f32, 0.017f32);
+        let scan = LaserScan::parse(angle_min, angle_increment, 0.0, 0.05, 12.0, &[1.0; 365])
+            .expect("a scan");
+        let placed = PlacedScan::new(0, &scan, &still(PlanarPose::IDENTITY), PlanarPose::IDENTITY)
+            .expect("finite poses");
+        // The still sensor at the identity heads each ray along its angle in the scan, as
+        // camera_core's placed rays give it.
+        for (index, beam) in placed.beams.iter().enumerate() {
+            assert_eq!(placed.geometry.ray_angle(index), beam.bearing);
         }
     }
 

@@ -247,6 +247,41 @@ pub struct Localization {
     map_from_odometry: Pose2,
 }
 
+/// A localization's mapper, restored from the graph and scans of a map, before the
+/// localization is placed in the map.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RestoredLocalization {
+    parameters: LocalizationParameters,
+    mapper: Mapper,
+}
+
+impl RestoredLocalization {
+    pub(crate) fn new(
+        state: &MapperState,
+        parameters: LocalizationParameters,
+    ) -> Result<Self, LocalizationError> {
+        let karto = parameters.slam_toolbox.karto()?;
+        Ok(Self {
+            parameters,
+            mapper: Mapper::restore(karto, state)?,
+        })
+    }
+
+    /// The localization whose next scan that passes the gate is placed where
+    /// `map_from_odometry` carries its odometry, and matched against the map's scan nearest
+    /// it.
+    pub(crate) fn placed(self, map_from_odometry: Pose2) -> Localization {
+        Localization {
+            parameters: self.parameters,
+            gate: ScanGate::new(&self.parameters.slam_toolbox),
+            mapper: self.mapper,
+            placement: Placement::NearBy,
+            reprocessing: map_from_odometry,
+            map_from_odometry,
+        }
+    }
+}
+
 impl Localization {
     /// A localization on the graph and scans of `state`, whose next scan that passes the
     /// gate is placed where `map_from_odometry` carries its odometry, and matched against
@@ -256,15 +291,7 @@ impl Localization {
         parameters: LocalizationParameters,
         map_from_odometry: Pose2,
     ) -> Result<Self, LocalizationError> {
-        let karto = parameters.slam_toolbox.karto()?;
-        Ok(Self {
-            parameters,
-            gate: ScanGate::new(&parameters.slam_toolbox),
-            mapper: Mapper::restore(karto, state)?,
-            placement: Placement::NearBy,
-            reprocessing: map_from_odometry,
-            map_from_odometry,
-        })
+        Ok(RestoredLocalization::new(state, parameters)?.placed(map_from_odometry))
     }
 
     /// The base at `estimate` in `map` when its odometry read `odometry`: the next scan

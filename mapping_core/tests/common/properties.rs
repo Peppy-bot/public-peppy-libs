@@ -1,12 +1,54 @@
-//! The Hegel generators the property tests draw from: the parameters of a projection and
-//! clouds of points about it, rooms, drives around them with drifting odometry, and the
-//! scans a laser reads in them.
+//! The generators the property tests draw from: the parameters of a projection and clouds
+//! of points about it, from a Hegel test case; rooms, drives around them with drifting
+//! odometry, from a test case or a fixed [`Stream`]; and the scans a laser reads in them.
 
 use camera_core::laser_scan::{LaserScan, NO_RETURN_MARK_M, Sweep};
 use camera_core::pose::PlanarPose;
+use chain_kinematics::Draws;
 use hegel::TestCase;
 use hegel::generators as gs;
 use mapping_core::LaserProjectionParameters;
+use std::cell::RefCell;
+
+/// Where the room, drive and odometry generators take their draws from: a Hegel test case,
+/// or a [`Stream`] that draws the same values on every run.
+pub trait DrawSource {
+    /// A value in `min..=max`.
+    fn float(&self, min: f64, max: f64) -> f64;
+    /// An integer in `min..=max`.
+    fn integer(&self, min: u32, max: u32) -> u32;
+}
+
+impl DrawSource for TestCase {
+    fn float(&self, min: f64, max: f64) -> f64 {
+        self.draw(gs::floats().min_value(min).max_value(max))
+    }
+
+    fn integer(&self, min: u32, max: u32) -> u32 {
+        self.draw(gs::integers().min_value(min).max_value(max))
+    }
+}
+
+/// chain_kinematics' SplitMix64 draws of a seed: the same draws on every run and every
+/// machine.
+pub struct Stream(RefCell<Draws>);
+
+impl Stream {
+    pub fn new(seed: u64) -> Self {
+        Self(RefCell::new(Draws::new(seed)))
+    }
+}
+
+impl DrawSource for Stream {
+    fn float(&self, min: f64, max: f64) -> f64 {
+        self.0.borrow_mut().between(min, max).min(max)
+    }
+
+    fn integer(&self, min: u32, max: u32) -> u32 {
+        let span = u64::from(max - min) + 1;
+        min + (self.0.borrow_mut().next_bits() % span) as u32
+    }
+}
 
 /// The pose on the floor at `x`, `y` (m) and `yaw` (rad).
 pub fn planar(x: f64, y: f64, yaw: f64) -> PlanarPose {
@@ -92,20 +134,20 @@ fn signs_of(quadrant: u8) -> [f64; 2] {
 
 /// An L-shaped room 6 to 8 m wide and 3.4 to 5 m deep, its block over a drawn quadrant, so
 /// no turn of the room about its center, and no reflection, takes its walls to themselves.
-pub fn asymmetric_room(tc: &TestCase) -> Room {
-    let half_width: f64 = tc.draw(gs::floats().min_value(3.0).max_value(4.0));
-    let half_height: f64 = tc.draw(gs::floats().min_value(1.7).max_value(2.5));
-    let quadrant: u8 = tc.draw(gs::integers().min_value(0).max_value(3));
+pub fn asymmetric_room(draws: &impl DrawSource) -> Room {
+    let half_width = draws.float(3.0, 4.0);
+    let half_height = draws.float(1.7, 2.5);
+    let quadrant = draws.integer(0, 3) as u8;
     Room::l_shaped(half_width, half_height, quadrant)
 }
 
 /// A room 4 to 8 m wide and 3.4 to 6 m deep, with a box of 0.3 to 0.6 m a side in a
 /// drawn corner.
-pub fn room(tc: &TestCase) -> Room {
-    let half_width: f64 = tc.draw(gs::floats().min_value(2.0).max_value(4.0));
-    let half_height: f64 = tc.draw(gs::floats().min_value(1.7).max_value(3.0));
-    let half_side: f64 = tc.draw(gs::floats().min_value(0.15).max_value(0.3));
-    let corner: u8 = tc.draw(gs::integers().min_value(0).max_value(3));
+pub fn room(draws: &impl DrawSource) -> Room {
+    let half_width = draws.float(2.0, 4.0);
+    let half_height = draws.float(1.7, 3.0);
+    let half_side = draws.float(0.15, 0.3);
+    let corner = draws.integer(0, 3) as u8;
     Room::new(half_width, half_height, half_side, corner)
 }
 
@@ -151,6 +193,20 @@ impl Room {
             half_width,
             half_height,
             walls: polygon(corners).collect(),
+        }
+    }
+
+    /// This room turned by `angle` (rad) about the origin.
+    pub fn turned(self, angle: f64) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let turn = |[x, y]: [f64; 2]| [cos * x - sin * y, sin * x + cos * y];
+        Self {
+            walls: self
+                .walls
+                .iter()
+                .map(|&[a, b]| [turn(a), turn(b)])
+                .collect(),
+            ..self
         }
     }
 
@@ -209,10 +265,9 @@ pub const DRIVE_STEP: f64 = 0.3;
 /// A drive counterclockwise around a circle about the room's center, of a radius that
 /// keeps it [`DRIVE_CLEARANCE`] from the walls and from an L's block, and clear of a box in
 /// a corner.
-pub fn loop_drive(tc: &TestCase, room: &Room) -> Vec<PlanarPose> {
+pub fn loop_drive(draws: &impl DrawSource, room: &Room) -> Vec<PlanarPose> {
     let largest = room.half_width.min(room.half_height) - DRIVE_CLEARANCE;
-    let radius: f64 = tc.draw(gs::floats().min_value(0.5).max_value(largest.max(0.5)));
-    circle_drive(radius)
+    circle_drive(draws.float(0.5, largest.max(0.5)))
 }
 
 /// A drive counterclockwise around a circle of `radius` (m) about the origin, a scan every
@@ -239,17 +294,9 @@ const ODOMETRY_DRIFT: f64 = 0.01;
 /// The odometry of a drive: from its first pose, each motion between two poses scaled by
 /// a drawn factor within [`ODOMETRY_SCALE_ERROR`] of 1 and turned by a drawn drift up to
 /// [`ODOMETRY_DRIFT`] a step.
-pub fn drifting_odometry(tc: &TestCase, drive: &[PlanarPose]) -> Vec<PlanarPose> {
-    let scale: f64 = tc.draw(
-        gs::floats()
-            .min_value(1.0 - ODOMETRY_SCALE_ERROR)
-            .max_value(1.0 + ODOMETRY_SCALE_ERROR),
-    );
-    let drift: f64 = tc.draw(
-        gs::floats()
-            .min_value(-ODOMETRY_DRIFT)
-            .max_value(ODOMETRY_DRIFT),
-    );
+pub fn drifting_odometry(draws: &impl DrawSource, drive: &[PlanarPose]) -> Vec<PlanarPose> {
+    let scale = draws.float(1.0 - ODOMETRY_SCALE_ERROR, 1.0 + ODOMETRY_SCALE_ERROR);
+    let drift = draws.float(-ODOMETRY_DRIFT, ODOMETRY_DRIFT);
     let Some(&first) = drive.first() else {
         return Vec::new();
     };

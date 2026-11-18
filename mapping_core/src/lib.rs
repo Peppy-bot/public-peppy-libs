@@ -38,6 +38,14 @@
 //!   a mapping's estimate. Each [`MapPose`] carries the standard deviations of its match,
 //!   and the base is localized while they lie within its matching limits
 //!   ([`LocalizationLimits`]).
+//! - [`GlobalLocalization`]: the base found in a map from no known pose, as Nav2 1.5.2's
+//!   AMCL localizes globally once `reinitialize_global_localization` starts it:
+//!   `max_particles` particles spread over the free cells of the map, weighed by AMCL's
+//!   likelihood field model, moved by its differential or omnidirectional motion model and
+//!   resampled by KLD sampling, every random draw on glibc's `drand48` stream of a seed. Each
+//!   [`MapPose`] is the mean of the heaviest cluster of particles with the deviations of the
+//!   whole filter's covariance, as `amcl_pose` carries them; once they lie within the search
+//!   limits, [`Localization::from_estimate`] keeps the pose within its matching limits.
 //!
 //! Each module names the file and the function of slam_toolbox, karto, Ceres or Nav2 that
 //! it follows, and follows its arithmetic in its order, with three departures: a scan is
@@ -51,6 +59,7 @@
 
 mod cholesky;
 mod geometry;
+mod global_localization;
 mod grid;
 mod laser_projection;
 mod localization;
@@ -67,6 +76,10 @@ mod scan_matcher;
 #[cfg(test)]
 mod slam_toolbox_parameters;
 
+pub use global_localization::{
+    AmclParameterError, AmclParameters, GlobalLocalization, GlobalLocalizationError,
+    GlobalLocalizationParameters, RobotModelType, SearchStep,
+};
 pub use laser_projection::{
     LaserProjection, LaserProjectionError, LaserProjectionParameters, ProjectedScan,
 };

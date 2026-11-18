@@ -31,12 +31,14 @@ pub struct Deviations {
 impl Deviations {
     /// The deviations of a 3 x 3 covariance of x, y and yaw: the square root of the
     /// larger eigenvalue of its 2 x 2 position block, and the square root of its yaw
-    /// variance, as slam_toolbox's pose and AMCL's `amcl_pose` carry a covariance.
+    /// variance, as slam_toolbox's pose and AMCL's `amcl_pose` carry a covariance. A
+    /// variance that rounding leaves below 0, as AMCL's of particles at one pose, reads as
+    /// 0.
     pub(crate) fn of_covariance(covariance: &Matrix3) -> Self {
         let [[xx, xy, _], [_, yy, _], [_, _, yaw]] = covariance.0;
         Self {
-            position_std_m: larger_eigenvalue(xx, xy, yy).sqrt(),
-            yaw_std_rad: yaw.sqrt(),
+            position_std_m: deviation_of(larger_eigenvalue(xx, xy, yy)),
+            yaw_std_rad: deviation_of(yaw),
         }
     }
 
@@ -45,6 +47,11 @@ impl Deviations {
         self.position_std_m <= limits.position_std_m.get()
             && self.yaw_std_rad <= limits.yaw_std_rad.get()
     }
+}
+
+/// The square root of `variance`, 0 for a variance below 0; NaN for NaN.
+fn deviation_of(variance: f64) -> f64 {
+    if variance < 0.0 { 0.0 } else { variance.sqrt() }
 }
 
 /// The larger eigenvalue of the symmetric matrix [[xx, xy], [xy, yy]], from its trace and
@@ -109,6 +116,19 @@ mod tests {
         let deviations = Deviations::of_covariance(&covariance);
         assert_eq!(deviations.position_std_m, 0.09f64.sqrt());
         assert_eq!(deviations.yaw_std_rad, 0.1);
+    }
+
+    #[test]
+    fn a_variance_that_rounding_leaves_below_zero_reads_as_no_deviation() {
+        let covariance = Matrix3([[-1e-17, 0.0, 0.0], [0.0, -2e-17, 0.0], [0.0, 0.0, -4e-16]]);
+        let deviations = Deviations::of_covariance(&covariance);
+        assert_eq!(
+            (deviations.position_std_m, deviations.yaw_std_rad),
+            (0.0, 0.0)
+        );
+        let unknown = Matrix3([[f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, f64::NAN]]);
+        let deviations = Deviations::of_covariance(&unknown);
+        assert!(deviations.position_std_m.is_nan() && deviations.yaw_std_rad.is_nan());
     }
 
     #[test]
