@@ -11,7 +11,8 @@
 #                                    without it, as many as the CPUs nproc counts
 #
 # The reference of each scenario runs in a container of its own, at most --jobs of them at
-# once, so a run takes about the time of its longest scenario. The script prints the run
+# once, so a run takes about the time of its longest scenario, or of a mapping scenario and
+# the longest scenario that localizes in its map. The script prints the run
 # time of each reference as it ends, and the output of a reference that fails.
 #
 # A local-only kind reads datasets that the repository does not hold. With --datasets, the
@@ -437,9 +438,10 @@ run_reference() {
   return 1
 }
 
-# The running references, each scenario by the pid that runs it, and the scenarios whose
-# references failed.
+# The running references, each scenario by the pid that runs it, the scenarios whose
+# references ended, and those whose references failed.
 declare -A running=()
+declare -A ended=()
 failed_references=()
 
 # Waits for one running reference to end.
@@ -449,16 +451,46 @@ wait_for_a_reference() {
   if ((status)); then
     failed_references+=("${running[$pid]}")
   fi
+  ended[${running[$pid]}]=1
   unset "running[$pid]"
 }
 
+# The file name of the scenario whose map the scenario $1 localizes in, or nothing for a
+# scenario that names none.
+map_scenario_of() {
+  { grep -o '"map_scenario": *"[^"]*"' "$harness/scenarios/$1" || true; } |
+    sed 's/.*"\([^"]*\)"$/\1.json/'
+}
+
 mkdir "$scratch/logs" "$outputs/inputs"
+# Each scenario starts as soon as a job is free, and a scenario that localizes once the
+# scenario whose map it reads has ended.
+declare -A map_of_scenario=()
 for name in "${scenarios[@]}"; do
-  while ((${#running[@]} >= jobs)); do
-    wait_for_a_reference
+  map=$(map_scenario_of "$name")
+  map_of_scenario[$name]=$map
+  if [[ -n $map && " ${scenarios[*]} " != *" $map "* ]]; then
+    echo "$name localizes in the map of $map, which is no scenario of this run: name a" \
+      "mapping scenario of ros_reference/scenarios/" >&2
+    exit 1
+  fi
+done
+pending=("${scenarios[@]}")
+while ((${#pending[@]})); do
+  waiting=()
+  for name in "${pending[@]}"; do
+    map=${map_of_scenario[$name]}
+    if ((${#running[@]} >= jobs)) || [[ -n $map && -z ${ended[$map]-} ]]; then
+      waiting+=("$name")
+      continue
+    fi
+    run_reference "$name" &
+    running[$!]=$name
   done
-  run_reference "$name" &
-  running[$!]=$name
+  pending=("${waiting[@]}")
+  if ((${#pending[@]})); then
+    wait_for_a_reference
+  fi
 done
 while ((${#running[@]})); do
   wait_for_a_reference

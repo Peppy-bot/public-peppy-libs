@@ -65,7 +65,8 @@ ros_reference/run.sh --jobs 4    # runs at most 4 references at once, in either 
 The script builds the reference image for the architecture of the host, and runs the
 reference program on each scenario in it, each scenario in a container of its own, at most
 `--jobs` of them at once, as many as the CPUs `nproc` counts without it, so a run takes
-about the time of its longest scenario. It prints the run time of each reference as it
+about the time of its longest scenario, or of a mapping scenario and the longest scenario
+that localizes in its map. It prints the run time of each reference as it
 ends, and the output of a reference that fails. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. It names each container that it starts
@@ -518,8 +519,8 @@ local-only kinds and keeps their committed outputs, with the committed digests o
 repository files that each output lists under `inputs`, so a developer who checks a drawn
 kind fetches nothing, and a scenario or a source of a local-only kind that differs from its
 digest fails the routine tests until `run.sh --datasets` writes its output again. A room
-dataset scenario that localizes names the scenario whose map it localizes in, whose name
-sorts before its own, so `run.sh` maps before it localizes.
+dataset scenario that localizes names the scenario whose map it localizes in, and `run.sh`
+starts it once that scenario's reference has ended.
 
 A run with `--datasets` holds an flock on the cache's `cache.lock` until it ends: shared
 while it reads the cache, and exclusive while it fetches or extracts a dataset, which it
