@@ -289,22 +289,61 @@ fn each_scenario_carries_this_crates_search_budget() {
 // the reference probed are this crate's, rounded as execute_joint_path rounds them,
 // probed at the spacing this crate's arms give, against the pairs of the robot's own
 // links this crate's plans check. Each scenario's plans end on its iterations, so they
-// repeat.
+// repeat. Each scenario plans in a test of its own, named as the scenario, so the
+// scenarios plan in parallel.
 #[cfg(target_arch = "x86_64")]
+fn carries_the_paths_this_crate_plans(name: &str) {
+    let case = Case::load(name);
+    assert_eq!(
+        case.scenes.termination,
+        Termination::Iterations,
+        "{name}: a committed scenario's plans end on its iterations; one ended by time runs \
+         locally, as the harness README's rule 3 says"
+    );
+    assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
+    on_shape(&case.robot.description, CarriesItsPaths(&case))
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+}
+
+/// A test of each scenario `$scenario` that it carries the paths this crate plans, and
+/// [`SCENARIOS_PLANNED`], their names in order.
+macro_rules! a_test_per_scenario {
+    ($($scenario:ident),+ $(,)?) => {
+        #[cfg(target_arch = "x86_64")]
+        mod each_scenario_carries_the_paths_this_crate_plans {
+            $(
+                #[test]
+                fn $scenario() {
+                    super::carries_the_paths_this_crate_plans(stringify!($scenario));
+                }
+            )+
+        }
+
+        /// The scenarios that a test of each_scenario_carries_the_paths_this_crate_plans
+        /// plans, in the order of their names.
+        const SCENARIOS_PLANNED: &[&str] = &[$(stringify!($scenario)),+];
+    };
+}
+
+a_test_per_scenario!(
+    arm_planning_both_arms_objects_openarm_v2,
+    arm_planning_both_arms_openarm_v2,
+    arm_planning_both_arms_poses_openarm_v2,
+    arm_planning_objects_openarm_v2,
+    arm_planning_objects_so101,
+    arm_planning_openarm_v2,
+    arm_planning_poses_openarm_v2,
+);
+
+// Each committed arm planning scenario has a test of its own that plans it.
 #[test]
-fn each_scenario_carries_the_paths_this_crate_plans() {
-    for case in Case::load_all() {
-        assert_eq!(
-            case.scenes.termination,
-            Termination::Iterations,
-            "{}: a committed scenario's plans end on its iterations; one ended by time runs \
-             locally, as the harness README's rule 3 says",
-            case.name
-        );
-        assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
-        on_shape(&case.robot.description, CarriesItsPaths(&case))
-            .unwrap_or_else(|error| panic!("{}: {error}", case.name));
-    }
+fn each_scenario_has_a_test_that_plans_it() {
+    assert_eq!(
+        Case::names(),
+        SCENARIOS_PLANNED,
+        "name each arm planning scenario under ros_reference/scenarios in \
+         a_test_per_scenario!, in the order of their names"
+    );
 }
 
 /// That the scenario `case` carries the answers and the probe spacing this crate gives, and

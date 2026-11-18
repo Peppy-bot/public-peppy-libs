@@ -575,7 +575,11 @@ arm64 host.
    digests, and `ros_reference/run.sh --check` on an arm64 host, which runs the parity
    tests on the outputs of the arm64 image.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
-   runs on the new one. The forward kinematics parity test poses arms of 1 to 7 joints,
+   runs on the new one. The arm planning parity test plans the scenes of each scenario in
+   a test of its own: add the name of a new arm planning scenario to
+   `a_test_per_scenario!` in `motion_planning_core/tests/ros_reference_arm_planning.rs`,
+   whose `each_scenario_has_a_test_that_plans_it` fails until each scenario is named
+   there. The forward kinematics parity test poses arms of 1 to 7 joints,
    the chain collision parity test arms of 7 joints, the self distance parity test asks
    the scenarios for a robot of two arms of 7 joints, as OpenArm v2 is, and for one of one
    arm of 5, as SO-101 is, builds the self model of each scenario's robot by those counts,

@@ -374,37 +374,42 @@ pub struct Case {
 }
 
 impl Case {
-    /// Every arm planning scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: an answer of motion_planning_core in every
-    /// scene, MoveIt's probe of its path exactly where it is a path, the probe of
-    /// MoveIt's own path exactly where MoveIt succeeds, and a self distance in each probe
-    /// exactly where the plans check pairs of the robot's own links.
-    pub fn load_all() -> Vec<Self> {
+    /// The name of every arm planning scenario under `scenarios/`, in order.
+    pub fn names() -> Vec<String> {
         scenario_names(Kind::ArmPlanning)
-            .into_iter()
-            .map(|name| {
-                let scenes: Scenes = read_scenario(&name);
-                let robot = read_robot(&name, &scenes.description);
-                let arms = robot.group_arms(&name, &scenes.group);
-                let checked_pairs = robot.checked_pairs(&name, &scenes.group);
-                let (probe_spacing, ik_search_passes, cases) = pair(
-                    &name,
-                    &scenes,
-                    !checked_pairs.is_empty(),
-                    read_reference(&name),
-                );
-                Case {
-                    name,
-                    robot,
-                    arms,
-                    scenes,
-                    checked_pairs,
-                    probe_spacing,
-                    ik_search_passes,
-                    cases,
-                }
-            })
-            .collect()
+    }
+
+    /// Every arm planning scenario under `scenarios/`, in the order of their names, each
+    /// as [`Case::load`] loads it.
+    pub fn load_all() -> Vec<Self> {
+        Self::names().iter().map(|name| Self::load(name)).collect()
+    }
+
+    /// The arm planning scenario `name`, paired with its reference output: an answer of
+    /// motion_planning_core in every scene, MoveIt's probe of its path exactly where it is
+    /// a path, the probe of MoveIt's own path exactly where MoveIt succeeds, and a self
+    /// distance in each probe exactly where the plans check pairs of the robot's own links.
+    pub fn load(name: &str) -> Self {
+        let scenes: Scenes = read_scenario(name);
+        let robot = read_robot(name, &scenes.description);
+        let arms = robot.group_arms(name, &scenes.group);
+        let checked_pairs = robot.checked_pairs(name, &scenes.group);
+        let (probe_spacing, ik_search_passes, cases) = pair(
+            name,
+            &scenes,
+            !checked_pairs.is_empty(),
+            read_reference(name),
+        );
+        Case {
+            name: name.to_string(),
+            robot,
+            arms,
+            scenes,
+            checked_pairs,
+            probe_spacing,
+            ik_search_passes,
+            cases,
+        }
     }
 }
 
