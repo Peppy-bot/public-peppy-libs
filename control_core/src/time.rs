@@ -34,6 +34,9 @@ pub enum DurationError {
     #[error("must be a positive finite number of seconds, got {0}")]
     NotPositiveFinite(f64),
 
+    #[error("must be a finite number of seconds, 0 or more, got {0}")]
+    NotNonNegativeFinite(f64),
+
     #[error("{0:e} s is longer than a Duration holds")]
     TooLarge(f64),
 
@@ -82,6 +85,16 @@ pub fn duration_from_secs(secs: f64) -> Result<Duration, DurationError> {
     (!period.is_zero())
         .then_some(period)
         .ok_or(DurationError::Underflow(secs))
+}
+
+/// A wait from a seconds value, finite and 0 or more: 0 waits not at all, a
+/// value below half a nanosecond rounds to 0, and a value longer than a
+/// `Duration` holds waits `Duration::MAX`, which no clock reaches.
+pub fn wait_from_secs(secs: f64) -> Result<Duration, DurationError> {
+    if !(secs.is_finite() && secs >= 0.0) {
+        return Err(DurationError::NotNonNegativeFinite(secs));
+    }
+    Ok(Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX))
 }
 
 /// The nanoseconds from `from_ns` to `to_ns`, below 0 for a clock that went
@@ -290,6 +303,33 @@ mod tests {
             duration_from_secs(f64::MAX),
             Err(DurationError::TooLarge(_))
         ));
+    }
+
+    #[test]
+    fn a_wait_is_finite_and_0_or_more_and_saturates_past_a_duration() {
+        for secs in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            -f64::MIN_POSITIVE,
+        ] {
+            assert!(
+                matches!(
+                    wait_from_secs(secs),
+                    Err(DurationError::NotNonNegativeFinite(_))
+                ),
+                "{secs} must be refused"
+            );
+        }
+        assert_eq!(wait_from_secs(0.0).unwrap(), Duration::ZERO);
+        assert_eq!(wait_from_secs(1e-10).unwrap(), Duration::ZERO);
+        assert_eq!(wait_from_secs(0.25).unwrap(), Duration::from_millis(250));
+        assert_eq!(wait_from_secs(f64::MAX).unwrap(), Duration::MAX);
+        assert_eq!(
+            DurationError::NotNonNegativeFinite(-1.0).to_string(),
+            "must be a finite number of seconds, 0 or more, got -1"
+        );
     }
 
     /// `try_from_secs_f64` rounds anything under half a nanosecond to zero and

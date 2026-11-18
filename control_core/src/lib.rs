@@ -3,9 +3,10 @@
 //! footprint, its body velocity, its limiter and its wheel odometry, the
 //! setpoint stream, the service, receive and ask loops, the fault that ends a
 //! node, the model a component is configured for, latched failure logging, a
-//! node's wall or simulation clock, waiting and locking from synchronous code,
-//! and the arms a request names, for robot nodes and the kinematics crates
-//! that plan their moves.
+//! node's wall or simulation clock, a robot's tree of frames with the lookups
+//! that wait on that clock, waiting and locking from synchronous code, and the
+//! arms a request names, for robot nodes and the kinematics crates that plan
+//! their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -24,8 +25,11 @@
 //! - [`timing`]: the clock a motion plays on and the duration a caller may ask
 //!   of it.
 //! - [`node_clock`]: the clock a node reads, the wall clock or a simulation
-//!   clock fed the ticks the node receives, the time now and a wait until a
-//!   deadline on it.
+//!   clock fed the ticks the node receives, the time now, a wait until a
+//!   deadline on it, and whether it went back between two looks.
+//! - [`robot_tree`]: a robot's tree of frames as a node holds it, its followers
+//!   that fill it from the messages of transforms, and the lookups in it that
+//!   wait on the node's clock until the tree answers them.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`twist`]: a body velocity in the robot frame, finite by construction.
@@ -91,6 +95,7 @@ pub mod positive_finite;
 pub mod receiving;
 pub mod report_once;
 pub mod requested_arms;
+pub mod robot_tree;
 pub mod serving;
 pub mod setpoint_stream;
 pub mod sync;

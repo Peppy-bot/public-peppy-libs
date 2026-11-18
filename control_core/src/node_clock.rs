@@ -5,9 +5,12 @@
 //! A simulation clock reads the ticks of its domain, which the node receives and passes
 //! in: [`NodeClock::simulation`] gives the clock and the [`TickFeed`] that sets it, and
 //! [`follow_ticks`] feeds it each tick a node's receive gives. Before its first tick a
-//! simulation clock reads 0.
+//! simulation clock reads 0. [`BackSteps`] tells whether a clock went back between two
+//! looks.
 
 use std::fmt::Display;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
@@ -20,18 +23,30 @@ pub struct NodeClock(Source);
 #[derive(Clone, Debug)]
 enum Source {
     Wall,
-    /// The time of the newest tick of the simulation clock, 0 before the first.
-    Simulation(watch::Receiver<u64>),
+    Simulation {
+        /// The time of the newest tick, 0 before the first.
+        ticks: watch::Receiver<u64>,
+        /// The ticks so far that came before the tick before them.
+        steps_back: Arc<AtomicU64>,
+    },
 }
 
 /// What sets a simulation clock: the time of each of its ticks.
 #[derive(Debug)]
-pub struct TickFeed(watch::Sender<u64>);
+pub struct TickFeed {
+    ticks: watch::Sender<u64>,
+    steps_back: Arc<AtomicU64>,
+}
 
 impl TickFeed {
-    /// Sets the clock to the tick at `time_ns`.
+    /// Sets the clock to the tick at `time_ns`. A tick before the one before it is a step
+    /// back, counted before the clock reads it, so a reader that sees the tick sees the
+    /// step back too.
     pub fn tick(&self, time_ns: u64) {
-        self.0.send_replace(time_ns);
+        if time_ns < *self.ticks.borrow() {
+            self.steps_back.fetch_add(1, Ordering::Release);
+        }
+        self.ticks.send_replace(time_ns);
     }
 }
 
@@ -44,15 +59,33 @@ impl NodeClock {
     /// A simulation clock that reads 0, and the feed that sets it at each tick. Once the
     /// feed is dropped, the clock keeps its last tick and ends no wait past it.
     pub fn simulation() -> (Self, TickFeed) {
-        let (feed, ticks) = watch::channel(0);
-        (Self(Source::Simulation(ticks)), TickFeed(feed))
+        let (sender, ticks) = watch::channel(0);
+        let steps_back = Arc::new(AtomicU64::new(0));
+        let feed = TickFeed {
+            ticks: sender,
+            steps_back: Arc::clone(&steps_back),
+        };
+        (Self(Source::Simulation { ticks, steps_back }), feed)
+    }
+
+    /// A watch of this clock's steps back from now on.
+    pub fn back_steps(&self) -> BackSteps {
+        BackSteps(match &self.0 {
+            Source::Wall => Watched::Wall {
+                reading: wall_now_ns(),
+            },
+            Source::Simulation { steps_back, .. } => Watched::Simulation {
+                seen: steps_back.load(Ordering::Acquire),
+                steps_back: Arc::clone(steps_back),
+            },
+        })
     }
 
     /// The time now on this clock, in nanoseconds since the Unix epoch.
     pub fn now_ns(&self) -> u64 {
         match &self.0 {
             Source::Wall => wall_now_ns(),
-            Source::Simulation(ticks) => *ticks.borrow(),
+            Source::Simulation { ticks, .. } => *ticks.borrow(),
         }
     }
 
@@ -65,7 +98,7 @@ impl NodeClock {
                 let left = deadline_ns.saturating_sub(wall_now_ns());
                 tokio::time::sleep(Duration::from_nanos(left)).await;
             }
-            Source::Simulation(ticks) => {
+            Source::Simulation { ticks, .. } => {
                 if ticks
                     .clone()
                     .wait_for(|now| *now >= deadline_ns)
@@ -83,7 +116,49 @@ impl NodeClock {
     pub fn ticks(&self) -> Option<watch::Receiver<u64>> {
         match &self.0 {
             Source::Wall => None,
-            Source::Simulation(ticks) => Some(ticks.clone()),
+            Source::Simulation { ticks, .. } => Some(ticks.clone()),
+        }
+    }
+}
+
+/// Whether a node's clock went back between one look and the next, as tf2_ros's buffer
+/// watches its clock for a jump back in time (tf2_ros/src/buffer.cpp:70-80). A simulation
+/// clock's feed counts each tick before the tick before it, so a step back is seen even
+/// where the clock went forward again before the next look. The wall clock is read at each
+/// look, and a reading before the one at the look before is a step back.
+#[derive(Debug)]
+pub struct BackSteps(Watched);
+
+#[derive(Debug)]
+enum Watched {
+    Wall {
+        /// The reading at the last look.
+        reading: u64,
+    },
+    Simulation {
+        /// The steps back the feed counted.
+        steps_back: Arc<AtomicU64>,
+        /// The count at the last look.
+        seen: u64,
+    },
+}
+
+impl BackSteps {
+    /// Whether the clock went back since the last look, or since the watch began.
+    pub fn went_back(&mut self) -> bool {
+        match &mut self.0 {
+            Watched::Wall { reading } => {
+                let now = wall_now_ns();
+                let went_back = now < *reading;
+                *reading = now;
+                went_back
+            }
+            Watched::Simulation { steps_back, seen } => {
+                let count = steps_back.load(Ordering::Acquire);
+                let went_back = count != *seen;
+                *seen = count;
+                went_back
+            }
         }
     }
 }
@@ -134,6 +209,36 @@ mod tests {
         feed.tick(45);
         assert_eq!(clock.now_ns(), 45);
         assert_eq!(clock.clone().now_ns(), 45, "a clone reads the same clock");
+    }
+
+    #[test]
+    fn a_step_back_of_a_simulation_clock_is_seen_at_the_next_look_even_once_it_went_forward() {
+        let (clock, feed) = NodeClock::simulation();
+        feed.tick(100);
+        let mut back_steps = clock.back_steps();
+        feed.tick(100);
+        feed.tick(200);
+        assert!(!back_steps.went_back(), "a tick on or after the last one");
+        feed.tick(150);
+        feed.tick(300);
+        assert!(
+            back_steps.went_back(),
+            "back to 150 and on to 300 between two looks"
+        );
+        assert!(!back_steps.went_back(), "each step back is seen once");
+        feed.tick(10);
+        assert!(back_steps.went_back());
+    }
+
+    #[test]
+    fn the_wall_clock_goes_on_between_two_looks() {
+        let mut back_steps = BackSteps(Watched::Wall { reading: 0 });
+        assert!(!back_steps.went_back());
+        let mut ahead = BackSteps(Watched::Wall { reading: u64::MAX });
+        assert!(
+            ahead.went_back(),
+            "a reading before the one at the last look"
+        );
     }
 
     #[tokio::test]

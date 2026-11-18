@@ -179,6 +179,7 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 name = "control_core"
 version = "0.1.0"
 dependencies = [
+ "frame_tree",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
