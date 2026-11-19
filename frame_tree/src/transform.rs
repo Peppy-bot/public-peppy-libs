@@ -61,6 +61,16 @@ impl Transform {
         })
     }
 
+    /// The transform at `position` turned by the unit quaternion `orientation`, its matrix built
+    /// as `Matrix3x3::setRotation` builds it, as tf2 makes the transform of a lookup's answer
+    /// (buffer_core.cpp:794-805): unchecked, since a lookup composes unit quaternions.
+    pub(crate) fn of_unit(position: [f64; 3], orientation: [f64; 4]) -> Self {
+        Self {
+            rows: arithmetic::rotation_of(orientation),
+            origin: position,
+        }
+    }
+
     /// The placed frame's origin, in the frame it is placed in.
     pub fn origin(&self) -> [f64; 3] {
         self.origin

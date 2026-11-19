@@ -5,7 +5,7 @@
 use std::time::{Duration, SystemTime};
 
 use frame_tree::{
-    BrokenTree, FrameName, FrameTransform, FrameTree, HeldStamps, LookupError, LookupTime,
+    BrokenTree, Found, FrameName, FrameTransform, FrameTree, HeldStamps, LookupError, LookupTime,
     MovingMessage, Placement, Publisher, Stamp, StaticMessage, TransformError,
     TransformErrorReason, TransformName, TransformRecord, ZeroWindow,
 };
@@ -135,6 +135,82 @@ fn robot() -> FrameTree {
         );
     }
     tree
+}
+
+// The root of a frame's chain is where its walk up ends: at a time through each moving
+// transform's value then, and at the latest time through each frame's newest parent.
+#[test]
+fn the_root_of_a_chain_is_where_its_walk_up_ends() {
+    let mut tree = tree();
+    tree.take_moving(
+        &publisher("base"),
+        &moving(10, vec![transform("odom", "base", [0.0; 3], 0.0)]),
+    )
+    .unwrap();
+    tree.take_static(
+        &publisher("model"),
+        &fixed(vec![transform("base", "arm", [0.0; 3], 0.0)]),
+    )
+    .unwrap();
+    let at = |nanos| LookupTime::At(Stamp::from_nanos(nanos));
+    assert_eq!(tree.root_at(&frame("arm"), at(10)).unwrap(), frame("odom"));
+    assert_eq!(
+        tree.root_at(&frame("arm"), LookupTime::Latest).unwrap(),
+        frame("odom")
+    );
+    assert_eq!(
+        tree.root_at(&frame("odom"), LookupTime::Latest).unwrap(),
+        frame("odom")
+    );
+    assert!(matches!(
+        tree.root_at(&frame("gripper"), LookupTime::Latest),
+        Err(LookupError::UnknownFrame { .. })
+    ));
+    assert!(matches!(
+        tree.root_at(&frame("arm"), at(5)),
+        Err(LookupError::Extrapolation { .. })
+    ));
+}
+
+// A lookup through a fixed frame checks that the tree knows its target, its source and its fixed
+// frame, in that order, before either half looks: an unknown target is refused ahead of a half
+// with no value at its time, and an unknown frame in itself is refused.
+#[test]
+fn a_lookup_through_a_fixed_frame_checks_its_three_frames_first() {
+    let mut tree = tree();
+    tree.take_moving(
+        &publisher("base"),
+        &moving(10, vec![transform("odom", "base", [0.0; 3], 0.0)]),
+    )
+    .unwrap();
+    let at = |nanos| LookupTime::At(Stamp::from_nanos(nanos));
+    let unknown = |found: Result<Found, LookupError>| match found {
+        Err(LookupError::UnknownFrame { frame, .. }) => frame,
+        other => panic!("an unknown frame, not {other:?}"),
+    };
+    let (odom, base) = (frame("odom"), frame("base"));
+    let nowhere = frame("nowhere");
+    assert_eq!(
+        unknown(tree.lookup_through(&nowhere, at(10), &base, at(5), &odom)),
+        nowhere
+    );
+    assert_eq!(
+        unknown(tree.lookup_through(&base, at(10), &nowhere, at(10), &odom)),
+        nowhere
+    );
+    assert_eq!(
+        unknown(tree.lookup_through(&base, at(10), &base, at(10), &nowhere)),
+        nowhere
+    );
+    assert_eq!(
+        unknown(tree.lookup_through(&nowhere, at(10), &nowhere, at(5), &nowhere)),
+        nowhere
+    );
+    assert!(
+        tree.lookup_through(&base, at(10), &base, at(10), &odom)
+            .is_ok()
+    );
+    assert!(tree.knows(&odom) && !tree.knows(&nowhere));
 }
 
 #[test]

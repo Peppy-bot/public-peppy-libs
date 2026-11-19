@@ -87,13 +87,15 @@ under `tf2/`.
 | Where both chains stop at a transform with no value, the error is the transform whose newest sample is newer, the source's on a tie | `src/buffer_core.cpp:426-445` |
 | Where the chains do not meet, the frames are in two trees; a missing value comes before that | `src/buffer_core.cpp:481-493`, `:1047-1058` |
 | The composition is tf2's `TransformAccum`, quaternion and vector arithmetic operation for operation | `src/buffer_core.cpp:524-596`, `include/tf2/LinearMath/Quaternion.hpp:144-151`, `:427-443`, `:502-507` |
+| A lookup of the source at one time in the target at another (`lookup_through`) checks that the tree knows its target, its source and its fixed frame, in that order, then goes through the fixed frame: the source in the fixed frame at the source's time and the fixed frame in the target at the target's time, each made a `Transform` by `setRotation`, then their `Transform` product, its rotation read back by `getRotation`; its time is the target side's | `src/buffer_core.cpp:750-781`, `:794-805`, `:880-898`, `:132-155`, `include/tf2/LinearMath/Transform.hpp:124-128`, `:169-172`, `:252-257` |
+| The root of a frame's chain at a time (`root_at`) is the frame where the walk of a lookup's source from it ends; a transform with no value at the time fails it as a lookup fails, and tf2's walk stops at that transform | `src/buffer_core.cpp:352-397` |
 | The latest time of a lookup is the earliest of the newest stamps of the moving transforms on both chains up to their nearest common ancestor; a chain of static transforms has none, and its lookup holds at every time | `src/buffer_core.cpp:1112-1261` |
 
 `tests/ros_reference_transform_lookup.rs` holds the crate to these rules against tf2
 itself, on the transform lookup scenarios of the ROS reference harness
-(`ros_reference/`): every transform taken or refused as tf2 takes it, every lookup refused
-with the kind of error tf2 throws, and every other lookup at tf2's time, within 1e-9 m and
-1e-9 rad of tf2's transform.
+(`ros_reference/`): every transform taken or refused as tf2 takes it, every lookup and every
+lookup through a fixed frame refused with the kind of error tf2 throws, and every other one
+at tf2's time, within 1e-9 m and 1e-9 rad of tf2's transform.
 
 ## Where it departs from tf2
 

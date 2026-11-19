@@ -15,7 +15,10 @@
 //!   sets, and a static transform for every time. [`FrameTree::clear_moving`] drops every
 //!   moving sample, as a consumer does when its clock goes back. [`FrameTree::lookup`]
 //!   gives the source frame's place in the target frame at a time or at the latest time
-//!   common to the chain, interpolated and composed in tf2's arithmetic.
+//!   common to the chain, interpolated and composed in tf2's arithmetic;
+//!   [`FrameTree::lookup_through`] gives the source at one time in the target at another
+//!   through a fixed frame, as tf2's advanced lookup composes its two halves, and
+//!   [`FrameTree::root_at`] the frame where a frame's chain of parents ends.
 //! - [`LookupError`]: an unknown frame, no chain between the frames, a transform with no
 //!   value at the time, and transforms that two publishers hold or that form a cycle, each
 //!   naming its frames.

@@ -2,7 +2,8 @@
 //! scenario's transforms in order, a moving transform at its stamp, a static transform as
 //! tf2_ros's static broadcaster sends it, with every static transform sent before it, and
 //! answers each lookup of the scenario with the source frame's transform in the target
-//! frame and the time it holds at, or with the error it throws.
+//! frame and the time it holds at, or with the error it throws, and each lookup through a
+//! fixed frame, tf2's advanced `lookupTransform`, likewise.
 
 use crate::{Kind, read_reference, read_scenario, scenario_names};
 use serde::Deserialize;
@@ -24,7 +25,8 @@ struct Scenario {
     steps: Vec<Step>,
 }
 
-/// One step of a scenario: a transform sent moving at its stamp or static, or a lookup.
+/// One step of a scenario: a transform sent moving at its stamp or static, a lookup, or a
+/// lookup through a fixed frame.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 enum Step {
@@ -47,6 +49,15 @@ enum Step {
         target: String,
         source: String,
         time: Option<u64>,
+    },
+    /// A lookup of `source` at `source_time` in `target` at `target_time` through `fixed`,
+    /// each time in nanoseconds or the latest time where it is null.
+    LookupThrough {
+        target: String,
+        target_time: Option<u64>,
+        source: String,
+        source_time: Option<u64>,
+        fixed: String,
     },
 }
 
@@ -136,6 +147,16 @@ pub enum Case {
         time: Option<u64>,
         answer: Result<Found, Tf2Error>,
     },
+    /// A lookup of `source` at `source_time` in `target` at `target_time` through `fixed`,
+    /// each time in nanoseconds or the latest time, and tf2's answer.
+    LookupThrough {
+        target: String,
+        target_time: Option<u64>,
+        source: String,
+        source_time: Option<u64>,
+        fixed: String,
+        answer: Result<Found, Tf2Error>,
+    },
 }
 
 /// A transform lookup scenario paired with its reference output.
@@ -175,11 +196,27 @@ impl Cases {
     }
 }
 
+/// tf2's answer to a step: whether it took a transform, or its answer to a lookup.
+enum Answered {
+    Taken(bool),
+    Looked(Result<Found, Tf2Error>),
+}
+
+impl From<Answer> for Answered {
+    fn from(answer: Answer) -> Self {
+        match answer {
+            Answer::Taken(Taken { taken }) => Answered::Taken(taken),
+            Answer::Found(found) => Answered::Looked(Ok(found)),
+            Answer::Refused(Refused { error }) => Answered::Looked(Err(error)),
+        }
+    }
+}
+
 fn pair(name: &str, steps: Vec<Step>, answers: Vec<Answer>) -> Vec<Case> {
     assert_eq!(steps.len(), answers.len(), "{name}: one answer per step");
     steps
         .into_iter()
-        .zip(answers)
+        .zip(answers.into_iter().map(Answered::from))
         .enumerate()
         .map(|(index, step)| match step {
             (
@@ -190,7 +227,7 @@ fn pair(name: &str, steps: Vec<Step>, answers: Vec<Answer>) -> Vec<Case> {
                     position,
                     orientation,
                 },
-                Answer::Taken(Taken { taken }),
+                Answered::Taken(taken),
             ) => Case::Moving {
                 stamp,
                 transform: SentTransform {
@@ -208,7 +245,7 @@ fn pair(name: &str, steps: Vec<Step>, answers: Vec<Answer>) -> Vec<Case> {
                     position,
                     orientation,
                 },
-                Answer::Taken(Taken { taken }),
+                Answered::Taken(taken),
             ) => Case::Static {
                 transform: SentTransform {
                     parent,
@@ -224,25 +261,29 @@ fn pair(name: &str, steps: Vec<Step>, answers: Vec<Answer>) -> Vec<Case> {
                     source,
                     time,
                 },
-                Answer::Found(found),
+                Answered::Looked(answer),
             ) => Case::Lookup {
                 target,
                 source,
                 time,
-                answer: Ok(found),
+                answer,
             },
             (
-                Step::Lookup {
+                Step::LookupThrough {
                     target,
+                    target_time,
                     source,
-                    time,
+                    source_time,
+                    fixed,
                 },
-                Answer::Refused(Refused { error }),
-            ) => Case::Lookup {
+                Answered::Looked(answer),
+            ) => Case::LookupThrough {
                 target,
+                target_time,
                 source,
-                time,
-                answer: Err(error),
+                source_time,
+                fixed,
+                answer,
             },
             (step, _) => panic!("{name}: step {index}, {step:?}, has an answer of another step"),
         })

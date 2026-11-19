@@ -19,6 +19,7 @@ use std::time::SystemTime;
 
 use crate::arithmetic;
 use crate::frame::{FrameName, FrameNameError, Stamp, Start, TimeError};
+use crate::transform::Transform;
 
 /// tf2's tolerance on a quaternion's squared norm: an orientation whose squared norm
 /// differs from 1 by this much or more is refused (buffer_core.cpp:66, 250-255).
@@ -53,6 +54,17 @@ impl Placement {
 
     pub fn orientation(&self) -> [f64; 4] {
         self.orientation
+    }
+
+    /// The placement as tf2's transform, as tf2 makes the transform of a lookup's answer.
+    pub fn transform(&self) -> Transform {
+        Transform::of_unit(self.position, self.orientation)
+    }
+
+    /// The placement of `transform`: its origin, and its orientation as tf2's `getRotation`
+    /// reads it.
+    pub(crate) fn of_transform(transform: &Transform) -> Self {
+        Self::new(transform.origin(), transform.orientation())
     }
 }
 

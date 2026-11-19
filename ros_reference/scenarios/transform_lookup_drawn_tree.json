@@ -51,6 +51,14 @@
     {"step":"moving","stamp":1691242051,"parent":"frame_0","child":"frame_1","position":[0.9921612578092469,0.905169522205657,-0.3944162263740778],"orientation":[-0.9132368471649427,0.31480566597413234,-0.2576833338760274,0.02225203571258288]},
     {"step":"lookup","target":"frame_5","source":"frame_7","time":null},
     {"step":"lookup","target":"frame_7","source":"frame_6","time":1314177782},
-    {"step":"lookup","target":"frame_2","source":"frame_4","time":1578988861}
+    {"step":"lookup","target":"frame_2","source":"frame_4","time":1578988861},
+    {"step":"lookup_through","target":"frame_5","target_time":1395273713,"source":"frame_4","source_time":null,"fixed":"frame_7"},
+    {"step":"lookup_through","target":"frame_5","target_time":1691242051,"source":"frame_0","source_time":null,"fixed":"frame_2"},
+    {"step":"lookup_through","target":"frame_5","target_time":1510347243,"source":"frame_2","source_time":1595896287,"fixed":"frame_1"},
+    {"step":"lookup_through","target":"frame_0","target_time":1691242051,"source":"frame_3","source_time":null,"fixed":"frame_2"},
+    {"step":"lookup_through","target":"frame_4","target_time":null,"source":"frame_1","source_time":null,"fixed":"frame_6"},
+    {"step":"lookup_through","target":"frame_7","target_time":1386841703,"source":"frame_6","source_time":null,"fixed":"frame_2"},
+    {"step":"lookup_through","target":"frame_7","target_time":1595896287,"source":"frame_2","source_time":1091208980,"fixed":"frame_5"},
+    {"step":"lookup_through","target":"frame_6","target_time":null,"source":"frame_7","source_time":null,"fixed":"frame_4"}
   ]
 }

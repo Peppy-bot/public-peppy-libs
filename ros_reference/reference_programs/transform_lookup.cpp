@@ -43,17 +43,20 @@ geometry_msgs::msg::TransformStamped transform_of(const nlohmann::json& step) {
   return transform;
 }
 
-// The answer to a lookup: the source's transform in the target and the time it holds at,
-// null for the time zero, or the error, by the exception tf2 throws. tf2 throws a
-// LookupException both for a frame it does not hold and for a loop; the message tells
+// The time a step names in nanoseconds, or tf2's time zero, the latest time, for null.
+tf2::TimePoint time_of(const nlohmann::json& time) {
+  return time.is_null() ? tf2::TimePointZero
+                        : tf2::TimePoint(std::chrono::nanoseconds(time.get<std::int64_t>()));
+}
+
+// The answer of `look`, a lookup of tf2's: the source's transform in the target and the time
+// it holds at, null for the time zero, or the error, by the exception tf2 throws. tf2 throws
+// a LookupException both for a frame it does not hold and for a loop; the message tells
 // them apart (buffer_core.cpp:149-156, 398-406).
-nlohmann::json lookup(const tf2::BufferCore& buffer, const nlohmann::json& step) {
-  const auto time = step.at("time").is_null()
-                        ? tf2::TimePointZero
-                        : tf2::TimePoint(std::chrono::nanoseconds(step.at("time").get<std::int64_t>()));
+template <typename Look>
+nlohmann::json answer_of(const Look& look) {
   try {
-    const auto found = buffer.lookupTransform(step.at("target").get<std::string>(),
-                                              step.at("source").get<std::string>(), time);
+    const geometry_msgs::msg::TransformStamped found = look();
     const auto& t = found.transform;
     const std::int64_t stamp =
         std::int64_t{found.header.stamp.sec} * nanoseconds_per_second + found.header.stamp.nanosec;
@@ -74,6 +77,26 @@ nlohmann::json lookup(const tf2::BufferCore& buffer, const nlohmann::json& step)
     const bool loop = std::string(error.what()).find("contains a loop") != std::string::npos;
     return {{"error", loop ? "loop" : "unknown_frame"}};
   }
+}
+
+// The answer to a lookup of the source in the target at the step's time.
+nlohmann::json lookup(const tf2::BufferCore& buffer, const nlohmann::json& step) {
+  return answer_of([&] {
+    return buffer.lookupTransform(step.at("target").get<std::string>(),
+                                  step.at("source").get<std::string>(), time_of(step.at("time")));
+  });
+}
+
+// The answer to a lookup through a fixed frame, tf2's advanced lookupTransform: the source at
+// source_time in the fixed frame, then the fixed frame in the target at target_time
+// (buffer_core.cpp:750-781, 880-898).
+nlohmann::json lookup_through(const tf2::BufferCore& buffer, const nlohmann::json& step) {
+  return answer_of([&] {
+    return buffer.lookupTransform(
+        step.at("target").get<std::string>(), time_of(step.at("target_time")),
+        step.at("source").get<std::string>(), time_of(step.at("source_time")),
+        step.at("fixed").get<std::string>());
+  });
 }
 
 }  // namespace
@@ -112,6 +135,8 @@ nlohmann::json transform_lookup(const nlohmann::json& scenario, Inputs&) {
       answers.push_back({{"taken", taken}});
     } else if (kind == "lookup") {
       answers.push_back(lookup(buffer, step));
+    } else if (kind == "lookup_through") {
+      answers.push_back(lookup_through(buffer, step));
     } else {
       throw std::runtime_error("no step is named " + kind);
     }
