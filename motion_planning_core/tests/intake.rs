@@ -137,7 +137,7 @@ fn frame_of(joints: &Joints) -> Vec<u8> {
         PerArm::<(), ARMS>::ids().flat_map(|id| {
             let posed = OPENARM_V2.arms[id].chain().at(&arm(joints, id));
             riders[id].iter().map(move |finger| {
-                let hand = posed.link_pose_world(finger.segment);
+                let hand = posed.link_pose_root(finger.segment);
                 let RiderBody::Part(part) = finger.body else {
                     panic!("a finger is a part of the robot");
                 };
@@ -330,7 +330,7 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
     let mut map = empty_map();
     let (now, then) = (bent(0.0), bent(0.5));
     let left = &OPENARM_V2.arms[LEFT];
-    let hand_at = |joints: &Joints| left.chain().world_ee_pose(&arm(joints, LEFT));
+    let hand_at = |joints: &Joints| left.chain().root_ee_pose(&arm(joints, LEFT));
     let held_at = |joints: &Joints| -> [f64; 3] {
         (hand_at(joints) * Point3::new(0.0, 0.0, 0.08))
             .coords

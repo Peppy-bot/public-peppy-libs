@@ -92,7 +92,7 @@ pub fn reach_bound<const N: usize>(chain: &Chain<N>) -> f64 {
     spacing + travel
 }
 
-/// A pose no configuration reaches, in the world frame targets are given in: any
+/// A pose no configuration reaches, in the root frame targets are given in: any
 /// orientation, at a point past the chain's reach bound by [`PAST_REACH_M`], out to a
 /// reach beyond that, from the base origin.
 #[hegel::composite]
@@ -102,7 +102,7 @@ pub fn unreachable_poses<const N: usize>(tc: &TestCase, chain: &Chain<N>) -> Iso
     let distance: f64 = tc.draw(gs::floats().min_value(nearest).max_value(nearest + reach));
     let position = tc.draw(unit_vectors()) * distance;
     let rotation = UnitQuaternion::from_rotation_matrix(&tc.draw(rotations()));
-    chain.world_pose(&Isometry3::from_parts(
+    chain.root_pose(&Isometry3::from_parts(
         Translation3::from(position),
         rotation,
     ))

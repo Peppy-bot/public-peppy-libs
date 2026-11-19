@@ -23,7 +23,7 @@ let arm = Arm::from_urdf(urdf, "openarm_left_link0")?;
 
 let posed = arm.at(&q);
 let ee = posed.ee_pose();                 // arm base frame
-let tau = posed.gravity_torques();        // world frame, payload included
+let tau = posed.gravity_torques();        // root frame, payload included
 
 let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 ```
@@ -63,7 +63,8 @@ zero misses.
 ## Frames
 
 FK and IK work in the **arm base frame** (the arm's own mounting link). Gravity
-and Coriolis compute in the **world frame**, because gravity is a world quantity.
+and Coriolis compute in the **root frame**, the frame of the URDF's root link,
+with gravity along its -Z.
 The fixed transform between them is captured at load from the URDF, so for
 gravity to point the right way the URDF must carry the tree from its root down
 to the mount, not just the bare arm chain.

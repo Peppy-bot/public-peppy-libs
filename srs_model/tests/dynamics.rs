@@ -77,7 +77,7 @@ fn gravity_matches_potential_energy_gradient_both_sides() {
             let potential = |q: &JointVec| -> f64 {
                 let posed = arm.at(q);
                 (0..ARM_DOF)
-                    .map(|i| posed.mass(i) * GRAVITY_MAGNITUDE * posed.com_world(i).z)
+                    .map(|i| posed.mass(i) * GRAVITY_MAGNITUDE * posed.com_root(i).z)
                     .sum()
             };
             let tau = arm.at(&q).gravity_torques();

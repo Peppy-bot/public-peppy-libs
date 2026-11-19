@@ -46,7 +46,7 @@ fn segment_of<const N: usize>(tc: &TestCase) -> usize {
 
 /// Asserts that `chain` at `q` holds its end effector within the convergence of `target`.
 fn assert_stands_at<const N: usize>(chain: &Chain<N>, q: &[f64; N], target: &Isometry3<f64>) {
-    let reached = chain.world_ee_pose(q);
+    let reached = chain.root_ee_pose(q);
     let moved = (reached.translation.vector - target.translation.vector).norm();
     let turned = reached.rotation.angle_to(&target.rotation);
     assert!(moved <= CONVERGED + TOLERANCE, "{q:?} misses by {moved} m");
@@ -64,7 +64,7 @@ fn an_answer_stands_at_its_target_inside_the_limits(tc: TestCase) {
         fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
             let chain = chain_of::<N>(robot);
             let limits = chain.limits();
-            let target = chain.world_ee_pose(&tc.draw(configs(limits)));
+            let target = chain.root_ee_pose(&tc.draw(configs(limits)));
             let seed = tc.draw(configs(limits));
             let found = end_effector_solver(&chain).search(
                 seed,
@@ -95,7 +95,7 @@ fn a_seed_at_the_target_is_the_answer(tc: TestCase) {
             let mut draws = Draws::new(DRAWS);
             let answer = end_effector_solver(&chain).search(
                 q,
-                &chain.world_ee_pose(&q),
+                &chain.root_ee_pose(&q),
                 &mut draws,
                 &|_| {
                     offers.set(offers.get() + 1);
@@ -122,7 +122,7 @@ fn a_budget_one_descent_spends_starts_no_other(tc: TestCase) {
             let offers = Cell::new(0_usize);
             let answer = end_effector_solver(&chain).search(
                 q,
-                &chain.world_ee_pose(&q),
+                &chain.root_ee_pose(&q),
                 &mut Draws::new(DRAWS),
                 &|_| {
                     offers.set(offers.get() + 1);
@@ -147,7 +147,7 @@ fn identical_searches_answer_identically(tc: TestCase) {
             let chain = chain_of::<N>(robot);
             let limits = chain.limits();
             let solver = end_effector_solver(&chain);
-            let target = chain.world_ee_pose(&tc.draw(configs(limits)));
+            let target = chain.root_ee_pose(&tc.draw(configs(limits)));
             let seed = tc.draw(configs(limits));
             let search = || {
                 let mut draws = Draws::new(DRAWS);
@@ -155,7 +155,7 @@ fn identical_searches_answer_identically(tc: TestCase) {
                 (answer, draws.next_bits())
             };
             let first = search();
-            let unrelated = chain.world_ee_pose(&tc.draw(configs(limits)));
+            let unrelated = chain.root_ee_pose(&tc.draw(configs(limits)));
             let _ = solver.search(
                 tc.draw(configs(limits)),
                 &unrelated,
@@ -274,7 +274,7 @@ fn a_descent_leaves_free_what_it_does_not_aim_at(tc: TestCase) {
         fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
             let chain = chain_of::<N>(robot);
             let q = tc.draw(configs(chain.limits()));
-            let (here, elsewhere) = (chain.world_ee_pose(&q), tc.draw(poses()));
+            let (here, elsewhere) = (chain.root_ee_pose(&q), tc.draw(poses()));
             let search = |aims: Aims, target: Isometry3<f64>| {
                 IkSolver::new(&chain, ChainFrame::EndEffector, aims, Ends::Converged).search(
                     q,
@@ -300,7 +300,7 @@ fn a_descent_leaves_free_what_it_does_not_aim_at(tc: TestCase) {
 fn a_position_first_descent_keeps_the_position_that_an_even_one_spends() {
     let chain = so101();
     let start = [0.3, -0.4, 0.8, 0.6, 0.2];
-    let reached = chain.world_ee_pose(&start);
+    let reached = chain.root_ee_pose(&start);
     let turned = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3);
     let target = Isometry3::from_parts(reached.translation, reached.rotation * turned);
     let miss = |aims: Aims| {
@@ -313,7 +313,7 @@ fn a_position_first_descent_keeps_the_position_that_an_even_one_spends() {
                 ONE_DESCENT,
             )
             .expect("the end of the search's one descent");
-        (chain.world_ee_pose(&end).translation.vector - target.translation.vector).norm()
+        (chain.root_ee_pose(&end).translation.vector - target.translation.vector).norm()
     };
     assert!(
         miss(Aims::PositionFirst) * 10.0 < miss(Aims::Both),
@@ -362,12 +362,12 @@ fn a_frame_stands_where_the_chain_puts_it(tc: TestCase) {
             let posed = chain.at(&q);
             assert_eq!(
                 ChainFrame::EndEffector.pose_at(&posed),
-                chain.world_ee_pose(&q)
+                chain.root_ee_pose(&q)
             );
             let (segment, offset) = (segment_of::<N>(tc), tc.draw(poses()));
             assert_eq!(
                 ChainFrame::OnSegment { segment, offset }.pose_at(&posed),
-                posed.link_pose_world(segment) * offset
+                posed.link_pose_root(segment) * offset
             );
         }
     }
@@ -403,7 +403,7 @@ fn a_search_goes_on_from_drawn_configurations_until_its_caller_accepts() {
     const REFUSED: usize = 3;
     let chain = openarm();
     let q = Draws::new(DRAWS).within(&chain.limits());
-    let target = chain.world_ee_pose(&q);
+    let target = chain.root_ee_pose(&q);
     let offers = Cell::new(0_usize);
     let answer = end_effector_solver(&chain)
         .search(

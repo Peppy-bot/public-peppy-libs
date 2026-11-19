@@ -219,7 +219,7 @@ pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()
         .flat_map(|rider| {
-            let pose = posed.link_pose_world(rider.segment) * rider.offset;
+            let pose = posed.link_pose_root(rider.segment) * rider.offset;
             let RiderBody::Part(part) = rider.body else {
                 panic!("a finger is a part of the robot");
             };

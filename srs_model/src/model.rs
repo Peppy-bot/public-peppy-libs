@@ -37,9 +37,9 @@ pub(crate) struct ArmModel {
     pub l_su: f64,
     /// Forearm length |E*-W|.
     pub l_uw: f64,
-    /// Constant `world -> arm base` transform (this arm's fixed mounting). The
-    /// IK/FK work in the arm base frame; this converts world/body-frame poses.
-    pub base_from_world: Isometry3<f64>,
+    /// Constant `root -> arm base` transform (this arm's fixed mounting). The
+    /// IK/FK work in the arm base frame; this converts root-frame poses.
+    pub base_from_root: Isometry3<f64>,
 }
 
 /// Tolerance (meters) for the SRS coincidence checks in [`ArmModel::from_fk`]:
@@ -142,18 +142,18 @@ impl ArmModel {
             wrist_home,
             l_su: (shoulder - elbow_home).norm(),
             l_uw: (elbow_home - wrist_home).norm(),
-            base_from_world: fk.base_from_world(),
+            base_from_root: fk.base_from_root(),
         })
     }
 
-    /// Convert a world/body-frame pose into the arm base frame the solver uses.
-    pub fn base_pose(&self, world: &Isometry3<f64>) -> Isometry3<f64> {
-        self.base_from_world * world
+    /// Convert a root-frame pose into the arm base frame the solver uses.
+    pub fn base_pose(&self, in_root: &Isometry3<f64>) -> Isometry3<f64> {
+        self.base_from_root * in_root
     }
 
-    /// Convert an arm-base-frame pose (e.g. FK output) back into the world frame.
-    pub fn world_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
-        self.base_from_world.inverse() * base
+    /// Convert an arm-base-frame pose (e.g. FK output) back into the root frame.
+    pub fn root_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
+        self.base_from_root.inverse() * base
     }
 }
 
@@ -322,20 +322,20 @@ mod tests {
     }
 
     #[test]
-    fn world_base_transform_matches_mount_and_round_trips() {
+    fn root_base_transform_matches_mount_and_round_trips() {
         use nalgebra::{Point3, Translation3, UnitQuaternion};
         let m = v1_model("left");
-        // The arm base (link0) origin sits at the body->link0 mount in world:
-        // (0, 0.031, 0.698). world->base must map that point to the origin.
+        // The arm base (link0) origin sits at the body->link0 mount in the root frame:
+        // (0, 0.031, 0.698). root->base must map that point to the origin.
         let base_origin = Point3::new(0.0, 0.031, 0.698);
-        let in_base = m.base_from_world.transform_point(&base_origin);
+        let in_base = m.base_from_root.transform_point(&base_origin);
         assert!(in_base.coords.norm() < 1e-6, "base origin -> {:?}", in_base);
-        // base_pose / world_pose round-trip an arbitrary pose exactly.
+        // base_pose / root_pose round-trip an arbitrary pose exactly.
         let p = Isometry3::from_parts(
             Translation3::new(0.1, -0.2, 0.6),
             UnitQuaternion::from_euler_angles(0.3, -0.4, 0.5),
         );
-        let back = m.world_pose(&m.base_pose(&p));
+        let back = m.root_pose(&m.base_pose(&p));
         assert!((back.translation.vector - p.translation.vector).norm() < 1e-9);
         assert!(back.rotation.angle_to(&p.rotation) < 1e-9);
     }

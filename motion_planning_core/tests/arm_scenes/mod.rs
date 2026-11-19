@@ -246,7 +246,7 @@ impl<const N: usize, const K: usize> Standing<N, K> {
         )
         .expect("the chain to the grasp link")
         .chain()
-        .world_ee_pose(&[0.0; N])
+        .root_ee_pose(&[0.0; N])
     }
 
     /// What a plan of `arms` from `start`, which holds their joints in their order, meets
@@ -265,7 +265,7 @@ impl<const N: usize, const K: usize> Standing<N, K> {
         let at = placed::<N, K>(&self.planned, start);
         let parts = self
             .model
-            .world_pieces(&at)
+            .pieces_in_root(&at)
             .expect("finite joint positions")
             .into_iter()
             .filter(|(link, _)| !moving.contains(link))
@@ -799,7 +799,7 @@ pub fn in_the_scene<const N: usize, const D: usize, const K: usize, R>(
         Some(k) => arms[k]
             .geometry()
             .chain()
-            .world_ee_pose(&Arms::<N, D>::slice(start, k)),
+            .root_ee_pose(&Arms::<N, D>::slice(start, k)),
         None => standing.idle_grasp_pose(link),
     };
     let planning = planning_scene_of(arms, &tips, scene, &grasp_pose, &mut map);

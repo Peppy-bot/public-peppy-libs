@@ -31,7 +31,7 @@ fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> StepLimits<N> 
 }
 
 fn tip<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> Isometry3<f64> {
-    chain.world_ee_pose(q)
+    chain.root_ee_pose(q)
 }
 
 /// Peak tip speed (m/s) and slew (rad/s) over a run of steps toward `target`,

@@ -2,7 +2,7 @@
 //! it that [`crate::Chain`] needs.
 //!
 //! A URDF is a tree of links joined by joints. This flattens it into an arena -
-//! links and joints in `Vec`s, adjacency by index - and computes world
+//! links and joints in `Vec`s, adjacency by index - and computes root-frame
 //! transforms by composing `parent * origin * joint_motion` down a path. That is
 //! the whole of it: no interior mutability, no transform cache to invalidate, no
 //! shared ownership. A [`Chain`] is plain data, so forward kinematics is a pure

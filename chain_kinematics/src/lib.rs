@@ -39,9 +39,9 @@
 //! and [`pose_of_origin`] reads a URDF `<origin>`.
 //!
 //! Frames: forward kinematics reports poses in the **base frame** named by the
-//! spec, and [`Chain::base_from_world`] relates that to the URDF root for a
-//! caller that needs the world frame (gravity, or composing two chains of one
-//! robot).
+//! spec, and [`Chain::base_from_root`] relates that to the **root frame**, the
+//! frame of the URDF's root link, for a caller that needs it (gravity, or
+//! composing two chains of one robot).
 //!
 //! Evidence for the forward kinematics: at every configuration of the forward
 //! kinematics scenarios of the ROS reference harness (`ros_reference`), the

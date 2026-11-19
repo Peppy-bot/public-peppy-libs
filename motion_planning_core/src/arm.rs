@@ -207,12 +207,12 @@ impl<'a, const N: usize> Arm<'a, N> {
 /// joint: where a goal of the grasp point and an object attached to the grasp link ride.
 pub(crate) fn grasp_frame<const N: usize>(chain: &Chain<N>) -> Isometry3<f64> {
     let zero = [0.0; N];
-    chain.at(&zero).link_pose_world(N - 1).inverse() * chain.world_ee_pose(&zero)
+    chain.at(&zero).link_pose_root(N - 1).inverse() * chain.root_ee_pose(&zero)
 }
 
 /// Where `rider` stands in the frame of the URDF root with its chain posed at `posed`.
 pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Isometry3<f64> {
-    posed.link_pose_world(rider.segment) * rider.offset
+    posed.link_pose_root(rider.segment) * rider.offset
 }
 
 /// The bodies of `rider` standing at `pose` in the frame of the URDF root: each of a
@@ -241,7 +241,7 @@ fn rider_bodies<'a>(rider: &Rider<'a>, pose: Isometry3<f64>) -> impl Iterator<It
 fn reach_of<const N: usize>(geometry: &ChainGeometry<N>, riders: &[Rider]) -> [f64; N] {
     let chain = geometry.chain();
     let posed = chain.at(&[0.0; N]);
-    let origin = |j: usize| posed.origin_world(j);
+    let origin = |j: usize| posed.origin_root(j);
     let limits = chain.limits();
     let prismatic = |j: usize| matches!(posed.kind(j), JointKind::Prismatic { .. });
     // The longest the distance from joint j's origin to joint j + 1's can be.

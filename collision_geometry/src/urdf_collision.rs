@@ -297,7 +297,7 @@ impl UrdfCollisions {
         entries.iter().map(|c| c.surface(meshes_dir)).collect()
     }
 
-    /// The collision surfaces of a world-fixed `link`, mapped into the URDF root frame
+    /// The collision surfaces of a `link` fixed to the root, mapped into the URDF root frame
     /// through its fixed mount chain. A link a movable joint carries is refused
     /// ([`GeometryError::NotFixedToTheRoot`]).
     pub fn fixed_surfaces_in_root(

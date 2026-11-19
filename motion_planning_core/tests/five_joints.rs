@@ -110,7 +110,7 @@ fn goals_met(goal_of: impl Fn(&Isometry3<f64>, &mut Draws) -> Goal) -> usize {
     let mut draws = Draws::new(SEED);
     (0..GOALS)
         .filter(|_| {
-            let goal = goal_of(&chain.world_ee_pose(&draws.within(&limits)), &mut draws);
+            let goal = goal_of(&chain.root_ee_pose(&draws.within(&limits)), &mut draws);
             let working = draws.within(&limits);
             (0..GOAL_SAMPLES).any(|_| {
                 sampler
@@ -220,7 +220,7 @@ fn a_goal_of_an_orientation_alone_is_met() {
 
 /// The fraction of the Cartesian path from `IN_ITS_PLANE` along `by`, the orientation kept.
 fn fraction_along(by: Vector3<f64>) -> f64 {
-    let start = ARM.chain().world_ee_pose(&IN_ITS_PLANE);
+    let start = ARM.chain().root_ee_pose(&IN_ITS_PLANE);
     let arms = Arms::<JOINTS, JOINTS>::new(vec![Arm::new(&description_arm().name, &ARM)], None);
     let waypoints = [Isometry3::from_parts(
         Translation3::from(start.translation.vector + by),

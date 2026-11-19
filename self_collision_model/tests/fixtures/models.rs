@@ -152,7 +152,7 @@ pub const OPENINGS: [f64; 3] = [0.0, 0.5, 1.0];
 /// power of them.
 pub const MOST_GRID_JOINTS: usize = 3;
 
-/// The joints that turn the body `link` in the world, each by its arm and its index, and
+/// The joints that turn the body `link` in the root frame, each by its arm and its index, and
 /// whether the body is a finger, which its gripper's opening moves too. A fixed body turns
 /// on none. `links` holds the links of each arm's chain ([`chain_links`]).
 pub fn joints_moving<const N: usize>(
@@ -186,7 +186,7 @@ pub fn distance_between<const N: usize, const K: usize>(
     a: &str,
     b: &str,
 ) -> f64 {
-    let bodies = model.world_pieces(q).expect("a finite configuration");
+    let bodies = model.pieces_in_root(q).expect("a finite configuration");
     let pieces = |name: &str| {
         &bodies
             .iter()

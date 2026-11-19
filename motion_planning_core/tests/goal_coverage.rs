@@ -52,7 +52,7 @@ fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_inval
     for pose_index in 0..POSES {
         let q: [f64; JOINTS] =
             std::array::from_fn(|i| limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit());
-        let pose = chain.world_ee_pose(&q);
+        let pose = chain.root_ee_pose(&q);
         // A seed in each branch: the drawn configuration with its limbs' middle joints
         // turned to each side of a quarter turn where their limits allow.
         let sides = |joint: usize| -> Vec<f64> {
@@ -166,7 +166,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
             let (Frame::Link { segment, offset } | Frame::Part { segment, offset }) = frame else {
                 unreachable!("each frame drawn is a link's or a part's")
             };
-            let pose = chain.at(&q).link_pose_world(segment) * offset;
+            let pose = chain.at(&q).link_pose_root(segment) * offset;
             let goal = Goal::new(
                 JOINTS,
                 Vec::new(),

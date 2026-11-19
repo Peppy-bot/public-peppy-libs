@@ -211,7 +211,7 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
     let mut model = SelfCollisionModel::<JOINTS, ARMS>::from_description(description, meshes)
         .expect("the self model of OpenArm v2");
     let at_zero: BTreeMap<String, Vec<Point3<f64>>> = model
-        .world_pieces(&[[0.0; JOINTS]; ARMS])
+        .pieces_in_root(&[[0.0; JOINTS]; ARMS])
         .expect("finite joint positions")
         .into_iter()
         .map(|(link, pieces)| {
@@ -753,7 +753,7 @@ fn on_its_side<const N: usize>(case: &Case) {
                     (Vector3::from(position)
                         - geometry
                             .chain()
-                            .world_ee_pose(&state(start))
+                            .root_ee_pose(&state(start))
                             .translation
                             .vector)
                         .norm()

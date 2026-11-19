@@ -1256,7 +1256,7 @@ mod tests {
                     touch_links: Vec::new(),
                     operation: "attach".to_string(),
                 },
-                |_| Some(geometry.chain().world_ee_pose(&q)),
+                |_| Some(geometry.chain().root_ee_pose(&q)),
                 &mut map,
             )
             .expect("the held object attaches to the tip");
@@ -1358,8 +1358,8 @@ mod tests {
         });
         let (q_first, q_second) = (Arms::<2, 4>::slice(&q, 0), Arms::<2, 4>::slice(&q, 1));
         let grasp = |link: &str| match link {
-            "link_2" => first.chain().world_ee_pose(&q_first),
-            _ => second.chain().world_ee_pose(&q_second),
+            "link_2" => first.chain().root_ee_pose(&q_first),
+            _ => second.chain().root_ee_pose(&q_second),
         };
         // Each object stands up to 12 cm off its arm's tip.
         let near_the_tip = |link: &str| -> [f64; 3] {

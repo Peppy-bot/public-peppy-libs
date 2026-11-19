@@ -125,7 +125,7 @@ fn gravity_is_the_potential_energy_gradient(tc: TestCase) {
             let potential = |q: &[f64; N]| -> f64 {
                 let posed = chain.at(q);
                 (0..N)
-                    .map(|segment| posed.mass(segment) * GRAVITY * posed.com_world(segment).z)
+                    .map(|segment| posed.mass(segment) * GRAVITY * posed.com_root(segment).z)
                     .sum()
             };
             let q = tc.draw(configs(chain.limits()));
@@ -164,19 +164,19 @@ fn the_coriolis_torques_are_lagrange_equations_of_the_kinetic_energy(tc: TestCas
                 let posed = chain.at(q);
                 (0..N)
                     .map(|segment| {
-                        let com = Point3::from(posed.com_world(segment));
+                        let com = Point3::from(posed.com_root(segment));
                         let velocity: Vector3<f64> = posed
-                            .point_world_jacobian(&com, segment)
+                            .point_root_jacobian(&com, segment)
                             .iter()
                             .zip(qdot)
                             .map(|(column, rate)| column * *rate)
                             .sum();
                         let spin: Vector3<f64> = (0..=segment)
                             .filter(|&joint| posed.kind(joint).turns())
-                            .map(|joint| posed.axis_world(joint) * qdot[joint])
+                            .map(|joint| posed.axis_root(joint) * qdot[joint])
                             .sum();
                         0.5 * (posed.mass(segment) * velocity.norm_squared()
-                            + spin.dot(&(posed.inertia_world(segment) * spin)))
+                            + spin.dot(&(posed.inertia_root(segment) * spin)))
                     })
                     .sum()
             };
@@ -285,14 +285,14 @@ fn the_joints_that_move_a_point_are_the_ones_above_it_on_the_chain(tc: TestCase)
             let (posed, posed_named) = (path_order.at(&q), named.at(&permuted));
 
             for segment in 0..N {
-                let point = Point3::from(posed.link_pose_world(segment).translation.vector);
+                let point = Point3::from(posed.link_pose_root(segment).translation.vector);
                 // The same segment, at the entry of `q` the named chain gives it.
                 let as_named = order
                     .iter()
                     .position(|&joint| joint == segment)
                     .expect("every path-order joint is named");
-                let want = posed.point_world_jacobian(&point, segment);
-                let got = posed_named.point_world_jacobian(&point, as_named);
+                let want = posed.point_root_jacobian(&point, segment);
+                let got = posed_named.point_root_jacobian(&point, as_named);
                 for (column, &joint) in got.iter().zip(&order) {
                     assert!(
                         (want[joint] - column).norm() < TOLERANCE,

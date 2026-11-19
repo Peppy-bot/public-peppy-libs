@@ -274,7 +274,7 @@ fn points_the_torso_mesh_leaves_empty_are_outside_its_pieces() {
     let torso_body = torso(&description(MODEL));
     let mut m = model();
     let pieces = m
-        .world_pieces(&posture(&description(MODEL), states::HOME))
+        .pieces_in_root(&posture(&description(MODEL), states::HOME))
         .expect("pieces");
     let torso: &Vec<Placed> = &pieces
         .iter()
@@ -308,7 +308,7 @@ fn fit_cost_report() {
     let build = build_start.elapsed();
 
     let mut rows: Vec<(String, usize, usize, f64)> = m
-        .world_pieces(&home)
+        .pieces_in_root(&home)
         .expect("pieces")
         .into_iter()
         .map(|(name, ps)| {

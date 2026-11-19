@@ -2357,7 +2357,7 @@ pub(crate) mod tests {
         };
         OrientationTarget {
             frame,
-            orientation: geometry.chain().at(q).link_pose_world(2).rotation
+            orientation: geometry.chain().at(q).link_pose_root(2).rotation
                 * nalgebra::UnitQuaternion::from_axis_angle(
                     &nalgebra::Vector3::x_axis(),
                     std::f64::consts::PI,

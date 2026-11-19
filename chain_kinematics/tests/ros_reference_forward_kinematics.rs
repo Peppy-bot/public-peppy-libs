@@ -1,4 +1,4 @@
-//! Forward kinematics against MoveIt: `Chain::at` gives the world pose of each link of a
+//! Forward kinematics against MoveIt: `Chain::at` gives the root-frame pose of each link of a
 //! serial chain read from a URDF, at a configuration of its joints. The evidence: at every
 //! configuration of each arm of every forward kinematics scenario of the ROS reference
 //! harness (the zero configuration, both limits, and configurations drawn within the
@@ -83,7 +83,7 @@ fn assert_arm_agrees_with_moveit<const N: usize>(robot: &Robot, case: &ArmCase, 
         let posed = kinematics.at(&q);
         let at = format!("{at} configuration {index}");
         for (i, moveit) in configuration.links.iter().enumerate() {
-            assert_pose_agrees(posed.link_name(i), &posed.link_pose_world(i), moveit, &at);
+            assert_pose_agrees(posed.link_name(i), &posed.link_pose_root(i), moveit, &at);
         }
         assert_pose_agrees(
             &case.arm.grasp_link,

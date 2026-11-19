@@ -295,7 +295,7 @@ fn goal_sampling_ends_once_its_failing_samples_reach_1000_less_its_goals() {
 
 /// The goal of the grasp point's pose at `q`, within 5 mm and 0.01 rad.
 fn pose_goal_at(q: &[f64; JOINTS]) -> Goal {
-    let pose = LEFT_ARM.chain().world_ee_pose(q);
+    let pose = LEFT_ARM.chain().root_ee_pose(q);
     Goal::new(
         JOINTS,
         Vec::new(),
@@ -331,7 +331,7 @@ fn a_goal_sample_sets_out_from_its_working_state() {
         if reached == TWO_BRANCH_POSES {
             break;
         }
-        let pose = chain.world_ee_pose(&q);
+        let pose = chain.root_ee_pose(&q);
         // The pose on the other shoulder branch, from a seed whose shoulder turns past
         // the quarter turn.
         let mut seed = q;
@@ -393,7 +393,7 @@ fn a_goal_sample_on_the_grasp_point_aims_at_its_orientation_too() {
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     for (k, q) in off_the_branch_seams(11).take(10).enumerate() {
-        let here = chain.world_ee_pose(&q);
+        let here = chain.root_ee_pose(&q);
         let goal = Goal::new(
             JOINTS,
             Vec::new(),

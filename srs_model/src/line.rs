@@ -46,16 +46,16 @@ impl LineSolver<ARM_DOF> for Descending<'_> {
     }
 
     fn pose(&self, q: &JointVec) -> Isometry3<f64> {
-        self.arm.world_ee_pose(q)
+        self.arm.root_ee_pose(q)
     }
 }
 
 /// The configurations of the straight line from the pose at `seed` to `end`, `seed`
 /// first and the end effector within `PRECISION` of the line at each and at the midpoint
 /// between each two; `None` when a step has no solution continuing the one before it, or cannot keep the
-/// precision. `end` is in the world frame.
+/// precision. `end` is in the root frame.
 pub fn plan_line(arm: &Arm, end: &Isometry3<f64>, seed: JointVec) -> Option<Vec<JointVec>> {
-    let start = arm.world_ee_pose(&seed);
+    let start = arm.root_ee_pose(&seed);
     let solver = Descending {
         arm,
         ik: IkSolver::new(

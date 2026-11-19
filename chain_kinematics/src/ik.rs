@@ -7,7 +7,7 @@
 //! is KDL's `CartToJnt` (:418-497):
 //!
 //! - The frame's miss is KDL's `diff` of its pose to the target: the translation to it,
-//!   and the rotation vector of the turn to it in the world frame (frames.inl:1129-1143).
+//!   and the rotation vector of the turn to it in the root frame (frames.inl:1129-1143).
 //!   The descent converges where the larger of the two norms is within `EPSILON`
 //!   (:441-449).
 //! - A step that lowers that error is taken from the configuration it reached: the SVD
@@ -108,11 +108,11 @@ pub enum ChainFrame {
 }
 
 impl ChainFrame {
-    /// The frame's pose in `posed`, in the world frame.
+    /// The frame's pose in `posed`, in the root frame.
     pub fn pose_at<const N: usize>(self, posed: &Posed<N>) -> Isometry3<f64> {
         match self {
-            Self::EndEffector => posed.base_from_world().inverse() * posed.ee_pose(),
-            Self::OnSegment { segment, offset } => posed.link_pose_world(segment) * offset,
+            Self::EndEffector => posed.base_from_root().inverse() * posed.ee_pose(),
+            Self::OnSegment { segment, offset } => posed.link_pose_root(segment) * offset,
         }
     }
 
@@ -195,7 +195,7 @@ impl<'a, const N: usize> IkSolver<'a, N> {
     }
 
     /// The first configuration that `accept` takes of the ends the search offers of its
-    /// descents toward `target`, in the world frame: of a descent from `seed`, then of each
+    /// descents toward `target`, in the root frame: of a descent from `seed`, then of each
     /// descent from a configuration drawn inside the limits, until the descents have made
     /// `iterations` passes, as KDL's `searchPositionIK` re-seeds after its first attempt and
     /// starts no descent once its time is out (kdl_kinematics_plugin.cpp:369-409), handing
@@ -301,7 +301,7 @@ impl<'a, const N: usize> IkSolver<'a, N> {
     }
 
     /// KDL's `diff` of the frame's pose in `posed` to `target`: the translation to it,
-    /// then the rotation vector of the turn to it, in the world frame
+    /// then the rotation vector of the turn to it, in the root frame
     /// (frames.inl:1129-1143).
     /// A component the descent does not aim at reads 0.
     fn miss(&self, posed: &Posed<N>, target: &Isometry3<f64>) -> Vector6<f64> {
@@ -370,7 +370,7 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         (scaled.transpose() * inner / scale).component_mul(weights)
     }
 
-    /// The Jacobian of the frame in `posed`, in the world frame about the frame's origin,
+    /// The Jacobian of the frame in `posed`, in the root frame about the frame's origin,
     /// as KDL's `ChainJntToJacSolver` gives the chain's with its reference point at the
     /// tip, in the base frame (chainjnttojacsolver.hpp:45-47): a column of 0 for a joint
     /// that does not move the frame.
@@ -380,10 +380,10 @@ impl<'a, const N: usize> IkSolver<'a, N> {
             ChainFrame::EndEffector => N,
             ChainFrame::OnSegment { segment, .. } => segment,
         };
-        let linear = posed.point_world_jacobian(&origin, segment);
+        let linear = posed.point_root_jacobian(&origin, segment);
         std::array::from_fn(|j| {
             let turn = if self.moving[j] && posed.kind(j).turns() {
-                posed.axis_world(j)
+                posed.axis_root(j)
             } else {
                 Vector3::zeros()
             };
@@ -554,13 +554,13 @@ mod tests {
     #[test]
     fn a_descent_converges_on_the_position_and_the_orientation_together() {
         let chain = left_arm();
-        let here = chain.world_ee_pose(&SEED);
+        let here = chain.root_ee_pose(&SEED);
         let target = Isometry3::from_parts(
             here.translation,
             here.rotation * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), TURN_RAD),
         );
         let descent = solver_of(&chain).descend(SEED, &target, &mut NoDraws);
-        let (end, reached) = (descent.end, chain.world_ee_pose(&descent.end));
+        let (end, reached) = (descent.end, chain.root_ee_pose(&descent.end));
         assert!(descent.converged, "{end:?}");
         assert!(
             (reached.translation.vector - target.translation.vector).norm() <= EPSILON,

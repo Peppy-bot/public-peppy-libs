@@ -139,7 +139,7 @@ impl<const N: usize> Held<'_, N> {
             return;
         };
         for j in (0..N).filter(|&j| self.turning[j]) {
-            row[self.arm * N + j] = axis.dot(&posed.axis_world(j));
+            row[self.arm * N + j] = axis.dot(&posed.axis_root(j));
         }
     }
 }

@@ -64,7 +64,7 @@ fn solid(min: Vector3<f64>, max: Vector3<f64>) -> Vec<[f64; 3]> {
 
 /// The grasp point of the left arm at `q`.
 fn hand(q: &[f64; JOINTS]) -> Vector3<f64> {
-    LEFT_ARM.chain().world_ee_pose(q).translation.vector
+    LEFT_ARM.chain().root_ee_pose(q).translation.vector
 }
 
 /// A map holding `points`, seen from above the robot.
@@ -284,7 +284,7 @@ fn a_short_pose_move_from_the_start_ends_on_its_branches() {
             break;
         }
         drawn += 1;
-        let pose = LEFT_ARM.chain().world_ee_pose(&start);
+        let pose = LEFT_ARM.chain().root_ee_pose(&start);
         let lowered = pose.translation.vector - Vector3::z() * LOWERING_M;
         let reached = ik.search(
             start,
@@ -2105,7 +2105,7 @@ fn scene_of_grasp_links(grasp_links: &[&str]) -> PlanningScene {
 
 /// The grasp point of the left arm at `q`.
 fn grasp_pose(q: &[f64; JOINTS]) -> Isometry3<f64> {
-    LEFT_ARM.chain().world_ee_pose(q)
+    LEFT_ARM.chain().root_ee_pose(q)
 }
 
 /// A shape of `kind` and `dimensions` centered `position` from its object's origin,
@@ -2371,7 +2371,7 @@ fn an_attached_item_is_carried_around_the_box() {
 /// The grasp point's frame at `q` moved `ahead_m` along the way from the hand's origin to
 /// the grasp point: past every link.
 fn ahead_of_the_grasp_point(q: &[f64; JOINTS], ahead_m: f64) -> Isometry3<f64> {
-    let hand = LEFT_ARM.chain().at(q).link_pose_world(JOINTS - 1);
+    let hand = LEFT_ARM.chain().at(q).link_pose_root(JOINTS - 1);
     let grasp = grasp_pose(q);
     let out = (grasp.translation.vector - hand.translation.vector).normalize();
     Isometry3::from_parts(
@@ -2399,7 +2399,7 @@ fn last_joint_at(angle: f64) -> [f64; JOINTS] {
 /// of the way that bisection finds.
 fn held_apart_from_its_arm(empty: &VoxelMap, q: &[f64; JOINTS], apart: f64) -> PlanningScene {
     let tcp = grasp_pose(q);
-    let joint = LEFT_ARM.chain().at(q).origin_world(JOINTS - 1);
+    let joint = LEFT_ARM.chain().at(q).origin_root(JOINTS - 1);
     let held_at = |t: f64| {
         let at = Isometry3::from_parts(
             Translation3::from(tcp.translation.vector + (joint - tcp.translation.vector) * t),
@@ -2830,7 +2830,7 @@ fn cube_mesh(side: f64) -> ShapeFields {
 fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
     let q = [0.0; JOINTS];
     let grasp = grasp_pose(&q);
-    let hand = LEFT_ARM.chain().at(&q).link_pose_world(JOINTS - 1);
+    let hand = LEFT_ARM.chain().at(&q).link_pose_root(JOINTS - 1);
     let out = (grasp.translation.vector - hand.translation.vector).normalize();
     let center = grasp.translation.vector + out * 0.15;
     let turned = UnitQuaternion::rotation_between(&Vector3::z(), &out).unwrap_or_else(|| {

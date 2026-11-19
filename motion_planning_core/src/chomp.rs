@@ -439,8 +439,7 @@ impl<'a, const N: usize, const D: usize> Chomp<'a, N, D> {
                 .iter()
                 .zip(&self.at[i])
                 .map(|(sphere, at)| {
-                    let position =
-                        posed[sphere.arm].link_pose_world(sphere.segment) * sphere.center;
+                    let position = posed[sphere.arm].link_pose_root(sphere.segment) * sphere.center;
                     let near = self
                         .field
                         .gradient(position.coords.into(), cap)
@@ -519,7 +518,7 @@ impl<'a, const N: usize, const D: usize> Chomp<'a, N, D> {
                 let curvature = projector * at.acceleration / (at.speed * at.speed);
                 let cartesian = at.speed * (projector * -at.gradient - at.potential * curvature);
                 let columns = posed[sphere.arm]
-                    .point_world_jacobian(&Point3::from(at.position), sphere.segment);
+                    .point_root_jacobian(&Point3::from(at.position), sphere.segment);
                 std::array::from_fn(|k| {
                     let (arm, joint) = (k / N, k % N);
                     if arm == sphere.arm {

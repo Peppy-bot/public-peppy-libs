@@ -163,7 +163,7 @@ fn found_at(
 fn walk_of_the_line(start: &[f64; JOINTS], end: [f64; 3]) -> Option<[f64; JOINTS]> {
     let chain = LEFT_ARM.chain();
     let ik = IkSolver::new(chain, ChainFrame::EndEffector, Aims::Both, Ends::Converged);
-    let pose = chain.world_ee_pose(start);
+    let pose = chain.root_ee_pose(start);
     let line = Vector3::from(end) - pose.translation.vector;
     let steps = (line.norm() / LINE_STEP_M).ceil() as usize;
     (1..=steps).try_fold(*start, |at, k| {
@@ -424,7 +424,7 @@ fn the_orientations_hold_in_either_order() {
     };
     let upper_arm = target(
         frame,
-        posed.link_pose_world(2).rotation,
+        posed.link_pose_root(2).rotation,
         UPPER_ARM_TOLERANCE_RAD,
         None,
     );

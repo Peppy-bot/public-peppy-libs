@@ -67,7 +67,7 @@ impl OnShape for ChecksEveryPairButTheDisabledOnes {
             "{id} checks each pair once"
         );
         let bodies: Vec<String> = model
-            .world_pieces(&posture(&description, states::HOME))
+            .pieces_in_root(&posture(&description, states::HOME))
             .expect("a finite configuration")
             .into_iter()
             .map(|(body, _)| body.to_string())

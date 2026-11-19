@@ -61,7 +61,7 @@ fn arms_compose_as_chains<const N: usize>(tc: &TestCase, id: &str) {
         let q = tc.draw(configs(chain.limits()));
         let positions: HashMap<&str, f64> = joints.iter().copied().zip(q).collect();
         let transforms = every_transform(&description, &positions);
-        let miss = composed(&transforms, &arm.grasp_link).inverse() * chain.world_ee_pose(&q);
+        let miss = composed(&transforms, &arm.grasp_link).inverse() * chain.root_ee_pose(&q);
         assert!(
             miss.translation.vector.norm() <= TOLERANCE && miss.rotation.angle() <= TOLERANCE,
             "{id} {}: the transforms miss the chain by {miss}",
