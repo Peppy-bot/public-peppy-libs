@@ -18,7 +18,6 @@
 
 mod common;
 
-use camera_core::pose::PlanarPose;
 use common::clouds::{
     EDGE_MARGIN_M, assert_clear_of_edges, assert_on_step, geometry_of, heights_of, insert_cloud,
     live_obstacles_over, padded_as_nav2,
@@ -26,6 +25,7 @@ use common::clouds::{
 use common::footprints::inside_by;
 use common::layers::lethal_cells;
 use common::poses::planar;
+use control_core::planar_pose::PlanarPose;
 use navigation_core::grid::GridGeometry;
 use navigation_core::obstacles::ObstacleHeights;
 use ros_reference::obstacle_projection::{Cases, Cloud};

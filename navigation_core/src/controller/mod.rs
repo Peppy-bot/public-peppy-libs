@@ -35,8 +35,8 @@
 mod collision;
 mod lookahead;
 
-use camera_core::pose::PlanarPose;
 use control_core::non_negative_finite::NonNegativeFinite;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use control_core::twist::Twist;
 

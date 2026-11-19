@@ -350,8 +350,8 @@ fn distortion_terms(k: &[f64; 5], x: f64, y: f64) -> (f64, f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pose::Pose;
     use crate::test_support::close;
+    use frame_tree::Transform;
 
     const IDEAL: Intrinsics<'static> = Intrinsics {
         width: 640,
@@ -683,7 +683,7 @@ mod tests {
         let color = Pinhole::parse(&color_intrinsics).expect("a valid model");
         let (angle, offset) = (0.02_f64, [-0.063, 0.001, 0.002]);
         let depth_to_color =
-            Pose::new(offset, [0.0, (angle / 2.0).sin(), 0.0, (angle / 2.0).cos()])
+            Transform::new(offset, [0.0, (angle / 2.0).sin(), 0.0, (angle / 2.0).cos()])
                 .expect("a unit quaternion");
         // A point the color camera sees, and the same point in the depth
         // frame, turned back about +Y by hand.
@@ -699,7 +699,7 @@ mod tests {
         };
         let (u, v) = pixel(&IDEAL, in_depth);
         let point = depth.deproject(u, v, in_depth[2], DepthModel::Z);
-        let shows = |pose: &Pose| color.project(pose.apply(point)).expect("in front");
+        let shows = |pose: &Transform| color.project(pose.apply(point)).expect("in front");
         let want = pixel(&color_intrinsics, seen);
         let got = shows(&depth_to_color);
         assert!(

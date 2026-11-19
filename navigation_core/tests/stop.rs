@@ -25,13 +25,14 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::{PlanarPose, Pose};
 use common::finite::positive;
 use common::footprints::padded;
 use common::layers::{layer, lethal_cells};
 use common::poses::{moved, on_base, planar};
+use control_core::planar_pose::PlanarPose;
 use control_core::twist::Twist;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -220,7 +221,7 @@ const EDGE_M: f64 = 1.41;
 /// points every 2 cm.
 fn ledge() -> LiveObstacles {
     let mut live = live_obstacles(footprint(), 1);
-    let sensor = Pose::new([1.0, 0.0, 1.2], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([1.0, 0.0, 1.2], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let points: Vec<[f32; 3]> = (0..150)
         .flat_map(|i| (0..50).map(move |j| (i, j)))
         .map(|(i, j)| {
@@ -317,13 +318,13 @@ fn occupied_of(live: &LiveObstacles, base: PlanarPose) -> Vec<[f64; 2]> {
 }
 
 /// A sensor `height_m` up over the base's center, facing along +X.
-fn sensor_on_base(height_m: f64) -> Pose {
-    Pose::new([0.0, 0.0, height_m], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
+fn sensor_on_base(height_m: f64) -> Transform {
+    Transform::new([0.0, 0.0, height_m], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
 }
 
 /// `points`, in the map's frame, seen from the sensor `sensor_on_base` of a base at `base`.
-fn frame_of(points: &[[f64; 3]], base: PlanarPose, sensor_on_base: &Pose) -> Vec<[f32; 3]> {
-    let to_sensor = base.to_pose().compose(sensor_on_base).inverse();
+fn frame_of(points: &[[f64; 3]], base: PlanarPose, sensor_on_base: &Transform) -> Vec<[f32; 3]> {
+    let to_sensor = base.to_transform().compose(sensor_on_base).inverse();
     points
         .iter()
         .map(|&point| to_sensor.apply(point).map(|c| c as f32))

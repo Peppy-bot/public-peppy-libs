@@ -6,7 +6,7 @@
 //! as Nav2's costmap_math gives it; and the distance between two poses and the
 //! length of a path, as nav2_util gives them.
 
-use camera_core::pose::{PlanarPose, normalize_angle};
+use control_core::planar_pose::{PlanarPose, normalize_angle};
 
 /// The turn from `from` to `to` of least magnitude, in (-pi, pi]: the angles
 /// library's `shortest_angular_distance`.
@@ -37,10 +37,10 @@ pub(crate) fn path_length(poses: &[PlanarPose]) -> f64 {
 
 /// The heading that the quaternion of a turn by `theta` about the plane's
 /// normal reads back: tf2's `setRPY(0, 0, theta)`, then `tf2::getYaw`
-/// ([`camera_core::pose::quaternion_of_yaw`] and
-/// [`camera_core::pose::yaw_of_quaternion`]).
+/// ([`frame_tree::arithmetic::quaternion_of_yaw`] and
+/// [`frame_tree::arithmetic::yaw_of_quaternion`]).
 pub(crate) fn heading(theta: f64) -> f64 {
-    camera_core::pose::yaw_of_quaternion(camera_core::pose::quaternion_of_yaw(theta))
+    frame_tree::arithmetic::yaw_of_quaternion(frame_tree::arithmetic::quaternion_of_yaw(theta))
 }
 
 #[cfg(test)]

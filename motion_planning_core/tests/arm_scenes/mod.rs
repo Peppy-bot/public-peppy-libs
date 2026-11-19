@@ -15,11 +15,11 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
     ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
@@ -550,7 +550,7 @@ pub fn map_of(size: f64, half: f64, boxes: &[VoxelBox]) -> VoxelMap {
     map.insert(
         &Scan {
             frame: &frame,
-            sensor: Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            sensor: Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
             points: &points,
             max_range_m: PositiveFinite::parse(MAX_RANGE_M).expect("a positive range"),
         },

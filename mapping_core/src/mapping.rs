@@ -102,7 +102,8 @@ use crate::occupancy_grid::{GridError, GridExtent, GridParameters};
 use crate::placed_scan::PlacedScan;
 use crate::saved_map::RoomMap;
 use crate::scan_matcher::{MatchParameters, MatcherError, MatcherSizes};
-use camera_core::pose::{PlanarPose, quaternion_of_yaw, yaw_of_quaternion};
+use control_core::planar_pose::PlanarPose;
+use frame_tree::arithmetic::{quaternion_of_yaw, yaw_of_quaternion};
 use serde::Deserialize;
 use thiserror::Error;
 

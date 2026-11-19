@@ -9,7 +9,7 @@ pub mod properties;
 mod slam_toolbox_parameters;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
     AmclParameters, LocalizationLimits, LocalizationParameters, Mapping, MappingParameters,

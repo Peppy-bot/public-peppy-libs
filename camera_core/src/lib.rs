@@ -1,8 +1,8 @@
 //! What the camera nodes and the crates that read them share, free of peppy
 //! types: occupancy_map reads their depth frames, workspace_core sees a
 //! perception camera through their pinhole model, and navigation_core reads
-//! the scans of a 2-D lidar and the poses of a base. Each node maps these
-//! onto its own generated contract members.
+//! the scans of a 2-D lidar. Each node maps these onto its own generated
+//! contract members.
 //!
 //! - [`controls`]: why a control write gave no value, by the failure kind of
 //!   peppy, the value a control answers when it has none, and the auto/manual
@@ -11,18 +11,15 @@
 //! - [`encoding`]: the color encodings a camera publishes and the depth one,
 //!   and a z16 depth frame read pixel by pixel.
 //! - [`v4l2`]: the V4L2 control ids and values the UVC cameras drive.
-//! - [`geometry`]: the checks a pinhole model, a depth range, a depth unit
-//!   and a pose pass before a consumer computes with them, the `z` depth
-//!   model, and the refusal a color camera gives for its depth members.
+//! - [`geometry`]: the checks a pinhole model, a depth range and a depth unit
+//!   pass before a consumer computes with them, the `z` depth model, and the
+//!   refusal a color camera gives for its depth members.
 //! - [`pinhole`]: a stream's pinhole model with its lens, parsed from its
 //!   intrinsics or a rendered camera's from its field of view and giving
 //!   back the intrinsics a camera node answers, what its depth samples
 //!   measure, and the arithmetic between its pixels and the points of its
 //!   optical frame: the ray of a pixel, the pixel that shows a point, the
 //!   point of a depth reading and the reading of a point.
-//! - [`pose`]: where one frame sits in another, as camera_geometry:v1 carries
-//!   the depth-to-color transform, applied, composed and inverted as tf2 does,
-//!   interpolated between two poses, and where a frame sits on the floor plane.
 //! - [`laser_scan`]: the scans of a 2-D lidar as lidar_2d:v1 carries them,
 //!   each ray's hit placed where the sensor stood at the ray's time.
 //! - [`relay`]: the pieces of a simulated camera's relay: the camera a relay
@@ -36,7 +33,6 @@ pub mod encoding;
 pub mod geometry;
 pub mod laser_scan;
 pub mod pinhole;
-pub mod pose;
 pub mod relay;
 pub mod sensor_mounts;
 pub mod v4l2;

@@ -11,10 +11,10 @@
 
 mod common;
 
-use camera_core::pose::PlanarPose;
 use common::finite::{non_negative, positive};
 use common::footprints::padded;
 use common::poses::planar;
+use control_core::planar_pose::PlanarPose;
 use control_core::twist::Twist;
 use hegel::TestCase;
 use hegel::generators as gs;

@@ -2088,12 +2088,12 @@ fn on_segment<const N: usize>(q: &[f64; N], a: &[f64; N], b: &[f64; N]) -> bool 
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use camera_core::pose::Pose;
     use chain_kinematics::{ChainSpec, JointSelection};
     use collision_geometry::chain::ChainGeometry;
     use collision_geometry::gjk::Placed;
     use control_core::positive_finite::PositiveFinite;
     use frame_tree::FrameName;
+    use frame_tree::Transform;
     use hegel::TestCase;
     use hegel::generators as gs;
     use occupancy_map::{Bounds, Scan};
@@ -2257,7 +2257,7 @@ pub(crate) mod tests {
         map.insert(
             &Scan {
                 frame: &frame,
-                sensor: Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+                sensor: Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
                 points: &relative,
                 max_range_m: PositiveFinite::parse(10.0).expect("positive"),
             },

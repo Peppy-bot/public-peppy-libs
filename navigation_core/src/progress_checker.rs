@@ -9,8 +9,8 @@
 //! the baseline finds no progress. Times are integer nanoseconds, as ROS
 //! compares them.
 
-use camera_core::pose::PlanarPose;
 use control_core::non_negative_finite::NonNegativeFinite;
+use control_core::planar_pose::PlanarPose;
 use control_core::time::{elapsed_ns, nanoseconds, seconds};
 
 use crate::pose::distance;

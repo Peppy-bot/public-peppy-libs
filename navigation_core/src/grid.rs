@@ -6,7 +6,7 @@
 //! the planner locates its start and goal as `worldToMapContinuous` does,
 //! each in its arithmetic.
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 
 /// A cell nothing occupies.

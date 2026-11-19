@@ -21,9 +21,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use occupancy_map::{Bounds, Scan, Voxel, VoxelMap};
 use ros_reference::Outputs;
 use ros_reference::occupancy::{Cases, Cloud};
@@ -57,8 +57,8 @@ const SURFACE_CLEARANCE: f64 = 1e-6;
 const MAX_DIFFERING_SHARE: f64 = 0.01;
 
 /// Where the sensor of `cloud` stands in the map's frame.
-fn sensor_of(cloud: &Cloud) -> Pose {
-    Pose::new(cloud.sensor.position, cloud.sensor.orientation).expect("a sensor pose")
+fn sensor_of(cloud: &Cloud) -> Transform {
+    Transform::new(cloud.sensor.position, cloud.sensor.orientation).expect("a sensor pose")
 }
 
 /// How near the surface of `cases`'s sphere the nearest point of its clouds within the

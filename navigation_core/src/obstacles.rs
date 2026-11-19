@@ -151,9 +151,10 @@ use std::num::NonZeroUsize;
 use std::ops::RangeInclusive;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::{PlanarPose, Pose};
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use occupancy_map::{Bounds, MapError, Reading, Scan, VoxelMap};
 
 use crate::footprint::PaddedFootprint;
@@ -508,11 +509,11 @@ impl LiveObstacles {
         source: usize,
         points: &[[f32; 3]],
         base: PlanarPose,
-        sensor_on_base: Pose,
+        sensor_on_base: Transform,
         max_range_m: PositiveFinite,
     ) -> Result<(), UnknownSource> {
         self.known_source(source)?;
-        let sensor = base.to_pose().compose(&sensor_on_base);
+        let sensor = base.to_transform().compose(&sensor_on_base);
         let on_base: Vec<[f64; 2]> = points
             .iter()
             .map(|point| on_the_floor(sensor_on_base.apply(point.map(f64::from))))
@@ -538,13 +539,13 @@ impl LiveObstacles {
         source: usize,
         scan: &LaserScan,
         base: Sweep<PlanarPose>,
-        sensor_on_base: Pose,
+        sensor_on_base: Transform,
         max_range_m: PositiveFinite,
     ) -> Result<(), UnknownSource> {
         self.known_source(source)?;
         let sensor = Sweep {
-            first_ray: base.first_ray.to_pose().compose(&sensor_on_base),
-            last_ray: base.last_ray.to_pose().compose(&sensor_on_base),
+            first_ray: base.first_ray.to_transform().compose(&sensor_on_base),
+            last_ray: base.last_ray.to_transform().compose(&sensor_on_base),
         };
         let to_first_ray = sensor.first_ray.inverse();
         let (points, on_base): (Vec<[f32; 3]>, Vec<[f64; 2]>) = scan
@@ -677,7 +678,7 @@ impl LiveObstacles {
         source: usize,
         points: &[[f32; 3]],
         points_on_base: &[[f64; 2]],
-        sensor: Pose,
+        sensor: Transform,
         base: PlanarPose,
         max_range_m: PositiveFinite,
     ) {
@@ -1014,7 +1015,7 @@ mod tests {
         let mut live =
             LiveObstacles::new(odom(), bounds(), heights(), square(), NonZeroUsize::MIN).unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let sensor_on_base = Pose::new([5.025, 0.025, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let sensor_on_base = Transform::new([5.025, 0.025, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
         live.insert_depth_frame(
             0,
             &[[0.0, 0.0, -0.7]],
@@ -1183,7 +1184,7 @@ mod tests {
             .unwrap();
         assert!(at_the_column(&seen(&moved)), "{:?}", seen(&moved));
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let elsewhere = Pose::new([5.5, 0.5, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let elsewhere = Transform::new([5.5, 0.5, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
         let refused = live
             .insert_depth_frame(
                 1,

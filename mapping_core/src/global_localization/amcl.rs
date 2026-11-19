@@ -204,7 +204,7 @@ mod tests {
     use crate::global_localization::AmclParameters;
     use crate::global_localization::parameters::tests::nav2_parameters;
     use crate::global_localization::tests::{room_grid, room_scan};
-    use camera_core::pose::PlanarPose;
+    use control_core::planar_pose::PlanarPose;
 
     /// Where the base stands at the first scan, at binary fractions, so a move of
     /// `update_min_d` along x or y gives a delta of exactly `update_min_d`.

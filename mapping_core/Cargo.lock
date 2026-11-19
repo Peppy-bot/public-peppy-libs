@@ -756,6 +756,7 @@ dependencies = [
  "chain_kinematics",
  "control_core",
  "faer",
+ "frame_tree",
  "hegeltest",
  "libstdcxx_heap",
  "ros_reference",

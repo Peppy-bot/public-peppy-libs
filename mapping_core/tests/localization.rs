@@ -13,7 +13,7 @@
 //!   localize it again.
 
 use camera_core::laser_scan::{LaserScan, NO_RETURN_MARK_M};
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
 use hegel::generators as gs;
 use mapping_core::{InitialPose, InitialPoseFailure, Localization, MapPose, RoomMap};

@@ -2,8 +2,11 @@
 
 tf2's buffer in Rust. A node that reads the transforms contract takes each message of
 `transforms` and of `static_transforms` into a `FrameTree`, and asks it for the place of
-any frame in any other, at a time or at the latest time common to the chain. Pure Rust;
-no hardware or messaging dependencies.
+any frame in any other, at a time or at the latest time common to the chain. The crate
+also holds tf2's `Transform`, a rotation matrix and an origin that places a point and
+composes on tf2's bits, and `arithmetic`, the rotation arithmetic of tf2 and KDL operation
+for operation, which the libraries' geometry runs on. Pure Rust; no hardware or messaging
+dependencies.
 
 ## Quick start
 
@@ -154,8 +157,8 @@ with the kind of error tf2 throws, and every other lookup at tf2's time, within 
 cargo test
 ```
 
-- `src/` unit tests: the arithmetic, the time cache, the parsing of a message, a frame
-  name and a stamp.
+- `src/` unit tests: the arithmetic, `Transform`, the time cache, the parsing of a message,
+  a frame name and a stamp.
 - `tests/tree.rs`: each rule on a small tree, and each departure.
 - `tests/properties.rs`: Hegel properties on drawn trees: a lookup and its reverse undo
   each other, lookups compose along a chain, a static chain holds at every time, a moving

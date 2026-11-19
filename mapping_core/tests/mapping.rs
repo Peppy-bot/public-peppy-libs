@@ -5,7 +5,7 @@
 //! frame where mapping started; parameters that keep no localization leave the map in the
 //! error; and a start pose that is not finite is refused.
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
 use hegel::generators as gs;
 use mapping_core::{CellState, FinishError, GridError, LocalizationError, Mapping, ParameterError};

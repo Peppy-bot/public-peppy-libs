@@ -150,7 +150,7 @@ pub(crate) mod tests {
     use crate::mapping::Mapping;
     use crate::occupancy_grid::{CellState, GridParameters, OccupancyGrid};
     use camera_core::laser_scan::{LaserScan, Sweep};
-    use camera_core::pose::PlanarPose;
+    use control_core::planar_pose::PlanarPose;
     use control_core::positive_finite::PositiveFinite;
     use std::f64::consts::{PI, TAU};
 

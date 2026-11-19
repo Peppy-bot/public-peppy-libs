@@ -19,12 +19,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::{PlanarPose, Pose};
 use common::footprints::{inside_by, padded};
 use common::layers::{layer, lethal_cells};
 use common::poses::{on_base, planar};
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -118,13 +119,13 @@ fn small_square() -> PaddedFootprint {
 }
 
 /// The pose of a sensor at `position` turned by `yaw` about +Z.
-fn sensor_at(position: [f64; 3], yaw: f64) -> Pose {
+fn sensor_at(position: [f64; 3], yaw: f64) -> Transform {
     let half = yaw / 2.0;
-    Pose::new(position, [0.0, 0.0, half.sin(), half.cos()]).expect("a turn about +Z")
+    Transform::new(position, [0.0, 0.0, half.sin(), half.cos()]).expect("a turn about +Z")
 }
 
 /// `points`, in the map's frame, in the frame of `sensor`, in single precision.
-fn seen_from(sensor: &Pose, points: &[[f64; 3]]) -> Vec<[f32; 3]> {
+fn seen_from(sensor: &Transform, points: &[[f64; 3]]) -> Vec<[f32; 3]> {
     let to_sensor = sensor.inverse();
     points
         .iter()
@@ -1306,7 +1307,7 @@ fn the_footprint_clearing_leaves_no_occupied_cell_under_it_and_every_saved_cell(
 }
 
 /// A 2-D lidar 0.3 m up on its base, in the band.
-fn lidar_on_base() -> Pose {
+fn lidar_on_base() -> Transform {
     sensor_at([0.0, 0.0, 0.3], 0.0)
 }
 

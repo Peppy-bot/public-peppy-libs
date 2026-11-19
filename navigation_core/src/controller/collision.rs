@@ -7,7 +7,7 @@
 //! cell under the outline after an unknown edge is a collision here, where
 //! Nav2's check reads the footprint's cost as unknown and passes it.
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 
 use crate::footprint::PaddedFootprint;
 use crate::grid::{CostGrid, LETHAL, UNKNOWN};

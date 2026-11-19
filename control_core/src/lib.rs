@@ -1,6 +1,7 @@
 //! Shared control-loop and runtime primitives: pacing, filtering, rate
 //! limiting, the timing of a motion, the health of a motor, a mobile base's
-//! footprint, its body velocity, its limiter and its wheel odometry, the
+//! footprint, its body velocity, its limiter and its wheel odometry, where a
+//! frame sits on the floor plane, the
 //! setpoint stream, the service, receive and ask loops, the fault that ends a
 //! node, the model a component is configured for, latched failure logging, a
 //! node's wall or simulation clock, a robot's tree of frames with the lookups
@@ -32,6 +33,8 @@
 //!   wait on the node's clock until the tree answers them.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
+//! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
+//!   as Nav2's controller reads it, in frame_tree's arithmetic.
 //! - [`twist`]: a body velocity in the robot frame, finite by construction.
 //! - [`limiter`]: the limiter of a base's body velocity, as Nav2 1.5.2's
 //!   velocity smoother limits a stream of setpoints in open loop: each axis
@@ -91,6 +94,7 @@ pub mod not_finite;
 pub mod odometry;
 pub mod pacer;
 pub mod path_timing;
+pub mod planar_pose;
 pub mod positive_finite;
 pub mod receiving;
 pub mod report_once;

@@ -2,7 +2,7 @@
 //! `getLookAheadPoint` finds it with `interpolate_after_goal` false, and its
 //! `linearInterpolation` (src/controller_utils.cpp).
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 
 use crate::pose::distance;
 

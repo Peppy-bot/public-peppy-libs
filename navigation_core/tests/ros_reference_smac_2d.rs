@@ -24,10 +24,10 @@ mod common;
 
 use std::num::NonZeroU32;
 
-use camera_core::pose::PlanarPose;
 use common::finite::{multiplier, non_negative};
 use common::footprints::padded;
 use common::poses::planar;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::grid::{Cell, CostGrid, GridGeometry};
 use navigation_core::planner::{

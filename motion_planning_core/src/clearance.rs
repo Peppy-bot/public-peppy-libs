@@ -823,8 +823,7 @@ mod tests {
         map.insert(
             &Scan {
                 frame: &frame,
-                sensor: camera_core::pose::Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0])
-                    .expect("a pose"),
+                sensor: frame_tree::Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
                 points: &relative,
                 max_range_m: PositiveFinite::parse(10.0).expect("positive"),
             },

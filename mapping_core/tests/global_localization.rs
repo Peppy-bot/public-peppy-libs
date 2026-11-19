@@ -10,7 +10,7 @@
 //! returns to a pose that resampling left none at. At [`ALPHA`] and [`SEARCH_LIMIT`], the
 //! search handed over near the true pose in each of 112 drawn turned L-shaped rooms.
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
     AmclParameters, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits,

@@ -20,24 +20,27 @@
 //! - [`LookupError`]: an unknown frame, no chain between the frames, a transform with no
 //!   value at the time, and transforms that two publishers hold or that form a cycle, each
 //!   naming its frames.
-//! - [`interpolated`] and [`slerp`]: tf2's `setInterpolate3` of two positions and `slerp`
-//!   of two orientations, the interpolation a lookup between two samples takes, for a
-//!   caller that interpolates two poses the same way.
+//! - [`Transform`]: tf2's transform, a rotation matrix and an origin, which places a point,
+//!   composes, inverts and interpolates in tf2's arithmetic, bit for bit.
+//! - [`arithmetic`]: the rotation arithmetic of tf2 and KDL, operation for operation: the
+//!   quaternion products, rotations and interpolation a lookup takes, tf2's rotation matrix,
+//!   `setRPY` and `getYaw`, and KDL's matrices.
 //!
 //! The README lists each rule of tf2 the crate follows, by file and line of geometry2
 //! 0.45.10, and where it departs.
 
-mod arithmetic;
+pub mod arithmetic;
 mod cache;
 mod error;
 mod frame;
+mod transform;
 mod transforms;
 mod tree;
 
-pub use arithmetic::{interpolated, slerp};
 pub use cache::HeldStamps;
 pub use error::{BrokenTree, LookupError, TransformName};
 pub use frame::{FrameName, FrameNameError, LookupTime, Publisher, Stamp, TimeError};
+pub use transform::{NotATransform, Transform};
 pub use transforms::{
     FrameTransform, MessageError, MovingMessage, Placement, StaticMessage, TransformError,
     TransformErrorReason,

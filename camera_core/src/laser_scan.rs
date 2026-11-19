@@ -14,7 +14,7 @@
 //! sensor's pose at the ray's time, interpolated between its poses at the first
 //! and the last ray by the share `i * (1 / (n - 1))` of the sweep, as
 //! laser_geometry's `transformLaserScanToPointCloud` interpolates them
-//! ([`Pose::interpolated`]). The caller gives the two poses as a [`Sweep`]:
+//! ([`Transform::interpolated`]). The caller gives the two poses as a [`Sweep`]:
 //! where the sensor stood at the timestamp, its first ray, and
 //! [`LaserScan::sweep_s`] after it, its last ray. A ray at whose share the
 //! two poses interpolate to no pose places no hit. Each [`PlacedHit`] keeps
@@ -26,7 +26,7 @@
 
 use std::fmt;
 
-use crate::pose::{Pose, PoseError};
+use frame_tree::{NotATransform, Transform};
 
 /// lidar_2d:v1's range of a ray the sensor could not measure, or of a surface
 /// nearer than `min_range_m`.
@@ -60,7 +60,7 @@ pub struct PlacedHit {
 pub struct PlacedRay {
     /// The sensor's pose at the ray's time, in the frame of the sensor's
     /// poses.
-    pub sensor: Pose,
+    pub sensor: Transform,
     /// The ray's angle in the sensor frame (rad).
     pub angle_rad: f64,
     /// The distance (m) to the surface the ray hit; none for a mark.
@@ -304,7 +304,7 @@ impl LaserScan {
     /// at its ray's time, and placed in the frame of the sensor's poses
     /// `sensor` where the sensor stood at its ray's time; a ray at whose time
     /// the poses interpolate to no pose places none.
-    pub fn placed_hits(&self, sensor: &Sweep<Pose>) -> Vec<PlacedHit> {
+    pub fn placed_hits(&self, sensor: &Sweep<Transform>) -> Vec<PlacedHit> {
         self.rays()
             .filter_map(|ray| {
                 let in_sensor = ray.hit()?;
@@ -318,7 +318,7 @@ impl LaserScan {
     /// frame of the sensor's poses `sensor`, by the interpolation of
     /// [`LaserScan::placed_hits`]; the error of the first ray at whose time the
     /// poses interpolate to no pose.
-    pub fn placed_rays(&self, sensor: &Sweep<Pose>) -> Result<Vec<PlacedRay>, PoseError> {
+    pub fn placed_rays(&self, sensor: &Sweep<Transform>) -> Result<Vec<PlacedRay>, NotATransform> {
         self.rays()
             .map(|ray| {
                 Ok(PlacedRay {
@@ -337,7 +337,11 @@ impl LaserScan {
     /// the last ray interpolated by the share `index * (1 / (n - 1))` of the
     /// sweep, 0 for a scan of one ray, as laser_geometry computes it
     /// (laser_geometry.cpp:334, 346).
-    fn sensor_at(&self, index: usize, sensor: &Sweep<Pose>) -> Result<Pose, PoseError> {
+    fn sensor_at(
+        &self,
+        index: usize,
+        sensor: &Sweep<Transform>,
+    ) -> Result<Transform, NotATransform> {
         let intervals = self.ranges.len() - 1;
         let ranges_norm = if intervals > 0 {
             1.0 / intervals as f64
@@ -355,11 +359,11 @@ mod tests {
     use super::*;
     use crate::test_support::close;
 
-    fn identity() -> Pose {
-        Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity")
+    fn identity() -> Transform {
+        Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity")
     }
 
-    fn sweep(first_ray: Pose, last_ray: Pose) -> Sweep<Pose> {
+    fn sweep(first_ray: Transform, last_ray: Transform) -> Sweep<Transform> {
         Sweep {
             first_ray,
             last_ray,
@@ -504,7 +508,7 @@ mod tests {
         // The sensor turns back by the whole fan while it sweeps, so every ray
         // points along the first ray's direction in the frame of the poses.
         let half = -0.5_f64;
-        let turned = Pose::new([0.0; 3], [0.0, 0.0, half.sin(), half.cos()]).expect("a turn");
+        let turned = Transform::new([0.0; 3], [0.0, 0.0, half.sin(), half.cos()]).expect("a turn");
         for (index, hit) in scan
             .placed_hits(&sweep(identity(), turned))
             .into_iter()
@@ -537,7 +541,7 @@ mod tests {
     #[test]
     fn each_ray_stands_at_laser_geometrys_share_of_the_sweep() {
         let scan = scan(&[1.0; 6]);
-        let moved = Pose::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let moved = Transform::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let shares: Vec<f64> = (0..6)
             .map(|index| {
                 scan.sensor_at(index, &sweep(identity(), moved))
@@ -561,7 +565,7 @@ mod tests {
         let scan = LaserScan::parse(-0.25, degree, 0.001, 0.1, 10.0, &[1.0; RAYS])
             .expect("a scan of one ray a degree");
         let heading = |yaw: f64| {
-            Pose::new([0.0; 3], [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()])
+            Transform::new([0.0; 3], [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()])
                 .expect("a turn about +Z")
         };
         let hits = scan.placed_hits(&sweep(heading(2.6), heading(2.9)));
@@ -587,7 +591,7 @@ mod tests {
     #[test]
     fn each_placed_ray_stands_where_its_hit_is_placed() {
         let scan = scan(&[1.0, 10000.0, 3.0, 0.0]);
-        let moved = Pose::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let moved = Transform::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let sweep = sweep(identity(), moved);
         let rays = scan.placed_rays(&sweep).expect("every ray placed");
         assert_eq!(
@@ -619,7 +623,7 @@ mod tests {
     #[test]
     fn a_scan_of_one_ray_places_its_hit_by_the_first_pose() {
         let scan = scan(&[1.0]);
-        let moved = Pose::new([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let moved = Transform::new([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let hits = scan.placed_hits(&sweep(identity(), moved));
         assert_eq!(hits.len(), 1);
         assert!(close(

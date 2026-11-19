@@ -9,13 +9,13 @@ mod common;
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use camera_core::pose::PlanarPose;
 use common::finite::multiplier;
 use common::footprints::padded;
 use common::poses::planar;
 use common::properties::{
     COST_TOLERANCE, corner, grids, obstacle_costs, passable, passable_cells, with_cost,
 };
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
 use hegel::TestCase;

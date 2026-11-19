@@ -214,7 +214,7 @@ mod tests {
     use super::*;
     use crate::global_localization::tests::{room_grid, room_scan};
     use crate::occupancy_grid::{CellState, OccupancyGrid};
-    use camera_core::pose::PlanarPose;
+    use control_core::planar_pose::PlanarPose;
 
     fn model(laser_min_range: f64, laser_max_range: f64, max_beams: usize) -> LikelihoodField {
         LikelihoodField {

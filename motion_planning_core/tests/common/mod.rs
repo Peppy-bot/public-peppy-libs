@@ -14,12 +14,12 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use camera_core::pose::Pose;
 use chain_kinematics::{Draws, PRECISION_M, PRECISION_RAD, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use motion_planning_core::{Arm, Arms, Body};
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Scan, VoxelBox, VoxelMap};
@@ -150,7 +150,7 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
     map.insert(
         &Scan {
             frame: &world(),
-            sensor: Pose::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            sensor: Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
             points: &relative,
             max_range_m: PositiveFinite::parse(10.0).expect("positive"),
         },

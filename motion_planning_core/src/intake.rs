@@ -8,11 +8,11 @@ use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
 
 use camera_core::pinhole::{DepthModel, Pinhole};
-use camera_core::pose::Pose;
 use collision_geometry::chain::{
     BodyGeometry, BodyMask, ChainGeometry, Mask, Padding, PlacedMask, Rider, RiderBody,
 };
 use collision_geometry::shapes::PlacedShape;
+use frame_tree::Transform;
 use nalgebra::Isometry3;
 use occupancy_map::{
     Cutout, DepthError, InsertError, RobotCutout, Scan, ShapeCutout, VoxelMap, depth_points,
@@ -23,7 +23,7 @@ use crate::arm::rider_pose;
 /// The depth stream of a camera the robot carries, as the map reads its frames.
 pub struct DepthCamera {
     /// The depth optical frame in the robot frame.
-    pub sensor: Pose,
+    pub sensor: Transform,
     lens: Pinhole,
     /// How a sample reads as a depth.
     depth_model: DepthModel,
@@ -35,8 +35,8 @@ impl DepthCamera {
     /// The camera whose color optical frame stands at `color_in_robot` in the robot
     /// frame, with its depth optical frame at `depth_in_color` in the color one.
     pub fn new(
-        color_in_robot: &Pose,
-        depth_in_color: &Pose,
+        color_in_robot: &Transform,
+        depth_in_color: &Transform,
         lens: Pinhole,
         depth_model: DepthModel,
         depth_unit: f32,
@@ -203,7 +203,7 @@ pub fn insert_cut_out<const N: usize>(
     scan: &Scan,
     robot: &RobotMask<N>,
 ) -> Result<(), InsertError> {
-    let root = Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity is a pose");
+    let root = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity is a pose");
     let body = RobotCutout::new(scan.frame, root, robot.placed());
     let objects: Vec<ShapeCutout> = robot
         .objects
@@ -228,8 +228,8 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_millis(ms)
     }
 
-    fn pose(position: [f64; 3], orientation: [f64; 4]) -> Pose {
-        Pose::new(position, orientation).expect("a position and a unit quaternion")
+    fn pose(position: [f64; 3], orientation: [f64; 4]) -> Transform {
+        Transform::new(position, orientation).expect("a position and a unit quaternion")
     }
 
     // A depth frame 6 cm left of and 2 cm below a color frame that looks straight down
