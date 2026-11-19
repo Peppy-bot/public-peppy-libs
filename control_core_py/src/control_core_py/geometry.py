@@ -388,3 +388,39 @@ def lookup_time(timestamp: float | None) -> float | None:
             f"{last // _NANOS_PER_SECOND}.{last % _NANOS_PER_SECOND:09d} s after it"
         )
     return float(timestamp)
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a frame sits in another, as transform_lookup answers: a point of the placed frame is
+    R(orientation) * p + position in the other. A value placed where a coordinate leaves the
+    finite numbers is refused with GeometryError, as its parse refuses one."""
+
+    position: Vector
+    orientation: Quaternion
+
+    def place[V: (Point, Pose, PoseTarget, tuple)](self, value: V) -> V:
+        """`value` in the other frame, as control_core places it: a point through tf2's rotation
+        matrix, a pose's or a target's position placed and its orientation turned, and each value
+        of a tuple, of one frame at one time, by this one placement, the tuple refused whole where
+        one value is refused."""
+        match value:
+            case tuple():
+                return tuple(self.place(item) for item in value)
+            case Point():
+                return self._place_point(value)
+            case Pose():
+                return Pose(self._place_point(value.position), self._turned(value.orientation))
+            case PoseTarget():
+                orientation = None if value.orientation is None else self._turned(value.orientation)
+                return PoseTarget(self._place_point(value.position), orientation)
+        raise TypeError(f"a placement places a point, a pose, a target or a tuple of them, not {value!r}")
+
+    def _place_point(self, point: Point) -> Point:
+        """The point in the other frame, through tf2's rotation matrix."""
+        turned = _rotated(rotation_of(self.orientation), point.position)
+        return Point.parse([t + o for t, o in zip(turned, self.position)])
+
+    def _turned(self, orientation: UnitQuaternion) -> UnitQuaternion:
+        """The orientation turned by this placement's."""
+        return UnitQuaternion(normalized(product(self.orientation, orientation.quaternion)))

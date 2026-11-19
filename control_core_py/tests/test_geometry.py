@@ -189,3 +189,33 @@ def test_a_planar_pose_is_refused_off_the_plane_saying_what_to_send():
         assert str(refused.value) == message
     with pytest.raises(g.GeometryError, match="tilts"):
         g.Pose.parse([1.0, 0.0, 0.0], [math.sin(0.05), 0.0, 0.0, math.cos(0.05)]).planar()
+
+
+def test_a_value_placed_past_the_finite_numbers_is_refused_as_its_parse_refuses_it():
+    eighth = math.pi / 8.0
+    placement = g.Placement((1.7976931348623157e308, 0.0, 0.0), (0.0, 0.0, math.sin(eighth), math.cos(eighth)))
+    with pytest.raises(g.GeometryError) as refused:
+        placement.place(g.Point.parse([1.7976931348623157e308, 0.0, 0.0]))
+    assert str(refused.value).startswith("a position must be finite: got x inf")
+    assert placement.place(g.Point.parse([0.0, 1.0, 0.0])).position[0] == 1.7976931348623157e308
+
+
+def test_values_of_one_frame_and_one_time_are_placed_together_and_refused_whole():
+    quarter = about_z(math.pi / 2.0)
+    placement = g.Placement((1.0, 0.0, 0.0), quarter)
+    near, ahead = g.Point.parse([0.0, 0.0, 0.0]), g.Point.parse([1.0, 0.0, 0.0])
+    placed = placement.place((near, ahead))
+    assert close(placed[0].position, (1.0, 0.0, 0.0)) and close(placed[1].position, (1.0, 1.0, 0.0))
+    target = placement.place(g.PoseTarget.parse([1.0, 0.0, 0.0], None))
+    assert close(target.position.position, (1.0, 1.0, 0.0)) and target.orientation is None
+    far = g.Placement((1.7976931348623157e308, 0.0, 0.0), g.IDENTITY)
+    with pytest.raises(g.GeometryError, match="got x inf"):
+        far.place((near, g.Point.parse([1.7976931348623157e308, 0.0, 0.0])))
+
+
+def test_a_placement_carries_a_pose():
+    quarter = about_z(math.pi / 2.0)
+    placement = g.Placement((1.0, 0.0, 0.0), quarter)
+    pose = placement.place(g.Pose.parse([1.0, 0.0, 0.0], quarter))
+    assert close(pose.position.position, (1.0, 1.0, 0.0))
+    assert close(pose.orientation.quaternion, (0.0, 0.0, 1.0, 0.0))

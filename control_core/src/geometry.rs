@@ -14,7 +14,8 @@ use std::time::SystemTime;
 
 use frame_tree::arithmetic::{self, Quaternion, Vector};
 use frame_tree::{
-    DenormalizedQuaternion, FrameName, LookupTime, QUATERNION_NORMALIZATION_TOLERANCE, Stamp,
+    DenormalizedQuaternion, FrameName, LookupTime, Placement, QUATERNION_NORMALIZATION_TOLERANCE,
+    Stamp,
 };
 
 use crate::not_finite::NotFinite;
@@ -135,6 +136,60 @@ impl PoseTarget {
     }
 }
 
+/// A value of the geometry types that the placement of its frame in another carries into that
+/// other frame: a position through tf2's transform, and an orientation turned by the
+/// placement's.
+pub trait Placed: Sized {
+    /// The value in the frame `placement` places its frame in; refused, as the value's parse
+    /// refuses a number that is not finite, where a coordinate it reaches leaves the finite
+    /// numbers.
+    fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError>;
+}
+
+/// The orientation turned by the placement's.
+fn turned(placement: &Placement, orientation: UnitQuaternion) -> UnitQuaternion {
+    UnitQuaternion(arithmetic::normalized(arithmetic::product(
+        placement.orientation(),
+        orientation.quaternion(),
+    )))
+}
+
+impl Placed for Point {
+    fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
+        Point::parse(placement.transform().apply(self.0))
+    }
+}
+
+impl Placed for Pose {
+    fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
+        Ok(Pose::new(
+            self.position.placed_by(placement)?,
+            turned(placement, self.orientation),
+        ))
+    }
+}
+
+impl Placed for PoseTarget {
+    fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
+        Ok(Self {
+            position: self.position.placed_by(placement)?,
+            orientation: self
+                .orientation
+                .map(|orientation| turned(placement, orientation)),
+        })
+    }
+}
+
+/// Values of one frame at one time, each placed by the one placement, so one answer of a tree
+/// places all of them; refused whole where one is refused.
+impl<T: Placed> Placed for Vec<T> {
+    fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
+        self.iter()
+            .map(|value| value.placed_by(placement))
+            .collect()
+    }
+}
+
 /// A value of the geometry types in a frame at a time: a stamped type of the contracts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stamped<T> {
@@ -156,6 +211,16 @@ impl<T> Stamped<T> {
             time: lookup_time(timestamp)?,
             value,
         })
+    }
+
+    /// `value` in `frame` at the latest time, as a lookup places a value in a frame that holds
+    /// still.
+    pub(crate) fn at_latest(frame: FrameName, value: T) -> Self {
+        Self {
+            frame,
+            time: LookupTime::Latest,
+            value,
+        }
     }
 
     pub fn frame(&self) -> &FrameName {
@@ -411,5 +476,28 @@ mod tests {
             lookup_time(Some(time)),
             Ok(LookupTime::At(Stamp::from_nanos(nanos)))
         );
+    }
+
+    // A pose placed past the finite numbers is refused as its parse refuses one, where its
+    // position leaves them.
+    #[test]
+    fn a_value_placed_past_the_finite_numbers_is_refused() {
+        let eighth = std::f64::consts::FRAC_PI_8;
+        let turn = frame_tree::FrameTransform::parse(
+            "base",
+            "turned",
+            [f64::MAX, 0.0, 0.0],
+            [0.0, 0.0, eighth.sin(), eighth.cos()],
+        )
+        .unwrap()
+        .placement();
+        let pose =
+            Pose::parse([f64::MAX, 0.0, 0.0], UnitQuaternion::IDENTITY.quaternion()).unwrap();
+        assert!(matches!(
+            pose.placed_by(&turn),
+            Err(GeometryError::NotFinite(_))
+        ));
+        let near = Point::parse([0.0, 1.0, 0.0]).unwrap();
+        assert!(near.placed_by(&turn).is_ok());
     }
 }

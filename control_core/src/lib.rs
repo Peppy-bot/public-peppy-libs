@@ -29,8 +29,14 @@
 //!   clock fed the ticks the node receives, the time now, a wait until a
 //!   deadline on it, and whether it went back between two looks.
 //! - [`robot_tree`]: a robot's tree of frames as a node holds it, its followers
-//!   that fill it from the messages of transforms, and the lookups in it that
-//!   wait on the node's clock until the tree answers them.
+//!   that fill it from the messages of transforms, the lookups in it that wait
+//!   on the node's clock until the tree answers them
+//!   ([`lookup_within`](robot_tree::RobotTree::lookup_within),
+//!   [`lookup_within_through`](robot_tree::RobotTree::lookup_within_through)),
+//!   and a value of the geometry types placed in a frame
+//!   ([`place`](robot_tree::RobotTree::place)) or in the root of its frame's
+//!   chain ([`place_in_root`](robot_tree::RobotTree::place_in_root)), refused
+//!   with a [`PlaceError`](robot_tree::PlaceError).
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
