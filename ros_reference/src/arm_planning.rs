@@ -172,14 +172,15 @@ impl Scene {
 }
 
 /// An orientation a plan's path holds of a link of the arm at `arm` among the arms of the
-/// scenario's group, as plan_joint_path's path_orientation_constraints names it for
-/// motion_planning_core, and MoveIt's rotation-vector tolerances about x, y and z of the robot
-/// frame for MoveIt's path constraint.
+/// scenario's group, in the frame `frame`, as plan_joint_path's path_orientation_constraints
+/// names it for motion_planning_core, and MoveIt's rotation-vector tolerances about x, y and z
+/// of that frame for MoveIt's path constraint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeldOrientation {
     pub arm: usize,
     pub link_name: String,
+    pub frame: String,
     pub orientation: [f64; 4],
     pub tolerance_rad: f64,
     pub free_axis: String,
@@ -190,6 +191,12 @@ pub struct HeldOrientation {
 /// scenario's `goal_tolerance` of it for motion_planning_core and at it for MoveIt; or a
 /// pose or a position of each arm's grasp link, in the order of the arms, which both reach
 /// through inverse kinematics, MoveIt's KDL.
+///
+/// The frame of a pose, a position or a held orientation is the robot frame, by the name of
+/// the URDF's root link, or a link of the robot, which each state places where its joints put
+/// it: the frame that MoveIt's constraint names in its header, a link of the robot being a
+/// frame MoveIt places by the state it judges (moveit2 2.15.2 kinematic_constraint.cpp,
+/// `mobile_frame_`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum SceneGoal {
@@ -198,7 +205,7 @@ pub enum SceneGoal {
     Positions(Vec<PositionGoal>),
 }
 
-/// A pose of a grasp link in the robot frame, its position (m) and its orientation `[x, y,
+/// A pose of a grasp link in the frame `frame`, its position (m) and its orientation `[x, y,
 /// z, w]`, and how near each the goal holds: within `position_tolerance` (m) of the
 /// position, and turned within `orientation_tolerance` (rad) of the orientation, which
 /// MoveIt's `constructGoalConstraints` takes as the radius of its position region and as
@@ -207,18 +214,20 @@ pub enum SceneGoal {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PoseGoal {
+    pub frame: String,
     pub position: [f64; 3],
     pub orientation: [f64; 4],
     pub position_tolerance: f64,
     pub orientation_tolerance: f64,
 }
 
-/// A position of a grasp link in the robot frame (m), which the goal holds within
+/// A position of a grasp link in the frame `frame` (m), which the goal holds within
 /// `position_tolerance` (m), the grasp link free to turn: MoveIt's `constructGoalConstraints`
 /// of a point.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PositionGoal {
+    pub frame: String,
     pub position: [f64; 3],
     pub position_tolerance: f64,
 }
@@ -270,9 +279,17 @@ pub struct Probed {
     #[serde(deserialize_with = "Option::deserialize")]
     pub self_clearance: Option<f64>,
     /// The largest share of its tolerance that any orientation the scene holds reaches along
-    /// the path, measured as plan_joint_path states the tolerance; null where it holds none.
+    /// the path, measured as plan_joint_path states the tolerance, each in its frame where the
+    /// probe's state puts that frame; null where it holds none.
     #[serde(deserialize_with = "Option::deserialize")]
     pub share_of_tolerance: Option<f64>,
+    /// Whether MoveIt's kinematic constraints of the scene's goal hold at the path's last
+    /// waypoint, each in its frame where that waypoint puts it: of a goal of poses or of
+    /// positions, the constraints of MoveIt's request; of a goal of joints, each joint within
+    /// the scenario's `goal_tolerance` of the goal state. Null where the probe judges no goal,
+    /// as the CHOMP refinement reference's probes judge none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub goal_met: Option<bool>,
     /// The path's length in the joints' L2 norm.
     pub length: f64,
     /// The integral of the norm of the rounded path's curvature over its length (rad), summed
@@ -303,6 +320,8 @@ struct MoveItRead {
     self_clearance: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
     share_of_tolerance: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    goal_met: Option<bool>,
     #[serde(deserialize_with = "Option::deserialize")]
     length: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
@@ -471,6 +490,10 @@ fn pair(
                 "{what}: a share of the tolerance in each probe exactly where the scene holds an \
                  orientation"
             );
+            assert!(
+                case.probes().all(|p| p.goal_met.is_some()),
+                "{what}: MoveIt's judgment of the goal in each probe"
+            );
             case
         })
         .collect();
@@ -486,6 +509,7 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
         held_clearance,
         self_clearance,
         share_of_tolerance,
+        goal_met,
         length,
         turning,
         bending,
@@ -499,6 +523,7 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
                 held_clearance,
                 self_clearance,
                 share_of_tolerance,
+                goal_met,
                 length,
                 turning,
                 bending,
@@ -509,6 +534,7 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
             if held_clearance.is_none()
                 && self_clearance.is_none()
                 && share_of_tolerance.is_none()
+                && goal_met.is_none()
                 && duration.is_none() =>
         {
             None
@@ -553,8 +579,8 @@ mod tests {
     const FAILURE: &str = r#"{"failure": "no_path"}"#;
     const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null,
                              "self_clearance": null, "share_of_tolerance": null,
-                             "length": 1.0, "turning": 0.5, "bending": 0.25,
-                             "duration": 2.0}"#;
+                             "goal_met": true, "length": 1.0, "turning": 0.5,
+                             "bending": 0.25, "duration": 2.0}"#;
 
     /// The output of one scene: MoveIt's `status` and the fields of its probe, and the
     /// probe of ours.
@@ -568,12 +594,14 @@ mod tests {
 
     const MOVEIT_PROBED: &str = r#""collisions": 0, "clearance": 0.03125,
                                    "held_clearance": null, "self_clearance": null,
-                                   "share_of_tolerance": null, "length": 1.0,
-                                   "turning": 0.5, "bending": 0.25, "duration": 2.0"#;
+                                   "share_of_tolerance": null, "goal_met": true,
+                                   "length": 1.0, "turning": 0.5, "bending": 0.25,
+                                   "duration": 2.0"#;
     const MOVEIT_NONE: &str = r#""collisions": null, "clearance": null,
                                  "held_clearance": null, "self_clearance": null,
-                                 "share_of_tolerance": null, "length": null,
-                                 "turning": null, "bending": null, "duration": null"#;
+                                 "share_of_tolerance": null, "goal_met": null,
+                                 "length": null, "turning": null, "bending": null,
+                                 "duration": null"#;
 
     fn paired(
         ours: &str,
@@ -666,27 +694,31 @@ mod tests {
     fn a_scenes_goal_is_a_configuration_or_a_pose_of_each_grasp_link() {
         let goal = |text: &str| serde_json::from_str::<SceneGoal>(text);
         assert!(matches!(goal("[1.0, 2.0]"), Ok(SceneGoal::Joints(q)) if q == [1.0, 2.0]));
-        let pose = r#"{"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0],
-                       "position_tolerance": 0.005, "orientation_tolerance": 0.05}"#;
-        let poses = format!("[{pose}, {}]", pose.replace("0.05}", "0.01}"));
+        let pose = r#"{"frame": "base_link", "position": [0.1, 0.2, 0.3],
+                       "orientation": [0.0, 0.0, 0.0, 1.0], "position_tolerance": 0.005,
+                       "orientation_tolerance": 0.05}"#;
+        let in_the_other_hand = pose
+            .replace("base_link", "right_tcp")
+            .replace("0.05}", "0.01}");
+        let poses = format!("[{pose}, {in_the_other_hand}]");
         assert!(matches!(
             goal(&poses),
             Ok(SceneGoal::Poses(p))
-                if p.len() == 2 && p[0].orientation_tolerance == 0.05
-                    && p[1].orientation_tolerance == 0.01
+                if p.len() == 2 && p[0].frame == "base_link" && p[0].orientation_tolerance == 0.05
+                    && p[1].frame == "right_tcp" && p[1].orientation_tolerance == 0.01
         ));
-        let position = r#"[{"position": [0.1, 0.2, 0.3], "position_tolerance": 0.001}]"#;
+        let position = r#"{"frame": "base_link", "position": [0.1, 0.2, 0.3],
+                           "position_tolerance": 0.001}"#;
         assert!(matches!(
-            goal(position),
+            goal(&format!("[{position}]")),
             Ok(SceneGoal::Positions(p)) if p.len() == 1 && p[0].position_tolerance == 0.001
         ));
         assert!(goal(pose).is_err());
+        let unframed = |text: &str| format!("[{}]", text.replace(r#""frame": "base_link", "#, ""));
+        assert!(goal(&unframed(pose)).is_err(), "a pose names its frame");
         assert!(
-            goal(&format!(
-                "[{}]",
-                pose.replace('}', r#", "frame": "world"}"#)
-            ))
-            .is_err()
+            goal(&unframed(position)).is_err(),
+            "a position names its frame"
         );
     }
 

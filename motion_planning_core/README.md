@@ -291,7 +291,9 @@ that axis and its target direction. Each target gives its values in the robot fr
 frame of an arm of the plan's group (`Reference`), its own arm or another, which each state
 places where that arm's joints put it, as MoveIt holds a constraint whose frame is a link of
 the robot (moveit2 2.15.2 kinematic_constraint.cpp, `mobile_frame_`): the target is met where
-the frame stands in the state judged. MoveIt holds a pose
+the frame stands in the state judged. The hand frame scenario of the ROS reference harness gives
+the left hand's goal in the right hand's frame, and MoveIt's constraints of the goal hold at the
+end of each path of this crate there. MoveIt holds a pose
 goal's orientation by each component of the rotation vector between the two within the
 tolerance (moveit2 2.15.2 `constructGoalConstraints`, `ROTATION_VECTOR`, utils.cpp:220-226
 and kinematic_constraint.cpp:765-775), a box that admits a rotation of up to the square
@@ -527,7 +529,10 @@ answers each straight path as it is.
 of a frame (`Holder`) with an `OrientationTarget`, the measure a goal's orientation takes:
 the angle of the rotation from the target, or, with a free axis, the angle between that axis
 and its direction in the target, in the robot frame or in a frame of an arm of the group
-(`Reference`), against which every state holds it where that state puts the frame. The frame
+(`Reference`), against which every state holds it where that state puts the frame. The hand
+frame scenario of the ROS reference harness holds the left hand's orientation in the right
+hand's frame and the right hand's in the frame of a link of its own arm, and MoveIt's forward
+kinematics finds every probe of each path of this crate there within both. The frame
 that holds it is a frame of an arm of the group, or a frame no state moves at its rotation in
 the robot frame, such as a link of an arm outside the group where the plan's start stands it,
 as MoveIt judges a constraint on a link outside its planning group with the group's joints

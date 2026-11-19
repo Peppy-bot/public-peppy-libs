@@ -15,7 +15,10 @@
 //! above, and of the mean path length, on the scenes where MoveIt's path keeps the
 //! clearances, 0 or below. Over a drawn set whose scenes hold path orientations,
 //! MoveIt's own forward kinematics finds every probe of each rounded path of ours inside each
-//! tolerance, and the tally states the share of the tolerance MoveIt's own paths reach.
+//! tolerance, and the tally states the share of the tolerance MoveIt's own paths reach. In every
+//! scenario and every drawn set, MoveIt's kinematic constraints of each scene's goal hold at the
+//! last waypoint of each path of ours, each constraint in its frame where that waypoint puts it,
+//! a link of either arm among them in the hand frame scenario.
 
 mod arm_scenes;
 mod openarm_v2;
@@ -326,6 +329,7 @@ macro_rules! a_test_per_scenario {
 }
 
 a_test_per_scenario!(
+    arm_planning_both_arms_hand_frame_openarm_v2,
     arm_planning_both_arms_objects_openarm_v2,
     arm_planning_both_arms_openarm_v2,
     arm_planning_both_arms_poses_openarm_v2,
@@ -582,6 +586,52 @@ fn moveit_finds_every_path_of_this_crate_free() {
     }
 }
 
+/// How far past its tolerance a probe of a path of ours may read, in shares of the tolerance:
+/// 1e-7 rad at a tolerance of 0.1 rad, a slack over the rounding of MoveIt's forward kinematics,
+/// some 4e-15 per coordinate, and of the points of its rounded corners, 1e-12 in control_core's
+/// path timing parity. The plan's own walks leave a hundredth of the tolerance for it.
+const PROBE_SHARE_ROUNDING: f64 = 1e-6;
+
+// Each path of this crate in each scenario meets its scene's goal and holds its orientations as
+// MoveIt reads them, each in its frame where the probe's state puts it: MoveIt's kinematic
+// constraints of the goal hold at the path's last waypoint, and MoveIt's forward kinematics finds
+// every probe of the rounded path within each orientation's tolerance. The hand frame scenario
+// holds the left hand's goal and orientation in the right hand's frame and the right hand's
+// orientation in its wrist link's frame. The test prints how many of MoveIt's own paths meet the
+// goal and the largest share of a tolerance they reach.
+#[test]
+fn moveit_finds_every_path_of_this_crate_at_its_goal_and_within_its_orientations() {
+    for case in Case::load_all() {
+        let (mut theirs, mut theirs_met, mut theirs_share) = (0, 0, 0.0_f64);
+        for (k, c) in case.cases.iter().enumerate() {
+            let what = format!("{} scene {k}", case.name);
+            if let Some(probed) = c.ours_probed {
+                assert_eq!(
+                    probed.goal_met,
+                    Some(true),
+                    "{what}: MoveIt's goal constraints do not hold at our path's end"
+                );
+                if let Some(share) = probed.share_of_tolerance {
+                    assert!(
+                        share <= 1.0 + PROBE_SHARE_ROUNDING,
+                        "{what}: our path reaches {share} of an orientation's tolerance"
+                    );
+                }
+            }
+            if let Some(probed) = c.moveit.probed {
+                theirs += 1;
+                theirs_met += usize::from(probed.goal_met == Some(true));
+                theirs_share = theirs_share.max(probed.share_of_tolerance.unwrap_or(0.0));
+            }
+        }
+        println!(
+            "{}: MoveIt's goal constraints hold at the end of {theirs_met} of MoveIt's {theirs} \
+             paths, which reach at most {theirs_share} of an orientation's tolerance",
+            case.name
+        );
+    }
+}
+
 /// The spare a plan keeps above its clearance from an object, 1 mm (the plan module's
 /// `MIN_SPARE_M`, for a term of one moving body): a held object keeps the clearance and this
 /// from an object at each checked state.
@@ -656,6 +706,7 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
         mean(&paths.iter().map(of).collect::<Vec<f64>>())
     };
     let colliding = |paths: &[Probed]| paths.iter().filter(|p| p.collisions > 0).count();
+    let goal_met = |paths: &[Probed]| paths.iter().filter(|p| p.goal_met == Some(true)).count();
     let held_near = |paths: &[Probed]| {
         paths
             .iter()
@@ -664,9 +715,10 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
     };
     format!(
         "{} scenes; ours {} paths, failures {failures:?}, clearance {:.4}{}, length {:.3}, \
-         {} in collision at a probe, {} holding an object nearer than {held_within} m; \
-         MoveIt's {} paths, codes {codes:?}, clearance {:.4}{}, length {:.3}, {} in \
-         collision at a probe, {} holding an object nearer than {held_within} m",
+         {} in collision at a probe, {} holding an object nearer than {held_within} m, {} at \
+         MoveIt's goal; MoveIt's {} paths, codes {codes:?}, clearance {:.4}{}, length {:.3}, {} \
+         in collision at a probe, {} holding an object nearer than {held_within} m, {} at its \
+         goal",
         scenes.len(),
         ours.len(),
         mean_of(&ours, |p| p.clearance),
@@ -674,12 +726,14 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
         mean_of(&ours, |p| p.length),
         colliding(&ours),
         held_near(&ours),
+        goal_met(&ours),
         theirs.len(),
         mean_of(&theirs, |p| p.clearance),
         self_clearance(&theirs),
         mean_of(&theirs, |p| p.length),
         colliding(&theirs),
         held_near(&theirs),
+        goal_met(&theirs),
     )
 }
 
@@ -737,16 +791,22 @@ fn on_its_side<const N: usize>(case: &Case) {
         .map(|arm| geometry::<N>(arm, &case.robot))
         .collect();
     // How far a goal's grasp point stands from the start's, the farthest of the arms', for a
-    // goal of poses or of positions.
+    // goal of poses or of positions in the robot frame; none for a goal in a link's frame, which
+    // stands where that link ends.
+    let robot_frame = case.robot.description.root_link();
     let reach = |c: &SceneCase| {
-        let positions: Vec<[f64; 3]> = match &c.scene.goal {
-            SceneGoal::Poses(poses) => poses.iter().map(|pose| pose.position).collect(),
-            SceneGoal::Positions(goals) => goals.iter().map(|goal| goal.position).collect(),
+        let positions: Vec<([f64; 3], &str)> = match &c.scene.goal {
+            SceneGoal::Poses(poses) => poses.iter().map(|p| (p.position, &*p.frame)).collect(),
+            SceneGoal::Positions(goals) => goals.iter().map(|g| (g.position, &*g.frame)).collect(),
             SceneGoal::Joints(_) => return None,
         };
+        if positions.iter().any(|(_, frame)| *frame != robot_frame) {
+            return None;
+        }
         Some(
             positions
                 .into_iter()
+                .map(|(position, _)| position)
                 .zip(&geometries)
                 .zip(c.scene.start.as_chunks::<N>().0)
                 .map(|((position, geometry), start)| {
@@ -793,6 +853,11 @@ fn on_its_side<const N: usize>(case: &Case) {
     }
     let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
     let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
+    assert!(
+        ours.iter().all(|p| p.goal_met == Some(true)),
+        "{}: MoveIt's goal constraints do not hold at the end of a path of ours",
+        case.name
+    );
     let (low, high) = rate_interval(theirs.len(), scenes.len());
     let rate = ours.len() as f64 / scenes.len() as f64;
     let moveit_rate = theirs.len() as f64 / scenes.len() as f64;
@@ -950,15 +1015,10 @@ fn both_arms_to_poses_the_success_rate_the_clearances_and_the_length_lie_on_thei
     lies_on_its_side_of_moveits("arm_planning_both_arms_poses_openarm_v2");
 }
 
-/// How far past its tolerance a probe of a path of ours may read, in shares of the tolerance:
-/// 1e-7 rad at a tolerance of 0.1 rad, a slack over the rounding of MoveIt's forward kinematics,
-/// some 4e-15 per coordinate, and of the points of its rounded corners, 1e-12 in control_core's
-/// path timing parity. The plan's own walks leave a hundredth of the tolerance for it.
-const PROBE_SHARE_ROUNDING: f64 = 1e-6;
-
 /// Asserts that each path of ours in the scenario `name` keeps every orientation its scene holds,
 /// as MoveIt's forward kinematics finds it along the rounded path, and prints what MoveIt's own
-/// paths reach; then the tally of `lies_on_its_side_of_moveits`.
+/// paths reach, over the scenes that hold orientations; then the tally of
+/// `lies_on_its_side_of_moveits`.
 fn holds_its_orientations_and_lies_on_its_side_of_moveits(name: &str) {
     let case = Case::load_all()
         .into_iter()
@@ -968,14 +1028,14 @@ fn holds_its_orientations_and_lies_on_its_side_of_moveits(name: &str) {
         case.cases
             .iter()
             .filter_map(of)
-            .map(|probed| {
-                probed
-                    .share_of_tolerance
-                    .expect("a share where the scene holds an orientation")
-            })
+            .filter_map(|probed| probed.share_of_tolerance)
             .collect()
     };
-    let held = &case.cases[0].scene.path_orientations[0];
+    let held = case
+        .cases
+        .iter()
+        .find_map(|c| c.scene.path_orientations.first())
+        .unwrap_or_else(|| panic!("{name}: no scene holds an orientation"));
     println!(
         "{name}: tolerance_rad {}, MoveIt's box {:?}",
         held.tolerance_rad, held.moveit_tolerances
@@ -1035,5 +1095,13 @@ fn both_arms_holding_whole_orientations_a_path_lies_on_its_side_of_moveits() {
 fn both_arms_holding_free_axes_a_path_lies_on_its_side_of_moveits() {
     holds_its_orientations_and_lies_on_its_side_of_moveits(
         "arm_planning_both_arms_path_free_openarm_v2",
+    );
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms with constraints in the arms' links, run locally as the harness README's rule 3 says"]
+fn both_arms_in_hand_frames_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits(
+        "arm_planning_both_arms_hand_frame_openarm_v2",
     );
 }

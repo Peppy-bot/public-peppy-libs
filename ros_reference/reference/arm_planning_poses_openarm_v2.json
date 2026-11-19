@@ -2,35 +2,35 @@
   "kind": "arm_planning",
   "scenes": [
     {
-      "moveit": {"bending":0,"clearance":0.2064507590746983,"collisions":0,"duration":0.4338406901827377,"held_clearance":null,"length":0.32478853752359627,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0},
-      "ours": {"bending":0,"clearance":0.20666462319621312,"collisions":0,"duration":0.4298433964913135,"held_clearance":null,"length":0.32854597973662475,"self_clearance":null,"share_of_tolerance":null,"turning":0}
+      "moveit": {"bending":0,"clearance":0.2064507590746983,"collisions":0,"duration":0.4338406901827377,"goal_met":true,"held_clearance":null,"length":0.32478853752359627,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0},
+      "ours": {"bending":0,"clearance":0.20666462319621312,"collisions":0,"duration":0.4298433964913135,"goal_met":true,"held_clearance":null,"length":0.32854597973662475,"self_clearance":null,"share_of_tolerance":null,"turning":0}
     },
     {
-      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2,"turning":null},
-      "ours": {"bending":1.5890985820932175,"clearance":0.001646279291342299,"collisions":0,"duration":2.0105207925103428,"held_clearance":null,"length":5.462603392461651,"self_clearance":null,"share_of_tolerance":null,"turning":0.6482061397696733}
+      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"goal_met":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2,"turning":null},
+      "ours": {"bending":1.5890985820932175,"clearance":0.001646279291342299,"collisions":0,"duration":2.0105207925103428,"goal_met":true,"held_clearance":null,"length":5.462603392461651,"self_clearance":null,"share_of_tolerance":null,"turning":0.6482061397696733}
     },
     {
-      "moveit": {"bending":3.6636340564607095,"clearance":0.0007167563984946624,"collisions":0,"duration":2.2910677377269204,"held_clearance":null,"length":4.957507497604894,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0.929416417019284},
-      "ours": {"bending":0.7847883391845627,"clearance":0.011675242228686596,"collisions":0,"duration":2.014324791343803,"held_clearance":null,"length":4.975307469208749,"self_clearance":null,"share_of_tolerance":null,"turning":0.8361177524604321}
+      "moveit": {"bending":3.6636340564607095,"clearance":0.0007167563984946624,"collisions":0,"duration":2.2910677377269204,"goal_met":true,"held_clearance":null,"length":4.957507497604894,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0.929416417019284},
+      "ours": {"bending":0.7847883391845627,"clearance":0.011675242228686596,"collisions":0,"duration":2.014324791343803,"goal_met":true,"held_clearance":null,"length":4.975307469208749,"self_clearance":null,"share_of_tolerance":null,"turning":0.8361177524604321}
     },
     {
-      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10,"turning":null},
+      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"goal_met":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10,"turning":null},
       "ours": null
     },
     {
-      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-27,"turning":null},
+      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"goal_met":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-27,"turning":null},
       "ours": null
     },
     {
-      "moveit": {"bending":0,"clearance":0.0009914998158656121,"collisions":0,"duration":1.3514281781997084,"held_clearance":null,"length":3.6714074019882577,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0},
-      "ours": {"bending":7.389542148310532,"clearance":0.002663359360016759,"collisions":0,"duration":2.5955975954824746,"held_clearance":null,"length":6.3870014908065,"self_clearance":null,"share_of_tolerance":null,"turning":2.055724067980745}
+      "moveit": {"bending":0,"clearance":0.0009914998158656121,"collisions":0,"duration":1.3514281781997084,"goal_met":true,"held_clearance":null,"length":3.6714074019882577,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0},
+      "ours": {"bending":7.389542148310532,"clearance":0.002663359360016759,"collisions":0,"duration":2.5955975954824746,"goal_met":true,"held_clearance":null,"length":6.3870014908065,"self_clearance":null,"share_of_tolerance":null,"turning":2.055724067980745}
     },
     {
-      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},
+      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"goal_met":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},
       "ours": null
     },
     {
-      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},
+      "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"goal_met":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26,"turning":null},
       "ours": null
     }
   ]
