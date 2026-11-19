@@ -29,7 +29,15 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   whose distance from that corner rounds to that count keys no cell: a map leaves out the
   hits on the box's far x and far y edges, and with them a wall that lies along either
   edge. `RoomMap::load` reads it back, and refuses a directory whose files disagree, or
-  whose resolution makes no grid karto can count, naming the file and the field.
+  whose resolution makes no grid karto can count, naming the file and the field;
+  `RoomMap::load_summary` reads its summary from `meta.json` alone.
+- `MapStore` keeps maps by `MapName` in one directory, as room_map:v1 keeps them: a name is
+  a lowercase letter, then lowercase letters, digits and `_`, at most 64 characters. It
+  lists the maps whose description reads, sorted by name, each with its summary; it saves a
+  map under a name no saved map has, claiming the name's directory, writing the map into a
+  temporary directory, flushing it and renaming it over the claim; it loads a map; and it
+  removes one by renaming its directory before deleting it. A reader finds no map of a name
+  or a whole one.
 - `Localization` keeps the base's pose in a map as slam_toolbox does in its localization
   mode: each scan added to the graph, linked and its loops closed, and the oldest added
   scan beyond the buffer dropped. It starts from an `InitialPose` with a search radius and a

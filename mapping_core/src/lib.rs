@@ -34,6 +34,8 @@
 //!   [`Mapping::grid`] is that grid while the map is built.
 //! - [`RoomMap::save`] and [`RoomMap::load`]: a map as a directory of the pose graph, a
 //!   description, and the grid as Nav2's map saver writes a trinary map.
+//! - [`MapStore`]: maps saved by [`MapName`] in one directory, as room_map:v1 keeps them,
+//!   listed by name with each one's summary, each save and removal whole or not at all.
 //! - [`Localization`]: the base's pose in a map, kept as slam_toolbox keeps it in its
 //!   localization mode, from an [`InitialPose`] and its search, from an estimate, or from
 //!   a mapping's estimate. Each [`MapPose`] carries the standard deviations of its match,
@@ -66,6 +68,7 @@ mod laser_projection;
 mod localization;
 mod localized_scan;
 mod map_pose;
+mod map_store;
 mod mapper;
 mod mapping;
 mod occupancy_grid;
@@ -90,6 +93,7 @@ pub use localization::{
 };
 pub use localized_scan::{ScanError, ScanId};
 pub use map_pose::{Deviations, LocalizationLimits, MapPose};
+pub use map_store::{MapName, MapNameError, MapStore, SavedMap, StoreError};
 pub use mapping::{FinishError, Mapping, MappingError, MappingParameters, ParameterError};
 pub use occupancy_grid::{CellState, GridError, GridExtent, MapSaverFiles, OccupancyGrid};
 pub use placed_scan::PlacedScan;
