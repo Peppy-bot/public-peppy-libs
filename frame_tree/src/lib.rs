@@ -26,7 +26,7 @@
 //!   composes, inverts and interpolates in tf2's arithmetic, bit for bit.
 //! - [`arithmetic`]: the rotation arithmetic of tf2 and KDL, operation for operation: the
 //!   quaternion products, rotations and interpolation a lookup takes, tf2's rotation matrix,
-//!   `setRPY` and `getYaw`, and KDL's matrices.
+//!   `setRPY` and `getYaw`, and KDL's matrices. control_core's geometry types run on it.
 //!
 //! The README lists each rule of tf2 the crate follows, by file and line of geometry2
 //! 0.45.10, and where it departs.
@@ -44,7 +44,8 @@ pub use error::{BrokenTree, LookupError, TransformName};
 pub use frame::{FrameName, FrameNameError, LookupTime, Publisher, Stamp, TimeError};
 pub use transform::{NotATransform, Transform};
 pub use transforms::{
-    FrameTransform, MessageError, MovingMessage, Placement, StaticMessage, TransformError,
-    TransformErrorReason, TransformRecord,
+    DenormalizedQuaternion, FrameTransform, MessageError, MovingMessage, Placement,
+    QUATERNION_NORMALIZATION_TOLERANCE, StaticMessage, TransformError, TransformErrorReason,
+    TransformRecord, check_quaternion,
 };
 pub use tree::{Found, FrameTree, ZeroWindow};

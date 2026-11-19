@@ -23,7 +23,7 @@ use crate::transform::Transform;
 
 /// tf2's tolerance on a quaternion's squared norm: an orientation whose squared norm
 /// differs from 1 by this much or more is refused (buffer_core.cpp:66, 250-255).
-const QUATERNION_NORMALIZATION_TOLERANCE: f64 = 10e-3;
+pub const QUATERNION_NORMALIZATION_TOLERANCE: f64 = 10e-3;
 
 /// Where a child frame sits in its parent: a point `p` of the child frame is
 /// `R(orientation) * p + position` of the parent frame, the position in meters and the
@@ -95,9 +95,8 @@ impl FrameTransform {
         if !position.iter().all(|c| c.is_finite()) {
             return Err(TransformErrorReason::Position(position));
         }
-        if !is_unit(orientation) {
-            return Err(TransformErrorReason::Orientation(orientation));
-        }
+        check_quaternion(orientation)
+            .map_err(|_| TransformErrorReason::Orientation(orientation))?;
         Ok(Self {
             parent,
             child,
@@ -319,12 +318,24 @@ fn repeated_child<'a>(children: impl IntoIterator<Item = &'a str>) -> Option<&'a
     children.into_iter().find(|child| !named.insert(*child))
 }
 
-/// tf2's check of a quaternion, its squared norm summed w first within the tolerance of 1
-/// (buffer_core.cpp:250-255), each coordinate finite.
-fn is_unit(orientation: [f64; 4]) -> bool {
+/// A quaternion [x, y, z, w] that tf2's buffer refuses as TF_DENORMALIZED_QUATERNION: its
+/// squared norm, as tf2 sums it, lies [`QUATERNION_NORMALIZATION_TOLERANCE`] or more from 1, or
+/// is no number for a coordinate that is not finite.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DenormalizedQuaternion {
+    pub squared_norm: f64,
+}
+
+/// tf2's check of a quaternion [x, y, z, w]: its squared norm, summed w first, within
+/// [`QUATERNION_NORMALIZATION_TOLERANCE`] of 1 (buffer_core.cpp:250-255). A coordinate that is
+/// not finite makes a squared norm that is infinite or NaN, which the check refuses.
+pub fn check_quaternion(orientation: [f64; 4]) -> Result<(), DenormalizedQuaternion> {
     let [x, y, z, w] = orientation;
-    orientation.iter().all(|c| c.is_finite())
-        && ((w * w + x * x + y * y + z * z) - 1.0).abs() < QUATERNION_NORMALIZATION_TOLERANCE
+    let squared_norm = w * w + x * x + y * y + z * z;
+    if (squared_norm - 1.0).abs() < QUATERNION_NORMALIZATION_TOLERANCE {
+        return Ok(());
+    }
+    Err(DenormalizedQuaternion { squared_norm })
 }
 
 #[cfg(test)]
@@ -563,8 +574,8 @@ mod tests {
     #[test]
     fn a_quaternion_within_tf2s_tolerance_is_taken_and_normalized() {
         // A squared norm of 1.009 is within 10e-3 of 1.
-        assert!(is_unit([0.0, 0.0, 0.0, 1.009_f64.sqrt()]));
-        assert!(!is_unit([0.0, 0.0, 0.0, 1.0101_f64.sqrt()]));
+        assert_eq!(check_quaternion([0.0, 0.0, 0.0, 1.009_f64.sqrt()]), Ok(()));
+        assert!(check_quaternion([0.0, 0.0, 0.0, 1.0101_f64.sqrt()]).is_err());
         let parsed = fixed(vec![TransformRecord::new(
             "p",
             "c",

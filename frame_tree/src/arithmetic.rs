@@ -18,7 +18,8 @@
 
 //! The rotation arithmetic of the libraries, operation for operation as tf2 and KDL run it, so a
 //! lookup composes the bits tf2's `TransformAccum` composes and a point lands on the bits tf2 gives
-//! it. A quaternion is [x, y, z, w]; a rotation is a 3x3 matrix, row by row.
+//! it. A quaternion is [x, y, z, w]; a rotation is a 3x3 matrix, row by row. control_core's
+//! geometry types run on it.
 
 pub type Vector = [f64; 3];
 pub type Quaternion = [f64; 4];
