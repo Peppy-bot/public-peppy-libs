@@ -282,6 +282,20 @@ async def test_ask_waits_out_each_failure_and_logs_the_first_of_a_run(monkeypatc
     assert out.count("robot_identity failing: RuntimeError('no reply'); suppressing repeats") == 1
 
 
+async def test_ask_asks_nothing_once_cancelled_before_it_starts():
+    token = FakeToken()
+    token.cancel()
+    asks = 0
+
+    async def ask_once():
+        nonlocal asks
+        asks += 1
+        return "so101"
+
+    assert await runtime.ask("get_identity", token, ask_once) is None
+    assert asks == 0
+
+
 async def test_ask_ends_with_none_once_cancelled_while_it_asks():
     token = FakeToken()
     asked = asyncio.Event()
