@@ -20,7 +20,9 @@ fields are optional.
   uses follows the name rule of Rules, and a teach of `locations:v1` refuses a name outside
   it.
 - `tables`: table to `{ <enum value>: <row>, ... }`, one row per value of the enum that keys
-  it; a row is a literal or `{ $location: "<name>" }`.
+  it; a row is a bool, a number, a string or a list of them, or every row of the table is
+  `{ $location: "<name>" }`, a table of locations, which goes only to a field with the mark
+  `location` and which no expression reads.
 - `observations`: name to `{ member: "<alias>.<service>", role, args?, instance? }` (a
   service called on demand) or `{ topic: "<alias>.<topic>", role, max_age_s, instance? }`
   (the latest message; older than `max_age_s` fails the step that reads it). A read of a
@@ -71,20 +73,77 @@ bound; each wait has `timeout_s`.
 
 The `args` of a call give each field of the request of its member that the contract does
 not mark `$optional`, also a field that the member does not read in some cases, such as a
-position beside an item id. An argument is a literal, an object or a list of arguments, or
+target beside an item id. An argument is a literal, an object or a list of arguments, or
 a reference:
 
 - `{ $ref: "<name>.<path>" }`: a named result before it on every path, an observation, or
   a loop element. A name that each case of a `match` defines is defined after the `match`
-  only when it has an `otherwise` that defines it too. A field that holds a position, a pose
-  or an item id takes only a `$ref` to a position, a pose or an item id that a call or an
-  observation of the same role gives; an item id comes from a call or an observation of the
-  same node instance.
+  only when it has an `otherwise` that defines it too. A call reads each observation that
+  its arguments name once, as it sends its request. A field that holds an item id takes only
+  a `$ref` to an item id that a call or an observation of the same node instance gives.
 - `{ $table: "<table>", key: <$ref or $param> }`: the row the key selects.
 - `{ $location: "<name>" }`: a location that `locations` declares, admitted only in a field
   with the mark `location`. Such a field holds only a `$location`, directly, through a table
   row or through a parameter, never a literal and never a `$ref`.
 - `{ $param: "<param>" }`: the value a lane group gives the role.
+
+## Points, poses and twists
+
+A point, a pose and a twist name their frame and their time, as the geometry types of
+contracts-hub give them: a record `{ frame, timestamp, position }`, `{ frame, timestamp,
+position, orientation }` or `{ frame, timestamp, linear_velocity, angular_velocity }`, or a
+record of many values that gives one `frame` and one `timestamp`. `frame` is a frame as
+`transforms` names frames, and `timestamp` a time on the clock of `transforms` as RFC 3339
+text. A command may leave its `frame` out, for its robot frame, or for world in a
+simulation, and its `timestamp` out, for the latest time. A record whose values hold at
+every time, such as the result of a plan, holds no `timestamp`. A field that takes such a
+record gets it whole:
+
+- A literal record is in the robot frame of the robot of its role, the root link of its
+  URDF, which it names, such as `base_link`, or leaves `frame` out: with no frame, it goes
+  with none, which the skill reads as its robot frame, or as world in a simulation. Or it
+  names a frame that the tree of the robot holds above its robot frame: `odom`, `map`, or
+  `world` where a node publishes it into the tree. A literal record gives each of its fields
+  as a literal, such as `{ frame: "map", position: [1.2, 0.4, 0.0] }`, a target in map at
+  the latest time with no orientation. A literal record in an empty frame is refused, and so
+  is one in another link of the robot, and one that names a frame for a robot whose skills
+  give no URDF through `robot_identity:v1`, whose links the director cannot tell. A point, a
+  pose or a twist in another link of the robot comes from a report of a skill of the robot by
+  `$ref`, which brings its frame and the time it holds at.
+- A `$ref` to a point, a pose or a twist of a result or an observation brings its frame and
+  its timestamp, and the skill places it where its frame stood at that time: a point that a
+  skill gave in the robot frame before a move names the same place after it. A record that
+  leaves its timestamp out, as a report does for values that hold at every time, or that
+  holds none, brings its frame alone, and the request names the latest time.
+- A `$ref` to a point, a pose or a twist with no frame of its own, in a record that gives one
+  `frame`, such as an item of `grasp_points` of `limb_states` or of `points` of
+  `scan_items`, brings the frame and the timestamp of that record (a twist beside a
+  `child_frame` brings that frame), and so does a loop element of such a list of a result.
+  One in a record that holds a position or an orientation of its own is posed relative to
+  that record, such as a shape of a collision object, posed relative to its object, or a
+  vertex of a mesh, relative to its shape, and is refused; so is one in a record that gives
+  no frame, and a loop element of a list of an observation, which its loop reads from one
+  message: a `$ref` to an item of that list by its index brings the frame and the timestamp
+  of the message.
+- A point goes to a field that takes a pose whose orientation may be left out, with no
+  orientation, which the member reads as none, and a pose goes to a field that takes a point
+  with its position alone.
+- A point, a pose or a twist of another role goes to a call only in `world`, a frame that the
+  trees of both robots hold above their robot frames where a node publishes it: a run fails
+  the call with `rejected` in another frame. No node publishes `world` into a robot's tree,
+  so a call takes the points, poses and twists of the reports of its own robot. A whole
+  record of another role that holds points, poses or twists is refused: give it field by
+  field, with a `$ref` of its own to each point, pose or twist.
+- The frame, the timestamp and the values of a record that names its frame are literals, or
+  the record comes whole by one `$ref`. A request that names its frame at its own level, such
+  as the request of `check_positions`, takes its values by `$ref` to one record that gives one
+  `frame`, such as `points: { $ref: "scanned.points" }`, or to one point, pose or twist that
+  names its own, such as `points: [{ $ref: "seen.item_point" }]`, and takes that frame and
+  the timestamp of that record with them; values of another role reach it in `world` alone.
+  A `frame` or a `timestamp` given beside such values is refused unless it is the `$ref` of
+  theirs, and so is a `timestamp` beside values of a record that holds none, values of two
+  records, a literal value beside them, and a list whose values each name a frame of their
+  own.
 
 ## Expressions
 
@@ -122,9 +181,9 @@ named before it on every path, loop elements and parameters, never an optional f
   reaching call on every path. A reach check is a call of a member whose result has a field
   with the mark `checks_reach`, with `as` and a `done_when` that is that field of its
   result, alone or as a term of `&&`, such as `done_when: "near.all_workable"`. Each `$ref`
-  of an item id or a position of the reaching call reads the same result or observation as
-  the `$ref` of a position of a reach check before it, so the robot reaches only an item
-  whose position a check read. A loop element reads what the list of its loop reads.
+  of an item id, a point or a pose of the reaching call reads the same result or observation
+  as the `$ref` of a point of a reach check before it, so the robot reaches only an item
+  whose point a check read. A loop element reads what the list of its loop reads.
 - No observation reads a member that moves the robot.
 - Each awaited signal has a `signal` step in another lane, and no waits hold each other: a
   wait reached on every path needs a signal that some lane emits before, or beside, the waits
