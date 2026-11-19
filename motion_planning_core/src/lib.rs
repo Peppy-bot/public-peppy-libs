@@ -66,7 +66,7 @@ pub use plan::{
     Place, PlanFailure, PlanRequest, Refiner, Scene, StartFault, check_path, iteration_bound,
     plan_path, sample_goals, start_inside_limits,
 };
-pub use pose::{orientation_from_parts, pose_from_parts, pose_parts};
+pub use pose::pose_from_parts;
 pub use scene::{
     AttachRequest, AttachedObjectFields, OCCUPANCY_MAP, ObjectFields, ObjectRequest, Objects,
     Obstacle, PlanObjects, PlanningScene, RobotLinks, RobotPart, SceneError, SceneSnapshot,

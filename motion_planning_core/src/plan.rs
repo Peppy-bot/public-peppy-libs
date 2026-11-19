@@ -2096,12 +2096,13 @@ pub(crate) mod tests {
     use frame_tree::Transform;
     use hegel::TestCase;
     use hegel::generators as gs;
+    use nalgebra::Isometry3;
     use occupancy_map::{Bounds, Scan};
 
     use super::*;
     use crate::arm::{Arm, Body, SelfModel};
     use crate::goal::OrientationTarget;
-    use crate::scene::{ObjectFields, ObjectRequest, PlanningScene, RobotLinks, ShapeFields};
+    use crate::scene::{ObjectRequest, PlanningScene, RobotLinks, ShapeFields};
 
     // Waypoints inside a straight stretch go, the first and the last and each corner stay, and a
     // turn back on the same line stays: the path rests there.
@@ -3504,22 +3505,18 @@ pub(crate) mod tests {
     }
 
     /// A box of side `side` at `position`, as an object request adds it.
-    fn box_at(id: &str, position: [f64; 3], side: f64) -> ObjectRequest {
-        ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: id.to_string(),
-                position,
+    fn box_at(id: &str, [x, y, z]: [f64; 3], side: f64) -> ObjectRequest {
+        ObjectRequest::Add {
+            id: id.to_string(),
+            pose: Isometry3::translation(x, y, z),
+            shapes: vec![ShapeFields {
+                kind: "box".to_string(),
+                dimensions: vec![side; 3],
+                mesh_vertices: Vec::new(),
+                mesh_triangles: Vec::new(),
+                position: [0.0; 3],
                 orientation: [0.0, 0.0, 0.0, 1.0],
-                shapes: vec![ShapeFields {
-                    kind: "box".to_string(),
-                    dimensions: vec![side; 3],
-                    mesh_vertices: Vec::new(),
-                    mesh_triangles: Vec::new(),
-                    position: [0.0; 3],
-                    orientation: [0.0, 0.0, 0.0, 1.0],
-                }],
-            },
+            }],
         }
     }
 

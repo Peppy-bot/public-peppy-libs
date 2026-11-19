@@ -632,14 +632,17 @@ motion_planning's scene members; a node parses the wire into its requests and ma
 refusals (`SceneError`), each `rejected` but a link whose pose is not known yet
 (`Unplaced`).
 
-- `apply_collision_objects` applies a batch in order, all or none. "add" places an object
-  with its shapes, in place of one of the same id, whose allowed pairs stay; "move" reads
-  only the id and the pose; "remove" reads only the id, and drops every pair that names
-  the object. Refused: an empty id, an id that names a link or `"occupancy_map"`, an
-  unknown id for "move" or "remove", an attached object, an object of no shape, and a
-  shape that cannot be built, an open mesh among them. A pose's position is finite, and
-  its orientation within 0.001 of unit length is normalized (`pose_from_parts`). MoveIt
-  removes every object for a "remove" of an empty id; this crate refuses it.
+- `apply_collision_objects` applies a batch of `ObjectRequest`s in order, all or none,
+  each operation holding the fields it reads, a pose in the robot frame. "add" places an
+  object with its shapes, in place of one of the same id, whose allowed pairs stay; "move"
+  places an object at a new pose; "remove" drops every pair that names the object.
+  Refused: an empty id, an id that names a link or `"occupancy_map"`, an unknown id for
+  "move" or "remove", an attached object, an add of no shape, and a shape that cannot be
+  built, an open mesh among them. A shape's pose is read by `control_core`'s one parse of
+  the contracts' geometry (`pose_from_parts`): its position finite, and its orientation
+  normalized where its squared norm lies within 0.01 of 1, the tolerance of tf2's buffer,
+  and refused otherwise. MoveIt removes every object for a "remove" of an empty id; this
+  crate refuses it.
 - `apply_attached_collision_object` attaches an object no link carries to an arm's grasp
   link, where it stands, with touch links of the robot; a detach, which reads only the id,
   leaves it where it stands. Attaching an attached object and detaching one no link
@@ -652,6 +655,11 @@ refusals (`SceneError`), each `rejected` but a link whose pose is not known yet
   attached objects, each sorted by id, the attached ones in their links' frames; each
   allowed pair once, its first name before its second in sort order, the pairs sorted; and
   the clearance and the voxel size its caller gives it.
+- `standing_pose` gives the pose in the robot frame of one object no link carries, by its
+  id, or none for an attached object or an id the scene does not hold.
+- `move_objects` moves each object no link carries to the pose its caller gives it, its
+  shapes and pairs as they stand, and clears no voxel of the map, for a node that holds the
+  objects in a frame other than the robot frame and places them in the robot frame again.
 
 Adding, moving or attaching an object clears every voxel of the map it intersects where
 it then stands (`VoxelMap::clear_intersecting`); a batch clears where it leaves each

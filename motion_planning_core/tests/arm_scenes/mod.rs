@@ -17,14 +17,15 @@ use std::time::{Duration, Instant};
 
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
+use control_core::geometry::UnitQuaternion;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
 use frame_tree::Transform;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
-    ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
-    PlanningScene, PositionTarget, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
-    StartFault, iteration_bound, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
+    ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest, PlanningScene,
+    PositionTarget, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields, StartFault,
+    iteration_bound, plan_path, pose_from_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
@@ -427,29 +428,40 @@ fn shape_fields(shape: &Shape) -> ShapeFields {
     }
 }
 
-/// The entry of apply_collision_objects that a harness object writes.
+/// The entry of apply_collision_objects that a harness object writes, its pose read by
+/// control_core's parse.
 pub fn object_request(object: &Object) -> ObjectRequest {
-    ObjectRequest {
-        operation: object.operation.clone(),
-        object: ObjectFields {
-            id: object.id.clone(),
-            position: object.position,
-            orientation: object.orientation,
+    let id = object.id.clone();
+    let pose =
+        || pose_from_parts(object.position, object.orientation).expect("a harness object's pose");
+    match object.operation.as_str() {
+        "add" => ObjectRequest::Add {
+            id,
+            pose: pose(),
             shapes: object.shapes.iter().map(shape_fields).collect(),
         },
+        "move" => ObjectRequest::Move { id, pose: pose() },
+        "remove" => ObjectRequest::Remove { id },
+        operation => panic!("a harness object's operation is add, move or remove: {operation:?}"),
     }
 }
 
 /// The entry of apply_collision_objects that adds `held`, whose pose is in the frame of
 /// a link at `link_pose`, where that link holds it.
 fn held_request(held: &Object, link_pose: &Isometry3<f64>) -> ObjectRequest {
-    let mut request = object_request(held);
-    let in_the_link = pose_from_parts(request.object.position, request.object.orientation)
-        .expect("the held object's pose in its link's frame");
-    let (position, orientation) = pose_parts(&(link_pose * in_the_link));
-    request.object.position = position;
-    request.object.orientation = orientation;
-    request
+    let ObjectRequest::Add {
+        id,
+        pose: in_the_link,
+        shapes,
+    } = object_request(held)
+    else {
+        panic!("a held object is added");
+    };
+    ObjectRequest::Add {
+        id,
+        pose: link_pose * in_the_link,
+        shapes,
+    }
 }
 
 /// What a scene of a scenario of any kind stands in: the voxel size and the half side of the
@@ -505,11 +517,10 @@ fn planning_scene_of<const N: usize>(
     for (held, pose) in scene.attached.iter().zip(&poses) {
         planning
             .apply_attached_collision_object(
-                &AttachRequest {
+                &AttachRequest::Attach {
                     object_id: held.object.id.clone(),
                     link_name: held.link.clone(),
                     touch_links: held.touch_links.clone(),
-                    operation: "attach".to_string(),
                 },
                 |_| Some(*pose),
                 map,
@@ -721,7 +732,9 @@ fn path_orientation<'a, const N: usize>(
         link_name: &held.link_name,
         target: OrientationTarget {
             frame,
-            orientation: orientation_from_parts(held.orientation).expect("a unit quaternion"),
+            orientation: UnitQuaternion::parse(held.orientation)
+                .expect("a unit quaternion")
+                .into(),
             tolerance_rad: PositiveFinite::parse(held.tolerance_rad)
                 .expect("a path orientation's tolerance"),
             free_axis: Axis::free_named(&held.free_axis).expect("a free axis's name"),

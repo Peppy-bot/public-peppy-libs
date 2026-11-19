@@ -3,7 +3,7 @@
   "scenes": [
     {
       "moveit": {"bending":0,"clearance":0.2064507590746983,"collisions":0,"duration":0.4338406901827377,"held_clearance":null,"length":0.32478853752359627,"self_clearance":null,"share_of_tolerance":null,"status":1,"turning":0},
-      "ours": {"bending":0,"clearance":0.20666462319621312,"collisions":0,"duration":0.42984339649131365,"held_clearance":null,"length":0.32854597973662486,"self_clearance":null,"share_of_tolerance":null,"turning":0}
+      "ours": {"bending":0,"clearance":0.20666462319621312,"collisions":0,"duration":0.4298433964913135,"held_clearance":null,"length":0.32854597973662475,"self_clearance":null,"share_of_tolerance":null,"turning":0}
     },
     {
       "moveit": {"bending":null,"clearance":null,"collisions":null,"duration":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2,"turning":null},

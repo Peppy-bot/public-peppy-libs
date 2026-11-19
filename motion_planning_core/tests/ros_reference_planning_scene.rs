@@ -293,13 +293,19 @@ fn scene_after(
                 positions,
             } => {
                 set(&mut state, positions);
-                scene.apply_attached_collision_object(
-                    &AttachRequest {
+                let request = match operation.as_str() {
+                    "attach" => AttachRequest::Attach {
                         object_id: object_id.clone(),
                         link_name: link_name.clone(),
                         touch_links: (taking.touch_links)(own),
-                        operation: operation.clone(),
                     },
+                    "detach" => AttachRequest::Detach {
+                        object_id: object_id.clone(),
+                    },
+                    other => panic!("a reference attach is an attach or a detach: {other:?}"),
+                };
+                scene.apply_attached_collision_object(
+                    &request,
                     |link| Some(grasp_pose(robot, link, &state)),
                     &mut voxels,
                 )

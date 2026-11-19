@@ -10,7 +10,7 @@ description = "Plans the paths of one or more serial chains of joints, moved tog
 camera_core = { path = "../camera_core" }
 chain_kinematics = { path = "../chain_kinematics" }
 collision_geometry = { path = "../collision_geometry" }
-control_core = { path = "../control_core" }
+control_core = { path = "../control_core", features = ["nalgebra"] }
 frame_tree = { path = "../frame_tree" }
 nalgebra = "0.35"
 occupancy_map = { path = "../occupancy_map" }

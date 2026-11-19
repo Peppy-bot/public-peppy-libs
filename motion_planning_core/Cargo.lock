@@ -223,6 +223,7 @@ name = "control_core"
 version = "0.1.0"
 dependencies = [
  "frame_tree",
+ "nalgebra",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

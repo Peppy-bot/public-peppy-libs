@@ -663,7 +663,7 @@ mod tests {
     use super::*;
     use crate::plan::tests::{gantry, one_arm, two_links, world};
     use crate::scene::{
-        AttachRequest, ObjectFields, ObjectRequest, Objects, PlanningScene, RobotLinks, ShapeFields,
+        AttachRequest, ObjectRequest, Objects, PlanningScene, RobotLinks, ShapeFields,
     };
 
     // MoveIt's potential of a sphere: 0 at the clearance and beyond, half the squared
@@ -828,21 +828,17 @@ mod tests {
         let (mut map, field) = gantry_world(&[]);
         let hands = ["left_hand", "right_hand"].map(String::from);
         let mut planning = PlanningScene::new(RobotLinks::new(hands.clone(), hands));
-        let object = |id: &str, position: [f64; 3]| ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: id.to_string(),
-                position,
+        let object = |id: &str, [x, y, z]: [f64; 3]| ObjectRequest::Add {
+            id: id.to_string(),
+            pose: Isometry3::translation(x, y, z),
+            shapes: vec![ShapeFields {
+                kind: "box".to_string(),
+                dimensions: vec![0.05; 3],
+                mesh_vertices: Vec::new(),
+                mesh_triangles: Vec::new(),
+                position: [0.0; 3],
                 orientation: [0.0, 0.0, 0.0, 1.0],
-                shapes: vec![ShapeFields {
-                    kind: "box".to_string(),
-                    dimensions: vec![0.05; 3],
-                    mesh_vertices: Vec::new(),
-                    mesh_triangles: Vec::new(),
-                    position: [0.0; 3],
-                    orientation: [0.0, 0.0, 0.0, 1.0],
-                }],
-            },
+            }],
         };
         let (standing, held) = ([0.3, 0.0, 0.0], [-0.3, 0.0, 0.0]);
         planning
@@ -851,11 +847,10 @@ mod tests {
         let hand = Isometry3::translation(held[0], held[1], held[2]);
         planning
             .apply_attached_collision_object(
-                &AttachRequest {
+                &AttachRequest::Attach {
                     object_id: "cup".to_string(),
                     link_name: "right_hand".to_string(),
                     touch_links: Vec::new(),
-                    operation: "attach".to_string(),
                 },
                 |link| (link == "right_hand").then_some(hand),
                 &mut map,

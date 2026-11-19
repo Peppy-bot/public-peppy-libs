@@ -1,42 +1,20 @@
 //! A pose as the contracts write it: a position in meters and a unit quaternion
-//! `[x, y, z, w]`, read and written, for the planning scene's objects and a goal's frame.
+//! `[x, y, z, w]`, taken or refused by control_core's one parse of the contracts' geometry.
+//! The planning scene reads the pose of each shape of an object with it, and control_core's
+//! `pose_arrays` writes one back.
 
-use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
+use control_core::geometry::Pose;
+use nalgebra::Isometry3;
 
-/// How far a quaternion's norm may lie from 1 and still name an orientation, which is
-/// then normalized.
-const UNIT_NORM_SLACK: f64 = 1e-3;
-
-/// The orientation of the quaternion `[x, y, z, w]`, normalized: its norm lies within
-/// 0.001 of 1.
-pub fn orientation_from_parts(orientation: [f64; 4]) -> Result<UnitQuaternion<f64>, String> {
-    let [x, y, z, w] = orientation;
-    let quaternion = Quaternion::new(w, x, y, z);
-    let norm = quaternion.norm();
-    if !(1.0 - UNIT_NORM_SLACK..=1.0 + UNIT_NORM_SLACK).contains(&norm) {
-        return Err(format!(
-            "an orientation is a unit quaternion [x, y, z, w]; {orientation:?} has norm {norm}"
-        ));
-    }
-    Ok(UnitQuaternion::from_quaternion(quaternion))
-}
-
-/// The pose of `position` (m) and the orientation `[x, y, z, w]`.
+/// The pose of `position` (m) and the orientation `[x, y, z, w]` where control_core's parse
+/// takes them: each number finite, and the orientation's squared norm within
+/// `QUATERNION_NORMALIZATION_TOLERANCE` of 1, normalized as tf2's buffer normalizes a
+/// transform's. The refusal is the parse's, and says what to send.
 pub fn pose_from_parts(
     position: [f64; 3],
     orientation: [f64; 4],
 ) -> Result<Isometry3<f64>, String> {
-    if !position.iter().all(|v| v.is_finite()) {
-        return Err(format!("a position is finite; {position:?} is not"));
-    }
-    Ok(Isometry3::from_parts(
-        Translation3::from(position),
-        orientation_from_parts(orientation)?,
-    ))
-}
-
-/// The position and the quaternion `[x, y, z, w]` of `pose`.
-pub fn pose_parts(pose: &Isometry3<f64>) -> ([f64; 3], [f64; 4]) {
-    let q = pose.rotation.quaternion();
-    (pose.translation.vector.into(), [q.i, q.j, q.k, q.w])
+    Pose::parse(position, orientation)
+        .map(Isometry3::from)
+        .map_err(|e| e.to_string())
 }

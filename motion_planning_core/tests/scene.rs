@@ -1,7 +1,7 @@
 //! The rules of the planning scene, on a robot of two hands, each with two fingers, on a
-//! torso: a batch of objects applies all or none; "add" replaces and keeps the pairs,
-//! "move" and "remove" read only what they use, and "remove" drops every pair that names
-//! the object; ids, attached objects and open meshes are refused; only a grasp link
+//! torso: a batch of objects applies all or none; "add" replaces and keeps the pairs, and
+//! "remove" drops every pair that names the object; ids, attached objects and open meshes
+//! are refused; only a grasp link
 //! carries an object, where it stands, and an attach and a detach keep the pairs; a pair
 //! names an object; the snapshot is what was set, with the clearance and the voxel size
 //! it is given; adding, moving or attaching an object clears the map where it stands, a
@@ -11,6 +11,7 @@
 mod common;
 mod openarm_v2;
 
+use control_core::geometry::{Pose, pose_arrays};
 use motion_planning_core::{
     AttachRequest, OCCUPANCY_MAP, ObjectFields, ObjectRequest, PlanningScene, RobotLinks,
     SceneError, ShapeFields, pose_from_parts,
@@ -79,46 +80,39 @@ fn object(id: &str, position: [f64; 3], shapes: Vec<ShapeFields>) -> ObjectField
     }
 }
 
-fn add(id: &str, position: [f64; 3], shapes: Vec<ShapeFields>) -> ObjectRequest {
-    ObjectRequest {
-        operation: "add".to_string(),
-        object: object(id, position, shapes),
+fn add(id: &str, [x, y, z]: [f64; 3], shapes: Vec<ShapeFields>) -> ObjectRequest {
+    ObjectRequest::Add {
+        id: id.to_string(),
+        pose: Isometry3::translation(x, y, z),
+        shapes,
     }
 }
 
-/// A move of `id` to `position`, with a shape no add takes, which a move does not read.
-fn move_to(id: &str, position: [f64; 3]) -> ObjectRequest {
-    ObjectRequest {
-        operation: "move".to_string(),
-        object: object(id, position, vec![shape("cone", &[])]),
+/// A move of `id` to `position`.
+fn move_to(id: &str, [x, y, z]: [f64; 3]) -> ObjectRequest {
+    ObjectRequest::Move {
+        id: id.to_string(),
+        pose: Isometry3::translation(x, y, z),
     }
 }
 
-/// A removal of `id`, at a position that is not one, which a removal does not read.
+/// The removal of `id`.
 fn remove(id: &str) -> ObjectRequest {
-    ObjectRequest {
-        operation: "remove".to_string(),
-        object: object(id, [f64::NAN; 3], Vec::new()),
-    }
+    ObjectRequest::Remove { id: id.to_string() }
 }
 
 fn attach(id: &str, link: &str, touch_links: &[&str]) -> AttachRequest {
-    AttachRequest {
+    AttachRequest::Attach {
         object_id: id.to_string(),
         link_name: link.to_string(),
         touch_links: touch_links.iter().map(|l| l.to_string()).collect(),
-        operation: "attach".to_string(),
     }
 }
 
-/// A detach of `id`, naming a link and a touch link the robot does not have, which a
-/// detach does not read.
+/// A detach of `id`.
 fn detach(id: &str) -> AttachRequest {
-    AttachRequest {
+    AttachRequest::Detach {
         object_id: id.to_string(),
-        link_name: "no_link".to_string(),
-        touch_links: vec!["no_link".to_string()],
-        operation: "detach".to_string(),
     }
 }
 
@@ -221,15 +215,18 @@ fn add_replaces_and_remove_drops_the_pairs() {
         .set_allowed_collision("cup", &names(&["left_finger_a"]), true)
         .expect("allowed");
     let mut map = empty_map();
-    let replacing = add("block", [0.5, 0.1, 0.3], vec![shape("sphere", &[0.03])]);
+    let replaced_by = object("block", [0.5, 0.1, 0.3], vec![shape("sphere", &[0.03])]);
     scene
         .apply_collision_objects(
-            &[replacing.clone(), move_to("cup", [0.7, 0.0, 0.3])],
+            &[
+                add("block", replaced_by.position, replaced_by.shapes.clone()),
+                move_to("cup", [0.7, 0.0, 0.3]),
+            ],
             &mut map,
         )
         .expect("a replacing add and a move apply");
     let snapshot = scene.snapshot(CLEARANCE_M, VOXEL_M);
-    assert_eq!(snapshot.objects[0], replacing.object);
+    assert_eq!(snapshot.objects[0], replaced_by);
     assert_eq!(snapshot.objects[1].position, [0.7, 0.0, 0.3]);
     assert_eq!(snapshot.objects[1].shapes[0].kind, "cylinder");
     assert_eq!(
@@ -287,14 +284,11 @@ fn an_id_must_name_an_object() {
     }
 }
 
-// A shape or an operation the contract does not describe is refused, and the message
-// says what to send: a kind of no shape, a box of two dimensions, a radius that is no
-// length, an open mesh, a position that is no number, an orientation that is no unit
-// quaternion, an object of no shape, and an operation of no name. An orientation within
-// 0.001 of unit length is normalized.
+// A shape the contract does not describe is refused, and the message says what to send: a
+// kind of no shape, a box of two dimensions, a radius that is no length, an open mesh, and an
+// object of no shape.
 #[test]
 fn what_the_contract_does_not_describe_is_refused() {
-    let mut scene = PlanningScene::new(robot());
     let refusal = |request: ObjectRequest| {
         PlanningScene::new(robot())
             .apply_collision_objects(&[request], &mut empty_map())
@@ -317,43 +311,59 @@ fn what_the_contract_does_not_describe_is_refused() {
         ..shape("mesh", &[])
     };
     assert!(refusal(one(walls)).contains("the mesh is open"));
-    assert!(
-        refusal(add("block", [0.5, f64::NAN, 0.3], vec![cube(0.06)]))
-            .contains("a position is finite")
-    );
-    let skewed = ObjectRequest {
-        object: ObjectFields {
-            orientation: [0.0, 0.0, 0.0, 1.1],
-            ..object("block", [0.5, 0.0, 0.3], vec![cube(0.06)])
-        },
-        ..add("block", [0.5, 0.0, 0.3], vec![cube(0.06)])
-    };
-    assert!(refusal(skewed).contains("unit quaternion"));
     assert!(refusal(add("block", [0.5, 0.0, 0.3], Vec::new())).contains("at least one shape"));
-    let rotate = ObjectRequest {
-        operation: "rotate".to_string(),
-        ..remove("block")
+}
+
+// A shape's pose is read by control_core's one parse of the contracts' geometry: an
+// orientation whose squared norm lies 0.01 or more from 1 and a position that is not finite
+// are refused with the parse's message, and an orientation within 0.01 of unit length is
+// normalized.
+#[test]
+fn a_shape_pose_is_read_by_the_one_parse() {
+    let posed = |position: [f64; 3], orientation: [f64; 4]| ShapeFields {
+        position,
+        orientation,
+        ..cube(0.1)
     };
-    assert!(refusal(rotate).contains("\"add\", \"move\" or \"remove\""));
-    let nearly = ObjectRequest {
-        object: ObjectFields {
-            orientation: [0.0, 0.0, 0.0, 1.0005],
-            ..object("block", [0.5, 0.0, 0.3], vec![cube(0.06)])
-        },
-        ..add("block", [0.5, 0.0, 0.3], vec![cube(0.06)])
+    let applied = |shape: ShapeFields| {
+        let mut scene = PlanningScene::new(robot());
+        scene
+            .apply_collision_objects(
+                &[add("block", [0.5, 0.0, 0.3], vec![shape])],
+                &mut empty_map(),
+            )
+            .map(|()| scene)
     };
-    scene
-        .apply_collision_objects(&[nearly], &mut empty_map())
-        .expect("a nearly unit orientation applies");
+    let refused_by_the_parse = |position: [f64; 3], orientation: [f64; 4]| {
+        Err(SceneError::Batch {
+            index: 0,
+            id: "block".to_string(),
+            error: Box::new(SceneError::Shape {
+                index: 0,
+                error: Pose::parse(position, orientation)
+                    .expect_err("a refusal of the parse")
+                    .to_string(),
+            }),
+        })
+    };
+    let long = [0.0, 0.0, 0.0, 1.1];
     assert_eq!(
-        scene.snapshot(CLEARANCE_M, VOXEL_M).objects[0].orientation,
-        IDENTITY
+        applied(posed([0.0; 3], long)).map(|_| ()),
+        refused_by_the_parse([0.0; 3], long)
     );
+    let nowhere = [f64::NAN, 0.0, 0.0];
+    assert_eq!(
+        applied(posed(nowhere, IDENTITY)).map(|_| ()),
+        refused_by_the_parse(nowhere, IDENTITY)
+    );
+    let scene = applied(posed([0.0; 3], [0.0, 0.0, 0.0, 1.004])).expect("a pose the parse takes");
+    let snapshot = scene.snapshot(CLEARANCE_M, VOXEL_M);
+    assert_eq!(snapshot.objects[0].shapes[0].orientation, IDENTITY);
 }
 
 // Only an arm's grasp link carries an object, with touch links of the robot; attaching
 // an attached object and detaching one that is not attached are refused, and every
-// operation of a batch on an attached object too. A detach reads only the object's id.
+// operation of a batch on an attached object too.
 #[test]
 fn only_a_grasp_link_carries_an_object() {
     let mut scene = scene_of(&[add("block", [0.45, 0.2, 0.3], vec![cube(0.04)])]);
@@ -407,25 +417,21 @@ fn only_a_grasp_link_carries_an_object() {
         apply(&mut scene, detach("block")),
         Err(SceneError::NotAttached("block".to_string()))
     );
-    assert!(matches!(
-        apply(
-            &mut scene,
-            AttachRequest {
-                operation: "hold".to_string(),
-                ..attach("block", "left_hand", &[])
-            }
-        ),
-        Err(SceneError::Operation { .. })
-    ));
 }
 
 // An attach keeps the object where it stands, in the frame of its link, under the
 // attached objects alone; a detach leaves it where the link carried it. Its pairs stay
-// through both.
+// through both, and its standing pose is the one the snapshot gives, none while a link
+// carries it and none for an id the scene does not hold.
 #[test]
 fn an_attached_object_keeps_where_it_stands_and_its_pairs() {
     let at = [0.45, 0.2, 0.3];
     let mut scene = scene_of(&[add("block", at, vec![cube(0.04)])]);
+    assert_eq!(
+        scene.standing_pose("block"),
+        Some(Isometry3::translation(0.45, 0.2, 0.3))
+    );
+    assert_eq!(scene.standing_pose("cup"), None);
     scene
         .set_allowed_collision("block", &names(&["torso"]), true)
         .expect("allowed");
@@ -456,6 +462,7 @@ fn an_attached_object_keeps_where_it_stands_and_its_pairs() {
     let off = ((hand * carried).translation.vector - Vector3::from(at)).norm();
     assert!(off < POSE_TOLERANCE, "the attached block moved {off} m");
     assert_eq!(snapshot.allowed_pairs, [pair("block", "torso")]);
+    assert_eq!(scene.standing_pose("block"), None);
     let moved = Isometry3::translation(0.0, 0.3, 0.1) * hand;
     scene
         .apply_attached_collision_object(&detach("block"), |_| Some(moved), &mut map)
@@ -465,6 +472,44 @@ fn an_attached_object_keeps_where_it_stands_and_its_pairs() {
     let off = (Vector3::from(snapshot.objects[0].position) - Vector3::new(0.45, 0.5, 0.4)).norm();
     assert!(off < POSE_TOLERANCE, "the detached block lies {off} m off");
     assert_eq!(snapshot.allowed_pairs, [pair("block", "torso")]);
+    let standing = scene
+        .standing_pose("block")
+        .expect("the detached block stands");
+    assert_eq!(
+        pose_arrays(&standing),
+        (
+            snapshot.objects[0].position,
+            snapshot.objects[0].orientation
+        )
+    );
+}
+
+// A move of the objects no link carries places each where it is given, keeps its shapes and
+// its pairs, and leaves an attached object on its link.
+#[test]
+fn a_move_of_the_objects_places_each_and_clears_nothing() {
+    let mut scene = scene_of(&[
+        add("block", [0.45, 0.2, 0.3], vec![cube(0.04)]),
+        add("held", [0.4, 0.0, 0.3], vec![cube(0.02)]),
+    ]);
+    scene
+        .set_allowed_collision("block", &names(&["torso"]), true)
+        .expect("allowed");
+    scene
+        .apply_attached_collision_object(&attach("held", "left_hand", &[]), hands, &mut empty_map())
+        .expect("attached");
+    let before = scene.snapshot(CLEARANCE_M, VOXEL_M);
+    let shift = Isometry3::translation(-0.2, 0.1, 0.0);
+    scene.move_objects(|id, pose| {
+        assert_eq!(id, "block", "the move asks of the objects no link carries");
+        shift * pose
+    });
+    let after = scene.snapshot(CLEARANCE_M, VOXEL_M);
+    let off = (Vector3::from(after.objects[0].position) - Vector3::new(0.25, 0.3, 0.3)).norm();
+    assert!(off < POSE_TOLERANCE, "the block lies {off} m off");
+    assert_eq!(after.objects[0].shapes, before.objects[0].shapes);
+    assert_eq!(after.attached_objects, before.attached_objects);
+    assert_eq!(after.allowed_pairs, [pair("block", "torso")]);
 }
 
 // A link whose pose is not known yet refuses an attach and a detach, and the scene
@@ -586,9 +631,10 @@ fn the_snapshot_holds_what_was_set() {
         &given
             .iter()
             .rev()
-            .map(|object| ObjectRequest {
-                operation: "add".to_string(),
-                object: object.clone(),
+            .map(|object| ObjectRequest::Add {
+                id: object.id.clone(),
+                pose: pose_from_parts(object.position, object.orientation).expect("a pose"),
+                shapes: object.shapes.clone(),
             })
             .collect::<Vec<_>>(),
     );

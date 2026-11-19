@@ -28,10 +28,10 @@ use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal, GoalSampler,
-    IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest, Objects,
-    OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
-    PlanningScene, PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields,
-    StartFault, Surroundings, check_path, plan_path, pose_parts, term_clearances,
+    IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectRequest, Objects, OrientationTarget,
+    PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest, PlanningScene,
+    PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
+    Surroundings, check_path, plan_path, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
@@ -2123,15 +2123,10 @@ fn primitive(kind: &str, dimensions: &[f64], position: [f64; 3]) -> ShapeFields 
 
 /// An object of `shapes`, at `pose`, as apply_collision_objects adds it.
 fn add_object(id: &str, pose: &Isometry3<f64>, shapes: Vec<ShapeFields>) -> ObjectRequest {
-    let (position, orientation) = pose_parts(pose);
-    ObjectRequest {
-        operation: "add".to_string(),
-        object: ObjectFields {
-            id: id.to_string(),
-            position,
-            orientation,
-            shapes,
-        },
+    ObjectRequest::Add {
+        id: id.to_string(),
+        pose: *pose,
+        shapes,
     }
 }
 
@@ -2142,10 +2137,7 @@ fn add_shape(id: &str, pose: &Isometry3<f64>, kind: &str, dimensions: &[f64]) ->
 
 /// The removal of the object `id`.
 fn remove_object(id: &str) -> ObjectRequest {
-    ObjectRequest {
-        operation: "remove".to_string(),
-        ..add_object(id, &Isometry3::identity(), Vec::new())
-    }
+    ObjectRequest::Remove { id: id.to_string() }
 }
 
 /// The left arm's scene after `requests`, applied to `map`.
@@ -2168,11 +2160,10 @@ fn attached(
 ) -> PlanningScene {
     let mut held = scene.clone();
     held.apply_attached_collision_object(
-        &AttachRequest {
+        &AttachRequest::Attach {
             object_id: id.to_string(),
             link_name: link.to_string(),
             touch_links: touch_links.iter().map(|link| link.to_string()).collect(),
-            operation: "attach".to_string(),
         },
         |_| Some(link_pose),
         &mut map(VOXEL_M, 1.6),

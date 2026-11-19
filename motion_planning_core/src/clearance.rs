@@ -738,8 +738,7 @@ mod tests {
     use super::*;
     use crate::arm::{Arm, SelfModel};
     use crate::scene::{
-        AttachRequest, ObjectFields, ObjectRequest, PlanningScene, RobotLinks, RobotPart,
-        ShapeFields,
+        AttachRequest, ObjectRequest, PlanningScene, RobotLinks, RobotPart, ShapeFields,
     };
 
     /// An arm of one revolute joint whose link is a 10 cm box.
@@ -1192,12 +1191,14 @@ mod tests {
                 .coords
                 .into()
         };
-        // A unit quaternion `[x, y, z, w]` drawn about a drawn axis.
-        let drawn_orientation = || -> [f64; 4] {
+        // A pose at `position`, turned about a drawn axis by a drawn angle.
+        let drawn_pose = |[x, y, z]: [f64; 3]| -> nalgebra::Isometry3<f64> {
             let axis = tc.draw(unit_vectors());
             let angle: f64 = tc.draw(gs::floats().min_value(-3.0).max_value(3.0));
-            let q = nalgebra::UnitQuaternion::from_scaled_axis(axis * angle);
-            [q.i, q.j, q.k, q.w]
+            nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(x, y, z),
+                nalgebra::UnitQuaternion::from_scaled_axis(axis * angle),
+            )
         };
         // A shape of a drawn kind, a box, a sphere or a cylinder 1 cm to 8 cm across, as
         // motion_planning writes it, at its object's origin.
@@ -1223,24 +1224,16 @@ mod tests {
         };
         let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
         let mut requests: Vec<ObjectRequest> = (0..count)
-            .map(|k| ObjectRequest {
-                operation: "add".to_string(),
-                object: ObjectFields {
-                    id: format!("object_{k}"),
-                    position: near_a_body(),
-                    orientation: drawn_orientation(),
-                    shapes: vec![drawn_shape()],
-                },
+            .map(|k| ObjectRequest::Add {
+                id: format!("object_{k}"),
+                pose: drawn_pose(near_a_body()),
+                shapes: vec![drawn_shape()],
             })
             .collect();
-        requests.push(ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: "held".to_string(),
-                position: near_a_body(),
-                orientation: drawn_orientation(),
-                shapes: vec![drawn_shape()],
-            },
+        requests.push(ObjectRequest::Add {
+            id: "held".to_string(),
+            pose: drawn_pose(near_a_body()),
+            shapes: vec![drawn_shape()],
         });
         let (mut map, _) = world(0.04, &[]);
         let names = ["link_1", "link_2"].map(String::from);
@@ -1250,11 +1243,10 @@ mod tests {
             .expect("the drawn objects apply");
         scene
             .apply_attached_collision_object(
-                &AttachRequest {
+                &AttachRequest::Attach {
                     object_id: "held".to_string(),
                     link_name: "link_2".to_string(),
                     touch_links: Vec::new(),
-                    operation: "attach".to_string(),
                 },
                 |_| Some(geometry.chain().root_ee_pose(&q)),
                 &mut map,
@@ -1367,12 +1359,14 @@ mod tests {
             let off: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.12));
             (tip + tc.draw(unit_vectors()) * off).into()
         };
-        // A unit quaternion `[x, y, z, w]` drawn about a drawn axis.
-        let drawn_orientation = || -> [f64; 4] {
+        // A pose at `position`, turned about a drawn axis by a drawn angle.
+        let drawn_pose = |[x, y, z]: [f64; 3]| -> nalgebra::Isometry3<f64> {
             let axis = tc.draw(unit_vectors());
             let angle: f64 = tc.draw(gs::floats().min_value(-3.0).max_value(3.0));
-            let q = nalgebra::UnitQuaternion::from_scaled_axis(axis * angle);
-            [q.i, q.j, q.k, q.w]
+            nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(x, y, z),
+                nalgebra::UnitQuaternion::from_scaled_axis(axis * angle),
+            )
         };
         // A shape of a drawn kind, a box, a sphere or a cylinder 1 cm to 8 cm across, as
         // motion_planning writes it, at its object's origin.
@@ -1396,14 +1390,10 @@ mod tests {
                 orientation: [0.0, 0.0, 0.0, 1.0],
             }
         };
-        let held = |id: &str, link: &str| ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: id.to_string(),
-                position: near_the_tip(link),
-                orientation: drawn_orientation(),
-                shapes: vec![drawn_shape()],
-            },
+        let held = |id: &str, link: &str| ObjectRequest::Add {
+            id: id.to_string(),
+            pose: drawn_pose(near_the_tip(link)),
+            shapes: vec![drawn_shape()],
         };
         let requests = [held("first", "link_2"), held("second", "b_link_2")];
         let (mut map, _) = world(0.04, &[]);
@@ -1418,11 +1408,10 @@ mod tests {
         for (id, link) in [("first", "link_2"), ("second", "b_link_2")] {
             scene
                 .apply_attached_collision_object(
-                    &AttachRequest {
+                    &AttachRequest::Attach {
                         object_id: id.to_string(),
                         link_name: link.to_string(),
                         touch_links: Vec::new(),
-                        operation: "attach".to_string(),
                     },
                     |link| Some(grasp(link)),
                     &mut map,

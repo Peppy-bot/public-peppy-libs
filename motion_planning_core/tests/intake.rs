@@ -17,8 +17,8 @@ use collision_geometry::chain::{BodyMask, Padding, PlacedMask, Rider, RiderBody}
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::Transform;
 use motion_planning_core::{
-    Arms, AttachRequest, DepthCamera, JointHistory, ObjectFields, ObjectRequest, PlanningScene,
-    RobotLinks, RobotMask, ShapeFields, insert_cut_out,
+    Arms, AttachRequest, DepthCamera, JointHistory, ObjectRequest, PlanningScene, RobotLinks,
+    RobotMask, ShapeFields, insert_cut_out,
 };
 use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, Scan, VoxelMap};
@@ -288,22 +288,18 @@ fn a_replayed_frame_cut_out_at_its_stamp_marks_nothing() {
 }
 
 /// A box of `size` at `position`, as apply_collision_objects adds it.
-fn add_box(id: &str, position: [f64; 3], size: [f64; 3]) -> ObjectRequest {
-    ObjectRequest {
-        operation: "add".to_string(),
-        object: ObjectFields {
-            id: id.to_string(),
-            position,
+fn add_box(id: &str, [x, y, z]: [f64; 3], size: [f64; 3]) -> ObjectRequest {
+    ObjectRequest::Add {
+        id: id.to_string(),
+        pose: Isometry3::translation(x, y, z),
+        shapes: vec![ShapeFields {
+            kind: "box".to_string(),
+            dimensions: size.to_vec(),
+            mesh_vertices: Vec::new(),
+            mesh_triangles: Vec::new(),
+            position: [0.0; 3],
             orientation: [0.0, 0.0, 0.0, 1.0],
-            shapes: vec![ShapeFields {
-                kind: "box".to_string(),
-                dimensions: size.to_vec(),
-                mesh_vertices: Vec::new(),
-                mesh_triangles: Vec::new(),
-                position: [0.0; 3],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            }],
-        },
+        }],
     }
 }
 
@@ -348,11 +344,10 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .expect("the objects apply");
     scene
         .apply_attached_collision_object(
-            &AttachRequest {
+            &AttachRequest::Attach {
                 object_id: "block".to_string(),
                 link_name: left_grasp.to_string(),
                 touch_links: Vec::new(),
-                operation: "attach".to_string(),
             },
             |link| (link == left_grasp).then(|| hand_at(&now)),
             &mut map,
