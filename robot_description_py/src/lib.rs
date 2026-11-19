@@ -557,13 +557,6 @@ impl PyCameraFrame {
         vector3(self.0.xyz)
     }
 
-    /// The frame's roll, pitch and yaw in the parent link's frame, radians,
-    /// as a URDF origin gives them.
-    #[getter]
-    fn rpy(&self) -> Vector3 {
-        vector3(self.0.rpy)
-    }
-
     /// The depths the camera measures, as the depth sensor the URDF gives on
     /// its optical frame, or None for a camera the URDF gives no depth
     /// sensor.

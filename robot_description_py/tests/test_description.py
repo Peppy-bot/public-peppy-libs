@@ -132,7 +132,7 @@ def test_each_camera_gives_its_optical_frame():
         "chest_optical_frame",
     }
     for camera in cameras.values():
-        assert len(camera.xyz) == 3 and len(camera.rpy) == 3
+        assert len(camera.xyz) == 3
 
 
 @pytest.mark.parametrize(
