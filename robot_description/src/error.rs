@@ -230,15 +230,16 @@ pub enum DescriptionError {
     #[error("the pair {link1:?} and {link2:?} is disabled twice")]
     DuplicatePair { link1: String, link2: String },
     #[error(
-        "the camera frame {frame:?} hangs on the joint {joint:?}, which moves; an optical frame is fixed to its link"
+        "the sensor frame {frame:?} hangs on the joint {joint:?}, which moves; a sensor's frame is fixed to its link"
     )]
-    CameraFrameMoves { frame: String, joint: String },
-    #[error("the camera frame {frame:?} hangs on no joint")]
-    CameraFrameUnmounted { frame: String },
+    SensorFrameMoves { frame: String, joint: String },
+    #[error("the sensor frame {frame:?} hangs on no joint")]
+    SensorFrameUnmounted { frame: String },
     #[error(
         "the sensor on {reference:?} is of the type {kind:?}, and this reader reads a sensor of \
-         the type \"depth\"; {}",
-        DEPTH_SENSOR_FORM
+         the type \"depth\" or \"gpu_lidar\"; {}; {}",
+        DEPTH_SENSOR_FORM,
+        LIDAR_FORM
     )]
     SensorType { reference: String, kind: String },
     #[error(
@@ -266,12 +267,40 @@ pub enum DescriptionError {
     SensorOffACamera { reference: String },
     #[error("the camera {camera:?} has two depth sensors; a camera measures one depth range")]
     DepthSensorTwice { camera: String },
+    #[error(
+        "the <{bound}> of the lidar on {reference:?} is {value:?}, not one finite number of \
+         meters"
+    )]
+    LidarRangeValue {
+        reference: String,
+        bound: &'static str,
+        value: String,
+    },
+    #[error(
+        "the lidar on {reference:?} measures from {min} to {max} meters; its <min> is 0 or \
+         above and below its <max>"
+    )]
+    LidarRangeBounds {
+        reference: String,
+        min: f64,
+        max: f64,
+    },
+    #[error(
+        "two sensors are named {name:?}; name each camera and each lidar of the robot apart, \
+         a camera by its optical frame <camera>_optical_frame and a lidar by its <sensor name>"
+    )]
+    SensorNameTwice { name: String },
 }
 
 /// The form of a camera's depth sensor, which a refusal of one names.
 const DEPTH_SENSOR_FORM: &str = "a camera's depth range is <gazebo \
      reference=\"<camera>_optical_frame\"><sensor name=\"<camera>\" \
      type=\"depth\"><camera><clip><near>NEAR</near><far>FAR</far></clip></camera></sensor></gazebo>, \
+     in meters";
+
+/// The form of a 2-D lidar, which a refusal of one names.
+const LIDAR_FORM: &str = "a 2-D lidar is <gazebo reference=\"<frame>\"><sensor name=\"<lidar>\" \
+     type=\"gpu_lidar\"><lidar><range><min>MIN</min><max>MAX</max></range></lidar></sensor></gazebo>, \
      in meters";
 
 /// The elements a reader reads in an element, listed.
