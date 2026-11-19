@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn rejects_urdf_missing_arm_links() {
         // A URDF without the arm links must Err, not panic.
-        let urdf = r#"<?xml version="1.0"?><robot name="x"><link name="world"/></robot>"#;
+        let urdf = r#"<?xml version="1.0"?><robot name="x"><link name="base_link"/></robot>"#;
         assert!(ForwardKinematics::from_urdf(urdf, "openarm_left_link0").is_err());
     }
 

@@ -136,7 +136,7 @@ def test_each_camera_gives_its_optical_frame():
 
 
 @pytest.mark.parametrize(
-    ("name", "root"), [("openarm_v1", "world"), ("openarm_v2", "world"), ("so101", "base_link")]
+    ("name", "root"), [("openarm_v1", "base_link"), ("openarm_v2", "base_link"), ("so101", "base_link")]
 )
 def test_the_root_link_is_the_robot_frame(name, root):
     assert model(name).description().root_link == root

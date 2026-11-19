@@ -24,7 +24,7 @@ use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaterni
 use occupancy_map::{Bounds, Scan, VoxelMap};
 use robot_description::{ArmId, PerArm, states};
 
-use common::{MESHES, world};
+use common::{MESHES, root_frame};
 use openarm_v2::{ARMS, DESCRIPTION, JOINTS, LEFT, Robot, posture};
 
 /// The joints of both arms.
@@ -205,7 +205,7 @@ enum CutAt {
 /// An empty map of 2.5 cm voxels about the robot and the camera.
 fn empty_map() -> VoxelMap {
     VoxelMap::new(
-        world(),
+        root_frame(),
         PositiveFinite::parse(0.025).expect("a positive voxel size"),
         Bounds {
             min: [-0.4, -1.0, 0.0],
@@ -218,7 +218,7 @@ fn empty_map() -> VoxelMap {
 /// The map the recording builds, each frame inserted with the robot cut out as `cut_at`
 /// says.
 fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
-    let world = world();
+    let root = root_frame();
     let mut map = empty_map();
     let camera = depth_camera();
     let riders = fingers();
@@ -234,7 +234,7 @@ fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
                 };
                 let points = camera.points(frame).expect("a frame of the lens's size");
                 let scan = Scan {
-                    frame: &world,
+                    frame: &root,
                     sensor: camera.sensor,
                     points: &points,
                     max_range_m: PositiveFinite::parse(2.0).expect("a positive range"),
@@ -379,9 +379,9 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .iter()
         .map(|p| std::array::from_fn(|i| (p[i] - sensor.origin()[i]) as f32))
         .collect();
-    let world = world();
+    let root = root_frame();
     let scan = Scan {
-        frame: &world,
+        frame: &root,
         sensor,
         points: &relative,
         max_range_m: PositiveFinite::parse(3.0).expect("a positive range"),

@@ -47,7 +47,7 @@ const LAUNCH_GOAL_SAMPLES: usize = 10;
 /// The share of a voxel a link point moves at most between two probes of a path.
 const PROBE_SHARE_OF_VOXEL: f64 = 0.1;
 /// The name of the frame of a scene's map, in which its boxes stand.
-const ROOT_FRAME: &str = "world";
+const ROOT_FRAME: &str = "base_link";
 /// The range of the scan that fills a scene's map, from the root: beyond every voxel of
 /// the map.
 const MAX_RANGE_M: f64 = 10.0;

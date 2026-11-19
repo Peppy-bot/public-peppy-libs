@@ -122,7 +122,7 @@ pub fn an_hour_from_now() -> Instant {
 }
 
 /// The frame of OpenArm v2's URDF root, which the maps stand in.
-pub fn world() -> FrameName {
+pub fn root_frame() -> FrameName {
     FrameName::parse(openarm_v2::root_link()).expect("the URDF root names a frame")
 }
 
@@ -130,7 +130,7 @@ pub fn world() -> FrameName {
 /// origin.
 pub fn map(voxel_m: f64, half_m: f64) -> VoxelMap {
     VoxelMap::new(
-        world(),
+        root_frame(),
         PositiveFinite::parse(voxel_m).expect("positive"),
         Bounds {
             min: [-half_m; 3],
@@ -149,7 +149,7 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
         .collect();
     map.insert(
         &Scan {
-            frame: &world(),
+            frame: &root_frame(),
             sensor: Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
             points: &relative,
             max_range_m: PositiveFinite::parse(10.0).expect("positive"),
