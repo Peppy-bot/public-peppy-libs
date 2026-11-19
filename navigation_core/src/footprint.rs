@@ -189,6 +189,13 @@ impl PaddedFootprint {
         self.cost_at(grid, pose) == f64::from(LETHAL)
     }
 
+    /// Whether `point`, in the base's frame, lies inside the padded footprint,
+    /// by [`is_point_inside_polygon`]: a ray that ends there ends on the base or
+    /// within its padding.
+    pub fn holds(&self, point: [f64; 2]) -> bool {
+        is_point_inside_polygon(point[0], point[1], &self.points)
+    }
+
     /// Whether `point`, in the base's frame, lies inside the outline the
     /// footprint pads, by [`is_point_inside_polygon`].
     pub(crate) fn outline_holds(&self, point: [f64; 2]) -> bool {
@@ -490,6 +497,18 @@ mod tests {
         assert!(footprint.outline_holds([0.399, 0.0]));
         assert!(!footprint.outline_holds([0.43, 0.0]));
         assert!(!footprint.outline_holds([0.0, -2.0]));
+    }
+
+    // The padded footprint holds a point of the padding too, and none past it.
+    #[test]
+    fn the_padded_footprint_holds_a_point_in_the_padding_and_none_past_it() {
+        let rectangle = Footprint::parse(&RECTANGLE).unwrap();
+        let footprint = PaddedFootprint::new(&rectangle, padding(0.05)).unwrap();
+        assert!(footprint.holds([0.399, 0.0]));
+        assert!(footprint.holds([0.43, 0.0]));
+        assert!(footprint.holds([-0.24, -0.34]));
+        assert!(!footprint.holds([0.46, 0.0]));
+        assert!(!footprint.holds([0.0, -2.0]));
     }
 
     // The inscribed radius is the nearest edge, the circumscribed one the

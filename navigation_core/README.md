@@ -15,8 +15,8 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   checks take, as Nav2 hands them only its padded footprint; a padding that makes the
   outline cross itself is refused, naming the padding. A `PaddedFootprint` gives its
   inscribed and circumscribed radii as Nav2's `calculateMinAndMaxDistances` takes them,
-  its vertices placed at a pose (`transformFootprint`), and whether the base collides at a
-  pose.
+  its vertices placed at a pose (`transformFootprint`), whether the base collides at a
+  pose, and whether it holds a point of the base's frame (`holds`).
 - `obstacles` keeps what the sensors see in an occupancy map, `LiveObstacles`: the points
   of depth frames and the hits of laser scans, each placed where the sensor stood at its
   time, the map's columns under the padded footprint cleared after each frame, and the
