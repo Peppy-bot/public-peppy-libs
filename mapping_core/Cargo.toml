@@ -16,11 +16,13 @@ libstdcxx_heap = { path = "../libstdcxx_heap" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
+tracing = "0.1"
 
 [dev-dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
 ros_reference = { path = "../ros_reference" }
+tracing-subscriber = "0.3"
 
 [profile.dev]
 opt-level = 1

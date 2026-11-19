@@ -18,7 +18,7 @@
 //! map saver writes a trinary map (`map.pgm` and `map.yaml`; nav2_map_server/src/map_io.cpp,
 //! `tryWriteMapToFile`). Loading reads the pose graph, makes its grid anew, and refuses a
 //! directory whose files disagree with it or with each other, naming the file and the
-//! field.
+//! field. The description alone gives the map's summary ([`RoomMap::load_summary`]).
 
 use crate::geometry::{Matrix3, Pose2, Vector2};
 use crate::localized_scan::{Laser, LocalizedScan, ScanId};
@@ -297,6 +297,16 @@ impl RoomMap {
         }
     }
 
+    /// The summary of the map that `directory` holds, read from its description alone.
+    pub fn load_summary(directory: &Path) -> Result<MapSummary, LoadError> {
+        let meta: MetaFile = parse_file(directory, META_FILE)?;
+        Ok(MapSummary {
+            extent: GridExtent::of_cells(meta.origin, meta.width, meta.height, meta.resolution()?),
+            scans: meta.scans,
+            mapping_start_unix_ns: meta.mapping_start_unix_ns,
+        })
+    }
+
     /// The map that `directory` holds.
     pub fn load(directory: &Path) -> Result<RoomMap, LoadError> {
         let pose_graph: PoseGraphFile = parse_file(directory, POSE_GRAPH_FILE)?;
@@ -308,19 +318,7 @@ impl RoomMap {
                 field: "scans".into(),
             });
         }
-        let invalid_resolution = |reason: String| LoadError::Invalid {
-            file: META_FILE,
-            field: "resolution".into(),
-            reason,
-        };
-        let resolution = PositiveFinite::parse(meta.resolution)
-            .map_err(|_| {
-                invalid_resolution(format!(
-                    "is {}, and the side of a cell is finite and above 0",
-                    meta.resolution
-                ))
-            })?
-            .get();
+        let resolution = meta.resolution()?;
         let grid_parameters = GridParameters {
             resolution,
             min_pass_through: meta.min_pass_through,
@@ -365,6 +363,29 @@ impl RoomMap {
             });
         }
         Ok(map)
+    }
+}
+
+impl MetaFile {
+    /// The side of a cell (m), finite and above 0.
+    fn resolution(&self) -> Result<f64, LoadError> {
+        PositiveFinite::parse(self.resolution)
+            .map(PositiveFinite::get)
+            .map_err(|_| {
+                invalid_resolution(format!(
+                    "is {}, and the side of a cell is finite and above 0",
+                    self.resolution
+                ))
+            })
+    }
+}
+
+/// The refusal of meta.json's resolution, for `reason`.
+fn invalid_resolution(reason: String) -> LoadError {
+    LoadError::Invalid {
+        file: META_FILE,
+        field: "resolution".into(),
+        reason,
     }
 }
 
