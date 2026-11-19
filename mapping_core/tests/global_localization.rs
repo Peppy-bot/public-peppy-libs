@@ -13,7 +13,7 @@
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
-    AmclParameters, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits,
+    AmclParameters, Drand48, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits,
     PlacedScan, RobotModelType, SearchStep,
 };
 use std::ops::ControlFlow;
@@ -155,21 +155,23 @@ fn search_in_a_drawn_room(draws: &impl DrawSource) -> Search {
         },
         localization: localization_parameters(),
     };
-    let search =
-        GlobalLocalization::start(&map, parameters, draws.integer(0, u32::MAX)).expect("a search");
+    let mut stream = Drand48::seeded(draws.integer(0, u32::MAX));
+    let search = GlobalLocalization::start(&map, parameters, &mut stream).expect("a search");
     let ended = scans
         .iter()
         .enumerate()
-        .try_fold(search, |search, (index, scan)| match search.add(scan) {
-            SearchStep::Searching(search, pose) => {
-                assert!(
-                    pose.is_none_or(|pose| !pose.localized),
-                    "scan {index}: a search goes on with a pose outside its limits: {pose:?}"
-                );
-                ControlFlow::Continue(search)
-            }
-            SearchStep::Found(localization, pose) => {
-                ControlFlow::Break((index, localization, pose))
+        .try_fold(search, |search, (index, scan)| {
+            match search.add(scan, &mut stream) {
+                SearchStep::Searching(search, pose) => {
+                    assert!(
+                        pose.is_none_or(|pose| !pose.localized),
+                        "scan {index}: a search goes on with a pose outside its limits: {pose:?}"
+                    );
+                    ControlFlow::Continue(search)
+                }
+                SearchStep::Found(localization, pose) => {
+                    ControlFlow::Break((index, localization, pose))
+                }
             }
         });
     let ControlFlow::Break((found_at, mut localization, found)) = ended else {

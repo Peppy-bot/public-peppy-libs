@@ -21,8 +21,8 @@ use common::{
 };
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
-    CellState, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits, MapPose,
-    OccupancyGrid, RoomMap, SearchStep,
+    CellState, Drand48, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits,
+    MapPose, OccupancyGrid, RoomMap, SearchStep,
 };
 use ros_reference::amcl_global_localization::{
     Cases, Estimate, Grid, GridParameters, Laser, MapScan,
@@ -200,15 +200,21 @@ fn each_search_answers_as_amcl_publishes() {
                     },
                     localization: localization_parameters(),
                 };
+                // The harness seeds AMCL's stream right before it asks for each search.
+                let mut stream = Drand48::seeded(search.seed);
                 let mut search_state = Some(
-                    GlobalLocalization::start(&map, parameters, search.seed)
+                    GlobalLocalization::start(&map, parameters, &mut stream)
                         .unwrap_or_else(|e| panic!("{label}: {e}")),
                 );
                 let mut answers: Vec<(usize, MapPose)> = Vec::new();
                 for (index, (scan, drive)) in scans.iter().zip(&room.scans).enumerate() {
                     let [x, y, yaw] = drive.odometry;
                     let placed_scan = placed(drive.stamp_ns, planar(x, y, yaw), scan);
-                    match search_state.take().expect("a search").add(&placed_scan) {
+                    match search_state
+                        .take()
+                        .expect("a search")
+                        .add(&placed_scan, &mut stream)
+                    {
                         SearchStep::Searching(going_on, answer) => {
                             search_state = Some(going_on);
                             answers.extend(answer.map(|answer| (index, answer)));

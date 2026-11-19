@@ -45,7 +45,8 @@
 //!   AMCL localizes globally once `reinitialize_global_localization` starts it:
 //!   `max_particles` particles spread over the free cells of the map, weighed by AMCL's
 //!   likelihood field model, moved by its differential or omnidirectional motion model and
-//!   resampled by KLD sampling, every random draw on glibc's `drand48` stream of a seed. Each
+//!   resampled by KLD sampling, every random draw on the caller's [`Drand48`] stream, glibc's
+//!   `drand48`, which a caller seeds once for its searches as AMCL's node does. Each
 //!   [`MapPose`] is the mean of the heaviest cluster of particles with the deviations of the
 //!   whole filter's covariance, as `amcl_pose` carries them; once they lie within the search
 //!   limits, [`Localization::from_estimate`] keeps the pose within its matching limits.
@@ -81,7 +82,7 @@ mod scan_matcher;
 mod slam_toolbox_parameters;
 
 pub use global_localization::{
-    AmclParameterError, AmclParameters, GlobalLocalization, GlobalLocalizationError,
+    AmclParameterError, AmclParameters, Drand48, GlobalLocalization, GlobalLocalizationError,
     GlobalLocalizationParameters, RobotModelType, SearchStep,
 };
 pub use laser_projection::{
