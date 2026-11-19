@@ -144,7 +144,7 @@ nlohmann::json collision_monitor(const nlohmann::json& scenario, Inputs&) {
     const auto& cloud_age = entry.at("cloud_age_ns");
     nlohmann::json record = {{"now_ns", now_ns}, {"cloud_age_ns", cloud_age}};
     if (!cloud_age.is_null()) {
-      auto cloud = cloud_of(entry.at("points"));
+      auto cloud = cloud_of(entry.at("points"), sensor_frame);
       cloud->header.frame_id = monitor->base_frame();
       cloud->header.stamp = rclcpp::Time(now_ns - cloud_age.get<std::int64_t>(), RCL_ROS_TIME);
       monitor->take(cloud);

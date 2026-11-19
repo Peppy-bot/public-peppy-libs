@@ -5,8 +5,8 @@ entries in the order of libstdc++'s `std::priority_queue` (GCC 15) with a compar
 that returns `a.first > b.first`. The entry of least cost comes out first. Entries of
 equal cost come out in the order that libstdc++'s queue gives them, which depends on the
 slot of each entry in its binary heap. A port of a C++ search that takes its ties from
-such a queue, such as Nav2's Smac 2D planner, takes its entries in the same order through
-`OpenSet`.
+such a queue, such as Nav2's Smac 2D planner or AMCL's distance map, takes its entries in
+the same order through `OpenSet`.
 
 The queue is a binary heap in a vector, its entry of least cost in the first slot. A push
 puts the entry in a new last slot and moves it up past each parent of greater cost. A pop
@@ -17,6 +17,7 @@ heap (Knuth, The Art of Computer Programming, vol. 3, section 5.2.3). Costs comp
 `>`, so a NaN cost is neither greater nor less than another cost.
 
 - `OpenSet::push` adds an entry, as `priority_queue::push` does.
+- `OpenSet::peek` gives the entry that comes out next, as `top` does.
 - `OpenSet::pop` takes out the entry that comes out next and gives it, as `top` followed
   by `pop` does.
 

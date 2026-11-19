@@ -1,13 +1,17 @@
 {
   "datasets_read": ["pioneer_360/groundtruth.txt","pioneer_360/depth"],
-  "depth_frames": 1209,
-  "dropped_scans": [],
-  "inputs": ["ros_reference/datasets.txt","ros_reference/reference_programs/amcl_map_cspace.cpp","ros_reference/reference_programs/amcl_map_cspace.hpp","ros_reference/reference_programs/nav2_node.cpp","ros_reference/reference_programs/nav2_node.hpp","ros_reference/reference_programs/room_dataset.cpp","ros_reference/reference_programs/room_dataset.hpp","ros_reference/reference_programs/room_dataset_files.cpp","ros_reference/reference_programs/room_dataset_files.hpp","ros_reference/reference_programs/room_dataset_runs.cpp","ros_reference/scenarios/room_dataset_pioneer_360.json","ros_reference/src/bin/statistics.rs","ros_reference/src/metrics.rs","ros_reference/src/room_dataset.rs"],
+  "inputs": ["ros_reference/datasets.txt","ros_reference/reference_programs/amcl_map_cspace.cpp","ros_reference/reference_programs/amcl_map_cspace.hpp","ros_reference/reference_programs/amcl_node.cpp","ros_reference/reference_programs/amcl_node.hpp","ros_reference/reference_programs/laser_projection.cpp","ros_reference/reference_programs/laser_projection.hpp","ros_reference/reference_programs/nav2_node.cpp","ros_reference/reference_programs/nav2_node.hpp","ros_reference/reference_programs/point_cloud.cpp","ros_reference/reference_programs/point_cloud.hpp","ros_reference/reference_programs/room_dataset.cpp","ros_reference/reference_programs/room_dataset.hpp","ros_reference/reference_programs/room_dataset_files.cpp","ros_reference/reference_programs/room_dataset_files.hpp","ros_reference/reference_programs/room_dataset_runs.cpp","ros_reference/scenarios/room_dataset_pioneer_360.json","ros_reference/src/bin/statistics.rs","ros_reference/src/metrics.rs","ros_reference/src/room_dataset.rs"],
   "kind": "room_dataset",
-  "mount": {"floor_normal":[0.0009905904016709562,0.011902380958920825,0.9999286734853468],"height":0.5593127619986716,"pitch":0.0987733337420941,"roll":0.009330232343558445},
   "runs": ["mapping"],
   "scans": 361,
-  "sequence": "pioneer_360",
+  "source": {
+    "tum_rgbd": {
+      "depth_frames": 1209,
+      "dropped_scans": [],
+      "mount": {"floor_normal":[0.0009905904016709562,0.011902380958920825,0.9999286734853468],"height":0.5593127619986716,"pitch":0.0987733337420941,"roll":0.009330232343558445},
+      "sequence": "pioneer_360"
+    }
+  },
   "task": {
     "mapping": [
       {"processed_scans":21,"seed":0,"trajectory_max_m":2.022439747956266,"trajectory_rmse_m":0.975947580731891,"trajectory_yaw_rmse_rad":0.5580519810878685},

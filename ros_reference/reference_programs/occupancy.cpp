@@ -12,10 +12,10 @@
 #include <moveit/pointcloud_octomap_updater/pointcloud_octomap_updater.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
+#include "point_cloud.hpp"
 #include "private_member.hpp"
 #include "scenario.hpp"
 
@@ -126,40 +126,6 @@ Eigen::Isometry3d isometry(const geometry_msgs::msg::TransformStamped& transform
   return pose;
 }
 
-// The points of a cloud, in the sensor frame, as a PointCloud2 of float x, y, z.
-sensor_msgs::msg::PointCloud2::SharedPtr cloud_of(const nlohmann::json& points) {
-  auto cloud = std::make_shared<sensor_msgs::msg::PointCloud2>();
-  cloud->header.frame_id = sensor_frame;
-  sensor_msgs::PointCloud2Modifier modifier(*cloud);
-  modifier.setPointCloud2FieldsByString(1, "xyz");
-  modifier.resize(points.size());
-  sensor_msgs::PointCloud2Iterator<float> x(*cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> y(*cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> z(*cloud, "z");
-  for (const auto& point : points) {
-    const auto p = numbers(point, 3, "a point");
-    *x = static_cast<float>(p[0]);
-    *y = static_cast<float>(p[1]);
-    *z = static_cast<float>(p[2]);
-    ++x;
-    ++y;
-    ++z;
-  }
-  return cloud;
-}
-
-// The points of `cloud` as the updater reads them, in single precision.
-nlohmann::json points_read(const sensor_msgs::msg::PointCloud2& cloud) {
-  auto points = nlohmann::json::array();
-  for (sensor_msgs::PointCloud2ConstIterator<float> point(cloud, "x"); point != point.end();
-       ++point) {
-    points.push_back(nlohmann::json::array(
-        {static_cast<double>(point[0]), static_cast<double>(point[1]),
-         static_cast<double>(point[2])}));
-  }
-  return points;
-}
-
 }  // namespace
 
 nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
@@ -206,7 +172,7 @@ nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
     const auto transform = sensor_transform(scan.at("sensor"));
     map_h_sensor = isometry(transform);
     (updater.*pointer(TfBuffer{}))->setTransform(transform, "occupancy_reference", true);
-    const auto cloud = cloud_of(scan.at("points"));
+    const auto cloud = cloud_of(scan.at("points"), sensor_frame);
     (updater.*pointer(CloudCallback{}))(cloud);
     clouds.push_back({{"sensor", pose_read(transform)}, {"points", points_read(*cloud)}});
   }

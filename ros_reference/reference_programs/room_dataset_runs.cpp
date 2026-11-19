@@ -3,6 +3,7 @@
 // own, which spins the listener's subscriptions on a thread of its own, no node activates,
 // the odometry enters each node's tf buffer at each scan's stamp, and each node's clock
 // reads each scan's stamp.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +34,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "amcl_map_cspace.hpp"
+#include "amcl_node.hpp"
 #include "nav2_node.hpp"
 #include "private_member.hpp"
 #include "room_dataset.hpp"
@@ -44,9 +46,6 @@ namespace ros_reference {
 namespace {
 
 using namespace room_dataset_files;
-
-// The writer of the tf transforms that the runs put in each node's buffer.
-constexpr const char* tf_authority = "room_dataset";
 
 // The members of slam_toolbox's Ceres solver plugin up to its solver options, in their
 // order in solvers/ceres_solver.hpp of slam_toolbox 2.10.0, which the package does not
@@ -74,44 +73,8 @@ void use_one_solver_thread(karto::ScanSolver* solver) {
   options.num_threads = 1;
 }
 
-// The base's pose in the odometry frame at `stamp_ns`.
-geometry_msgs::msg::TransformStamped odometry_transform(std::int64_t stamp_ns,
-                                                        const PlanarPose& pose) {
-  geometry_msgs::msg::TransformStamped transform;
-  transform.header.frame_id = odometry_frame;
-  transform.header.stamp = stamp_of_nanoseconds(stamp_ns);
-  transform.child_frame_id = base_frame;
-  transform.transform.translation.x = pose.x;
-  transform.transform.translation.y = pose.y;
-  transform.transform.translation.z = 0.0;
-  tf2::Quaternion rotation;
-  rotation.setRPY(0.0, 0.0, pose.yaw);
-  transform.transform.rotation = tf2::toMsg(rotation);
-  return transform;
-}
-
 PlanarPose planar(const karto::Pose2& pose) {
   return {pose.GetX(), pose.GetY(), pose.GetHeading()};
-}
-
-// The scenario's parameters of a node, with the parameters that this program sets.
-rclcpp::NodeOptions options_of(const nlohmann::json& parameters,
-                               std::vector<rclcpp::Parameter> program_parameters) {
-  for (const auto& [name, value] : parameters.items()) {
-    program_parameters.push_back(parameter_of(name, value));
-  }
-  return rclcpp::NodeOptions().parameter_overrides(program_parameters);
-}
-
-// Throws unless `node` declared each of the scenario's parameters `parameters`, which it
-// then read.
-template <typename Node>
-void check_declared(const Node& node, const nlohmann::json& parameters, const char* reference) {
-  for (const auto& [name, value] : parameters.items()) {
-    if (!node.has_parameter(name)) {
-      throw std::runtime_error(std::string(reference) + " declares no parameter " + name);
-    }
-  }
 }
 
 std::vector<rclcpp::Parameter> slam_toolbox_frames(const char* mode) {
@@ -209,8 +172,26 @@ class MappingReference : public SlamToolboxReference<slam_toolbox::SynchronousSl
   }
 };
 
+// The covariance of a match that slam_toolbox publishes with a scan's pose on its pose
+// topic: of x and y (m^2), and of the heading (rad^2), with position_covariance_scale and
+// yaw_covariance_scale at their default of 1.
+struct MatchCovariance {
+  double xx;
+  double xy;
+  double yy;
+  double yaw;
+};
+
+// A scan that slam_toolbox's localization added: its pose in the map, and the covariance of
+// its match.
+struct Localized {
+  PlanarPose pose;
+  MatchCovariance covariance;
+};
+
 // slam_toolbox's localization mode: laserCallback adds a scan that it should process
-// against the loaded map, and this records the pose of each scan that it adds.
+// against the loaded map, and this records the pose of each scan that it adds, with the
+// covariance of its match.
 class LocalizationReference
     : public SlamToolboxReference<slam_toolbox::LocalizationSlamToolbox> {
  public:
@@ -234,9 +215,10 @@ class LocalizationReference
     }
   }
 
-  // The pose of `scan` in the map, when slam_toolbox added it.
-  std::optional<PlanarPose> localize(std::int64_t stamp_ns, const PlanarPose& odometry,
-                                     const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
+  // The pose of `scan` in the map and the covariance of its match, when slam_toolbox added
+  // it.
+  std::optional<Localized> localize(std::int64_t stamp_ns, const PlanarPose& odometry,
+                                    const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
     set_ros_time(get_clock(), stamp_ns);
     tf_->setTransform(odometry_transform(stamp_ns, odometry), tf_authority, false);
     added_.reset();
@@ -250,94 +232,40 @@ class LocalizationReference
                                      karto::Pose2& odometry) override {
     karto::LocalizedRangeScan* added = LocalizationSlamToolbox::addScan(laser, scan, odometry);
     if (added != nullptr) {
-      added_ = planar(added->GetCorrectedPose());
+      added_ = Localized{planar(added->GetCorrectedPose()), match_covariance(added)};
     }
     return added;
   }
 
  private:
-  std::optional<PlanarPose> added_;
-};
-
-// Nav2's AMCL, configured as on_configure configures it, without the executor that it
-// spins there, and taking scans as on_activate lets it.
-class GlobalLocalizationReference : public nav2_amcl::AmclNode {
- public:
-  using AmclNode::AmclNode;
-
-  // initTransforms makes a tf listener that spins an executor on a thread of its own
-  // (nav2_amcl 1.5.2 amcl_node.cpp:1382), which dies with the node, canceling that
-  // executor and joining the thread (tf2_ros 0.45.10 transform_listener.cpp:67-72): the
-  // reference waits until the executor spins.
-  ~GlobalLocalizationReference() override {
-    if (tf_listener_) {
-      wait_until_spinning(*tf_listener_);
+  // The covariance of the match of `scan`: karto's AddEdges links the scan to the scan
+  // before it first (Mapper.cpp, MapperGraph::AddEdges and LinkScans), and labels that
+  // edge with the covariance that ProcessLocalization and ProcessAgainstNodesNearBy hand
+  // slam_toolbox to publish. The identity, as slam_toolbox publishes it, for a scan that
+  // karto linked to no scan before it.
+  MatchCovariance match_covariance(karto::LocalizedRangeScan* scan) {
+    boost::mutex::scoped_lock lock(smapper_mutex_);
+    const auto& vertices = smapper_->getMapper()->GetGraph()->GetVertices();
+    const auto& by_id = vertices.at(scan->GetSensorName());
+    const auto vertex = by_id.find(scan->GetStateId());
+    if (vertex == by_id.end()) {
+      throw std::runtime_error("karto's graph holds no vertex of an added scan");
     }
-  }
-
-  void prepare() {
-    callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-    initParameters();
-    initTransforms();
-    initParticleFilter();
-    initLaserScan();
-    initMessageFilters();
-    initPubSub();
-    initServices();
-    initOdometry();
-    active_ = true;
-  }
-
-  void receive_map(const nav_msgs::msg::OccupancyGrid& map) {
-    mapReceived(std::make_shared<const nav_msgs::msg::OccupancyGrid>(map));
-    if (!first_map_received_) {
-      throw std::runtime_error("AMCL refuses the map");
+    for (auto* edge : vertex->second->GetEdges()) {
+      if (edge->GetTarget() != vertex->second) {
+        continue;
+      }
+      auto* link = dynamic_cast<karto::LinkInfo*>(edge->GetLabel());
+      if (link == nullptr) {
+        throw std::runtime_error("an edge of karto's graph carries no link");
+      }
+      const karto::Matrix3& c = link->GetCovariance();
+      return {c(0, 0), c(0, 1), c(1, 1), c(2, 2)};
     }
+    return {1.0, 0.0, 1.0, 1.0};
   }
 
-  // Seeds drand48, which AMCL alone draws from, and asks for global localization.
-  void start_global_localization(int seed) {
-    srand48(seed);
-    globalLocalizationCallback(nullptr, std::make_shared<std_srvs::srv::Empty::Request>(),
-                               std::make_shared<std_srvs::srv::Empty::Response>());
-  }
-
-  // The covariance of the whole filter that amcl_pose carries: of x and y, and the
-  // circular variance of the heading.
-  struct Covariance {
-    double xx;
-    double xy;
-    double yy;
-    double yaw;
-  };
-
-  // An amcl_pose that AMCL published, and whether the filter's convergence test held then.
-  struct Estimate {
-    PlanarPose pose;
-    Covariance covariance;
-    bool converged;
-  };
-
-  // The amcl_pose that AMCL published after `scan`, if it published one: publishAmclPose
-  // stamps each pose with its scan's stamp and keeps the pose it publishes in
-  // last_published_pose_ (amcl_node.cpp:833, :856), and laserReceived publishes after a
-  // resample, after the first scan of a global localization, and after each scan until it
-  // published its first pose (:546-556, :590).
-  std::optional<Estimate> receive(std::int64_t stamp_ns, const PlanarPose& odometry,
-                                  const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan) {
-    set_ros_time(get_clock(), stamp_ns);
-    tf_buffer_->setTransform(odometry_transform(stamp_ns, odometry), tf_authority, false);
-    laserReceived(scan);
-    if (last_published_pose_.header.stamp != scan->header.stamp) {
-      return std::nullopt;
-    }
-    const auto& published = last_published_pose_.pose;
-    const auto& position = published.pose.position;
-    const auto& covariance = published.covariance;
-    return Estimate{{position.x, position.y, tf2::getYaw(published.pose.orientation)},
-                    {covariance[0], covariance[1], covariance[7], covariance[35]},
-                    pf_->converged != 0};
-  }
+  std::optional<Localized> added_;
 };
 
 // The pose of each processed scan, by the index of the scan among the kept scans.
@@ -372,16 +300,14 @@ void map(const nlohmann::json& scenario, int seed, const std::filesystem::path& 
   }
   // slam_toolbox declares the laser's parameters when it makes the laser of the first scan.
   check_declared(*node, parameters, "slam_toolbox");
-  if (seed == scenario.at("seeds").at(0).get<int>()) {
-    node->save_map(map_of(results), scenario.at("task").at("mapping").at("map_saver"));
-  }
+  node->save_map(map_of(results, seed), scenario.at("task").at("mapping").at("map_saver"));
   write_json(run_file(results, "mapping", seed), {{"seed", seed}, {"poses", recorded(poses)}});
 }
 
-// The pose of the base at the first kept scan of `prepared` in the map of the scenario
-// `map_scenario`: the ground truth pose, moved by the rigid motion that best aligns, in
-// the least-squares sense, the ground truth of the map's first seed's scans with their
-// poses in its map (Eigen's umeyama, without scaling).
+// The pose of the base at the first kept scan of `prepared` in the map that `map_seed` of a
+// mapping scenario made: the ground truth pose, moved by the rigid motion that best aligns,
+// in the least-squares sense, the ground truth of the map's scans with their poses in it
+// (Eigen's umeyama, without scaling).
 PlanarPose start_in_map(const Prepared& prepared, const std::filesystem::path& map_results,
                         int map_seed) {
   const auto map_prepared = read_prepared(map_results);
@@ -399,10 +325,20 @@ PlanarPose start_in_map(const Prepared& prepared, const std::filesystem::path& m
   return {position.x(), position.y(), wrapped(first.yaw + turn)};
 }
 
+// The results of `map_scenario`, whose seed `seed` made the map that a run of `seed`
+// localizes in.
+std::filesystem::path map_results_of(const nlohmann::json& map_scenario, int seed) {
+  const auto& seeds = map_scenario.at("seeds");
+  if (std::find(seeds.begin(), seeds.end(), seed) == seeds.end()) {
+    throw std::runtime_error(map_scenario.at("name").get<std::string>() + " maps no seed " +
+                             std::to_string(seed));
+  }
+  return results_of(map_scenario.at("name").get<std::string>());
+}
+
 void localize(const nlohmann::json& scenario, int seed, const std::filesystem::path& results,
               const nlohmann::json& map_scenario) {
-  const auto map_results = results_of(map_scenario.at("name").get<std::string>());
-  const auto map_seed = map_scenario.at("seeds").at(0).get<int>();
+  const auto map_results = map_results_of(map_scenario, seed);
   const auto& parameters = scenario.at("slam_toolbox");
   auto node = std::make_shared<LocalizationReference>(
       options_of(parameters, slam_toolbox_frames("localization")));
@@ -410,14 +346,14 @@ void localize(const nlohmann::json& scenario, int seed, const std::filesystem::p
   node->prepare();
   const auto prepared = read_prepared(results);
   const auto odometry = read_odometry(results, seed);
-  const auto start = start_in_map(prepared, map_results, map_seed);
-  node->load_map(map_of(map_results), start);
+  const auto start = start_in_map(prepared, map_results, seed);
+  node->load_map(map_of(map_results, seed), start);
   std::vector<RecordedPose> poses;
   for (std::size_t i = 0; i < prepared.scans.size(); ++i) {
     const auto& scan = prepared.scans[i];
-    if (const auto pose = node->localize(scan.stamp_ns, odometry[i],
-                                         laser_scan_of(prepared.parameters, scan))) {
-      poses.push_back({i, *pose});
+    if (const auto localized = node->localize(scan.stamp_ns, odometry[i],
+                                              laser_scan_of(prepared.parameters, scan))) {
+      poses.push_back({i, localized->pose});
     }
   }
   check_declared(*node, parameters, "slam_toolbox");
@@ -425,20 +361,104 @@ void localize(const nlohmann::json& scenario, int seed, const std::filesystem::p
              {{"seed", seed}, {"start", pose_json(start)}, {"poses", recorded(poses)}});
 }
 
+// The kept scans of `prepared` and the odometry `odometry` spliced from two places, as the
+// parity test of mapping_core splices them: the first half of the scans, then the scans
+// from the one, among the first half of the rest, whose ground truth lies farthest from the
+// last of the first half (the first of equals), a scan period after it, their odometry moved
+// rigidly to go on from it, as a base carried to another place reads its odometry.
+struct Spliced {
+  Prepared prepared;
+  std::vector<PlanarPose> odometry;
+  // The index of the first scan after the splice, and of the scan of `prepared` it is.
+  std::size_t splice;
+  std::size_t far;
+};
+
+PlanarPose composed(const PlanarPose& a, const PlanarPose& b) {
+  const double c = std::cos(a.yaw), s = std::sin(a.yaw);
+  return {a.x + c * b.x - s * b.y, a.y + s * b.x + c * b.y, a.yaw + b.yaw};
+}
+
+// `b` in the frame of `a`.
+PlanarPose relative(const PlanarPose& a, const PlanarPose& b) {
+  const double c = std::cos(a.yaw), s = std::sin(a.yaw);
+  const double dx = b.x - a.x, dy = b.y - a.y;
+  return {c * dx + s * dy, -s * dx + c * dy, b.yaw - a.yaw};
+}
+
+Spliced spliced(const Prepared& prepared, const std::vector<PlanarPose>& odometry) {
+  const std::size_t half = prepared.scans.size() / 2;
+  const auto& last = prepared.scans[half - 1];
+  const std::size_t rest = prepared.scans.size() - half;
+  std::size_t far = half;
+  double farthest = 0.0;
+  for (std::size_t index = half; index < half + rest / 2; ++index) {
+    const auto& truth = prepared.scans[index].truth;
+    const double distance = std::hypot(truth.x - last.truth.x, truth.y - last.truth.y);
+    if (distance > farthest) {
+      far = index;
+      farthest = distance;
+    }
+  }
+  const std::int64_t period_ns = prepared.scans[1].stamp_ns - prepared.scans[0].stamp_ns;
+  Spliced result{{prepared.parameters, {}}, {}, half, far};
+  for (std::size_t index = 0; index < half; ++index) {
+    result.prepared.scans.push_back(prepared.scans[index]);
+    result.odometry.push_back(odometry[index]);
+  }
+  const auto& carried = odometry[half - 1];
+  const auto& from = odometry[far];
+  for (std::size_t index = far; index < prepared.scans.size(); ++index) {
+    auto scan = prepared.scans[index];
+    scan.stamp_ns = last.stamp_ns + period_ns + (scan.stamp_ns - prepared.scans[far].stamp_ns);
+    result.prepared.scans.push_back(scan);
+    result.odometry.push_back(composed(carried, relative(from, odometry[index])));
+  }
+  return result;
+}
+
+// slam_toolbox's localization on the scans and the odometry of `seed` spliced from two
+// places of the map: the pose and the covariance of the match of each scan it adds.
+void localize_spliced(const nlohmann::json& scenario, int seed,
+                      const std::filesystem::path& results, const nlohmann::json& map_scenario) {
+  const auto map_results = map_results_of(map_scenario, seed);
+  const auto& parameters = scenario.at("slam_toolbox");
+  auto node = std::make_shared<LocalizationReference>(
+      options_of(parameters, slam_toolbox_frames("localization")));
+  node->configure();
+  node->prepare();
+  const auto run = spliced(read_prepared(results), read_odometry(results, seed));
+  const auto start = start_in_map(run.prepared, map_results, seed);
+  node->load_map(map_of(map_results, seed), start);
+  auto answers = nlohmann::json::array();
+  for (std::size_t i = 0; i < run.prepared.scans.size(); ++i) {
+    const auto& scan = run.prepared.scans[i];
+    if (const auto localized = node->localize(scan.stamp_ns, run.odometry[i],
+                                              laser_scan_of(run.prepared.parameters, scan))) {
+      const auto& c = localized->covariance;
+      answers.push_back(
+          {{"scan", i},
+           {"pose", pose_json(localized->pose)},
+           {"covariance", {{"xx", c.xx}, {"xy", c.xy}, {"yy", c.yy}, {"yaw", c.yaw}}}});
+    }
+  }
+  check_declared(*node, parameters, "slam_toolbox");
+  write_json(run_file(results, "spliced_localization", seed),
+             {{"seed", seed},
+              {"start", pose_json(start)},
+              {"splice", run.splice},
+              {"far", run.far},
+              {"poses", answers}});
+}
+
 void localize_globally(const nlohmann::json& scenario, int seed,
                        const std::filesystem::path& results,
                        const nlohmann::json& map_scenario) {
-  const auto map_results = results_of(map_scenario.at("name").get<std::string>());
+  const auto map_results = map_results_of(map_scenario, seed);
   const auto& parameters = scenario.at("task").at("localization").at("amcl");
-  auto node = std::make_shared<GlobalLocalizationReference>(options_of(
-      parameters, {{"base_frame_id", base_frame},
-                   {"odom_frame_id", odometry_frame},
-                   {"global_frame_id", map_frame},
-                   {"tf_broadcast", false}}));
-  node->prepare();
-  check_declared(*node, parameters, "AMCL");
+  const auto node = amcl_with(parameters);
   nav_msgs::msg::OccupancyGrid map;
-  const auto yaml = map_of(map_results).string() + ".yaml";
+  const auto yaml = map_of(map_results, seed).string() + ".yaml";
   if (nav2_map_server::loadMapFromYaml(yaml, map) != nav2_map_server::LOAD_MAP_SUCCESS) {
     throw std::runtime_error("nav2_map_server does not load " + yaml);
   }
@@ -475,7 +495,8 @@ void localize_globally(const nlohmann::json& scenario, int seed,
 int room_dataset_run(int argc, char** argv) {
   if (argc != 6) {
     std::cerr << "usage: ros_reference " << room_dataset_run_command
-              << " <mapping|localization|global_localization> <scenario.json> <seed> "
+              << " <mapping|localization|spliced_localization|global_localization> "
+                 "<scenario.json> <seed> "
                  "<repository root>\n";
     return 2;
   }
@@ -495,6 +516,8 @@ int room_dataset_run(int argc, char** argv) {
           scenario.at("task").at("localization").at("map_scenario").get<std::string>() + ".json"));
       if (run == "localization") {
         localize(scenario, seed, results, map_scenario);
+      } else if (run == "spliced_localization") {
+        localize_spliced(scenario, seed, results, map_scenario);
       } else if (run == "global_localization") {
         localize_globally(scenario, seed, results, map_scenario);
       } else {

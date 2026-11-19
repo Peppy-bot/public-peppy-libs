@@ -47,7 +47,7 @@ nlohmann::json obstacle_projection(const nlohmann::json& scenario, Inputs&) {
 
     const auto transform = sensor_transform(entry.at("sensor"));
     tf.setTransform(transform, "obstacle_projection_reference", true);
-    const auto cloud = cloud_of(entry.at("points"));
+    const auto cloud = cloud_of(entry.at("points"), sensor_frame);
     layer->take(cloud);
 
     // The layer marks the cloud's points with the base at its pose, then clears the

@@ -1,0 +1,24 @@
+{
+  "datasets_read": [],
+  "inputs": ["ros_reference/drives/l_room.json","ros_reference/reference_programs/amcl_map_cspace.cpp","ros_reference/reference_programs/amcl_map_cspace.hpp","ros_reference/reference_programs/amcl_node.cpp","ros_reference/reference_programs/amcl_node.hpp","ros_reference/reference_programs/laser_projection.cpp","ros_reference/reference_programs/laser_projection.hpp","ros_reference/reference_programs/nav2_node.cpp","ros_reference/reference_programs/nav2_node.hpp","ros_reference/reference_programs/point_cloud.cpp","ros_reference/reference_programs/point_cloud.hpp","ros_reference/reference_programs/room_dataset.cpp","ros_reference/reference_programs/room_dataset.hpp","ros_reference/reference_programs/room_dataset_files.cpp","ros_reference/reference_programs/room_dataset_files.hpp","ros_reference/reference_programs/room_dataset_runs.cpp","ros_reference/scenarios/room_dataset_l_room.json","ros_reference/src/bin/statistics.rs","ros_reference/src/metrics.rs","ros_reference/src/room_dataset.rs"],
+  "kind": "room_dataset",
+  "runs": ["mapping"],
+  "scans": 1031,
+  "source": {
+    "lidar_drive": {}
+  },
+  "task": {
+    "mapping": [
+      {"processed_scans":29,"seed":0,"trajectory_max_m":0.01949068288908133,"trajectory_rmse_m":0.012741110905017382,"trajectory_yaw_rmse_rad":0.005794791804041635},
+      {"processed_scans":29,"seed":1,"trajectory_max_m":0.022363854242965213,"trajectory_rmse_m":0.01524225139925618,"trajectory_yaw_rmse_rad":0.0029894689245144063},
+      {"processed_scans":29,"seed":2,"trajectory_max_m":0.022357467072243724,"trajectory_rmse_m":0.013135928087129942,"trajectory_yaw_rmse_rad":0.0035422869904069014},
+      {"processed_scans":29,"seed":3,"trajectory_max_m":0.022000187111400542,"trajectory_rmse_m":0.013171471528395698,"trajectory_yaw_rmse_rad":0.002813491083267134},
+      {"processed_scans":29,"seed":4,"trajectory_max_m":0.018620767822829253,"trajectory_rmse_m":0.012163470576969022,"trajectory_yaw_rmse_rad":0.002916887722716993},
+      {"processed_scans":29,"seed":5,"trajectory_max_m":0.024676825970462307,"trajectory_rmse_m":0.014845752681110196,"trajectory_yaw_rmse_rad":0.002159079324703442},
+      {"processed_scans":29,"seed":6,"trajectory_max_m":0.025108199081666855,"trajectory_rmse_m":0.013768848172605751,"trajectory_yaw_rmse_rad":0.0038384101710198524},
+      {"processed_scans":29,"seed":7,"trajectory_max_m":0.025589029411947836,"trajectory_rmse_m":0.014161930568356858,"trajectory_yaw_rmse_rad":0.0036969119606225184},
+      {"processed_scans":29,"seed":8,"trajectory_max_m":0.018490629916109426,"trajectory_rmse_m":0.012030382978126882,"trajectory_yaw_rmse_rad":0.002447002963165849},
+      {"processed_scans":29,"seed":9,"trajectory_max_m":0.01868081033456004,"trajectory_rmse_m":0.010979465842866932,"trajectory_yaw_rmse_rad":0.0035509884321809244}
+    ]
+  }
+}

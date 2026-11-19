@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "amcl_global_localization.hpp"
 #include "arm_planning.hpp"
 #include "cartesian_paths.hpp"
 #include "chain_collision.hpp"
@@ -24,6 +25,8 @@
 #include "forward_kinematics.hpp"
 #include "global_costmap.hpp"
 #include "inflation.hpp"
+#include "laser_projection.hpp"
+#include "map_export.hpp"
 #include "obstacle_projection.hpp"
 #include "occupancy.hpp"
 #include "orientation_constraints.hpp"
@@ -43,6 +46,7 @@ namespace {
 using Reference = nlohmann::json (*)(const nlohmann::json&, ros_reference::Inputs&);
 
 const std::map<std::string, Reference> references = {
+    {"amcl_global_localization", ros_reference::amcl_global_localization},
     {"arm_planning", ros_reference::arm_planning},
     {"cartesian_paths", ros_reference::cartesian_paths},
     {"chain_collision", ros_reference::chain_collision},
@@ -52,6 +56,8 @@ const std::map<std::string, Reference> references = {
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"global_costmap", ros_reference::global_costmap},
     {"inflation", ros_reference::inflation},
+    {"laser_projection", ros_reference::laser_projection},
+    {"map_export", ros_reference::map_export},
     {"obstacle_projection", ros_reference::obstacle_projection},
     {"occupancy", ros_reference::occupancy},
     {"orientation_constraints", ros_reference::orientation_constraints},

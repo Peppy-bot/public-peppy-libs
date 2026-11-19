@@ -34,6 +34,12 @@ impl<T: Copy> OpenSet<T> {
         self.climb(self.slots.len() - 1, entry);
     }
 
+    /// The entry in the first slot, which the next pop gives; `None` when the queue is empty.
+    /// As `priority_queue::top`.
+    pub fn peek(&self) -> Option<(f32, T)> {
+        self.slots.first().copied()
+    }
+
     /// Takes out the entry in the first slot and gives it; `None` when the queue is empty. The
     /// empty first slot moves down to a leaf along the child of lesser cost, the right child when
     /// the two costs are equal, and the last entry moves up from that leaf past each parent of
@@ -255,7 +261,7 @@ mod tests {
                 queue.push(cost, item);
                 None
             }
-            Call::Peek(expected) => Some((queue.slots.first().copied(), expected)),
+            Call::Peek(expected) => Some((queue.peek(), expected)),
             Call::Pop(expected) => Some((queue.pop(), expected)),
         };
         if let Some((gave, expected)) = output

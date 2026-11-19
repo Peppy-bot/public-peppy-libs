@@ -8,12 +8,12 @@
 // a scan, and draws the noisy odometry of each seed. It writes those prepared inputs under
 // the directory that ROS_REFERENCE_RESULTS names, at `<scenario>/`. Each run then has a
 // process of its own, which this program starts as `ros_reference room_dataset_run`: a
-// mapping scenario maps once a seed, and the first seed's run also saves its pose graph
-// and exports its grid as nav2_map_server writes it; a localization scenario localizes in
-// the first seed's map of the mapping scenario that it names, with slam_toolbox once a
-// seed and with AMCL's global localization once a seed. Each run writes its poses beside
-// the prepared inputs. The output holds what the reference read and prepared; the
-// `statistics` program of the ros_reference crate scores the runs.
+// mapping scenario maps once a seed, and each seed's run also saves its pose graph and
+// exports its grid as nav2_map_server writes it; a localization scenario localizes, with
+// slam_toolbox once a seed and with AMCL's global localization once a seed, in the map
+// that the same seed of the mapping scenario that it names made. Each run writes its
+// poses beside the prepared inputs. The output holds what the reference read and
+// prepared; the `statistics` program of the ros_reference crate scores the runs.
 #pragma once
 
 #include <nlohmann/json.hpp>
