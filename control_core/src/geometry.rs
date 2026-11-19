@@ -9,13 +9,16 @@
 //! refusal says what to send instead, each number in it printed as Rust's `Display` prints it,
 //! and control_core_py's geometry gives the same text for the same refusal
 //! (`tests/fixtures/geometry_refusals.tsv`).
+//!
+//! Behind the `nalgebra` feature a point, an orientation and a pose go into nalgebra's types with
+//! `From`, and `pose_arrays` gives an isometry back as the contracts' arrays.
 
 use std::time::SystemTime;
 
 use frame_tree::arithmetic::{self, Quaternion, Vector};
 use frame_tree::{
     DenormalizedQuaternion, FrameName, LookupTime, Placement, QUATERNION_NORMALIZATION_TOLERANCE,
-    Stamp,
+    Stamp, Transform,
 };
 
 use crate::not_finite::NotFinite;
@@ -100,6 +103,12 @@ impl Pose {
 
     pub fn orientation(self) -> UnitQuaternion {
         self.orientation
+    }
+
+    /// The pose as tf2's transform, its matrix built as tf2's `setRotation` builds it.
+    pub fn transform(self) -> Transform {
+        Transform::new(self.position.position(), self.orientation.quaternion())
+            .expect("a finite position and a normalized quaternion make a transform")
     }
 }
 
@@ -308,6 +317,54 @@ impl<const N: usize> From<NotFinite<N>> for GeometryError {
     }
 }
 
+#[cfg(feature = "nalgebra")]
+impl From<Point> for nalgebra::Point3<f64> {
+    fn from(point: Point) -> Self {
+        Self::from(point.0)
+    }
+}
+
+#[cfg(feature = "nalgebra")]
+impl From<Point> for nalgebra::Vector3<f64> {
+    fn from(point: Point) -> Self {
+        Self::from(point.0)
+    }
+}
+
+#[cfg(feature = "nalgebra")]
+impl From<Point> for nalgebra::Translation3<f64> {
+    fn from(point: Point) -> Self {
+        Self::from(point.0)
+    }
+}
+
+/// nalgebra holds a quaternion's coordinates in the contracts' order, [x, y, z, w], and the
+/// orientation is unit as its parse normalized it, so nalgebra takes it as it stands.
+#[cfg(feature = "nalgebra")]
+impl From<UnitQuaternion> for nalgebra::UnitQuaternion<f64> {
+    fn from(orientation: UnitQuaternion) -> Self {
+        Self::new_unchecked(nalgebra::Quaternion::from_vector(nalgebra::Vector4::from(
+            orientation.0,
+        )))
+    }
+}
+
+#[cfg(feature = "nalgebra")]
+impl From<Pose> for nalgebra::Isometry3<f64> {
+    fn from(pose: Pose) -> Self {
+        Self::from_parts(pose.position.into(), pose.orientation.into())
+    }
+}
+
+/// The position of `pose` and its orientation [x, y, z, w], as the contracts give them.
+#[cfg(feature = "nalgebra")]
+pub fn pose_arrays(pose: &nalgebra::Isometry3<f64>) -> ([f64; 3], [f64; 4]) {
+    (
+        pose.translation.vector.into(),
+        pose.rotation.quaternion().coords.into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +556,52 @@ mod tests {
         ));
         let near = Point::parse([0.0, 1.0, 0.0]).unwrap();
         assert!(near.placed_by(&turn).is_ok());
+    }
+
+    // A pose goes to nalgebra and back to the arrays it parsed from, and nalgebra's isometry
+    // carries a point where tf2's transform of the pose carries it: the two read the
+    // quaternion's coordinates in one order.
+    #[cfg(feature = "nalgebra")]
+    #[hegel::test]
+    fn a_pose_in_nalgebra_holds_its_arrays_and_places_a_point_as_tf2(tc: TestCase) {
+        let coordinate = || gs::floats().min_value(-100.0).max_value(100.0);
+        let unit = || gs::floats().min_value(-1.0).max_value(1.0);
+        let position = [
+            tc.draw(coordinate()),
+            tc.draw(coordinate()),
+            tc.draw(coordinate()),
+        ];
+        let drawn: [f64; 4] = [
+            tc.draw(unit()),
+            tc.draw(unit()),
+            tc.draw(unit()),
+            tc.draw(unit()),
+        ];
+        let norm = drawn.iter().map(|c| c * c).sum::<f64>().sqrt();
+        tc.assume(norm > 0.1);
+        let pose = Pose::parse(position, drawn.map(|c| c / norm)).unwrap();
+        let isometry = nalgebra::Isometry3::from(pose);
+        assert_eq!(
+            pose_arrays(&isometry),
+            (pose.position().position(), pose.orientation().quaternion())
+        );
+        assert_eq!(
+            nalgebra::Point3::from(pose.position()),
+            nalgebra::Point3::from(position)
+        );
+        assert_eq!(
+            nalgebra::Vector3::from(pose.position()),
+            nalgebra::Vector3::from(position)
+        );
+        let point = [
+            tc.draw(coordinate()),
+            tc.draw(coordinate()),
+            tc.draw(coordinate()),
+        ];
+        let by_nalgebra = isometry * nalgebra::Point3::from(point);
+        let by_tf2 = pose.transform().apply(point);
+        for (a, b) in by_nalgebra.coords.iter().zip(by_tf2) {
+            assert!((a - b).abs() < 1e-9, "{by_nalgebra} vs {by_tf2:?}");
+        }
     }
 }
