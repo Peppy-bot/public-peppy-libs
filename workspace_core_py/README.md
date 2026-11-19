@@ -46,7 +46,8 @@ is a `ValueError` whose text is the refusal that the answer carries.
 | `GRASP_DIRECTIONS` | the grasp directions in the order a reach tries them, each a `GraspDirection` with its `name` (`down`, `forward`) and its unit `approach` vector |
 | `angle_between(a, b)` | the angle between two directions, each an iterable of three numbers (a tuple, a list, a numpy array), in radians from 0 to pi; pi when one is zero |
 | `SurfaceHeight.from_wire(metres)` | the surface height of a describe_workspace request, a finite number within 1000 m of the robot's base point, to the millimetre: `metres`, and `grid_targets()`, the targets `ABOVE_SURFACE` above each point of the standard grid, in the grid's order. Two heights that round alike are equal and hash alike |
-| `Positions.from_wire(values)` | the points of a check_positions request, three numbers per point: `points`, in the request's order |
+| `Positions.parse(points)` | the points of a check_positions request once the backbone placed them in the robot frame, each `(x, y, z)` of finite numbers, each coordinate within 1000 m of the robot's base point: `points`, in the request's order |
+| `NO_POINTS` | the refusal of a check_positions request that gives no points, as `Positions.parse` gives it, for a backbone that refuses such a request before it places any point |
 | `Reach.reached_by(arm)`, `Reach.short(by)` | whether an arm reaches a target: `reached`, `arm` (`""` when none does) and `short_by` (0 when an arm does). An empty arm name, and a shortfall that is not a finite distance of at least 0, are refused |
 | `SurfaceReach.from_grid_order(height, reaches)` | the reach of the surface at `height`: one `Reach` per grid target, in the grid's order; another count is refused |
 | `ReachMemo()` | the reach of the surfaces measured last, one per height: `get(height)`, `insert(surface)`, which gives back the reach stored first for the height, and `len(memo)`. Past 32 heights it drops the height it stored first, also when a caller asked that height again after it was stored |
@@ -76,7 +77,8 @@ describe_workspace:
 
 check_positions:
 
-1. `positions = Positions.from_wire(values)`.
+1. Place each point of the request in the robot frame, then
+   `positions = Positions.parse(placed)`.
 2. Measure the reach of each of `positions.points`.
 3. `check_without_perception_camera(positions, reaches)`.
 

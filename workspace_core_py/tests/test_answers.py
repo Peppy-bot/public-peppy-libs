@@ -12,6 +12,11 @@ from workspace_core_py import (
 UNCHECKED = "The view is not checked: the robot has no perception camera."
 
 
+def positions(*points):
+    """The points of a request, each `(x, y, z)` in the robot frame."""
+    return Positions.parse(points)
+
+
 def surface(metres, reaches):
     """The reach of the surface at `metres` where the arm reaches the target
     above each grid point `(x, y)` that `reaches` holds, and stops 0.2 m short
@@ -64,10 +69,10 @@ def test_a_surface_with_too_little_room_gives_its_rectangle_but_no_placement():
 
 
 def test_each_checked_point_carries_its_reach_and_message_in_the_requests_order():
-    positions = Positions.from_wire([0.3, 0.0, 0.5, 0.9, 0.0, 0.5, 0.4, 0.1, 0.3])
+    checked = positions((0.3, 0.0, 0.5), (0.9, 0.0, 0.5), (0.4, 0.1, 0.3))
     reaches = [Reach.reached_by("arm"), Reach.short(0.6), Reach.short(0.004)]
-    answer = check_without_perception_camera(positions, reaches)
-    assert [point.position for point in answer.points] == positions.points
+    answer = check_without_perception_camera(checked, reaches)
+    assert [point.position for point in answer.points] == checked.points
     assert [point.reach for point in answer.points] == reaches
     assert [point.workable for point in answer.points] == [True, False, False]
     assert all(point.view == "no_camera" for point in answer.points)
@@ -94,19 +99,17 @@ def test_each_checked_point_carries_its_reach_and_message_in_the_requests_order(
 def test_the_answer_of_one_point_says_whether_it_is_workable_then_why_no_view_is_checked(
     reach, workable, message
 ):
-    answer = check_without_perception_camera(
-        Positions.from_wire([0.3, 0.0, 0.5]), [reach]
-    )
+    answer = check_without_perception_camera(positions((0.3, 0.0, 0.5)), [reach])
     assert answer.all_workable is workable
     assert answer.message == f"{message} {UNCHECKED}"
 
 
 def test_a_check_with_another_count_of_reaches_is_refused():
-    positions = Positions.from_wire([0.3, 0.0, 0.5, 0.9, 0.0, 0.5])
+    two = positions((0.3, 0.0, 0.5), (0.9, 0.0, 0.5))
     with pytest.raises(
         ValueError,
         match="^1 reaches are given for 2 targets: give one reach per target, in order$",
     ):
-        check_without_perception_camera(positions, [Reach.reached_by("arm")])
+        check_without_perception_camera(two, [Reach.reached_by("arm")])
     with pytest.raises(TypeError):
-        check_without_perception_camera(positions, [Reach.short(0.1), None])  # type: ignore[list-item]
+        check_without_perception_camera(two, [Reach.short(0.1), None])  # type: ignore[list-item]

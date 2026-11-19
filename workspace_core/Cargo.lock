@@ -773,6 +773,7 @@ version = "0.1.0"
 dependencies = [
  "camera_core",
  "collision_geometry",
+ "control_core",
  "robot_description",
  "self_collision_model",
  "thiserror 2.0.21",

@@ -12,6 +12,7 @@ type _Bounds = tuple[float, float, float, float]
 REACH_TOLERANCE: Final[float]
 GRASP_ANGLE_TOLERANCE: Final[float]
 ABOVE_SURFACE: Final[float]
+NO_POINTS: Final[str]
 GRASP_DIRECTIONS: Final[tuple[GraspDirection, ...]]
 
 @final
@@ -36,7 +37,7 @@ class SurfaceHeight:
 @final
 class Positions:
     @staticmethod
-    def from_wire(values: Iterable[float]) -> Positions: ...
+    def parse(points: Iterable[Iterable[float]]) -> Positions: ...
     @property
     def points(self) -> list[_Vector3]: ...
     def __len__(self) -> int: ...

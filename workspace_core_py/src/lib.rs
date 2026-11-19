@@ -2,12 +2,13 @@
 //! Python imports as `workspace_core_py`. Its types are in
 //! `workspace_core_py.pyi`.
 
+use control_core::geometry::Point;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use workspace_core::design::{
-    self, PointAnswer, Positions, PositionsAnswer, PositionsReach, ReachMemo, SurfaceAnswer,
-    SurfaceHeight, SurfaceReach, ViewCheck,
+    self, PointAnswer, Positions, PositionsAnswer, PositionsError, PositionsReach, ReachMemo,
+    SurfaceAnswer, SurfaceHeight, SurfaceReach, ViewCheck,
 };
 use workspace_core::{
     ABOVE_SURFACE, GRASP_ANGLE_TOLERANCE, GraspDirection, REACH_TOLERANCE, Reach,
@@ -24,14 +25,16 @@ type Bounds = (f64, f64, f64, f64);
 /// The Python bindings of workspace_core, for a robot's backbone in Python:
 /// what it needs to give the workspace:v1 answer of a robot without a
 /// perception camera, around the reach its own solver gives. The limits, the
-/// grasp directions, the parsing of a request, the grid targets of a surface,
-/// the reach rule over its solver, the clearance of its arms over a surface,
-/// the reach memo, and the answers with their messages.
+/// grasp directions, the parsing of a request and the refusal of one with no
+/// points (`NO_POINTS`), the grid targets of a surface, the reach rule over
+/// its solver, the clearance of its arms over a surface, the reach memo, and
+/// the answers with their messages.
 #[pymodule]
 fn workspace_core_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("REACH_TOLERANCE", REACH_TOLERANCE)?;
     module.add("GRASP_ANGLE_TOLERANCE", GRASP_ANGLE_TOLERANCE)?;
     module.add("ABOVE_SURFACE", ABOVE_SURFACE)?;
+    module.add("NO_POINTS", PositionsError::Empty.to_string())?;
     module.add(
         "GRASP_DIRECTIONS",
         PyTuple::new(module.py(), GraspDirection::ALL.map(PyGraspDirection))?,
@@ -127,22 +130,25 @@ impl PySurfaceHeight {
     }
 }
 
-/// The points of a check_positions request, parsed: at least one, each three
-/// finite coordinates in the robot frame, each within 1000 m of the robot's
-/// base point.
+/// The points of a check_positions request in the robot frame: at least one,
+/// each coordinate within 1000 m of the robot's base point.
 #[pyclass(name = "Positions", module = "workspace_core_py", frozen)]
 struct PyPositions(Positions);
 
 #[pymethods]
 impl PyPositions {
-    /// The points of `values`, three numbers (x, y, z) per point, in order.
-    /// Raises ValueError with the refusal of the request when they are not
-    /// points of a request.
+    /// The points of a request, each `(x, y, z)` in the robot frame, the root
+    /// link of the robot's URDF, where the robot's node has placed it, in the
+    /// request's order. Raises ValueError, saying what to give, for a point
+    /// that is not three finite numbers, and with the refusal of the request
+    /// when they are not points of a request.
     #[staticmethod]
-    fn from_wire(values: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Positions::from_wire(&numbers(values)?)
-            .map(Self)
-            .map_err(refusal)
+    fn parse(points: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let points = points
+            .try_iter()?
+            .map(|point| Point::parse(three(&point?, "a point")?).map_err(refusal))
+            .collect::<PyResult<Vec<_>>>()?;
+        Positions::parse(points).map(Self).map_err(refusal)
     }
 
     /// The points, `(x, y, z)` in the robot frame, in the request's order.
