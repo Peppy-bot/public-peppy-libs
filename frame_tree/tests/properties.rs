@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use frame_tree::{
     FrameName, FrameTree, LookupError, LookupTime, MovingMessage, Placement, Publisher, Stamp,
-    StaticMessage,
+    StaticMessage, TransformRecord,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -98,16 +98,17 @@ fn assert_close(a: [f64; 3], b: [f64; 3], what: &str) {
 /// A tree of 2 to 8 frames, each frame after the first placed static in a frame before it.
 fn static_tree(tc: &TestCase) -> (FrameTree, usize) {
     let frames: usize = tc.draw(gs::integers::<usize>().min_value(2).max_value(8));
-    let parent_frames: Vec<String> = (1..frames)
-        .map(|child| name(tc.draw(gs::integers::<usize>().min_value(0).max_value(child - 1))))
+    let transforms = (1..frames)
+        .map(|child| {
+            let parent = tc.draw(gs::integers::<usize>().min_value(0).max_value(child - 1));
+            let Pose {
+                position,
+                orientation,
+            } = pose(tc);
+            TransformRecord::new(&name(parent), &name(child), position, orientation)
+        })
         .collect();
-    let poses: Vec<Pose> = (1..frames).map(|_| pose(tc)).collect();
-    let message = StaticMessage {
-        child_frames: (1..frames).map(name).collect(),
-        parent_frames,
-        positions: poses.iter().flat_map(|pose| pose.position).collect(),
-        orientations: poses.iter().flat_map(|pose| pose.orientation).collect(),
-    };
+    let message = StaticMessage { transforms };
     let mut tree = FrameTree::new(Duration::from_secs(1)).unwrap();
     let refused = tree.take_static(&publisher(), &message).unwrap();
     assert!(refused.is_empty(), "{refused:?}");
@@ -168,10 +169,12 @@ fn the_lookups_along_a_chain_compose(tc: TestCase) {
 fn send(tree: &mut FrameTree, stamp: u64, pose: Pose, start: u64) {
     let message = MovingMessage {
         timestamp: SystemTime::UNIX_EPOCH + Duration::from_nanos(stamp),
-        child_frames: vec![name(1)],
-        parent_frames: vec![name(0)],
-        positions: pose.position.to_vec(),
-        orientations: pose.orientation.to_vec(),
+        transforms: vec![TransformRecord::new(
+            &name(0),
+            &name(1),
+            pose.position,
+            pose.orientation,
+        )],
         start_timestamp: SystemTime::UNIX_EPOCH + Duration::from_nanos(start),
     };
     let refused = tree.take_moving(&publisher(), &message).unwrap();

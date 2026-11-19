@@ -257,7 +257,7 @@ mod tests {
 
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use frame_tree::TransformErrorReason;
+    use frame_tree::{TransformErrorReason, TransformRecord};
 
     use crate::node_clock::TickFeed;
     use crate::test_support::Logged;
@@ -283,6 +283,8 @@ mod tests {
             instance_id: "init_inst".into(),
         }
     }
+
+    const IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
 
     fn frame(name: &str) -> FrameName {
         FrameName::parse(name).expect("a frame name")
@@ -313,10 +315,12 @@ mod tests {
     fn arm_at(seconds: u64, x: f64) -> MovingMessage {
         MovingMessage {
             timestamp: time(seconds),
-            child_frames: vec!["arm".into()],
-            parent_frames: vec!["base_link".into()],
-            positions: vec![x, 0.0, 0.0],
-            orientations: vec![0.0, 0.0, 0.0, 1.0],
+            transforms: vec![TransformRecord::new(
+                "base_link",
+                "arm",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
             start_timestamp: time(1),
         }
     }
@@ -324,10 +328,12 @@ mod tests {
     /// The camera fixed 1 m above the arm link.
     fn camera_on_the_arm() -> StaticMessage {
         StaticMessage {
-            child_frames: vec!["camera".into()],
-            parent_frames: vec!["arm".into()],
-            positions: vec![0.0, 0.0, 1.0],
-            orientations: vec![0.0, 0.0, 0.0, 1.0],
+            transforms: vec![TransformRecord::new(
+                "arm",
+                "camera",
+                [0.0, 0.0, 1.0],
+                IDENTITY,
+            )],
         }
     }
 
@@ -598,7 +604,7 @@ mod tests {
     fn a_refused_transform_and_a_message_refused_whole_are_named() {
         let (tree, _ticks) = tree_at(21);
         let mut looped = arm_at(20, 1.0);
-        looped.parent_frames = vec!["arm".into()];
+        looped.transforms[0].frame = "arm".into();
         assert!(matches!(
             tree.take_moving(&backbone(), &looped),
             Err(Refused::Transforms(refused))
@@ -610,11 +616,11 @@ mod tests {
             .take_moving(&backbone(), &arm_at(5, 1.0))
             .expect_err("a stamp older than the window");
         assert!(old.to_string().contains("\"arm\""), "{old}");
-        let mut ragged = camera_on_the_arm();
-        ragged.positions.pop();
+        let mut twice = camera_on_the_arm();
+        twice.transforms.push(twice.transforms[0].clone());
         assert!(matches!(
-            tree.take_static(&initializer(), &ragged),
-            Err(Refused::Message(MessageError::Shape { .. }))
+            tree.take_static(&initializer(), &twice),
+            Err(Refused::Message(MessageError::RepeatedChild { .. }))
         ));
     }
 
@@ -626,9 +632,9 @@ mod tests {
         let mut waiting = waiting_for_the_camera_at(&tree, 21);
         assert!(still_waits(&mut waiting).await);
         let woken = tree.taken.subscribe();
-        let mut ragged = arm_at(21, 1.0);
-        ragged.positions.pop();
-        assert!(tree.take_moving(&backbone(), &ragged).is_err());
+        let mut twice = arm_at(21, 1.0);
+        twice.transforms.push(twice.transforms[0].clone());
+        assert!(tree.take_moving(&backbone(), &twice).is_err());
         assert!(!woken.has_changed().expect("the tree holds the sender"));
         assert!(still_waits(&mut waiting).await);
         tree.take_moving(&backbone(), &arm_at(21, 1.0))
@@ -641,11 +647,11 @@ mod tests {
     async fn the_followers_take_each_message_and_log_a_run_of_refusals_once() {
         let (logged, _guard) = Logged::capture();
         let (tree, _ticks) = tree_at(21);
-        let mut ragged = arm_at(20, 1.0);
-        ragged.positions.pop();
+        let mut twice = arm_at(20, 1.0);
+        twice.transforms.push(twice.transforms[0].clone());
         let mut received = vec![
-            Ok(Some((backbone(), ragged.clone()))),
-            Ok(Some((backbone(), ragged))),
+            Ok(Some((backbone(), twice.clone()))),
+            Ok(Some((backbone(), twice))),
             Err("a message that does not decode"),
             Ok(Some((backbone(), arm_at(20, 1.0)))),
             Ok(None),
@@ -693,16 +699,24 @@ mod tests {
     async fn each_publishers_refusals_are_logged_once_a_run_whatever_the_others_send() {
         let (logged, _guard) = Logged::capture();
         let (tree, _ticks) = tree_at(21);
-        let mut ragged = arm_at(20, 1.0);
-        ragged.positions.pop();
+        // A message stamped before the epoch, which the tree refuses whole.
+        let untimely = MovingMessage {
+            timestamp: UNIX_EPOCH - Duration::from_nanos(1),
+            ..arm_at(20, 1.0)
+        };
         let camera = |seconds, x| MovingMessage {
-            child_frames: vec!["camera".into()],
+            transforms: vec![TransformRecord::new(
+                "base_link",
+                "camera",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
             ..arm_at(seconds, x)
         };
         let mut received = (0..3)
             .flat_map(|second| {
                 [
-                    Ok::<_, &str>(Some((initializer(), ragged.clone()))),
+                    Ok::<_, &str>(Some((initializer(), untimely.clone()))),
                     Ok(Some((backbone(), camera(10 + second, 1.0)))),
                 ]
             })

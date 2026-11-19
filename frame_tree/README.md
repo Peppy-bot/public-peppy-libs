@@ -23,15 +23,14 @@ let mut tree = FrameTree::new(Duration::from_secs(10))?;
 // Who sent a message: the core node and the instance id of its producer.
 let publisher = Publisher { core_node, instance_id };
 
-// A message of static_transforms, field for field: its publisher's whole static set.
-let refused = tree.take_static(&publisher, &StaticMessage {
-    child_frames, parent_frames, positions, orientations,
-})?;
+// The transforms of a message of static_transforms: its publisher's whole static set,
+// each a TransformRecord { frame, child_frame, position, orientation }.
+let refused = tree.take_static(&publisher, &StaticMessage { transforms })?;
 
 // A message of transforms: the transforms its publisher measured at its timestamp, and
 // when they last started over, each time a SystemTime as the message carries it.
 let refused = tree.take_moving(&publisher, &MovingMessage {
-    timestamp, child_frames, parent_frames, positions, orientations, start_timestamp,
+    timestamp, transforms, start_timestamp,
 })?;
 
 // When the consumer's clock goes back: every moving stamp goes, the static transforms stay.
@@ -46,17 +45,17 @@ let transforms = vec![FrameTransform::parse("odom", "base_footprint", position, 
 let message = MovingMessage::from_transforms(measured, &transforms, started)?;
 ```
 
-A message's arrays are index-aligned: `child_frames`, `parent_frames`, `positions` (3 per
-transform) and `orientations` (4 per transform, [x, y, z, w]). A message of `transforms`
-also carries `timestamp`, when its publisher measured all its transforms, and
-`start_timestamp`, when they last started over. A message whose arrays do not line up,
-that names a child frame twice, or whose `timestamp` or `start_timestamp` lies before the
-Unix epoch or more than `u64::MAX` nanoseconds after it, is refused whole (`MessageError`)
-and changes nothing; `from_transforms` refuses a publisher's message on the same times. A
-transform with an empty frame, its child frame for its parent, a number that is not finite,
-or a quaternion whose squared norm lies 10e-3 or more from 1 is refused alone, and so is a
-moving one whose stamp is older than its child frame's newest by more than the window;
-`take_moving` and `take_static` give each refused transform with its index and its reason
+A message holds its transforms as records, `TransformRecord`: each a parent frame
+(`frame`), a `child_frame`, a `position` and an `orientation` ([x, y, z, w]). A message of
+`transforms` also carries `timestamp`, when its publisher measured all its transforms, and
+`start_timestamp`, when they last started over. A message that names a child frame twice,
+or whose `timestamp` or `start_timestamp` lies before the Unix epoch or more than
+`u64::MAX` nanoseconds after it, is refused whole (`MessageError`) and changes nothing;
+`from_transforms` refuses a publisher's message on the same times. A transform with an
+empty frame, its child frame for its parent, a number that is not finite, or a quaternion
+whose squared norm lies 10e-3 or more from 1 is refused alone, and so is a moving one
+whose stamp is older than its child frame's newest by more than the window; `take_moving`
+and `take_static` give each refused transform with its index and its reason
 (`TransformError`), and the message's other transforms are kept, each with its quaternion
 normalized.
 

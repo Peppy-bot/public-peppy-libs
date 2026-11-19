@@ -1,14 +1,14 @@
 //! The transforms of the transforms contract: a transform, the place of a child frame in its
 //! parent, and a message of `transforms` or of `static_transforms` field for field, as a
-//! consumer receives it and as a publisher sends it. A message's arrays are index-aligned:
-//! `child_frames`, `parent_frames`, `positions` (3 per transform) and `orientations` (4 per
-//! transform, [x, y, z, w]). A message of `transforms` also carries `timestamp`, when its
+//! consumer receives it and as a publisher sends it. A message holds its transforms as
+//! records: each a parent frame (`frame`), a `child_frame`, a `position` and an
+//! `orientation` ([x, y, z, w]). A message of `transforms` also carries `timestamp`, when its
 //! publisher measured all its transforms, and `start_timestamp`, when they last started
 //! over, each a `SystemTime` as the message carries it. A transform is made by parsing,
-//! from a message's arrays or from a publisher's values.
+//! from a message's records or from a publisher's values.
 //!
-//! A message whose times a stamp does not hold, whose arrays do not line up, or that names
-//! a child frame twice, is refused whole. Otherwise each transform stands alone, as tf2's
+//! A message whose times a stamp does not hold, or that names a child frame twice, is
+//! refused whole. Otherwise each transform stands alone, as tf2's
 //! listener hands each transform of a message to `setTransform` and that call refuses an
 //! invalid one by itself (buffer_core.cpp:210-266): an invalid transform is refused, with
 //! the reason, and the message's other transforms are kept, each with its quaternion
@@ -106,26 +106,42 @@ impl FrameTransform {
     }
 }
 
+/// A transform of a message, field for field: `child_frame` placed in its parent frame,
+/// `frame`, at `position` (x, y, z, m) and `orientation` (a unit quaternion [x, y, z, w]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct TransformRecord {
+    pub frame: String,
+    pub child_frame: String,
+    pub position: [f64; 3],
+    pub orientation: [f64; 4],
+}
+
+impl TransformRecord {
+    /// The record of `child_frame` placed in `frame` at `position`, turned by `orientation`.
+    pub fn new(frame: &str, child_frame: &str, position: [f64; 3], orientation: [f64; 4]) -> Self {
+        Self {
+            frame: frame.to_owned(),
+            child_frame: child_frame.to_owned(),
+            position,
+            orientation,
+        }
+    }
+}
+
 /// A message of `transforms`, field for field: the moving transforms one publisher measured
 /// at `timestamp`, which last started over at `start_timestamp`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct MovingMessage {
     pub timestamp: SystemTime,
-    pub child_frames: Vec<String>,
-    pub parent_frames: Vec<String>,
-    pub positions: Vec<f64>,
-    pub orientations: Vec<f64>,
+    pub transforms: Vec<TransformRecord>,
     pub start_timestamp: SystemTime,
 }
 
-/// A message of `static_transforms`, field for field: every fixed transform of one
-/// publisher.
+/// The transforms of a message of `static_transforms`: every fixed transform of one
+/// publisher, each holding at every time, so the message holds no timestamp.
 #[derive(Clone, PartialEq, Debug)]
 pub struct StaticMessage {
-    pub child_frames: Vec<String>,
-    pub parent_frames: Vec<String>,
-    pub positions: Vec<f64>,
-    pub orientations: Vec<f64>,
+    pub transforms: Vec<TransformRecord>,
 }
 
 impl MovingMessage {
@@ -139,18 +155,10 @@ impl MovingMessage {
         start_timestamp: SystemTime,
     ) -> Result<Self, MessageError> {
         stamp_and_start(timestamp, start_timestamp)?;
-        let StaticMessage {
-            child_frames,
-            parent_frames,
-            positions,
-            orientations,
-        } = StaticMessage::from_transforms(transforms)?;
+        let StaticMessage { transforms } = StaticMessage::from_transforms(transforms)?;
         Ok(Self {
             timestamp,
-            child_frames,
-            parent_frames,
-            positions,
-            orientations,
+            transforms,
             start_timestamp,
         })
     }
@@ -159,14 +167,7 @@ impl MovingMessage {
     /// does not hold refuses the message whole.
     pub(crate) fn parse(&self) -> Result<(Stamp, Start, Parsed), MessageError> {
         let (stamp, start) = stamp_and_start(self.timestamp, self.start_timestamp)?;
-        let parsed = Arrays {
-            child_frames: &self.child_frames,
-            parent_frames: &self.parent_frames,
-            positions: &self.positions,
-            orientations: &self.orientations,
-        }
-        .parse()?;
-        Ok((stamp, start, parsed))
+        Ok((stamp, start, parse(&self.transforms)?))
     }
 }
 
@@ -191,27 +192,22 @@ impl StaticMessage {
             });
         }
         Ok(Self {
-            child_frames: transforms.iter().map(|t| t.child.to_string()).collect(),
-            parent_frames: transforms.iter().map(|t| t.parent.to_string()).collect(),
-            positions: transforms
+            transforms: transforms
                 .iter()
-                .flat_map(|t| t.placement.position)
-                .collect(),
-            orientations: transforms
-                .iter()
-                .flat_map(|t| t.placement.orientation)
+                .map(|t| {
+                    TransformRecord::new(
+                        t.parent.as_str(),
+                        t.child.as_str(),
+                        t.placement.position,
+                        t.placement.orientation,
+                    )
+                })
                 .collect(),
         })
     }
 
     pub(crate) fn parse(&self) -> Result<Parsed, MessageError> {
-        Arrays {
-            child_frames: &self.child_frames,
-            parent_frames: &self.parent_frames,
-            positions: &self.positions,
-            orientations: &self.orientations,
-        }
-        .parse()
+        parse(&self.transforms)
     }
 }
 
@@ -229,26 +225,14 @@ pub enum MessageError {
     Timestamp(TimeError),
     #[error("the message's start_timestamp is refused: {0}")]
     StartTimestamp(TimeError),
-    /// Its arrays do not hold one entry of each per child frame.
-    #[error(
-        "the message holds {children} child frames, {parents} parent frames, {positions} \
-         position entries and {orientations} orientation entries: give one parent frame, 3 \
-         position entries and 4 orientation entries per child frame"
-    )]
-    Shape {
-        children: usize,
-        parents: usize,
-        positions: usize,
-        orientations: usize,
-    },
     #[error(
         "the message names the child frame {child:?} more than once: name each child frame once"
     )]
     RepeatedChild { child: String },
 }
 
-/// A transform of a message that was refused: the index of its child frame in
-/// `child_frames`, its child frame as the message names it, and why.
+/// A transform of a message that was refused: its index among the message's transforms, its
+/// child frame as the message names it, and why.
 #[derive(Clone, PartialEq, Debug, thiserror::Error)]
 #[error("transform {index} (child frame {child:?}) is refused: {reason}")]
 pub struct TransformError {
@@ -288,61 +272,33 @@ pub enum TransformErrorReason {
     BeforeWindow { stamp: Stamp, newest: Stamp },
 }
 
-/// The arrays every message of the contract carries.
-struct Arrays<'a> {
-    child_frames: &'a [String],
-    parent_frames: &'a [String],
-    positions: &'a [f64],
-    orientations: &'a [f64],
-}
-
-impl Arrays<'_> {
-    /// Each valid transform, and each invalid one refused; arrays that do not line up or
-    /// name a child frame twice refused whole.
-    fn parse(&self) -> Result<Parsed, MessageError> {
-        let count = self.child_frames.len();
-        if self.parent_frames.len() != count
-            || self.positions.len() != 3 * count
-            || self.orientations.len() != 4 * count
-        {
-            return Err(MessageError::Shape {
-                children: count,
-                parents: self.parent_frames.len(),
-                positions: self.positions.len(),
-                orientations: self.orientations.len(),
-            });
-        }
-        if let Some(child) = repeated_child(self.child_frames.iter().map(String::as_str)) {
-            return Err(MessageError::RepeatedChild {
-                child: child.to_owned(),
-            });
-        }
-        let (transforms, refused): (Vec<_>, Vec<_>) = (0..count)
-            .map(|index| {
-                FrameTransform::parse(
-                    &self.parent_frames[index],
-                    &self.child_frames[index],
-                    std::array::from_fn(|i| self.positions[3 * index + i]),
-                    std::array::from_fn(|i| self.orientations[4 * index + i]),
-                )
-            })
-            .enumerate()
-            .partition(|(_, transform)| transform.is_ok());
-        Ok(Parsed {
-            transforms: transforms
-                .into_iter()
-                .map(|(_, transform)| transform.expect("partitioned on Ok"))
-                .collect(),
-            refused: refused
-                .into_iter()
-                .map(|(index, transform)| TransformError {
-                    index,
-                    child: self.child_frames[index].clone(),
-                    reason: transform.expect_err("partitioned on Err"),
-                })
-                .collect(),
-        })
+/// Each valid transform of `records`, and each invalid one refused; records that name a child
+/// frame twice refused whole.
+fn parse(records: &[TransformRecord]) -> Result<Parsed, MessageError> {
+    if let Some(child) = repeated_child(records.iter().map(|r| r.child_frame.as_str())) {
+        return Err(MessageError::RepeatedChild {
+            child: child.to_owned(),
+        });
     }
+    let (transforms, refused): (Vec<_>, Vec<_>) = records
+        .iter()
+        .map(|r| FrameTransform::parse(&r.frame, &r.child_frame, r.position, r.orientation))
+        .enumerate()
+        .partition(|(_, transform)| transform.is_ok());
+    Ok(Parsed {
+        transforms: transforms
+            .into_iter()
+            .map(|(_, transform)| transform.expect("partitioned on Ok"))
+            .collect(),
+        refused: refused
+            .into_iter()
+            .map(|(index, transform)| TransformError {
+                index,
+                child: records[index].child_frame.clone(),
+                reason: transform.expect_err("partitioned on Err"),
+            })
+            .collect(),
+    })
 }
 
 /// The first child frame that `children` names a second time.
@@ -370,35 +326,26 @@ mod tests {
 
     const UNIT: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
 
-    fn names(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| (*name).to_owned()).collect()
-    }
-
     fn time(nanos: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_nanos(nanos)
     }
 
-    fn fixed(
-        children: &[&str],
-        parents: &[&str],
-        positions: &[f64],
-        orientations: &[f64],
-    ) -> StaticMessage {
-        StaticMessage {
-            child_frames: names(children),
-            parent_frames: names(parents),
-            positions: positions.to_vec(),
-            orientations: orientations.to_vec(),
-        }
+    fn fixed(transforms: Vec<TransformRecord>) -> StaticMessage {
+        StaticMessage { transforms }
     }
 
     fn moving() -> MovingMessage {
         MovingMessage {
             timestamp: time(7),
-            child_frames: names(&["base_footprint", "lidar_link"]),
-            parent_frames: names(&["odom", "base_footprint"]),
-            positions: vec![1.0, 2.0, 0.0, 0.1, 0.0, 0.2],
-            orientations: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0],
+            transforms: vec![
+                TransformRecord::new("odom", "base_footprint", [1.0, 2.0, 0.0], UNIT),
+                TransformRecord::new(
+                    "base_footprint",
+                    "lidar_link",
+                    [0.1, 0.0, 0.2],
+                    [0.0, 0.0, 1.0, 0.0],
+                ),
+            ],
             start_timestamp: time(3_000_000_000),
         }
     }
@@ -457,43 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn arrays_that_do_not_line_up_refuse_the_message() {
-        let error = fixed(&["a"], &["b"], &[0.0; 3], &[0.0; 3])
-            .parse()
-            .unwrap_err();
-        assert_eq!(
-            error,
-            MessageError::Shape {
-                children: 1,
-                parents: 1,
-                positions: 3,
-                orientations: 3,
-            }
-        );
-        assert_eq!(
-            error.to_string(),
-            "the message holds 1 child frames, 1 parent frames, 3 position entries and 3 \
-             orientation entries: give one parent frame, 3 position entries and 4 orientation \
-             entries per child frame"
-        );
-        let error = MovingMessage {
-            orientations: UNIT.to_vec(),
-            ..moving()
-        }
-        .parse()
-        .unwrap_err();
-        assert_eq!(
-            error,
-            MessageError::Shape {
-                children: 2,
-                parents: 2,
-                positions: 6,
-                orientations: 4,
-            }
-        );
-    }
-
-    #[test]
     fn a_time_before_the_epoch_refuses_the_message_naming_its_field() {
         let before = SystemTime::UNIX_EPOCH - Duration::from_nanos(1);
         let early = TimeError::BeforeEpoch {
@@ -547,12 +457,11 @@ mod tests {
 
     #[test]
     fn a_child_named_twice_refuses_the_message() {
-        let error = fixed(
-            &["c", "d", "c"],
-            &["a", "a", "b"],
-            &[0.0; 9],
-            &UNIT.repeat(3),
-        )
+        let error = fixed(vec![
+            TransformRecord::new("a", "c", [0.0; 3], UNIT),
+            TransformRecord::new("a", "d", [0.0; 3], UNIT),
+            TransformRecord::new("b", "c", [0.0; 3], UNIT),
+        ])
         .parse()
         .unwrap_err();
         assert_eq!(error, MessageError::RepeatedChild { child: "c".into() });
@@ -620,12 +529,10 @@ mod tests {
             ),
         ];
         for (child, parent, position, orientation, reason) in cases {
-            let parsed = fixed(
-                &["kept", child],
-                &["root", parent],
-                &[[0.0; 3], position].concat(),
-                &[UNIT, orientation].concat(),
-            )
+            let parsed = fixed(vec![
+                TransformRecord::new("root", "kept", [0.0; 3], UNIT),
+                TransformRecord::new(parent, child, position, orientation),
+            ])
             .parse()
             .unwrap();
             let [kept] = parsed.transforms.as_slice() else {
@@ -646,12 +553,12 @@ mod tests {
         // A squared norm of 1.009 is within 10e-3 of 1.
         assert!(is_unit([0.0, 0.0, 0.0, 1.009_f64.sqrt()]));
         assert!(!is_unit([0.0, 0.0, 0.0, 1.0101_f64.sqrt()]));
-        let parsed = fixed(
-            &["c"],
-            &["p"],
-            &[0.0; 3],
-            &[0.0, 0.0, 0.6 * 1.004, 0.8 * 1.004],
-        )
+        let parsed = fixed(vec![TransformRecord::new(
+            "p",
+            "c",
+            [0.0; 3],
+            [0.0, 0.0, 0.6 * 1.004, 0.8 * 1.004],
+        )])
         .parse()
         .unwrap();
         let [x, y, z, w] = parsed.transforms[0].placement().orientation();

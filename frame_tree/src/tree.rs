@@ -168,9 +168,9 @@ impl FrameTree {
             let child = transform.child().as_str();
             refused.push(TransformError {
                 index: message
-                    .child_frames
+                    .transforms
                     .iter()
-                    .position(|named| named == child)
+                    .position(|record| record.child_frame == child)
                     .expect("a parsed transform names a child frame of its message"),
                 child: child.to_owned(),
                 reason,

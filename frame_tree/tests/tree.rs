@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use frame_tree::{
     BrokenTree, FrameName, FrameTransform, FrameTree, HeldStamps, LookupError, LookupTime,
     MovingMessage, Placement, Publisher, Stamp, StaticMessage, TransformError,
-    TransformErrorReason, TransformName, ZeroWindow,
+    TransformErrorReason, TransformName, TransformRecord, ZeroWindow,
 };
 
 const WINDOW: Duration = Duration::from_nanos(100);
@@ -31,33 +31,10 @@ fn unknown_frame(found: Result<frame_tree::Found, LookupError>) -> FrameName {
     }
 }
 
-/// A transform as a message sends it.
-struct Sent {
-    parent: &'static str,
-    child: &'static str,
-    position: [f64; 3],
-    orientation: [f64; 4],
-}
-
-/// The transform `parent` -> `child` at `position`, turned by `yaw` about z.
-fn transform(parent: &'static str, child: &'static str, position: [f64; 3], yaw: f64) -> Sent {
-    Sent {
-        parent,
-        child,
-        position,
-        orientation: [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()],
-    }
-}
-
-/// The arrays of a message: its child frames, its parent frames, its positions and its
-/// orientations.
-fn arrays(sent: &[Sent]) -> (Vec<String>, Vec<String>, Vec<f64>, Vec<f64>) {
-    (
-        sent.iter().map(|sent| sent.child.to_owned()).collect(),
-        sent.iter().map(|sent| sent.parent.to_owned()).collect(),
-        sent.iter().flat_map(|sent| sent.position).collect(),
-        sent.iter().flat_map(|sent| sent.orientation).collect(),
-    )
+/// The record of the transform `parent` -> `child` at `position`, turned by `yaw` about z.
+fn transform(parent: &str, child: &str, position: [f64; 3], yaw: f64) -> TransformRecord {
+    let orientation = [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()];
+    TransformRecord::new(parent, child, position, orientation)
 }
 
 /// The start of every transform of a test but one that starts over.
@@ -80,19 +57,15 @@ fn publisher(instance_id: &str) -> Publisher {
     }
 }
 
-fn moving(stamp: u64, transforms: Vec<Sent>) -> MovingMessage {
+fn moving(stamp: u64, transforms: Vec<TransformRecord>) -> MovingMessage {
     started(stamp, transforms, START)
 }
 
 /// A message whose transforms last started over at `from` s.
-fn started(stamp: u64, transforms: Vec<Sent>, from: u64) -> MovingMessage {
-    let (child_frames, parent_frames, positions, orientations) = arrays(&transforms);
+fn started(stamp: u64, transforms: Vec<TransformRecord>, from: u64) -> MovingMessage {
     MovingMessage {
         timestamp: time(stamp),
-        child_frames,
-        parent_frames,
-        positions,
-        orientations,
+        transforms,
         start_timestamp: start(from),
     }
 }
@@ -104,14 +77,8 @@ fn transform_name(parent: &str, child: &str) -> TransformName {
     }
 }
 
-fn fixed(transforms: Vec<Sent>) -> StaticMessage {
-    let (child_frames, parent_frames, positions, orientations) = arrays(&transforms);
-    StaticMessage {
-        child_frames,
-        parent_frames,
-        positions,
-        orientations,
-    }
+fn fixed(transforms: Vec<TransformRecord>) -> StaticMessage {
+    StaticMessage { transforms }
 }
 
 fn tree() -> FrameTree {
@@ -943,7 +910,7 @@ fn a_message_gives_each_transform_it_refused_in_its_order() {
             transform("mast", "mast", [0.0; 3], 0.0),
         ],
     );
-    message.positions[0] = f64::NAN;
+    message.transforms[0].position[0] = f64::NAN;
     let refused = tree.take_moving(&publisher("arm"), &message).unwrap();
     let named: Vec<(usize, &str)> = refused
         .iter()
@@ -955,18 +922,15 @@ fn a_message_gives_each_transform_it_refused_in_its_order() {
         "{}",
         refused[1]
     );
-    // A message whose arrays do not line up is refused whole and changes nothing.
-    let short = MovingMessage {
-        orientations: vec![0.0, 0.0, 0.0, 1.0],
-        ..moving(
-            600,
-            vec![
-                transform("base", "arm", [0.0; 3], 0.0),
-                transform("odom", "base", [0.0; 3], 0.0),
-            ],
-        )
-    };
-    assert!(tree.take_moving(&publisher("arm"), &short).is_err());
+    // A message that names a child frame twice is refused whole and changes nothing.
+    let twice = moving(
+        600,
+        vec![
+            transform("odom", "base", [0.0; 3], 0.0),
+            transform("odom", "base", [0.0; 3], 0.0),
+        ],
+    );
+    assert!(tree.take_moving(&publisher("arm"), &twice).is_err());
     assert_close(position_of(&tree, "odom", "base", at(15)), [1.5, 0.0, 0.0]);
 }
 

@@ -8,15 +8,14 @@
 //!   publisher's values as tf2's `setTransform` checks one; a publisher makes its message
 //!   with `from_transforms`.
 //! - [`FrameTree`]: takes each message a consumer receives from a [`Publisher`], a message
-//!   whose times a [`Stamp`] does not hold, whose arrays do not line up or that names a
-//!   child frame twice refused whole ([`MessageError`]) and each other transform refused
-//!   alone with its reason ([`TransformError`]) or kept with its quaternion normalized,
-//!   per child frame and per publisher: a moving transform's samples of its newest start
-//!   within a window the caller sets, and a static transform for every time.
-//!   [`FrameTree::clear_moving`] drops every moving sample, as a consumer does when its
-//!   clock goes back. [`FrameTree::lookup`] gives the source frame's place in the target
-//!   frame at a time or at the latest time common to the chain, interpolated and composed
-//!   in tf2's arithmetic.
+//!   whose times a [`Stamp`] does not hold or that names a child frame twice refused whole
+//!   ([`MessageError`]) and each other transform refused alone with its reason
+//!   ([`TransformError`]) or kept with its quaternion normalized, per child frame and per
+//!   publisher: a moving transform's samples of its newest start within a window the caller
+//!   sets, and a static transform for every time. [`FrameTree::clear_moving`] drops every
+//!   moving sample, as a consumer does when its clock goes back. [`FrameTree::lookup`]
+//!   gives the source frame's place in the target frame at a time or at the latest time
+//!   common to the chain, interpolated and composed in tf2's arithmetic.
 //! - [`LookupError`]: an unknown frame, no chain between the frames, a transform with no
 //!   value at the time, and transforms that two publishers hold or that form a cycle, each
 //!   naming its frames.
@@ -43,6 +42,6 @@ pub use frame::{FrameName, FrameNameError, LookupTime, Publisher, Stamp, TimeErr
 pub use transform::{NotATransform, Transform};
 pub use transforms::{
     FrameTransform, MessageError, MovingMessage, Placement, StaticMessage, TransformError,
-    TransformErrorReason,
+    TransformErrorReason, TransformRecord,
 };
 pub use tree::{Found, FrameTree, ZeroWindow};

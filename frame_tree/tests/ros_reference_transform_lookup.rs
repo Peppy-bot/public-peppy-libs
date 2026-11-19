@@ -18,9 +18,14 @@ use std::time::{Duration, SystemTime};
 
 use frame_tree::{
     BrokenTree, FrameName, FrameTree, HeldStamps, LookupError, LookupTime, MovingMessage,
-    Publisher, Stamp, StaticMessage,
+    Publisher, Stamp, StaticMessage, TransformRecord,
 };
 use ros_reference::transform_lookup::{Case, Cases, Found, SentTransform, Tf2Error};
+
+/// The record of a transform the reference sends.
+fn record(sent: &SentTransform) -> TransformRecord {
+    TransformRecord::new(&sent.parent, &sent.child, sent.position, sent.orientation)
+}
 
 /// The largest distance allowed between our position and tf2's, in meters. The two compute
 /// the same operations in the same order, so the difference measured is at the bits of the
@@ -64,10 +69,7 @@ fn every_lookup_agrees_with_tf2() {
                 } => {
                     let message = MovingMessage {
                         timestamp: SystemTime::UNIX_EPOCH + Duration::from_nanos(*stamp),
-                        child_frames: vec![transform.child.clone()],
-                        parent_frames: vec![transform.parent.clone()],
-                        positions: transform.position.to_vec(),
-                        orientations: transform.orientation.to_vec(),
+                        transforms: vec![record(transform)],
                         start_timestamp: START,
                     };
                     let refused = tree
@@ -84,13 +86,7 @@ fn every_lookup_agrees_with_tf2() {
                         None => static_set.push(transform.clone()),
                     }
                     let message = StaticMessage {
-                        child_frames: static_set.iter().map(|sent| sent.child.clone()).collect(),
-                        parent_frames: static_set.iter().map(|sent| sent.parent.clone()).collect(),
-                        positions: static_set.iter().flat_map(|sent| sent.position).collect(),
-                        orientations: static_set
-                            .iter()
-                            .flat_map(|sent| sent.orientation)
-                            .collect(),
+                        transforms: static_set.iter().map(record).collect(),
                     };
                     let refused = tree
                         .take_static(&publisher(), &message)
