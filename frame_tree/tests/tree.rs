@@ -230,7 +230,8 @@ fn a_moving_transform_has_no_value_outside_its_samples() {
     assert_eq!(
         error.to_string(),
         "the transform odom -> base has no value at 0.000000025 s: it holds samples from \
-         0.000000010 s to 0.000000020 s; look up a time it holds, or the latest time"
+         0.000000010 s to 0.000000020 s; look up a time it holds, or leave the timestamp out for \
+         the latest time"
     );
 }
 
@@ -382,7 +383,8 @@ fn a_clear_drops_every_moving_sample_and_keeps_the_frames_and_static_ones() {
     assert_eq!(
         error.to_string(),
         "the transform odom -> base has no value at 0.000000015 s: it holds no sample since \
-         the clock went back; look up a time it holds, or the latest time"
+         the clock went back; look up a time it holds, or leave the timestamp out for the latest \
+         time"
     );
     // At the latest time a transform with no stamp gives its child no parent.
     assert_eq!(

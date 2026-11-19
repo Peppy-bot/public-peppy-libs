@@ -34,7 +34,7 @@ pub enum LookupError {
     /// before a clear.
     #[error(
         "the transform {transform} has no value at {requested}: {}; look up a time it \
-         holds, or the latest time",
+         holds, or leave the timestamp out for the latest time",
         held_text(.held)
     )]
     Extrapolation {
@@ -45,6 +45,20 @@ pub enum LookupError {
     /// The lookup needs a transform that breaks the tree.
     #[error(transparent)]
     BrokenTree(#[from] BrokenTree),
+}
+
+impl LookupError {
+    /// The failure kind the contracts give this error: `unknown_frame`, `no_chain`,
+    /// `extrapolation` or `broken_tree`, as transform_lookup and every contract that places a
+    /// value name the failures of a lookup.
+    pub fn failure_kind(&self) -> &'static str {
+        match self {
+            LookupError::UnknownFrame { .. } => "unknown_frame",
+            LookupError::NoChain { .. } => "no_chain",
+            LookupError::Extrapolation { .. } => "extrapolation",
+            LookupError::BrokenTree(_) => "broken_tree",
+        }
+    }
 }
 
 fn held_frames_text(held: &[FrameName]) -> String {
@@ -110,4 +124,55 @@ fn cycle_text(transforms: &[TransformName]) -> String {
         .map(TransformName::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::Stamp;
+
+    fn frame(name: &str) -> FrameName {
+        FrameName::parse(name).expect("a frame name")
+    }
+
+    #[test]
+    fn each_lookup_error_names_its_failure_kind_as_the_contracts_do() {
+        let transform = TransformName {
+            parent: frame("odom"),
+            child: frame("base_footprint"),
+        };
+        let cases = [
+            (
+                LookupError::UnknownFrame {
+                    frame: frame("gripper"),
+                    held: Vec::new(),
+                },
+                "unknown_frame",
+            ),
+            (
+                LookupError::NoChain {
+                    target_frame: frame("map"),
+                    source_frame: frame("odom"),
+                },
+                "no_chain",
+            ),
+            (
+                LookupError::Extrapolation {
+                    transform: transform.clone(),
+                    requested: LookupTime::At(Stamp::from_nanos(5)),
+                    held: HeldStamps::Empty,
+                },
+                "extrapolation",
+            ),
+            (
+                LookupError::BrokenTree(BrokenTree::Cycle {
+                    transforms: vec![transform],
+                }),
+                "broken_tree",
+            ),
+        ];
+        for (error, kind) in cases {
+            assert_eq!(error.failure_kind(), kind, "{error}");
+        }
+    }
 }
