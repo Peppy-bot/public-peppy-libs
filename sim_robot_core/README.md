@@ -7,7 +7,8 @@ What a simulation engine node knows about the robots it stands, whatever its phy
 | `registry` | The robots in the scene, by the name each stands under: who may join, who holds which robot, and the pair grace time of each robot: how long it stays without the pairs its model asks for, running from the first time a limb reaches it. A refused join raises `ValueError`, and `StillJoining` when the caller attaches its own robot again while the robot still joins: that one refusal ends once the robot stands, so an engine tells it apart. |
 | `pairs` | The four pairing slots an engine declares (`arms`, `grippers`, `rgb_cameras`, `rgbd_cameras`) and what each pair names: its robot, and its limb or its camera. |
 | `models` | One entry per robot model, with its checks, and the table that pairs those entries with an engine's own. |
-| `cameras` | The camera configuration of a model's entry, the z16 depth wire format, and per-camera frame pacing. |
+| `cameras` | The camera configuration of a model's entry, each camera with its frame, where a rendered camera's pixels point as camera_geometry carries it (its pinhole model, and the pose of its depth in its colour), the z16 depth wire format, the capture index, and per-camera frame pacing. |
+| `world` | `world`, the one frame of a simulation: a command with no frame is in world, one in another frame raises `UnknownFrame`, which an engine refuses with `unknown_frame`, and a robot base's target turns about +z alone. A value no contract takes raises control_core_py's `GeometryError`, refused with `rejected`; `failure_kind_of` gives the failure kind of each refusal. `attach_placement` reads where an attach of simulation_robot places its robot: a pose in world, or none for a spot of the engine's choosing. |
 
 ## The four slots
 
@@ -36,7 +37,7 @@ entry.arm_names()                # ["arm"]
 known.engine                     # the engine's own entry, as written
 ```
 
-A camera's pose is its optical frame turned half a turn about its own X (`cameras.camera_pose`): the optical frame looks along +Z with +Y down the picture, and the engines' camera frame looks along -Z with +Y up it.
+A camera's frame is its optical frame, the link `<camera>_optical_frame` of the description, which sensor_mounts gives for the camera's name and each of its pictures names (`CameraConfig.frame`). Its pose is the optical frame, where the fixed joint that holds it places it in its link, turned half a turn about its own X (`cameras.camera_pose`): the optical frame looks along +Z with +Y down the picture, and the engines' camera frame looks along -Z with +Y up it.
 
 ## The match
 
@@ -49,7 +50,7 @@ A robot stands in a simulation once its model's description is in [`robot_descri
 1. When its description carries a camera, write `src/sim_robot_core/models/<id>.json5` with how each camera renders, under the camera's name in the description, with a depth stream on each camera its URDF gives a depth sensor. A robot with no camera needs no file here.
 2. Give the MuJoCo node of `nodes-hub` its model: a robot in Waldo's catalogue, packed and published as a release whose `robots.json` entry names the robot's description, its MJCF, its mount body, the MJCF body of each URDF link the MJCF names otherwise and the gains of its arms; that release pinned in Waldo's `web/public/assets/catalogue.lock.json` and in `sim_base_images/waldo_catalogue.py` (`RELEASE_DIGEST`); and `sim_mujoco/engine/models/<id>.json5`. [sim_mujoco's README](https://github.com/Peppy-bot/nodes-hub/tree/main/sim_mujoco#models) says what each holds.
 3. Give the Isaac Sim node its model: a USD bundle of the robot, pinned by key and SHA-256 in `sim_base_images/isaac_assets.env` and staged by `sim_base_images/download_assets.sh`, and `sim_isaac/engine/models/<id>.json5`. [sim_isaac's README](https://github.com/Peppy-bot/nodes-hub/tree/main/sim_isaac#adding-a-model) says what each holds.
-4. Move the pins of this package and of `robot_description_py` in `sim_base_images/requirements.mujoco.txt`, `sim_base_images/requirements.isaac.txt` and each node's `tests/pyproject.toml` to the commit that carries the description and step 1, bump `MUJOCO_IMAGE_REV` and `ISAAC_IMAGE_REV` in `sim_base_images/build_base_images.sh`, and run that script, so each base image bakes the new pins.
+4. Move the pins of this package, of `robot_description_py` and of `control_core_py` in `sim_base_images/requirements.mujoco.txt`, `sim_base_images/requirements.isaac.txt` and each node's `tests/pyproject.toml` to the commit that carries the description and step 1, bump `MUJOCO_IMAGE_REV` and `ISAAC_IMAGE_REV` in `sim_base_images/build_base_images.sh`, and run that script, so each base image bakes the new pins.
 
 ## Tests
 

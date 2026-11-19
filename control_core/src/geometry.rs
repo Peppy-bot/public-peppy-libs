@@ -23,6 +23,10 @@ use frame_tree::{
 
 use crate::not_finite::NotFinite;
 
+/// The one frame of a simulation: every report of a simulation contract gives its values in it,
+/// and a command names it or leaves its frame out.
+pub const WORLD: &str = "world";
+
 /// A position [x, y, z] in m, every coordinate finite.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point(Vector);

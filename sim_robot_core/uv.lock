@@ -12,6 +12,19 @@ wheels = [
 ]
 
 [[package]]
+name = "control-core-py"
+version = "0.1.0"
+source = { directory = "../control_core_py" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -261,6 +274,7 @@ name = "sim-robot-core"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "control-core-py" },
     { name = "numpy" },
     { name = "pyjson5" },
     { name = "robot-description-py" },
@@ -273,6 +287,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "control-core-py", directory = "../control_core_py" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyjson5", specifier = ">=1.6" },
     { name = "robot-description-py", directory = "../robot_description_py" },

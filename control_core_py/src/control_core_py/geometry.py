@@ -40,6 +40,10 @@ _QUATERNION_NORMALIZATION_TOLERANCE = 10e-3
 # at 100 m stays near 4.4e-13.
 _PLANAR_TOLERANCE = 1e-9
 
+# The one frame of a simulation: every report of a simulation contract gives its values in it,
+# and a command names it or leaves its frame out.
+WORLD = "world"
+
 # The nanoseconds from the Unix epoch past which a stamp of control_core holds no time: one past
 # the last u64.
 _STAMP_NANOS_END = 2**64

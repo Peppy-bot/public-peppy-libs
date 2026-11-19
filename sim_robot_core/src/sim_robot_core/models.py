@@ -208,7 +208,7 @@ def _entry_of(
         model=model,
         arms=arms,
         grippers=grippers,
-        cameras=camera_configs(source, description.cameras, renders),
+        cameras=camera_configs(source, description, renders),
         start_posture=_start_posture(described, description),
     )
 
