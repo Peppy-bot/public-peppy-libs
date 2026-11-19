@@ -41,7 +41,7 @@ mod pose_arithmetic;
 
 pub use drand48::Drand48;
 pub use motion_model::RobotModelType;
-pub use parameters::{AmclParameterError, AmclParameters};
+pub use parameters::{AmclParameterError, AmclParameters, AmclSettings};
 
 use crate::localization::{
     Localization, LocalizationError, LocalizationParameters, RestoredLocalization, compose,
@@ -58,7 +58,7 @@ use thiserror::Error;
 /// localization that keeps the pose once the search ends.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlobalLocalizationParameters {
-    pub amcl: AmclParameters,
+    pub amcl: AmclSettings,
     pub search_limits: LocalizationLimits,
     pub localization: LocalizationParameters,
 }
@@ -66,8 +66,6 @@ pub struct GlobalLocalizationParameters {
 /// Why parameters or a map start no global localization.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum GlobalLocalizationError {
-    #[error(transparent)]
-    Amcl(#[from] AmclParameterError),
     #[error(transparent)]
     Localization(#[from] LocalizationError),
     #[error(
@@ -113,10 +111,9 @@ impl GlobalLocalization {
         parameters: GlobalLocalizationParameters,
         stream: &mut Drand48,
     ) -> Result<Self, GlobalLocalizationError> {
-        let amcl = parameters.amcl.checked()?;
         let localization = RestoredLocalization::new(&map.state, parameters.localization)?;
-        let amcl =
-            Amcl::new(map.grid(), amcl, stream).ok_or(GlobalLocalizationError::NoFreeCell)?;
+        let amcl = Amcl::new(map.grid(), parameters.amcl, stream)
+            .ok_or(GlobalLocalizationError::NoFreeCell)?;
         Ok(Self {
             amcl,
             search_limits: parameters.search_limits,
@@ -241,7 +238,8 @@ pub(crate) mod tests {
 
     fn parameters() -> GlobalLocalizationParameters {
         GlobalLocalizationParameters {
-            amcl: parameters::tests::nav2_parameters(),
+            amcl: AmclSettings::parse(parameters::tests::nav2_parameters())
+                .expect("Nav2's parameters"),
             search_limits: limits(0.5, 0.5),
             localization: localization_parameters(),
         }
@@ -296,21 +294,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parameters_that_amcl_or_the_localization_refuses_start_no_search() {
+    fn parameters_that_the_localization_refuses_start_no_search() {
         let map = room_map();
-        let amcl = GlobalLocalizationParameters {
-            amcl: AmclParameters {
-                resample_interval: 0,
-                ..parameters::tests::nav2_parameters()
-            },
-            ..parameters()
-        };
-        assert_eq!(
-            GlobalLocalization::start(&map, amcl, &mut Drand48::seeded(0)).err(),
-            Some(GlobalLocalizationError::Amcl(
-                AmclParameterError::NoResampleInterval
-            ))
-        );
         let mut localization = parameters();
         localization.localization.slam_toolbox.scan_buffer_size = 0;
         assert!(matches!(

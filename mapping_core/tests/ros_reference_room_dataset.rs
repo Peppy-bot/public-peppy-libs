@@ -27,8 +27,9 @@
 use camera_core::laser_scan::{LaserScan, Sweep};
 use control_core::planar_pose::PlanarPose;
 use mapping_core::{
-    Drand48, GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
-    LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan, RoomMap, SearchStep,
+    AmclSettings, Drand48, GlobalLocalization, GlobalLocalizationParameters, Localization,
+    LocalizationLimits, LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan,
+    RoomMap, SearchStep,
 };
 use ros_reference::metrics::PlanarPose as HarnessPose;
 use ros_reference::metrics::{self, Mean, PlanarMotion};
@@ -836,7 +837,8 @@ fn searched_starts<'a>(
                 prepared: read_prepared(results, &scenario.name),
                 rays: rays_of(scenario),
                 parameters: GlobalLocalizationParameters {
-                    amcl: amcl_parameters(&scenario.name, amcl),
+                    amcl: AmclSettings::parse(amcl_parameters(&scenario.name, amcl))
+                        .unwrap_or_else(|e| panic!("{}: {e}", scenario.name)),
                     search_limits: limits_of(*search_limits),
                     localization: localization_parameters_of(scenario),
                 },

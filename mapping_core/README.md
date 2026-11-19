@@ -123,7 +123,7 @@ if let Some(map_pose) = localization.add(&next_scan)? {
 // search limits, the parameters of the localization that keeps the pose once the search
 // ends; and the node's one stream of random draws, seeded once, as AMCL's node seeds it.
 let parameters = GlobalLocalizationParameters {
-    amcl,
+    amcl: AmclSettings::parse(amcl)?,
     search_limits,
     localization: localization_parameters,
 };

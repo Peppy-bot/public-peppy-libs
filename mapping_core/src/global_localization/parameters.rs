@@ -88,106 +88,115 @@ pub enum AmclParameterError {
     NoResampleInterval,
 }
 
-/// The parameters checked, as the parts of AMCL take them.
+/// AMCL's parameters as the parts of AMCL take them, each checked as AMCL takes it, which
+/// [`AmclSettings::parse`] alone gives.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CheckedParameters {
-    pub filter: FilterParameters,
-    pub motion: MotionModel,
-    pub laser: LikelihoodField,
-    pub laser_likelihood_max_dist: f64,
-    pub update_min_a: f64,
-    pub update_min_d: f64,
-    pub resample_interval: u32,
+pub struct AmclSettings {
+    pub(crate) filter: FilterParameters,
+    pub(crate) motion: MotionModel,
+    pub(crate) laser: LikelihoodField,
+    pub(crate) laser_likelihood_max_dist: f64,
+    pub(crate) update_min_a: f64,
+    pub(crate) update_min_d: f64,
+    pub(crate) resample_interval: u32,
 }
 
-impl AmclParameters {
-    pub(crate) fn checked(&self) -> Result<CheckedParameters, AmclParameterError> {
+impl AmclSettings {
+    /// `parameters` as AMCL's parts take them, refused naming the first parameter AMCL does
+    /// not take.
+    pub fn parse(parameters: AmclParameters) -> Result<Self, AmclParameterError> {
         let reals = [
-            ("alpha1", self.alpha1),
-            ("alpha2", self.alpha2),
-            ("alpha3", self.alpha3),
-            ("alpha4", self.alpha4),
-            ("alpha5", self.alpha5),
-            ("laser_likelihood_max_dist", self.laser_likelihood_max_dist),
-            ("laser_max_range", self.laser_max_range),
-            ("laser_min_range", self.laser_min_range),
-            ("pf_err", self.pf_err),
-            ("pf_z", self.pf_z),
-            ("sigma_hit", self.sigma_hit),
-            ("update_min_a", self.update_min_a),
-            ("update_min_d", self.update_min_d),
-            ("z_hit", self.z_hit),
-            ("z_rand", self.z_rand),
+            ("alpha1", parameters.alpha1),
+            ("alpha2", parameters.alpha2),
+            ("alpha3", parameters.alpha3),
+            ("alpha4", parameters.alpha4),
+            ("alpha5", parameters.alpha5),
+            (
+                "laser_likelihood_max_dist",
+                parameters.laser_likelihood_max_dist,
+            ),
+            ("laser_max_range", parameters.laser_max_range),
+            ("laser_min_range", parameters.laser_min_range),
+            ("pf_err", parameters.pf_err),
+            ("pf_z", parameters.pf_z),
+            ("sigma_hit", parameters.sigma_hit),
+            ("update_min_a", parameters.update_min_a),
+            ("update_min_d", parameters.update_min_d),
+            ("z_hit", parameters.z_hit),
+            ("z_rand", parameters.z_rand),
         ];
         if let Some((name, value)) = reals.into_iter().find(|(_, value)| !value.is_finite()) {
             return Err(AmclParameterError::NotFinite { name, value });
         }
         let positive = [
-            ("laser_likelihood_max_dist", self.laser_likelihood_max_dist),
-            ("pf_err", self.pf_err),
-            ("sigma_hit", self.sigma_hit),
+            (
+                "laser_likelihood_max_dist",
+                parameters.laser_likelihood_max_dist,
+            ),
+            ("pf_err", parameters.pf_err),
+            ("sigma_hit", parameters.sigma_hit),
         ];
         if let Some((name, value)) = positive.into_iter().find(|(_, value)| *value <= 0.0) {
             return Err(AmclParameterError::NotPositive { name, value });
         }
         let at_least_zero = [
-            ("alpha1", self.alpha1),
-            ("alpha2", self.alpha2),
-            ("alpha3", self.alpha3),
-            ("alpha4", self.alpha4),
-            ("alpha5", self.alpha5),
-            ("update_min_a", self.update_min_a),
-            ("update_min_d", self.update_min_d),
-            ("z_hit", self.z_hit),
-            ("z_rand", self.z_rand),
+            ("alpha1", parameters.alpha1),
+            ("alpha2", parameters.alpha2),
+            ("alpha3", parameters.alpha3),
+            ("alpha4", parameters.alpha4),
+            ("alpha5", parameters.alpha5),
+            ("update_min_a", parameters.update_min_a),
+            ("update_min_d", parameters.update_min_d),
+            ("z_hit", parameters.z_hit),
+            ("z_rand", parameters.z_rand),
         ];
         if let Some((name, value)) = at_least_zero.into_iter().find(|(_, value)| *value < 0.0) {
             return Err(AmclParameterError::Negative { name, value });
         }
-        if self.max_beams < 2 {
-            return Err(AmclParameterError::TooFewBeams(self.max_beams));
+        if parameters.max_beams < 2 {
+            return Err(AmclParameterError::TooFewBeams(parameters.max_beams));
         }
-        if self.max_particles == 0 {
+        if parameters.max_particles == 0 {
             return Err(AmclParameterError::NoParticles);
         }
-        if self.min_particles > self.max_particles {
+        if parameters.min_particles > parameters.max_particles {
             return Err(AmclParameterError::MinAboveMax {
-                min: self.min_particles,
-                max: self.max_particles,
+                min: parameters.min_particles,
+                max: parameters.max_particles,
             });
         }
-        if self.resample_interval == 0 {
+        if parameters.resample_interval == 0 {
             return Err(AmclParameterError::NoResampleInterval);
         }
-        Ok(CheckedParameters {
+        Ok(Self {
             filter: FilterParameters {
-                min_samples: self.min_particles as usize,
-                max_samples: self.max_particles as usize,
-                pop_err: self.pf_err,
-                pop_z: self.pf_z,
+                min_samples: parameters.min_particles as usize,
+                max_samples: parameters.max_particles as usize,
+                pop_err: parameters.pf_err,
+                pop_z: parameters.pf_z,
             },
             motion: MotionModel {
-                robot_model_type: self.robot_model_type,
+                robot_model_type: parameters.robot_model_type,
                 alphas: [
-                    self.alpha1,
-                    self.alpha2,
-                    self.alpha3,
-                    self.alpha4,
-                    self.alpha5,
+                    parameters.alpha1,
+                    parameters.alpha2,
+                    parameters.alpha3,
+                    parameters.alpha4,
+                    parameters.alpha5,
                 ],
             },
             laser: LikelihoodField {
-                z_hit: self.z_hit,
-                z_rand: self.z_rand,
-                sigma_hit: self.sigma_hit,
-                max_beams: self.max_beams as usize,
-                laser_min_range: self.laser_min_range,
-                laser_max_range: self.laser_max_range,
+                z_hit: parameters.z_hit,
+                z_rand: parameters.z_rand,
+                sigma_hit: parameters.sigma_hit,
+                max_beams: parameters.max_beams as usize,
+                laser_min_range: parameters.laser_min_range,
+                laser_max_range: parameters.laser_max_range,
             },
-            laser_likelihood_max_dist: self.laser_likelihood_max_dist,
-            update_min_a: self.update_min_a,
-            update_min_d: self.update_min_d,
-            resample_interval: self.resample_interval,
+            laser_likelihood_max_dist: parameters.laser_likelihood_max_dist,
+            update_min_a: parameters.update_min_a,
+            update_min_d: parameters.update_min_d,
+            resample_interval: parameters.resample_interval,
         })
     }
 }
@@ -223,7 +232,7 @@ pub(crate) mod tests {
     }
 
     fn refusal(parameters: AmclParameters) -> Option<AmclParameterError> {
-        parameters.checked().err()
+        AmclSettings::parse(parameters).err()
     }
 
     #[test]
