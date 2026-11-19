@@ -734,8 +734,10 @@ async def test_a_place_whose_line_down_ends_on_contact_releases_where_the_arm_st
     assert outcome == Outcome(True, "", stopped_at)
     assert robot.calls[-3:] == [("move", PLACE_POINT, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", PLACE_ABOVE, PLACE_Q)]
     offset = "[" + ", ".join(f"{100 * (a - b):+.1f}" for a, b in zip(stopped_at, PLACE_POINT)) + "] cm"
+    # The place logs the orientation that planned, then the contact.
     assert [record.getMessage() for record in log.records] == [
-        f"place with gripper 'left_gripper' ended its line down on contact {offset} from the place point: it releases there"
+        "place with gripper 'left_gripper': orientation 1 of 1 planned, [0.000, 1.000, 0.000, 0.000] (2 checks, 0 ms)",
+        f"place with gripper 'left_gripper' ended its line down on contact {offset} from the place point: it releases there",
     ]
 
 
@@ -765,7 +767,8 @@ async def test_a_place_whose_high_pre_place_point_has_no_plan_stands_at_the_clea
         ("move", low, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", low, PLACE_Q),
     ]
     assert [record.getMessage() for record in log.records] == [
-        "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it"
+        "place with gripper 'left_gripper': no plan 15.0 cm above the pose: the pre-place point stands 7.5 cm above it; "
+        "orientation 1 of 1 planned, [0.000, 1.000, 0.000, 0.000] (3 checks, 0 ms)"
     ]
 
 
@@ -777,7 +780,8 @@ async def test_a_place_whose_climb_fails_still_places_and_says_so_in_the_log(cap
         outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
     assert outcome == Outcome(True, "", None)
     assert [record.getMessage() for record in log.records] == [
-        "place with gripper 'left_gripper' released the item, but the climb back to the pre-place point failed: the side is busy"
+        "place with gripper 'left_gripper': orientation 1 of 1 planned, [0.000, 1.000, 0.000, 0.000] (2 checks, 0 ms)",
+        "place with gripper 'left_gripper' released the item, but the climb back to the pre-place point failed: the side is busy",
     ]
 
 

@@ -10,10 +10,16 @@ Rules written down here because the code depends on them:
   same. `n` counts per label stem and only grows, so a dropped id never
   comes back.
 - An item is the thing at its place, under a name alike to its own. A
-  detection keeps the id of a known item within `MATCH_RADIUS_M` of it
-  in two passes over the look. First, an item whose label shares a
-  content word with the detection's label, or that no look named yet:
-  one with the detection's label first, then the nearest. One object gets
+  detection keeps the id of a known item at its place in two passes over
+  the look. First, an item whose label shares a content word with the
+  detection's label, or that no look named yet: one with the detection's
+  label first, then the nearest. In this pass the place of a known item
+  with a box is the footprint of the box, the box seen from above and
+  turned by its yaw, so the detection's box centre, or its seen point when
+  it has no box, must lie inside it: the seen point of a bowl rises from
+  its floor to the top of each fruit put in it and moves aside with them,
+  while the bowl stays where it is. The place of a known item with no box
+  is `MATCH_RADIUS_M` around its position. One object gets
   different labels from different looks (the vocabulary's name in a scan,
   the caller's words in an identify search), and a shared word ties them.
   Items that stand one in the other, such as a mug in a bowl, lie within
@@ -22,8 +28,9 @@ Rules written down here because the code depends on them:
   that took no item takes the nearest item left by its place alone, but
   only when the look covers the labels of both: such a look would drop
   the item unseen, so the item it sees there under a new name is the same
-  item, renamed. A look that does not cover them, such as an identify
-  search, mints a new id instead, so it never hands the id of the bowl to
+  item, renamed; this pass measures the place by `MATCH_RADIUS_M` alone.
+  A look that does not cover them, such as an identify search, mints a
+  new id instead, so it never hands the id of the bowl to
   the mug in it. Any other detection mints a new id. An item a gripper
   holds is in the gripper, not where it was grabbed, so no detection
   matches it. The cost: an item swapped within the radius for another
@@ -51,12 +58,21 @@ Rules written down here because the code depends on them:
   clears the region: the picture has moved on, and a region of an older
   picture would be reported against the new one.
 - Shapes. An item carries the shape the look that last saw it fitted
-  around its depth points, for the motion planner. A place_item clears it
-  with the top: the item moved, and no look measured it where it stands.
+  around its depth points, for the motion planner. A look whose new box
+  lies inside the footprint of the known box leaves the known box, its top
+  raised to the higher of the two tops: the depth step fits the box of a
+  container around an item in it once one lies there, and the container
+  has not shrunk. Any other new box, or a look with none, replaces it. A
+  place_item clears it with the top: the item moved, and no look measured
+  it where it stands.
 - Grasp points. An item's position is a grasp point, where the gripper
   closes, when a grab_item goal addressed it by pose or a place_item put
   it down (`Item.position_is_grasp_point`); a look that sees it again
   makes its position the seen point again.
+- Targets. A place or a drop names the item to put the held item in or
+  on by its id (`target_item`): a known item, not the item the gripper
+  holds, and none that another gripper holds. The target value is what
+  the brain knew of the item when the goal started (`TargetItem.of`).
 - Holding follows results, not jaws. A gripper holds an item after a
   successful grab and stops holding after a successful drop or place.
   Refusals, failures, cancels and aborts leave the flag as it was. A grab
@@ -81,10 +97,13 @@ import secrets
 from typing import Callable, Optional, Sequence
 
 from .limbs import Limb
-from .ports import Coverage, Detection, FailureKind, Gripper, Item, Quat, Refusal, Vec3
+from .ports import Coverage, Detection, FailureKind, Gripper, Item, ItemShape, Quat, Refusal, TargetItem, Vec3
 from .words import content_words, named_by
 
 MATCH_RADIUS_M = 0.05
+# How far outside a footprint a point may lie and still count as inside it:
+# a point on an edge, less the rounding of the arithmetic.
+FOOTPRINT_EDGE_M = 1e-9
 # The label of an item that a goal addressed by pose: no look named it yet.
 UNNAMED_LABEL = "item"
 
@@ -97,6 +116,45 @@ def new_run_token() -> str:
 
 def distance(a: Vec3, b: Vec3) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def inside_footprint(x: float, y: float, shape: ItemShape) -> bool:
+    """Whether the point (x, y) lies inside the footprint of `shape`: the
+    box seen from above, turned by its yaw, its edges included."""
+    dx, dy = x - shape.centre[0], y - shape.centre[1]
+    cos, sin = math.cos(shape.yaw_rad), math.sin(shape.yaw_rad)
+    along, across = cos * dx + sin * dy, -sin * dx + cos * dy
+    return abs(along) <= shape.sides[0] / 2 + FOOTPRINT_EDGE_M and abs(across) <= shape.sides[1] / 2 + FOOTPRINT_EDGE_M
+
+
+def footprint_corners(shape: ItemShape) -> list[tuple[float, float]]:
+    """The four corners of the footprint of `shape`, x and y."""
+    cos, sin = math.cos(shape.yaw_rad), math.sin(shape.yaw_rad)
+    half_x, half_y = shape.sides[0] / 2, shape.sides[1] / 2
+    return [
+        (shape.centre[0] + cos * ax - sin * ay, shape.centre[1] + sin * ax + cos * ay)
+        for ax, ay in ((half_x, half_y), (half_x, -half_y), (-half_x, half_y), (-half_x, -half_y))
+    ]
+
+
+def box_inside_footprint(inner: ItemShape, outer: ItemShape) -> bool:
+    """Whether the footprint of `inner` lies inside the footprint of
+    `outer`: each of its corners does."""
+    return all(inside_footprint(x, y, outer) for x, y in footprint_corners(inner))
+
+
+def top_of(shape: ItemShape) -> float:
+    return shape.centre[2] + shape.sides[2] / 2
+
+
+def raised_to(shape: ItemShape, top_z: float) -> ItemShape:
+    """`shape` with its top at `top_z` when that is higher than its own,
+    its bottom where it was; `shape` itself otherwise."""
+    if top_z <= top_of(shape):
+        return shape
+    bottom = shape.centre[2] - shape.sides[2] / 2
+    centre = (shape.centre[0], shape.centre[1], (bottom + top_z) / 2)
+    return ItemShape(centre, (shape.sides[0], shape.sides[1], top_z - bottom), shape.yaw_rad)
 
 
 def best_match(detections: Sequence[Detection], description: str) -> Optional[Detection]:
@@ -236,6 +294,21 @@ class State:
             raise Refusal(FailureKind.PRECONDITION_FAILED, f"item '{item_id}' is held by gripper '{holder.name}'")
         return item
 
+    def target_item(self, target_item_id: str, gripper: Gripper) -> TargetItem:
+        """The target value of the known item that a place or a drop with
+        `gripper` puts the held item in or on (`TargetItem.of`). Refused when
+        the id names no known item, when it names the item `gripper` holds,
+        and when another gripper holds it."""
+        holder = self.holder_of(target_item_id)
+        if holder is gripper:
+            raise Refusal(
+                FailureKind.REJECTED,
+                f"item '{target_item_id}' is the item that gripper '{gripper.name}' holds: it cannot be its own target",
+            )
+        if holder is not None:
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"target item '{target_item_id}' is held by gripper '{holder.name}'")
+        return TargetItem.of(self.item(target_item_id))
+
     def holder_of(self, item_id: str) -> Optional[Gripper]:
         return next((gripper for gripper in self.grippers.values() if gripper.held_item_id == item_id), None)
 
@@ -249,14 +322,16 @@ class State:
         claimed: set[str] = set()
         matches: list[Optional[Item]] = []
         for detection in detections:
-            item = self._match(detection, claimed, held, lambda item, label=detection.label: _named_alike(item.label, label))
+            item = self._match(
+                detection, claimed, held, lambda item, label=detection.label: _named_alike(item.label, label), by_footprint=True,
+            )
             if item is not None:
                 claimed.add(item.item_id)
             matches.append(item)
         seen: list[Item] = []
         for detection, item in zip(detections, matches):
             if item is None and coverage.covers(detection.label):
-                item = self._match(detection, claimed, held, lambda item: coverage.covers(item.label))
+                item = self._match(detection, claimed, held, lambda item: coverage.covers(item.label), by_footprint=False)
             if item is None:
                 item = self._mint(detection.label, detection.position, detection.orientation, detection.confidence, now_ns)
                 item.region = detection.region
@@ -290,23 +365,34 @@ class State:
         return {gripper.held_item_id for gripper in self.grippers.values() if gripper.held_item_id is not None}
 
     def _match(
-        self, detection: Detection, claimed: set[str], held: set[str], takes: Callable[[Item], bool]
+        self, detection: Detection, claimed: set[str], held: set[str], takes: Callable[[Item], bool], *, by_footprint: bool
     ) -> Optional[Item]:
         """The known item at the detection's place that `takes` accepts:
-        among the items within the match radius that no earlier detection
-        of this look claimed and no gripper holds, one with the detection's
-        label first, then the nearest."""
+        among the items at its place that no earlier detection of this look
+        claimed and no gripper holds, one with the detection's label first,
+        then the nearest. `by_footprint` measures the place of a known item
+        with a box by its footprint (`_at_place`)."""
         near = [
             item
             for item in self.items.values()
             if item.item_id not in claimed
             and item.item_id not in held
-            and distance(item.position, detection.position) <= self.match_radius_m
+            and self._at_place(item, detection, by_footprint)
             and takes(item)
         ]
         if not near:
             return None
         return min(near, key=lambda item: (item.label != detection.label, distance(item.position, detection.position)))
+
+    def _at_place(self, item: Item, detection: Detection, by_footprint: bool) -> bool:
+        """Whether `detection` lies at the place of the known `item`: with
+        `by_footprint` and a box of the item, its box centre, or its seen
+        point when it has no box, inside the footprint of that box; else its
+        seen point within the match radius of the item's position."""
+        if by_footprint and item.shape is not None:
+            x, y, _ = detection.shape.centre if detection.shape is not None else detection.position
+            return inside_footprint(x, y, item.shape)
+        return distance(item.position, detection.position) <= self.match_radius_m
 
     def _mint(self, label: str, position: Vec3, orientation: Optional[Quat], confidence: float, now_ns: int) -> Item:
         stem = _stem(label)
@@ -335,9 +421,18 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.region = detection.region
     item.width_m = detection.width_m
     item.top_z = detection.top_z
-    item.shape = detection.shape
+    item.shape = _kept_shape(item.shape, detection.shape)
     if coverage.covers(detection.label):
         item.label = detection.label
+
+
+def _kept_shape(known: Optional[ItemShape], seen: Optional[ItemShape]) -> Optional[ItemShape]:
+    """The shape a look leaves on a known item: the known box, its top
+    raised to the higher of the two tops, when the new box lies inside its
+    footprint; else the new box, or none when the look fitted none."""
+    if known is None or seen is None or not box_inside_footprint(seen, known):
+        return seen
+    return raised_to(known, top_of(seen))
 
 
 def _named_alike(item_label: str, detection_label: str) -> bool:

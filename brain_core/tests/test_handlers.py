@@ -24,7 +24,7 @@ from fake_peppygen import LEFT_AT_REST, FakeTopic, fake_bindings, limb_states_me
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, forget, get_state, grab_item, identify_item, place_item, scan_items
 from brain_core.manipulators.scripted import CentreProposer, ScriptedManipulator
-from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
+from brain_core.ports import Box, Coverage, Detection, FailureKind, ItemShape, Refusal, Role, SearchTimeout
 
 
 def scan_goal(timeout_s: float = 0.0) -> FakeCtx:
@@ -41,12 +41,12 @@ def grab_goal(**overrides) -> FakeCtx:
     return FakeCtx(grab_action, **goal)
 
 
-def drop_goal(gripper_name: str = "") -> FakeCtx:
-    return FakeCtx(drop_action, gripper_name=gripper_name)
+def drop_goal(gripper_name: str = "", target_item_id=None) -> FakeCtx:
+    return FakeCtx(drop_action, gripper_name=gripper_name, target_item_id=target_item_id)
 
 
-def place_goal(position, gripper_name: str = "", orientation=None) -> FakeCtx:
-    return FakeCtx(place_action, gripper_name=gripper_name, position=position, orientation=orientation)
+def place_goal(position, gripper_name: str = "", orientation=None, target_item_id=None) -> FakeCtx:
+    return FakeCtx(place_action, gripper_name=gripper_name, position=position, orientation=orientation, target_item_id=target_item_id)
 
 
 def abort_goal(reason: str = "") -> FakeCtx:
@@ -708,3 +708,119 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     await asyncio.wait_for(streaming, WAIT)
     token.cancel()
     await asyncio.wait_for(asyncio.gather(*loops), WAIT)
+
+
+# A place into a target item: the target read from what the brain knows of
+# it, and the three refusals of the target before any move.
+
+BOWL_SHAPE = ItemShape((0.337, 0.000, 0.487), (0.192, 0.196, 0.088), 0.0)
+
+
+async def holding_with_a_bowl(manipulator):
+    """A brain whose left gripper holds the cup and which knows a bowl with
+    its box, and the bowl."""
+    brain = await make_brain(manipulator=manipulator)
+    cup, bowl = brain.state.remember(
+        [Detection("cup", (0.3, 0.2, 0.72), 0.9), Detection("wooden bowl", (0.38, -0.008, 0.461), 0.9, width_m=0.18, shape=BOWL_SHAPE)],
+        brain.now(), coverage=Coverage(every_label=True),
+    )
+    brain.state.set_held(brain.state.grippers["left_gripper"], cup.item_id)
+    return brain, cup, bowl
+
+
+async def test_a_place_with_a_target_item_places_into_it_and_reads_no_position():
+    manipulator = FakeManipulator()
+    brain, cup, bowl = await holding_with_a_bowl(manipulator)
+    ctx = place_goal([0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0, 1.0], target_item_id=bowl.item_id)
+    await place_item.run(brain, ctx)
+    assert ctx.completed["success"] is True, ctx.completed["message"]
+    assert manipulator.calls == [("place", "left_gripper", bowl.item_id)]
+    # The fake opens 1 cm above the bowl's rim at its centre.
+    assert ctx.completed["final_position"] == pytest.approx([0.337, 0.0, 0.541])
+    placed = brain.state.items[cup.item_id]
+    assert placed.position == pytest.approx((0.337, 0.0, 0.541)) and placed.orientation is None
+    # The bowl keeps its id and what the brain knew of it.
+    assert brain.state.items[bowl.item_id].shape == BOWL_SHAPE
+    assert state_of(brain).holding == [False, False]
+
+
+async def test_an_empty_target_item_id_names_no_target():
+    manipulator = FakeManipulator()
+    brain, _, _ = await holding_with_a_bowl(manipulator)
+    ctx = place_goal([0.5, 0.1, 0.7], target_item_id="")
+    await place_item.run(brain, ctx)
+    assert ctx.completed["success"] is True and manipulator.calls == [("place", "left_gripper", (0.5, 0.1, 0.7))]
+
+
+async def test_a_place_into_an_unknown_item_the_held_item_or_an_item_another_gripper_holds_is_refused_before_any_move():
+    manipulator = FakeManipulator()
+    brain, cup, bowl = await holding_with_a_bowl(manipulator)
+    for target, words in [
+        ("mug_1-t0", "unknown item 'mug_1-t0': scan or identify it again"),
+        (cup.item_id, f"item '{cup.item_id}' is the item that gripper 'left_gripper' holds: it cannot be its own target"),
+    ]:
+        ctx = place_goal([0.0, 0.0, 0.0], target_item_id=target)
+        await place_item.run(brain, ctx)
+        assert (ctx.completed["success"], ctx.completed["message"]) == (False, words)
+    brain.state.set_held(brain.state.grippers["right_gripper"], bowl.item_id)
+    ctx = place_goal([0.0, 0.0, 0.0], gripper_name="left_gripper", target_item_id=bowl.item_id)
+    await place_item.run(brain, ctx)
+    assert ctx.completed["message"] == f"target item '{bowl.item_id}' is held by gripper 'right_gripper'"
+    assert manipulator.calls == []
+    assert state_of(brain).holding == [True, True]
+
+
+async def test_the_target_is_refused_before_a_brain_with_no_manipulation_model_says_so():
+    brain, _, _ = await holding_with_a_bowl(None)
+    ctx = place_goal([0.0, 0.0, 0.0], target_item_id="mug_1-t0")
+    await place_item.run(brain, ctx)
+    assert ctx.completed["message"] == "unknown item 'mug_1-t0': scan or identify it again"
+
+
+def recording_the_order(brain, manipulator) -> list[str]:
+    """The order of the scene calls and of the manipulator's drop."""
+    order: list[str] = []
+    follow, drop = brain.make_scene_follow_holds, manipulator.drop
+
+    async def following(*args):
+        order.append("scene")
+        await follow(*args)
+
+    async def dropping(*args, **kwargs):
+        order.append("drop")
+        return await drop(*args, **kwargs)
+
+    brain.make_scene_follow_holds, manipulator.drop = following, dropping
+    return order
+
+
+async def test_a_drop_with_a_target_item_makes_the_scene_follow_the_holds_then_drops_above_it_and_forgets_the_item():
+    manipulator = FakeManipulator()
+    brain, cup, bowl = await holding_with_a_bowl(manipulator)
+    order = recording_the_order(brain, manipulator)
+    ctx = drop_goal(target_item_id=bowl.item_id)
+    await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is True, ctx.completed["message"]
+    assert manipulator.calls == [("drop", "left_gripper", bowl.item_id)]
+    # The scene follows before the carry, and again after the release.
+    assert order == ["scene", "drop", "scene"]
+    assert cup.item_id not in brain.state.items and bowl.item_id in brain.state.items
+
+
+async def test_a_drop_with_no_target_opens_where_the_arm_stands_and_the_scene_follows_after_it_alone():
+    manipulator = FakeManipulator()
+    brain, _, _ = await holding_with_a_bowl(manipulator)
+    order = recording_the_order(brain, manipulator)
+    ctx = drop_goal(target_item_id="")
+    await drop_item.run(brain, ctx)
+    assert ctx.completed["success"] is True and manipulator.calls == [("drop", "left_gripper")]
+    assert order == ["drop", "scene"]
+
+
+async def test_a_drop_above_an_unknown_item_is_refused_and_keeps_the_held_item():
+    manipulator = FakeManipulator()
+    brain, cup, _ = await holding_with_a_bowl(manipulator)
+    ctx = drop_goal(target_item_id="mug_1-t0")
+    await drop_item.run(brain, ctx)
+    assert (ctx.completed["success"], ctx.completed["message"]) == (False, "unknown item 'mug_1-t0': scan or identify it again")
+    assert manipulator.calls == [] and state_of(brain).held_item_ids == [cup.item_id, ""]

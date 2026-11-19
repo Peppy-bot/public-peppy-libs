@@ -9,7 +9,7 @@ import asyncio
 import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Optional, Sequence, Union
 
 import numpy as np
 import pytest
@@ -21,7 +21,7 @@ from brain_core.perception.camera import CameraPose, Intrinsics
 from brain_core.perception.geometry import NOT_DESCRIBED
 from brain_core.perception.perceiver import SourceReason
 from brain_core.perception.none import NoneDetector
-from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role
+from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role, TargetItem
 
 # Every property test runs the same examples on every host: no deadline,
 # which would judge the host's speed, a seed fixed per test, and no example
@@ -185,13 +185,18 @@ class FakeManipulator:
         self.calls.append(("grab", item.item_id, gripper.name, max_effort))
         return await self._run(cancel, closed_at=self.closed_at)
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome:
-        self.calls.append(("drop", gripper.name))
+    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+        self.calls.append(("drop", gripper.name) if above is None else ("drop", gripper.name, above.item_id))
         return await self._run(cancel)
 
-    async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
-        self.calls.append(("place", gripper.name, pose.position))
-        return await self._run(cancel, final_position=(pose.position[0], pose.position[1], pose.position[2] + 0.01))
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+        """A place at a pose reports the jaws opened 1 cm above it; a place
+        into a target item, 1 cm above the item's top at its centre."""
+        if isinstance(to, TargetItem):
+            self.calls.append(("place", gripper.name, to.item_id))
+            return await self._run(cancel, final_position=(to.centre[0], to.centre[1], to.top_z + 0.01))
+        self.calls.append(("place", gripper.name, to.position))
+        return await self._run(cancel, final_position=(to.position[0], to.position[1], to.position[2] + 0.01))
 
     async def stop(self) -> None:
         self.stopped += 1

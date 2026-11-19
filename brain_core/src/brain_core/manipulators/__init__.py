@@ -5,9 +5,9 @@ it is or with an aligner of its own."""
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Optional, Protocol, Union
 
-from ..ports import CancelToken, Gripper, Item, Outcome, Pose, Senses
+from ..ports import CancelToken, Gripper, Item, Outcome, Pose, Senses, TargetItem
 
 
 class Manipulator(Protocol):
@@ -36,9 +36,14 @@ class Manipulator(Protocol):
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome: ...
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome: ...
+    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+        """Opens `gripper` and lets the held item go: where the arm stands,
+        or, `above` an item, over it."""
+        ...
 
-    async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome: ...
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+        """Sets the held item down: at a pose, or in or on a target item."""
+        ...
 
     async def stop(self) -> None:
         """Halt whatever is in flight; the running call returns soon

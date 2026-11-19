@@ -183,7 +183,9 @@ async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(c
         ("grip", "left_gripper", 1.0, 0.0),
         ("move", ALIGNED_PLACE_ABOVE, PLACE_Q),
     ]
-    assert "place with gripper 'left_gripper': aligned in 2 steps: the grasp point moved 2.2 cm" in log.records[0].getMessage()
+    line = log.records[0].getMessage()
+    assert line.startswith("place with gripper 'left_gripper': orientation 1 of 1 planned")
+    assert "; aligned in 2 steps: the grasp point moved 2.2 cm" in line
 
 
 async def test_a_place_whose_model_gives_up_fails_before_the_descent_and_keeps_the_item():

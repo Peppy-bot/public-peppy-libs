@@ -280,11 +280,11 @@ async def test_a_place_or_a_drop_that_lets_go_clears_the_flag_then_detaches_and_
         # The scene at the start of the place, then at the release.
         answers(planner, attached=attached)
         answers(planner, attached=attached)
-        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None, target_item_id=None)
         await place_item.run(brain, ctx)
     else:
         answers(planner, attached=attached)
-        ctx = FakeCtx(drop_action, gripper_name="left_gripper")
+        ctx = FakeCtx(drop_action, gripper_name="left_gripper", target_item_id=None)
         await drop_item.run(brain, ctx)
     assert ctx.completed["success"] is True
     assert not brain.state.grippers["left_gripper"].holding
@@ -300,10 +300,10 @@ async def test_a_place_or_a_drop_that_fails_keeps_the_flag_and_the_attached_obje
     attached = [scene_object(f"brain/{item_id}", (0.0, 0.0, -0.01), LEFT_TCP)]
     answers(planner, attached=attached)
     if release == "place":
-        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+        ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None, target_item_id=None)
         await place_item.run(brain, ctx)
     else:
-        ctx = FakeCtx(drop_action, gripper_name="left_gripper")
+        ctx = FakeCtx(drop_action, gripper_name="left_gripper", target_item_id=None)
         await drop_item.run(brain, ctx)
     assert ctx.completed["success"] is False
     assert brain.state.grippers["left_gripper"].held_item_id == item_id
@@ -353,7 +353,7 @@ async def test_a_place_first_attaches_the_held_items_object_when_the_scene_lost_
     item_id = holds_lime(brain)
     answers(planner)
     answers(planner, attached=[scene_object(f"brain/{item_id}", (0.0, 0.0, 0.0), LEFT_TCP)])
-    ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None)
+    ctx = FakeCtx(place_action, gripper_name="left_gripper", position=[0.3, 0.1, 0.45], orientation=None, target_item_id=None)
     await place_item.run(brain, ctx)
     assert ctx.completed["success"] is True
     [before] = manipulator.writes_before
