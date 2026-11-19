@@ -13,7 +13,7 @@ mod openarm_v2;
 
 use control_core::geometry::UnitQuaternion;
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::{Axis, Frame, OrientationTarget};
+use motion_planning_core::{Axis, Frame, OrientationTarget, Reference};
 use ros_reference::orientation_constraints::{Case, Cases};
 
 use common::LEFT_ARM;
@@ -31,6 +31,7 @@ fn our_error(case: &Case) -> f64 {
         .try_into()
         .expect("one position per joint of the arm");
     OrientationTarget {
+        reference: Reference::Robot,
         frame: Frame::GraspPoint,
         orientation: UnitQuaternion::parse(case.orientation)
             .expect("a unit quaternion")

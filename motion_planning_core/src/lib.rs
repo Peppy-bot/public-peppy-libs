@@ -16,7 +16,9 @@
 //!   the [`Objects`] that stand still, within the robot's own body and from one another,
 //!   and between an attached object and the arm that carries it, each term the clearance
 //!   [`term_clearances`] asks of it, and the distance of each pair it checks.
-//! - [`Goal`]: the constraints an arm's last waypoint meets; [`sample_goals`] samples
+//! - [`Goal`]: the constraints an arm's last waypoint meets, each target in the robot frame
+//!   or in a frame of an arm of the plan's group that each state places ([`Reference`]), as
+//!   MoveIt holds a constraint in a link of the robot; [`sample_goals`] samples
 //!   configurations meeting a plan's [`ArmGoal`]s as MoveIt's goal sampler does, one goal
 //!   sample at a time by each arm's [`GoalSampler`] from the plan's [`Draws`](chain_kinematics::Draws),
 //!   [`IkGoalSampler`] by `chain_kinematics`' inverse kinematics, MoveIt's KDL, for any
@@ -48,7 +50,7 @@ mod pose;
 mod scene;
 mod stop;
 
-pub use arm::{Arm, Body, Moving, RiderOffTheArm, SelfModel};
+pub use arm::{Arm, ArmSet, Body, Moving, RiderOffTheArm, SelfModel};
 pub use arms::{Arms, GroupBody};
 pub use cartesian::{
     CartesianFailure, CartesianPath, CartesianRequest, Collisions, FollowedFrame, cartesian_path,
@@ -57,10 +59,10 @@ pub use cartesian::{
 pub use clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
 pub use goal::{
     Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
-    PositionTarget,
+    PlacedGoal, PositionTarget, Reference,
 };
 pub use intake::{DepthCamera, JointHistory, PosedChain, RobotMask, insert_cut_out};
-pub use path_orientation::PathOrientation;
+pub use path_orientation::{Holder, PathOrientation};
 pub use plan::{
     ArmGoal, CheckFailure, CheckRequest, MAX_STEP_M, MIN_DEPARTURE_STEP_M, PathCheck, PathFault,
     Place, PlanFailure, PlanRequest, Refiner, Scene, StartFault, check_path, iteration_bound,

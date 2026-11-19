@@ -52,7 +52,7 @@ use frame_tree::FrameName;
 use frame_tree::Transform;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget,
-    PositionTarget, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
+    PositionTarget, Reference, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
     term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
@@ -515,11 +515,13 @@ fn pose_goal(goal: &PoseGoal) -> Result<Goal, String> {
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: Vector3::from(goal.position),
             tolerance_m: tolerance("tolerance_m", goal.tolerance_m)?,
         }],
         vec![OrientationTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             orientation: UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z)),
             tolerance_rad: tolerance("tolerance_rad", goal.tolerance_rad)?,
@@ -629,6 +631,7 @@ fn scene_of(
             goal: &episode.goal,
             sampler,
         }],
+        &alone,
         &start,
         planner.goal_samples,
         u64::from(seed.get()),

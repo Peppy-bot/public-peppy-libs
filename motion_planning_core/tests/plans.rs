@@ -29,9 +29,9 @@ use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal, GoalSampler,
     IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectRequest, Objects, OrientationTarget,
-    PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest, PlanningScene,
-    PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
-    Surroundings, check_path, plan_path, term_clearances,
+    PathCheck, PathFault, Place, PlacedGoal, PlanFailure, PlanObjects, PlanRequest, PlanningScene,
+    PositionTarget, Reading, Reference, Refiner, RobotLinks, RobotPart, Scene, ShapeFields,
+    StartFault, Surroundings, check_path, plan_path, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
@@ -39,7 +39,8 @@ use ompl_bridge::Planner;
 
 use common::{
     LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, branch, distance_to_map, held_from_its_arm,
-    left_fingers, map, occupied_at, off_the_branch_seams, plan_arm, positive, voxel_in_a_finger,
+    left_fingers, map, occupied_at, off_the_branch_seams, placed, plan_arm, positive,
+    voxel_in_a_finger,
 };
 use openarm_v2::{DESCRIPTION, JOINTS, LEFT, RIGHT};
 
@@ -205,7 +206,7 @@ fn a_plan_around_a_box_keeps_its_clearance_on_its_rounded_path() {
         assert_eq!(waypoints.first(), Some(&LOW), "{planner} starts elsewhere");
         let last = waypoints.last().expect("a waypoint");
         assert!(
-            goal.met(LEFT_ARM.chain(), last),
+            placed(&goal).met(LEFT_ARM.chain(), last),
             "{planner} ends off the goal"
         );
         assert_dense_clear(&arms, &map, &field, &waypoints);
@@ -300,11 +301,13 @@ fn a_short_pose_move_from_the_start_ends_on_its_branches() {
             JOINTS,
             Vec::new(),
             vec![PositionTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 position: lowered,
                 tolerance_m: positive(GOAL_TOLERANCE_M),
             }],
             vec![OrientationTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 orientation: pose.rotation,
                 tolerance_rad: positive(GOAL_TOLERANCE_RAD),
@@ -474,7 +477,7 @@ struct WaitingOut {
 impl GoalSampler<JOINTS> for WaitingOut {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -495,7 +498,7 @@ struct OneGoal {
 impl GoalSampler<JOINTS> for OneGoal {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -714,7 +717,7 @@ struct WaitingOutEmpty {
 impl GoalSampler<JOINTS> for WaitingOutEmpty {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -803,7 +806,7 @@ struct AllButAttemptZero {
 impl GoalSampler<JOINTS> for AllButAttemptZero {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         draws: &mut Draws,
@@ -1538,7 +1541,7 @@ struct StoppingOnceDrawn<'a> {
 impl GoalSampler<JOINTS> for StoppingOnceDrawn<'_> {
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         working: &[f64; JOINTS],
         attempts: usize,
         draws: &mut Draws,
@@ -1625,7 +1628,7 @@ fn a_plan_of_several_attempts_repeats_and_keeps_its_clearance() {
         "three attempts repeat"
     );
     assert_eq!(waypoints.first(), Some(&LOW));
-    assert!(goal.met(LEFT_ARM.chain(), waypoints.last().expect("a waypoint")));
+    assert!(placed(&goal).met(LEFT_ARM.chain(), waypoints.last().expect("a waypoint")));
     assert_dense_clear(&arms, &map, &field, &waypoints);
 }
 
@@ -2356,7 +2359,7 @@ fn an_attached_item_is_carried_around_the_box() {
         "an item touching the gripper with no touch links gives {refused:?}"
     );
     let carried = plan(&holding(&scene, &LOW, &GRIPPER)).expect("the item carried around the box");
-    assert!(goal.met(LEFT_ARM.chain(), carried.last().expect("a waypoint")));
+    assert!(placed(&goal).met(LEFT_ARM.chain(), carried.last().expect("a waypoint")));
 }
 
 /// The grasp point's frame at `q` moved `ahead_m` along the way from the hand's origin to

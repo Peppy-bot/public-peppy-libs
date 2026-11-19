@@ -20,7 +20,7 @@ use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
 use frame_tree::Transform;
-use motion_planning_core::{Arm, Arms, Body};
+use motion_planning_core::{Arm, Arms, Body, Goal, PlacedGoal};
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Scan, VoxelBox, VoxelMap};
 use robot_description::ArmId;
@@ -70,6 +70,11 @@ pub fn plan_arm(id: ArmId) -> Arm<'static, JOINTS> {
     Arm::new(&openarm_v2::arm(id).name, geometry)
 }
 
+/// OpenArm v2's left arm alone, the right arm outside the group, with no self model.
+pub fn left_alone() -> Arms<'static, JOINTS, JOINTS> {
+    Arms::new(vec![plan_arm(LEFT)], None)
+}
+
 /// OpenArm v2's left arm as `srs_model` models it, from its base to its grasp point.
 pub fn left_srs_arm() -> srs_model::Arm {
     let left = openarm_v2::arm(LEFT);
@@ -104,6 +109,13 @@ pub fn off_the_branch_seams(seed: u64) -> impl Iterator<Item = [f64; JOINTS]> {
         [q[1], q[5]]
             .iter()
             .all(|v| v.cos().abs() >= std::f64::consts::FRAC_1_SQRT_2)
+    })
+}
+
+/// `goal`, whose targets name no frame of another arm, placed for its arm.
+pub fn placed(goal: &Goal) -> PlacedGoal {
+    goal.placed_for(0, |arm, _| {
+        panic!("the goal names a frame of the arm at place {arm}, another arm")
     })
 }
 

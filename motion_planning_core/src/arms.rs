@@ -62,6 +62,11 @@ impl<'a, const N: usize, const D: usize> Arms<'a, N, D> {
         &self.arms
     }
 
+    /// The name of each arm, in the group's order.
+    pub fn names(&self) -> Vec<&'a str> {
+        self.arms.iter().map(Arm::name).collect()
+    }
+
     pub fn self_model(&self) -> Option<&dyn SelfModel<D>> {
         self.self_model
     }

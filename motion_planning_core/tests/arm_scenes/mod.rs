@@ -22,10 +22,10 @@ use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
 use frame_tree::Transform;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
+    Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, Holder, IkGoalSampler, JointTarget, Moving,
     ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest, PlanningScene,
-    PositionTarget, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields, StartFault,
-    iteration_bound, plan_path, pose_from_parts,
+    PositionTarget, Reference, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
+    StartFault, iteration_bound, plan_path, pose_from_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
@@ -327,8 +327,8 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
     }
 
     /// Runs `read` on the nearest checked pair that `moving` judges, the arms of the plan
-    /// at the state `q`: the arm the plan holds last reads its pairs with every chain, and
-    /// the first of two its pairs without the other.
+    /// at the state `q`: an arm's turn after every other arm reads its pairs with every chain,
+    /// and its turn before them its pairs without the others.
     fn nearest<T>(
         &self,
         q: &[f64],
@@ -336,15 +336,18 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
         read: impl FnOnce(Result<Proximity<'_>, CollisionError>) -> T,
     ) -> T {
         let at = placed::<N, K>(&self.planned, q);
-        let last = self.planned.len() - 1;
+        let others = self.planned.len() - 1;
         let mut model = self.model.lock().expect("the self model");
         read(match moving {
             Moving::All => model.min_distance(&at),
-            Moving::Arm(k) if k == last => model.min_distance_of_chain(self.planned[k], &at),
-            Moving::Arm(0) if last == 1 => model.min_distance_of_chain_alone(self.planned[0], &at),
-            Moving::Arm(k) => panic!(
-                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
-                last + 1
+            Moving::Arm { arm, before } if before.len() == others => {
+                model.min_distance_of_chain(self.planned[arm], &at)
+            }
+            Moving::Arm { arm, before } if before.is_empty() => {
+                model.min_distance_of_chain_alone(self.planned[arm], &at)
+            }
+            Moving::Arm { arm, before } => panic!(
+                "the self model reads the pairs of an arm's turn after every other arm of a plan, or before them, and not of arm {arm} after {before:?}"
             ),
         })
     }
@@ -354,19 +357,18 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
     /// `nearest` reads for it: a state the model cannot measure reads as a collision.
     fn clearance(&self, q: &[f64], moving: Moving, within: f64) -> f64 {
         let at = placed::<N, K>(&self.planned, q);
-        let last = self.planned.len() - 1;
+        let others = self.planned.len() - 1;
         let mut model = self.model.lock().expect("the self model");
         match moving {
             Moving::All => model.min_distance_within(&at, within),
-            Moving::Arm(k) if k == last => {
-                model.min_distance_of_chain_within(self.planned[k], &at, within)
+            Moving::Arm { arm, before } if before.len() == others => {
+                model.min_distance_of_chain_within(self.planned[arm], &at, within)
             }
-            Moving::Arm(0) if last == 1 => {
-                model.min_distance_of_chain_alone_within(self.planned[0], &at, within)
+            Moving::Arm { arm, before } if before.is_empty() => {
+                model.min_distance_of_chain_alone_within(self.planned[arm], &at, within)
             }
-            Moving::Arm(k) => panic!(
-                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
-                last + 1
+            Moving::Arm { arm, before } => panic!(
+                "the self model reads the pairs of an arm's turn after every other arm of a plan, or before them, and not of arm {arm} after {before:?}"
             ),
         }
         .unwrap_or(f64::NEG_INFINITY)
@@ -663,12 +665,14 @@ fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -
                         N,
                         Vec::new(),
                         vec![PositionTarget {
+                            reference: Reference::Robot,
                             frame: motion_planning_core::Frame::GraspPoint,
                             position: placed.translation.vector,
                             tolerance_m: PositiveFinite::parse(pose.position_tolerance)
                                 .expect("a pose goal's position tolerance"),
                         }],
                         vec![OrientationTarget {
+                            reference: Reference::Robot,
                             frame: motion_planning_core::Frame::GraspPoint,
                             orientation: placed.rotation,
                             tolerance_rad: PositiveFinite::parse(pose.orientation_tolerance)
@@ -693,6 +697,7 @@ fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -
                         N,
                         Vec::new(),
                         vec![PositionTarget {
+                            reference: Reference::Robot,
                             frame: motion_planning_core::Frame::GraspPoint,
                             position: goal.position.into(),
                             tolerance_m: PositiveFinite::parse(goal.position_tolerance)
@@ -728,9 +733,10 @@ fn path_orientation<'a, const N: usize>(
         }
     };
     PathOrientation {
-        arm: held.arm,
+        holder: Holder::Arm(held.arm),
         link_name: &held.link_name,
         target: OrientationTarget {
+            reference: Reference::Robot,
             frame,
             orientation: UnitQuaternion::parse(held.orientation)
                 .expect("a unit quaternion")

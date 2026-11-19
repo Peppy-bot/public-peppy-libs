@@ -24,14 +24,14 @@ pub trait SelfModel<const N: usize>: Sync {
     fn nearest_pair(&self, q: &[f64; N], moving: Moving) -> (String, String);
 }
 
-/// The pairs a check of a state of a plan's group judges: every pair, or those of the
-/// arm at a place in the group after the arms before it: each pair that holds a body of
-/// that arm and none of an arm after it, against the rest of the robot, the world and
-/// the arms before it.
+/// The pairs a check of a state of a plan's group judges: every pair, or those of the turn
+/// of the arm at place `arm` in a goal sample of the group, after the turns of the arms at
+/// the places `before` holds: each pair that holds a body of that arm and of no arm outside
+/// `before`, against the rest of the robot, the world and the arms of `before`.
 #[derive(Clone, Copy, Debug)]
 pub enum Moving {
     All,
-    Arm(usize),
+    Arm { arm: usize, before: ArmSet },
 }
 
 impl Moving {
@@ -40,8 +40,49 @@ impl Moving {
     pub fn judges(self, a: usize, b: usize) -> bool {
         match self {
             Self::All => true,
-            Self::Arm(k) => a.max(b) == k,
+            Self::Arm { arm, before } => {
+                let sampled = |other: usize| other == arm || before.contains(other);
+                (a == arm && sampled(b)) || (b == arm && sampled(a))
+            }
         }
+    }
+}
+
+/// A set of arms of a plan's group, by their places in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArmSet(u64);
+
+impl ArmSet {
+    /// The most places a set holds: the places below the bits of its word.
+    pub const CAPACITY: usize = u64::BITS as usize;
+
+    /// The set of `places`.
+    ///
+    /// # Panics
+    ///
+    /// When a place lies at or past `ArmSet::CAPACITY`.
+    pub fn of(places: impl IntoIterator<Item = usize>) -> Self {
+        Self(places.into_iter().fold(0, |bits, place| {
+            assert!(
+                place < Self::CAPACITY,
+                "a set of arms holds places below {}, not {place}",
+                Self::CAPACITY
+            );
+            bits | 1 << place
+        }))
+    }
+
+    pub fn contains(self, place: usize) -> bool {
+        place < Self::CAPACITY && self.0 & 1 << place != 0
+    }
+
+    /// How many places the set holds.
+    pub fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -287,4 +328,48 @@ fn reach_of<const N: usize>(geometry: &ChainGeometry<N>, riders: &[Rider]) -> [f
             .map(|&(segment, farthest)| span[i..segment].iter().sum::<f64>() + farthest)
             .fold(0.0, f64::max)
     })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// The turn of the arm at place `arm` after the turns of the arms at `before`.
+    pub(crate) fn turn(arm: usize, before: &[usize]) -> Moving {
+        Moving::Arm {
+            arm,
+            before: ArmSet::of(before.iter().copied()),
+        }
+    }
+
+    // A turn judges each pair of its arm with itself, the world and the arms sampled before it,
+    // whatever their places: the turn of the second arm first judges no pair with the first,
+    // and the turn of the first after it judges that pair.
+    #[test]
+    fn a_turn_judges_its_arm_with_the_arms_sampled_before_it() {
+        let (second_first, first_after) = (turn(1, &[]), turn(0, &[1]));
+        assert!(second_first.judges(1, 1) && !second_first.judges(0, 1));
+        assert!(!second_first.judges(0, 0));
+        assert!(first_after.judges(0, 0) && first_after.judges(0, 1) && first_after.judges(1, 0));
+        assert!(!first_after.judges(1, 1));
+        let third = turn(2, &[0]);
+        assert!(third.judges(2, 0) && !third.judges(2, 1) && !third.judges(0, 1));
+    }
+
+    // A set holds the places it is made of, and none past its word.
+    #[test]
+    fn a_set_of_arms_holds_its_places() {
+        let set = ArmSet::of([0, 3, ArmSet::CAPACITY - 1]);
+        assert_eq!(set.len(), 3);
+        assert!(set.contains(3) && set.contains(ArmSet::CAPACITY - 1) && !set.contains(1));
+        assert!(!set.contains(ArmSet::CAPACITY));
+        assert!(ArmSet::default().is_empty() && !set.is_empty());
+    }
+
+    // A place past the word is refused.
+    #[test]
+    #[should_panic(expected = "a set of arms holds places below 64, not 64")]
+    fn a_set_refuses_a_place_past_its_word() {
+        ArmSet::of([ArmSet::CAPACITY]);
+    }
 }

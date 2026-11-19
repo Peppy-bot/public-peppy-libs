@@ -35,7 +35,7 @@ use collision_geometry::shapes::PlacedShape;
 use nalgebra::{Point3, Vector3};
 use occupancy_map::{DistanceField, Key, VoxelMap};
 
-use crate::arm::{Body, Moving};
+use crate::arm::{ArmSet, Body, Moving};
 use crate::arms::{Arms, GroupBody};
 use crate::scene::{OCCUPANCY_MAP, Objects};
 
@@ -702,15 +702,19 @@ fn own_distance<const N: usize, const D: usize>(
     })
 }
 
-/// `moving`, which names an arm of `arms` when it names one.
+/// `moving`, whose turn is one of an arm of `arms` after others of them when it names one.
 ///
 /// # Panics
 ///
-/// When `moving` names an arm past the group's last.
+/// When `moving` names an arm past the group's last, or a turn after its own arm's.
 fn of_the_group<const N: usize, const D: usize>(moving: Moving, arms: &Arms<N, D>) -> Moving {
-    if let Moving::Arm(k) = moving {
+    if let Moving::Arm { arm, before } = moving {
         let count = arms.arms().len();
-        assert!(k < count, "arm {k} of a group of {count} arms");
+        let in_the_group = ArmSet::of((0..count).filter(|k| before.contains(*k)));
+        assert!(
+            arm < count && before == in_the_group && !before.contains(arm),
+            "a turn of arm {arm} after the arms {before:?} of a group of {count} arms"
+        );
     }
     moving
 }
@@ -736,6 +740,7 @@ mod tests {
     use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
 
     use super::*;
+    use crate::arm::tests::turn;
     use crate::arm::{Arm, SelfModel};
     use crate::scene::{
         AttachRequest, ObjectRequest, PlanningScene, RobotLinks, RobotPart, ShapeFields,
@@ -972,17 +977,17 @@ mod tests {
         let surroundings = Surroundings::new(&map, &field, [0.03, 0.0, 0.0]);
         let arms = both(None);
         assert!(!surroundings.clear(&arms, &q));
-        assert!(surroundings.clear_moving(&arms, &q, Moving::Arm(0)));
-        assert!(!surroundings.clear_moving(&arms, &q, Moving::Arm(1)));
+        assert!(surroundings.clear_moving(&arms, &q, turn(0, &[])));
+        assert!(!surroundings.clear_moving(&arms, &q, turn(1, &[0])));
         for (k, geometry) in [(0, &first), (1, &second)] {
             let alone = Arms::<2, 2>::new(vec![Arm::new("alone", geometry)], None);
             assert_eq!(
-                surroundings.distances(&arms, &q, Moving::Arm(k))[WORLD],
+                surroundings.distances(&arms, &q, turn(k, &[0][..k]))[WORLD],
                 surroundings.distances(&alone, &[0.0; 2], Moving::All)[WORLD],
                 "arm {k}"
             );
         }
-        let [world_pair, _, _] = surroundings.nearest_pairs(&arms, &q, Moving::Arm(1));
+        let [world_pair, _, _] = surroundings.nearest_pairs(&arms, &q, turn(1, &[0]));
         assert_eq!(
             world_pair.map(|reading| reading.pair),
             Some(Contact::Map {
@@ -994,9 +999,9 @@ mod tests {
         let apart = Surroundings::new(&empty, &empty_field, [0.0, 0.01, 0.0]);
         let modeled = both(Some(&SecondArmTouches));
         assert!(!apart.clear(&modeled, &q));
-        assert!(apart.clear_moving(&modeled, &q, Moving::Arm(0)));
-        assert!(!apart.clear_moving(&modeled, &q, Moving::Arm(1)));
-        let [_, own_pair, _] = apart.nearest_pairs(&modeled, &q, Moving::Arm(0));
+        assert!(apart.clear_moving(&modeled, &q, turn(0, &[])));
+        assert!(!apart.clear_moving(&modeled, &q, turn(1, &[0])));
+        let [_, own_pair, _] = apart.nearest_pairs(&modeled, &q, turn(0, &[]));
         assert_eq!(
             own_pair.map(|reading| reading.pair),
             Some(Contact::Own {
@@ -1483,8 +1488,8 @@ mod tests {
         let exact_held = held_of(0).min(held_of(1));
         for (moving, exact_own, exact_held) in [
             (Moving::All, exact_own, exact_held),
-            (Moving::Arm(0), f64::INFINITY, held_of(0)),
-            (Moving::Arm(1), exact_own, held_of(1)),
+            (turn(0, &[]), f64::INFINITY, held_of(0)),
+            (turn(1, &[0]), exact_own, held_of(1)),
         ] {
             let measured = surroundings.distances(&arms, &q, moving);
             for (term, exact, clearance) in [

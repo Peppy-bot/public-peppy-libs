@@ -1,12 +1,20 @@
 //! A goal: the constraints a path's last waypoint meets, and the samplers that find
 //! configurations meeting them.
+//!
+//! A target gives its values in the robot frame or in a frame of an arm of the plan's group
+//! ([`Reference`]), which each state places where that arm's joints put it, as MoveIt holds a
+//! constraint whose frame is a link of the robot (moveit2 2.15.2 kinematic_constraint.cpp,
+//! `mobile_frame_`, :392-401, :640-648): the target is met where the frame stands in the
+//! state judged (:536-560, :720-740).
+
+use std::borrow::Cow;
 
 use chain_kinematics::{
     Aims, Chain, ChainFrame, Draws, Ends, IkSolver, Limit, Posed, SEARCH_ITERATIONS, all_within,
 };
 use collision_geometry::chain::Rider;
 use control_core::positive_finite::PositiveFinite;
-use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
 
 /// The joints from which a chain holds a frame at any pose it reaches: a pose's freedoms.
 const POSE_FREEDOMS: usize = 6;
@@ -125,6 +133,27 @@ impl Frame {
     }
 }
 
+/// The frame whose values a target gives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reference {
+    /// The robot frame, the frame of a plan's states.
+    Robot,
+    /// A frame of the arm at place `arm` of the plan's group (the goal's own arm or another),
+    /// which each state places where that arm's joints put it, as MoveIt holds a constraint
+    /// whose frame is a link of the robot (`mobile_frame_`).
+    Arm { arm: usize, frame: Frame },
+}
+
+impl Reference {
+    /// The arm of the group whose frame the reference is, if any.
+    pub(crate) fn arm(self) -> Option<usize> {
+        match self {
+            Self::Robot => None,
+            Self::Arm { arm, .. } => Some(arm),
+        }
+    }
+}
+
 /// A joint held within `below` under and `above` over `position`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JointTarget {
@@ -134,16 +163,27 @@ pub struct JointTarget {
     pub below: PositiveFinite,
 }
 
-/// A frame's origin held within `tolerance_m` of `position`, in the robot frame.
+/// A frame's origin held within `tolerance_m` of `position`, in the frame of `reference`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PositionTarget {
     pub frame: Frame,
+    pub reference: Reference,
     pub position: Vector3<f64>,
     pub tolerance_m: PositiveFinite,
 }
 
 impl PositionTarget {
-    /// Whether `p` lies within the tolerance of the position.
+    /// The target in the robot frame, its reference standing at `reference_pose` there.
+    fn placed_by(&self, reference_pose: &Isometry3<f64>) -> Self {
+        Self {
+            reference: Reference::Robot,
+            position: (reference_pose * Point3::from(self.position)).coords,
+            ..*self
+        }
+    }
+
+    /// Whether `p`, in the robot frame, lies within the tolerance of the position of a target
+    /// in the robot frame.
     fn holds(&self, p: &Vector3<f64>) -> bool {
         (p - self.position).norm() <= self.tolerance_m.get()
     }
@@ -194,18 +234,30 @@ impl Axis {
     }
 }
 
-/// A frame's orientation held within `tolerance_rad` of `orientation`: the angle of the
-/// rotation between them, or, with a free axis, the angle between that axis of the frame
-/// and its direction in `orientation`, the frame free to turn about it.
+/// A frame's orientation held within `tolerance_rad` of `orientation`, in the frame of
+/// `reference`: the angle of the rotation between them, or, with a free axis, the angle
+/// between that axis of the frame and its direction in `orientation`, the frame free to turn
+/// about it. The error of a target and its axis read `orientation` as the robot frame's: a
+/// target in a frame of an arm is placed in the robot frame first ([`PlacedGoal::met`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OrientationTarget {
     pub frame: Frame,
+    pub reference: Reference,
     pub orientation: UnitQuaternion<f64>,
     pub tolerance_rad: PositiveFinite,
     pub free_axis: Option<Axis>,
 }
 
 impl OrientationTarget {
+    /// The target in the robot frame, its reference turned by `reference_rotation` there.
+    pub(crate) fn placed_by(&self, reference_rotation: &UnitQuaternion<f64>) -> Self {
+        Self {
+            reference: Reference::Robot,
+            orientation: reference_rotation * self.orientation,
+            ..*self
+        }
+    }
+
     /// How far `actual` lies from the target, in radians, as the tolerance bounds it.
     pub fn error(&self, actual: &UnitQuaternion<f64>) -> f64 {
         match self.free_axis {
@@ -219,7 +271,16 @@ impl OrientationTarget {
 
     /// How far the target's frame of `chain` at `q` lies from the target, in radians, as
     /// the tolerance bounds it.
+    ///
+    /// # Panics
+    ///
+    /// When the target's reference is a frame of an arm, which a state of the group places.
     pub fn error_at<const N: usize>(&self, chain: &Chain<N>, q: &[f64; N]) -> f64 {
+        assert_eq!(
+            self.reference,
+            Reference::Robot,
+            "a target in the robot frame alone is judged by its arm's joints alone"
+        );
         self.error(&frame_pose(chain, q, self.frame).rotation)
     }
 
@@ -325,8 +386,9 @@ pub enum GoalError {
 
 /// The constraints a path's last waypoint meets: joints, or the position and the
 /// orientation of one frame of the arm, either or both, and the orientation a plan's path
-/// holds of that frame, when the plan takes one.
-#[derive(Debug, PartialEq)]
+/// holds of that frame, when the plan takes one. A state of the group places it for its arm
+/// before it is sampled or judged ([`Goal::placed_for`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Goal {
     joints: Vec<JointTarget>,
     position: Option<PositionTarget>,
@@ -334,9 +396,17 @@ pub struct Goal {
     path_orientation: Option<OrientationTarget>,
 }
 
+/// The goal of an arm of a plan's group with each target in a frame of another arm of the
+/// group placed in the robot frame where a state of the group puts that frame: each target is
+/// in the robot frame or in a frame of the goal's own arm, which the arm's joints place.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedGoal(Goal);
+
 impl Goal {
     /// The goal of an arm of `dimension` joints that meets every one of `joints`,
-    /// `positions` and `orientations`, the positions and orientations of one frame.
+    /// `positions` and `orientations`, the positions and orientations of one frame. Each
+    /// frame a target names, its own and its reference's in an arm of the group, whose arms
+    /// each hold `dimension` joints, is a frame of a joint of an arm.
     pub fn new(
         dimension: usize,
         joints: Vec<JointTarget>,
@@ -366,17 +436,24 @@ impl Goal {
             Frame::GraspPoint => Ok(()),
             Frame::Link { segment, .. } | Frame::Part { segment, .. } => in_arm(segment),
         };
+        let frames = |own: Frame, reference: Reference| {
+            frame(own)?;
+            match reference {
+                Reference::Robot => Ok(()),
+                Reference::Arm { frame: other, .. } => frame(other),
+            }
+        };
         for target in &joints {
             in_arm(target.joint)?;
         }
         for target in &positions {
-            frame(target.frame)?;
+            frames(target.frame, target.reference)?;
             if !target.position.iter().all(|c| c.is_finite()) {
                 return Err(GoalError::Position(target.position.into()));
             }
         }
         for target in &orientations {
-            frame(target.frame)?;
+            frames(target.frame, target.reference)?;
         }
         named_once(
             joints
@@ -409,20 +486,56 @@ impl Goal {
         })
     }
 
-    /// Whether `chain` at `q` meets every constraint of the goal.
-    pub fn met<const N: usize>(&self, chain: &Chain<N>, q: &[f64; N]) -> bool {
-        let pose = |frame: Frame| frame_pose(chain, q, frame);
-        let held = |t: &JointTarget| {
-            (t.position - t.below.get()..=t.position + t.above.get()).contains(&q[t.joint])
+    /// The goal of the arm at place `own` of a plan's group, each target in a frame of another
+    /// arm of the group placed in the robot frame where `pose_of` puts that frame: the pose of
+    /// frame `frame` of the arm at place `arm` in the state the goal is sampled or judged at,
+    /// as MoveIt places a constraint in a link by the state it samples from and judges.
+    pub fn placed_for(
+        &self,
+        own: usize,
+        pose_of: impl Fn(usize, Frame) -> Isometry3<f64>,
+    ) -> PlacedGoal {
+        PlacedGoal(self.placed_where(|reference| match reference {
+            Reference::Arm { arm, frame } if arm != own => Some(pose_of(arm, frame)),
+            _ => None,
+        }))
+    }
+
+    /// The goal with each target whose reference `pose_of` places placed in the robot frame
+    /// by that pose.
+    fn placed_where(&self, pose_of: impl Fn(Reference) -> Option<Isometry3<f64>>) -> Self {
+        let orientation = |target: OrientationTarget| match pose_of(target.reference) {
+            Some(pose) => target.placed_by(&pose.rotation),
+            None => target,
         };
-        self.joints.iter().all(held)
-            && self
-                .position
-                .is_none_or(|t| t.holds(&pose(t.frame).translation.vector))
-            && [self.orientation, self.path_orientation]
-                .into_iter()
-                .flatten()
-                .all(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad.get())
+        Self {
+            joints: self.joints.clone(),
+            position: self.position.map(|target| match pose_of(target.reference) {
+                Some(pose) => target.placed_by(&pose),
+                None => target,
+            }),
+            orientation: self.orientation.map(orientation),
+            path_orientation: self.path_orientation.map(orientation),
+        }
+    }
+
+    /// The reference of each target of the goal.
+    fn references(&self) -> impl Iterator<Item = Reference> + '_ {
+        let orientations = [self.orientation, self.path_orientation];
+        self.position
+            .map(|target| target.reference)
+            .into_iter()
+            .chain(orientations.into_iter().flatten().map(|t| t.reference))
+    }
+
+    /// Whether the goal names joints, which MoveIt's joint constraint sampler meets.
+    pub(crate) fn names_joints(&self) -> bool {
+        !self.joints.is_empty()
+    }
+
+    /// The places in the group of the arms whose frames the goal's targets are in.
+    pub(crate) fn referenced_arms(&self) -> impl Iterator<Item = usize> + '_ {
+        self.references().filter_map(Reference::arm)
     }
 
     /// The goal a plan samples that holds `held`, the orientations its path holds of the
@@ -441,10 +554,11 @@ impl Goal {
     }
 
     /// How far apart the goal's orientation and `held` stand where `held` names the goal's frame
-    /// and no orientation meets both.
+    /// in the goal's reference and no orientation meets both. Two references that a state
+    /// turns apart state nothing.
     pub(crate) fn orientation_apart_from(&self, held: &OrientationTarget) -> Option<f64> {
         self.orientation
-            .filter(|own| own.frame == held.frame)
+            .filter(|own| own.frame == held.frame && own.reference == held.reference)
             .and_then(|own| own.apart_from(held))
     }
 
@@ -457,6 +571,44 @@ impl Goal {
             (Some(own), Some(path)) if own.sampling_volume() < path.sampling_volume() => Some(own),
             (own, path) => path.or(own),
         }
+    }
+}
+
+impl PlacedGoal {
+    /// Whether `chain` at `q` meets every constraint of the goal, each target in a frame of
+    /// the arm placed where `q` puts that frame, as MoveIt judges a constraint in a link at the
+    /// state it judges.
+    pub fn met<const N: usize>(&self, chain: &Chain<N>, q: &[f64; N]) -> bool {
+        let posed = chain.at(q);
+        let placed = self.own_placed(&posed);
+        let pose = |frame: Frame| frame_pose_at(&posed, frame);
+        let held = |t: &JointTarget| {
+            (t.position - t.below.get()..=t.position + t.above.get()).contains(&q[t.joint])
+        };
+        placed.joints.iter().all(held)
+            && placed
+                .position
+                .is_none_or(|t| t.holds(&pose(t.frame).translation.vector))
+            && [placed.orientation, placed.path_orientation]
+                .into_iter()
+                .flatten()
+                .all(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad.get())
+    }
+
+    /// The goal with each target in a frame of its own arm placed in the robot frame where
+    /// the arm, posed at `posed`, puts that frame; itself when it holds none.
+    fn own_placed<const N: usize>(&self, posed: &Posed<N>) -> Cow<'_, Goal> {
+        if self
+            .0
+            .references()
+            .all(|reference| reference == Reference::Robot)
+        {
+            return Cow::Borrowed(&self.0);
+        }
+        Cow::Owned(self.0.placed_where(|reference| match reference {
+            Reference::Robot => None,
+            Reference::Arm { frame, .. } => Some(frame_pose_at(posed, frame)),
+        }))
     }
 }
 
@@ -498,7 +650,7 @@ impl Goal {
         drawn
     }
 
-    /// A pose of `frame` of `chain` drawn inside the goal, as
+    /// A pose of `frame` of `chain` drawn inside the goal, its targets in the robot frame, as
     /// `IKConstraintSampler::samplePose` draws one
     /// (default_constraint_samplers.cpp:441-557): a position drawn uniformly inside the
     /// position's tolerance, or, for a goal that names none, the frame's position at a
@@ -537,7 +689,7 @@ pub trait GoalSampler<const N: usize>: Sync {
     /// meets `goal` and that `valid` accepts, or none.
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         working: &[f64; N],
         attempts: usize,
         draws: &mut Draws,
@@ -567,7 +719,10 @@ pub trait GoalSampler<const N: usize>: Sync {
 /// states uniformly and keeps those that meet the goal by chance
 /// (constrained_goal_sampler.cpp:71-72, :158-166). This sampler descends toward what the
 /// goal names, with KDL's position-only and approximate-solution options applied, and the
-/// goal's constraints decide (`Frame::search_of`).
+/// goal's constraints decide (`Frame::search_of`). A target in a frame of the arm is drawn
+/// where the working state puts that frame and met where the configuration found puts it, as
+/// `samplePose` places a constraint in a link by the reference state (:482-483, :532-535) and
+/// `validate` judges the state found (:653-660).
 pub struct IkGoalSampler<const N: usize> {
     chain: Chain<N>,
 }
@@ -581,7 +736,7 @@ impl<const N: usize> IkGoalSampler<N> {
 impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         working: &[f64; N],
         attempts: usize,
         draws: &mut Draws,
@@ -589,8 +744,8 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
     ) -> Option<[f64; N]> {
         let limits = self.chain.limits();
         let accepted = |q: &[f64; N]| goal.met(&self.chain, q) && valid(q);
-        let Some((frame, named)) = goal.named_frame() else {
-            let drawn = goal.draw_joints(&limits, draws);
+        let Some((frame, named)) = goal.0.named_frame() else {
+            let drawn = goal.0.draw_joints(&limits, draws);
             return accepted(&drawn).then_some(drawn);
         };
         assert!(
@@ -598,8 +753,9 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
             "a goal sample's working state lies inside the joint limits, and {working:?} does not"
         );
         let ik = frame.ik_solver(&self.chain, named);
+        let drawn = goal.own_placed(&self.chain.at(working));
         (0..attempts).find_map(|attempt| {
-            let target = goal.draw_pose(&self.chain, frame, &limits, draws);
+            let target = drawn.draw_pose(&self.chain, frame, &limits, draws);
             let seed = if attempt == 0 {
                 *working
             } else {
@@ -661,9 +817,17 @@ pub(crate) mod tests {
         arm_chain(&description, &description.arms()[LEFT.place()])
     }
 
+    /// `goal` placed for the one arm of a plan's group.
+    fn alone(goal: &Goal) -> PlacedGoal {
+        goal.placed_for(0, |arm, _| {
+            panic!("a goal of a group of one arm names no other arm, and this one names arm {arm}")
+        })
+    }
+
     /// The grasp point held within `tolerance` of the identity, free about `free_axis`.
     fn hand_within(tolerance: f64, free_axis: Option<Axis>) -> OrientationTarget {
         OrientationTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             orientation: UnitQuaternion::identity(),
             tolerance_rad: PositiveFinite::parse(tolerance).expect("a tolerance above 0"),
@@ -676,6 +840,7 @@ pub(crate) mod tests {
             7,
             Vec::new(),
             vec![PositionTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 position: Vector3::new(0.3, 0.2, 0.5),
                 tolerance_m: PositiveFinite::parse(0.01).expect("a tolerance above 0"),
@@ -825,6 +990,7 @@ pub(crate) mod tests {
         let q = [0.1; 7];
         let pose = frame_pose(&chain, &q, Frame::GraspPoint);
         let at = PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: pose.translation.vector,
             tolerance_m: PositiveFinite::parse(0.01).expect("a tolerance above 0"),
@@ -834,9 +1000,9 @@ pub(crate) mod tests {
             ..hand_within(tolerance, None)
         };
         let goal = Goal::new(7, Vec::new(), vec![at], vec![turned_by(0.0, 0.1)]).expect("a goal");
-        assert!(goal.met(&chain, &q));
-        assert!(goal.holding(&[turned_by(0.05, 0.1)]).met(&chain, &q));
-        assert!(!goal.holding(&[turned_by(0.5, 0.1)]).met(&chain, &q));
+        assert!(alone(&goal).met(&chain, &q));
+        assert!(alone(&goal.holding(&[turned_by(0.05, 0.1)])).met(&chain, &q));
+        assert!(!alone(&goal.holding(&[turned_by(0.5, 0.1)])).met(&chain, &q));
     }
 
     // The grasp point, and a link fixed below the last joint's link, are solved exactly,
@@ -889,5 +1055,168 @@ pub(crate) mod tests {
             inner.search_of(&chain, Aims::Both),
             (Aims::Both, Ends::Approximate)
         );
+    }
+
+    /// The link of the chain's joint 3, which joints 0 to 3 turn.
+    fn link_3() -> Frame {
+        Frame::Link {
+            segment: 3,
+            offset: Isometry3::identity(),
+        }
+    }
+
+    /// A configuration of OpenArm v2's left arm inside its limits.
+    const BENT: [f64; 7] = [0.3, -0.4, 0.2, 1.1, 0.3, -0.2, 0.4];
+
+    /// A goal of the grasp point's position, held within 1 mm of `position` in `reference`,
+    /// and, with `orientation`, its orientation held within 0.01 rad of it there.
+    fn in_frame(
+        reference: Reference,
+        position: Vector3<f64>,
+        orientation: Option<UnitQuaternion<f64>>,
+    ) -> Goal {
+        Goal::new(
+            7,
+            Vec::new(),
+            vec![PositionTarget {
+                frame: Frame::GraspPoint,
+                reference,
+                position,
+                tolerance_m: PositiveFinite::parse(1e-3).expect("a tolerance above 0"),
+            }],
+            orientation
+                .map(|orientation| OrientationTarget {
+                    frame: Frame::GraspPoint,
+                    reference,
+                    orientation,
+                    tolerance_rad: PositiveFinite::parse(0.01).expect("a tolerance above 0"),
+                    free_axis: None,
+                })
+                .into_iter()
+                .collect(),
+        )
+        .expect("a valid goal")
+    }
+
+    // A target in a frame of another arm of the group is placed where the state puts that
+    // frame: the grasp point meets it there, and misses the same numbers read in the robot
+    // frame.
+    #[test]
+    fn a_target_in_a_frame_of_another_arm_is_placed_where_the_state_puts_it() {
+        let chain = left_arm();
+        let q = BENT;
+        let hand = frame_pose(&chain, &q, Frame::GraspPoint);
+        let other = Isometry3::from_parts(
+            Translation3::new(0.1, -0.5, 0.9),
+            UnitQuaternion::from_euler_angles(0.4, -0.3, 1.2),
+        );
+        let relative = other.inverse() * hand;
+        let goal = in_frame(
+            Reference::Arm {
+                arm: 1,
+                frame: Frame::GraspPoint,
+            },
+            relative.translation.vector,
+            Some(relative.rotation),
+        );
+        let placed = goal.placed_for(0, |arm, frame| {
+            assert_eq!((arm, frame), (1, Frame::GraspPoint));
+            other
+        });
+        assert!(placed.met(&chain, &q));
+        let unplaced = goal.placed_for(0, |_, _| Isometry3::identity());
+        assert!(!unplaced.met(&chain, &q));
+        assert_eq!(placed.0.referenced_arms().count(), 0);
+        assert_eq!(goal.referenced_arms().collect::<Vec<_>>(), [1, 1]);
+    }
+
+    // A target in a frame of the goal's own arm is met where the configuration puts that
+    // frame, as MoveIt judges a constraint in a link at the state: the grasp point held in the
+    // arm's link 3 holds while the joints before that link turn, and breaks when a joint
+    // after it does.
+    #[test]
+    fn a_target_in_a_frame_of_its_own_arm_moves_with_that_frame() {
+        let chain = left_arm();
+        let q = BENT;
+        let relative =
+            frame_pose(&chain, &q, link_3()).inverse() * frame_pose(&chain, &q, Frame::GraspPoint);
+        let goal = alone(&in_frame(
+            Reference::Arm {
+                arm: 0,
+                frame: link_3(),
+            },
+            relative.translation.vector,
+            Some(relative.rotation),
+        ));
+        assert!(goal.met(&chain, &q));
+        let mut before = q;
+        before[0] += 0.3;
+        before[2] -= 0.2;
+        assert!(goal.met(&chain, &before));
+        let mut after = q;
+        after[4] += 0.3;
+        assert!(!goal.met(&chain, &after));
+    }
+
+    // A goal in a frame of its own arm draws its pose where the working state puts that
+    // frame, as MoveIt's samplePose places a constraint in a link by the reference state: from
+    // the configuration that meets it, at the grasp point; from one whose link 3 stands
+    // elsewhere, where that link carries the target.
+    #[test]
+    fn a_goal_in_a_frame_of_its_own_arm_draws_where_the_working_state_puts_it() {
+        let chain = left_arm();
+        let q = BENT;
+        let hand = frame_pose(&chain, &q, Frame::GraspPoint);
+        let relative = frame_pose(&chain, &q, link_3()).inverse() * hand;
+        let goal = alone(&in_frame(
+            Reference::Arm {
+                arm: 0,
+                frame: link_3(),
+            },
+            relative.translation.vector,
+            None,
+        ));
+        let drawn_from = |working: &[f64; 7]| {
+            goal.own_placed(&chain.at(working))
+                .draw_pose(
+                    &chain,
+                    Frame::GraspPoint,
+                    &chain.limits(),
+                    &mut Draws::new(3),
+                )
+                .translation
+                .vector
+        };
+        assert!((drawn_from(&q) - hand.translation.vector).norm() <= 1e-3);
+        let mut turned = q;
+        turned[0] += 0.5;
+        let carried =
+            frame_pose(&chain, &turned, link_3()) * Point3::from(relative.translation.vector);
+        assert!((drawn_from(&turned) - carried.coords).norm() <= 1e-3);
+        assert!((carried.coords - hand.translation.vector).norm() > 0.1);
+    }
+
+    // A goal's orientation and a path orientation of its frame stand apart only in one
+    // reference: in two, a state turns them apart, and nothing is stated.
+    #[test]
+    fn orientations_in_two_references_state_nothing_apart() {
+        let goal = in_frame(
+            Reference::Robot,
+            Vector3::new(0.3, 0.2, 0.5),
+            Some(UnitQuaternion::identity()),
+        );
+        let turned = OrientationTarget {
+            orientation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 1.0),
+            ..hand_within(0.1, None)
+        };
+        assert!(goal.orientation_apart_from(&turned).is_some());
+        let in_the_other_hand = OrientationTarget {
+            reference: Reference::Arm {
+                arm: 1,
+                frame: Frame::GraspPoint,
+            },
+            ..turned
+        };
+        assert_eq!(goal.orientation_apart_from(&in_the_other_hand), None);
     }
 }

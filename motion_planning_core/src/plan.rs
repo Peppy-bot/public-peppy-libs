@@ -125,12 +125,12 @@ use ompl_bridge::{
     Request, SampledGoals, Space, plan,
 };
 
-use crate::arm::Moving;
+use crate::arm::{ArmSet, Moving};
 use crate::arms::Arms;
 use crate::chomp;
 use crate::clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
-use crate::goal::{Goal, GoalSampler};
-use crate::path_orientation::{PathOrientation, PathOrientations, Turned};
+use crate::goal::{Goal, GoalSampler, PlacedGoal, frame_pose_at};
+use crate::path_orientation::{Holder, PathOrientation, PathOrientations, Turned};
 use crate::scene::Objects;
 use crate::stop::is_set;
 
@@ -431,17 +431,28 @@ pub enum PlanFailure {
 /// # Panics
 ///
 /// When `request` holds a goal for other than each arm of `arms`, or a path orientation of
-/// an arm outside them.
+/// an arm outside them, or a target or a path orientation in a frame of an arm outside them.
 pub fn plan_path<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
     request: &PlanRequest<N, D>,
 ) -> Result<Vec<[f64; D]>, PlanFailure> {
+    let count = arms.arms().len();
     assert_eq!(
         request.goals.len(),
-        arms.arms().len(),
+        count,
         "a plan holds one goal for each arm"
     );
+    let referenced = (request.goals.iter())
+        .flat_map(|goal| goal.goal.referenced_arms())
+        .chain((request.path_orientations.iter()).flat_map(|held| {
+            let holder = match held.holder {
+                Holder::Arm(arm) => Some(arm),
+                Holder::Standing(_) => None,
+            };
+            holder.into_iter().chain(held.target.reference.arm())
+        }));
+    assert_frames_in_group(referenced, count);
     distances_in_range(request.min_clearance_m, &request.start_tolerance)
         .map_err(PlanFailure::Request)?;
     let start = start_clear(
@@ -956,6 +967,7 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
     let goals_alone_found = AtomicBool::new(false);
     let sampled = PlanGoals {
         goals: &goals,
+        arms,
         start: *start,
         goal_samples: request.goal_samples,
         seed: u64::from(request.seed),
@@ -1028,13 +1040,11 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
     }
     let (rejections, least_short) = short.into_inner().unwrap_or_else(PoisonError::into_inner);
     let Some((least_short, moving, _)) = least_short else {
-        let of = arms
-            .arms()
-            .iter()
-            .zip(&recording)
-            .find(|(_, sampler)| !sampler.found.load(Ordering::Relaxed))
+        let of = sampling_order(&goals, &arms.names())
+            .into_iter()
+            .find(|k| !recording[*k].found.load(Ordering::Relaxed))
             .filter(|_| several)
-            .map_or(String::new(), |(arm, _)| format!(" of {}", arm.name()));
+            .map_or(String::new(), |k| format!(" of {}", arms.arms()[k].name()));
         return Err(PlanFailure::Unreachable(format!(
             "inverse kinematics found no configuration{of} that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline{more_time}"
         )));
@@ -1066,6 +1076,9 @@ struct GoalsAlone<'p, const N: usize, const D: usize> {
 /// the attempts before it, one for each arm.
 struct PlanGoals<'p, const N: usize, const D: usize> {
     goals: &'p [ArmGoal<'p, N>],
+    /// The arms of the group: their chains place the frames the goals' targets are in, and
+    /// their names order their samples.
+    arms: &'p Arms<'p, N, D>,
     start: [f64; D],
     goal_samples: NonZeroUsize,
     seed: u64,
@@ -1082,6 +1095,7 @@ impl<const N: usize, const D: usize> SampledGoals for PlanGoals<'_, N, D> {
         Box::new(AttemptSampling {
             sampling: Sampling::new(
                 self.goals,
+                self.arms,
                 &self.start,
                 self.goal_samples,
                 seed,
@@ -1092,6 +1106,7 @@ impl<const N: usize, const D: usize> SampledGoals for PlanGoals<'_, N, D> {
             alone: self.goals_alone.as_ref().map(|alone| {
                 let sampling = Sampling::new(
                     alone.goals,
+                    self.arms,
                     &self.start,
                     NonZeroUsize::MIN,
                     seed,
@@ -1153,7 +1168,7 @@ struct Recording<'a, const N: usize> {
 impl<const N: usize> GoalSampler<N> for Recording<'_, N> {
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         working: &[f64; N],
         attempts: usize,
         draws: &mut Draws,
@@ -1208,6 +1223,10 @@ enum Sampled<const D: usize> {
 /// none does (constrained_goal_sampler.cpp:98-114, :169).
 struct Sampling<'s, const N: usize, const D: usize> {
     goals: &'s [ArmGoal<'s, N>],
+    /// The places of the arms in the order a goal sample draws them (`sampling_order`).
+    order: Vec<usize>,
+    /// The arms of the group, whose chains place the frames the goals' targets are in.
+    arms: &'s Arms<'s, N, D>,
     goal_samples: NonZeroUsize,
     ended: &'s (dyn Fn() -> bool + Sync),
     valid: &'s (dyn Fn(&[f64; D], Moving) -> bool + Sync),
@@ -1223,9 +1242,11 @@ struct Sampling<'s, const N: usize, const D: usize> {
 impl<'s, const N: usize, const D: usize> Sampling<'s, N, D> {
     /// # Panics
     ///
-    /// When `goals` holds other than one goal for each arm of `N` joints of the `D`.
+    /// When `goals` holds other than one goal for each arm of `arms`, or a target in a frame of
+    /// an arm outside them.
     fn new(
         goals: &'s [ArmGoal<'s, N>],
+        arms: &'s Arms<'s, N, D>,
         start: &[f64; D],
         goal_samples: NonZeroUsize,
         seed: u64,
@@ -1233,12 +1254,18 @@ impl<'s, const N: usize, const D: usize> Sampling<'s, N, D> {
         valid: &'s (dyn Fn(&[f64; D], Moving) -> bool + Sync),
     ) -> Self {
         assert_eq!(
-            goals.len() * N,
-            D,
-            "a goal for each arm of {N} joints of the {D}"
+            goals.len(),
+            arms.arms().len(),
+            "a goal for each arm of the group"
+        );
+        assert_frames_in_group(
+            goals.iter().flat_map(|goal| goal.goal.referenced_arms()),
+            goals.len(),
         );
         Self {
             goals,
+            order: sampling_order(goals, &arms.names()),
+            arms,
             goal_samples,
             ended,
             valid,
@@ -1259,8 +1286,14 @@ impl<'s, const N: usize, const D: usize> Sampling<'s, N, D> {
         {
             return Sampled::Ended;
         }
-        let Some(found) = sample_group(self.goals, &self.working, &mut self.draws, self.valid)
-        else {
+        let Some(found) = sample_group(
+            self.goals,
+            &self.order,
+            self.arms,
+            &self.working,
+            &mut self.draws,
+            self.valid,
+        ) else {
             self.failing += 1;
             return Sampled::Missed;
         };
@@ -1275,59 +1308,140 @@ impl<'s, const N: usize, const D: usize> Sampling<'s, N, D> {
     }
 }
 
-/// The states at which each arm of `goals`, a group of `D` joints in all, meets its goal,
-/// found from `start` by a `Sampling` of them sampled until it ends.
+/// Panics where `referenced`, the places of the arms in whose frames targets are, names an arm
+/// outside a group of `count` arms.
+fn assert_frames_in_group(referenced: impl IntoIterator<Item = usize>, count: usize) {
+    for arm in referenced {
+        assert!(
+            arm < count,
+            "a target is in a frame of the arm at place {arm}, and the plan's group holds {count} arms"
+        );
+    }
+}
+
+/// The states at which each arm of `arms` meets its goal of `goals`, in the group's order,
+/// found from `start` by a `Sampling` of them sampled until it ends, the frames of the arms
+/// placed by their chains.
 ///
 /// # Panics
 ///
-/// When `goals` holds other than one goal for each arm of `N` joints of the `D`.
+/// When `goals` holds other than one goal for each arm of `arms`, or a target in a frame of an
+/// arm outside them.
 pub fn sample_goals<const N: usize, const D: usize>(
     goals: &[ArmGoal<'_, N>],
+    arms: &Arms<'_, N, D>,
     start: &[f64; D],
     goal_samples: NonZeroUsize,
     seed: u64,
     ended: &(dyn Fn() -> bool + Sync),
     valid: &(dyn Fn(&[f64; D], Moving) -> bool + Sync),
 ) -> Vec<[f64; D]> {
-    let mut sampling = Sampling::new(goals, start, goal_samples, seed, ended, valid);
+    let mut sampling = Sampling::new(goals, arms, start, goal_samples, seed, ended, valid);
     while !matches!(sampling.sample(), Sampled::Ended) {}
     sampling.kept
 }
 
+/// The places of the arms of `goals`, named `names`, in the order a goal sample draws them, as
+/// MoveIt's `UnionConstraintSampler` orders its arms' samplers (moveit2 2.15.2
+/// union_constraint_sampler.cpp:54-132, `OrderSamplers`): an arm after each arm in whose frames
+/// its goal's targets are, the frames its sampler depends on (`getFrameDependency`, set from a
+/// constraint's mobile reference frame, default_constraint_samplers.cpp:280-283); among the arms
+/// that leaves free, an arm whose goal names joints first, as MoveIt samples its joint constraints
+/// first (:113-119), and then by name (:121-122), and by place where two arms share a name. The
+/// arms of a group move no link of one another, so MoveIt's first rule, a sampler whose group
+/// moves the links of another's first (:63-71), orders none of them. Where the frames of the arms
+/// left name one another, the first of them by that order goes next, an order of this crate's
+/// own: MoveIt's comparator holds each of two such arms before the other and warns that the
+/// sampling will likely give invalid results (:100-107), which orders neither. The goal's
+/// constraints decide on the state found.
+fn sampling_order<const N: usize>(goals: &[ArmGoal<'_, N>], names: &[&str]) -> Vec<usize> {
+    let depends_on = |k: usize| goals[k].goal.referenced_arms().filter(move |arm| *arm != k);
+    let first = |arms: &[usize]| {
+        arms.iter()
+            .copied()
+            .min_by_key(|k| (!goals[*k].goal.names_joints(), names[*k], *k))
+    };
+    (0..goals.len()).fold(Vec::with_capacity(goals.len()), |mut order, _| {
+        let left: Vec<usize> = (0..goals.len()).filter(|k| !order.contains(k)).collect();
+        let free: Vec<usize> = (left.iter().copied())
+            .filter(|k| depends_on(*k).all(|arm| order.contains(&arm)))
+            .collect();
+        let next = first(&free)
+            .or_else(|| first(&left))
+            .expect("an arm is left while the order is short of the group");
+        order.push(next);
+        order
+    })
+}
+
 /// One goal sample of the arms of `goals` from the working state `working`, as MoveIt's
 /// `UnionConstraintSampler::sample` samples a group from its arms' samplers (moveit2 2.15.2
-/// union_constraint_sampler.cpp): each arm in turn (`GoalSampler::sample_from`), from its
-/// joints of the state the sample has reached, drawing from its `draws`, `valid` deciding on
-/// that state with the arm at the configuration tried, the arms before it at their sampled
-/// joints and the arms after it at `working`'s, asked of the pairs of the arm's turn
-/// (`Moving::Arm`): each that holds a body of the arm and none of an arm after it. A pair
-/// with an arm after it is asked on that arm's turn, where both stand as the state the
-/// sample finds holds them, so that state keeps each pair `valid` judges of it. A caller
-/// that judges the whole state on every turn samples as MoveIt's validity callback does.
-/// None when an arm finds none.
+/// union_constraint_sampler.cpp:145-159): each arm in turn in `order`
+/// (`GoalSampler::sample_from`), from its joints of the state the sample has reached, drawing
+/// from its `draws`, `valid` deciding on that state with the arm at the configuration tried, the
+/// arms sampled before it at their sampled joints and the others at `working`'s, asked of the
+/// pairs of the arm's turn (`Moving::Arm`): each that holds a body of the arm and none of an arm
+/// sampled after it. A pair with an arm sampled after it is asked on that arm's turn, where both
+/// stand as the state the sample finds holds them, so that state keeps each pair `valid` judges
+/// of it. A caller that judges the whole state on every turn samples as MoveIt's validity
+/// callback does. An arm's targets in the frames of the group's other arms are placed where the
+/// state the sample has reached puts those frames (`Goal::placed_for`), by their chains of
+/// `arms`, as `UnionConstraintSampler` hands each arm's sampler the state the samplers before
+/// it left. Once every arm is sampled, each goal in a frame of another arm is judged at the state
+/// found, as MoveIt decides the goal's constraints on it (constrained_goal_sampler.cpp:126-137),
+/// so a goal in a frame of an arm sampled after it, where the frames of the arms name one
+/// another's, holds where that arm ends; each other goal its sampler met at the arm's joints of
+/// that state. None when an arm finds none, or a goal does not hold at the state found.
 fn sample_group<const N: usize, const D: usize>(
     goals: &[ArmGoal<'_, N>],
+    order: &[usize],
+    arms: &Arms<'_, N, D>,
     working: &[f64; D],
     draws: &mut [Draws],
     valid: &dyn Fn(&[f64; D], Moving) -> bool,
 ) -> Option<[f64; D]> {
     let mut state = *working;
-    for (k, (goal, draws)) in goals.iter().zip(draws.iter_mut()).enumerate() {
+    for (turn, &k) in order.iter().enumerate() {
         let placed = |q: &[f64; N]| {
             let mut placed = state;
             placed[k * N..(k + 1) * N].copy_from_slice(q);
             placed
         };
-        let found = goal.sampler.sample_from(
-            goal.goal,
+        let moving = Moving::Arm {
+            arm: k,
+            before: ArmSet::of(order[..turn].iter().copied()),
+        };
+        let found = goals[k].sampler.sample_from(
+            &placed_at(goals[k].goal, k, arms, &state),
             &Arms::<N, D>::slice(&state, k),
             MAX_STATE_SAMPLING_ATTEMPTS,
-            draws,
-            &|q| valid(&placed(q), Moving::Arm(k)),
+            &mut draws[k],
+            &|q| valid(&placed(q), moving),
         )?;
         state = placed(&found);
     }
-    Some(state)
+    let met = |(k, goal): (usize, &ArmGoal<'_, N>)| {
+        !goal.goal.referenced_arms().any(|arm| arm != k)
+            || placed_at(goal.goal, k, arms, &state).met(
+                arms.arms()[k].geometry().chain(),
+                &Arms::<N, D>::slice(&state, k),
+            )
+    };
+    goals.iter().enumerate().all(met).then_some(state)
+}
+
+/// The goal of the arm at place `own` of the group of `arms` with its targets in the frames of
+/// the group's other arms placed where `state` puts those frames, by their chains.
+fn placed_at<const N: usize, const D: usize>(
+    goal: &Goal,
+    own: usize,
+    arms: &Arms<'_, N, D>,
+    state: &[f64; D],
+) -> PlacedGoal {
+    goal.placed_for(own, |arm, frame| {
+        let chain = arms.arms()[arm].geometry().chain();
+        frame_pose_at(&chain.at(&Arms::<N, D>::slice(state, arm)), frame)
+    })
 }
 
 /// Where a walk breaks: the position of the last state it checks that keeps its
@@ -2096,12 +2210,12 @@ pub(crate) mod tests {
     use frame_tree::Transform;
     use hegel::TestCase;
     use hegel::generators as gs;
-    use nalgebra::Isometry3;
+    use nalgebra::{Isometry3, UnitQuaternion, Vector3};
     use occupancy_map::{Bounds, Scan};
 
     use super::*;
     use crate::arm::{Arm, Body, SelfModel};
-    use crate::goal::OrientationTarget;
+    use crate::goal::{Frame, JointTarget, OrientationTarget, PositionTarget, Reference};
     use crate::scene::{ObjectRequest, PlanningScene, RobotLinks, ShapeFields};
 
     // Waypoints inside a straight stretch go, the first and the last and each corner stay, and a
@@ -2357,6 +2471,7 @@ pub(crate) mod tests {
             offset: nalgebra::Isometry3::identity(),
         };
         OrientationTarget {
+            reference: Reference::Robot,
             frame,
             orientation: geometry.chain().at(q).link_pose_root(2).rotation
                 * nalgebra::UnitQuaternion::from_axis_angle(
@@ -2405,7 +2520,7 @@ pub(crate) mod tests {
             objects: Objects::none(),
         };
         let orientations = [PathOrientation {
-            arm: 0,
+            holder: Holder::Arm(0),
             link_name: "link_3",
             target,
         }];
@@ -2784,7 +2899,7 @@ pub(crate) mod tests {
     impl<const N: usize> GoalSampler<N> for At<N> {
         fn sample_from(
             &self,
-            _: &Goal,
+            _: &PlacedGoal,
             _: &[f64; N],
             _: usize,
             _: &mut Draws,
@@ -2792,6 +2907,113 @@ pub(crate) mod tests {
         ) -> Option<[f64; N]> {
             valid(&self.0).then_some(self.0)
         }
+    }
+
+    /// The goal of a grasp point at the origin of the grasp point of the arm at
+    /// `position_in`, and turned as the grasp point of the arm at `orientation_in`, each in the
+    /// robot frame where it names no arm.
+    fn in_frames(position_in: Option<usize>, orientation_in: Option<usize>) -> Goal {
+        let reference = |arm: Option<usize>| {
+            arm.map_or(Reference::Robot, |arm| Reference::Arm {
+                arm,
+                frame: Frame::GraspPoint,
+            })
+        };
+        let within = PositiveFinite::parse(0.01).expect("a tolerance above 0");
+        Goal::new(
+            1,
+            Vec::new(),
+            vec![PositionTarget {
+                frame: Frame::GraspPoint,
+                reference: reference(position_in),
+                position: Vector3::zeros(),
+                tolerance_m: within,
+            }],
+            vec![OrientationTarget {
+                frame: Frame::GraspPoint,
+                reference: reference(orientation_in),
+                orientation: UnitQuaternion::identity(),
+                tolerance_rad: within,
+                free_axis: None,
+            }],
+        )
+        .expect("a valid goal")
+    }
+
+    /// The order in which a goal sample draws the arms of `goals`, named `names`.
+    fn order_of(goals: &[Goal], names: &[&str]) -> Vec<usize> {
+        let sampler = At([0.0]);
+        let goals: Vec<ArmGoal<1>> = goals
+            .iter()
+            .map(|goal| ArmGoal {
+                goal,
+                sampler: &sampler,
+            })
+            .collect();
+        sampling_order(&goals, names)
+    }
+
+    /// The goal of the one joint of an arm within 0.01 rad of 0.
+    fn at_zero() -> Goal {
+        let within = PositiveFinite::parse(0.01).expect("a tolerance above 0");
+        let joint = JointTarget {
+            joint: 0,
+            position: 0.0,
+            above: within,
+            below: within,
+        };
+        Goal::new(1, vec![joint], Vec::new(), Vec::new()).expect("a valid goal")
+    }
+
+    // The arms sample in the group's order where no goal is in a frame of another arm and their
+    // names follow it; an arm whose goal is in the frames of other arms samples after them,
+    // through a chain of such arms; a frame of its own arm orders nothing; and the arms whose
+    // frames name one another sample in the order of their names, after the arms whose frames
+    // no arm left names, as MoveIt samples a circular dependency in the order its sort leaves.
+    #[test]
+    fn an_arm_samples_after_the_arms_in_whose_frames_its_goal_is() {
+        let order = |goals: &[Goal]| order_of(goals, &["a", "b", "c"][..goals.len()]);
+        let robot = in_frames(None, None);
+        let in_arm = |arm: usize| in_frames(Some(arm), None);
+        assert_eq!(order(&[robot.clone(), robot.clone()]), [0, 1]);
+        assert_eq!(order(&[in_arm(1), robot.clone()]), [1, 0]);
+        assert_eq!(order(&[robot.clone(), in_arm(0)]), [0, 1]);
+        assert_eq!(order(&[in_frames(None, Some(1)), robot.clone()]), [1, 0]);
+        assert_eq!(
+            order(&[
+                in_frames(Some(2), None),
+                robot.clone(),
+                in_frames(None, Some(1))
+            ]),
+            [1, 2, 0]
+        );
+        assert_eq!(order(&[in_arm(0)]), [0]);
+        assert_eq!(order(&[in_arm(1), in_arm(0)]), [0, 1]);
+        assert_eq!(order(&[in_arm(2), robot, in_arm(0)]), [1, 0, 2]);
+    }
+
+    // Among arms that no frame orders, an arm whose goal names joints samples first, and then
+    // the arms by name, as MoveIt's OrderSamplers puts a joint sampler first and then the
+    // groups by name; a goal in a frame of another arm still samples after that arm, and the
+    // arms whose frames name one another sample by name.
+    #[test]
+    fn a_joint_goal_samples_first_and_then_the_arms_by_name() {
+        let robot = in_frames(None, None);
+        let names = ["right_arm", "left_arm"];
+        assert_eq!(order_of(&[robot.clone(), robot.clone()], &names), [1, 0]);
+        assert_eq!(order_of(&[robot.clone(), at_zero()], &["a", "b"]), [1, 0]);
+        assert_eq!(order_of(&[at_zero(), robot.clone()], &names), [0, 1]);
+        assert_eq!(order_of(&[at_zero(), at_zero()], &names), [1, 0]);
+        assert_eq!(
+            order_of(&[at_zero(), in_frames(Some(0), None)], &names),
+            [0, 1]
+        );
+        assert_eq!(
+            order_of(&[in_frames(Some(1), None), at_zero()], &["a", "b"]),
+            [1, 0]
+        );
+        let one_another = [in_frames(Some(1), None), in_frames(Some(0), None)];
+        assert_eq!(order_of(&one_another, &names), [1, 0]);
     }
 
     // From -0.6 rad to 0.6 rad with the slide out at 0.5 m, a point of the cube of

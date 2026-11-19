@@ -4,7 +4,10 @@
 //! before it drew, from a start nearer than the clearance each pair on the turn of its
 //! later arm, names an arm whose sampler finds none, and answers a path that keeps the
 //! arms apart along the rounded path the robot runs, from a start nearer than the
-//! clearance as the start rule says.
+//! clearance as the start rule says. OpenArm v2's two arms hold a goal and a path
+//! orientation of the right hand in the left hand's frame against the left hand where each
+//! state puts it, as MoveIt holds a constraint in a link of the robot, and a goal of the left
+//! hand in the right hand's frame, the right arm sampled first.
 
 mod common;
 mod openarm_v2;
@@ -19,13 +22,16 @@ use control_core::path_timing::RoundedPath;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, Body, Goal, GoalSampler, IkGoalSampler, JointTarget, Moving, Objects,
-    PlanFailure, PlanRequest, Scene, SelfModel, plan_path,
+    Arm, ArmGoal, Arms, Body, Frame, Goal, GoalSampler, Holder, IkGoalSampler, JointTarget, Moving,
+    Objects, OrientationTarget, PathOrientation, PlacedGoal, PlanFailure, PlanRequest,
+    PositionTarget, Reference, Scene, SelfModel, plan_path,
 };
+use nalgebra::{Isometry3, Point3};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
-use common::{an_hour_from_now, map, positive};
+use common::{LEFT_ARM, RIGHT_ARM, an_hour_from_now, left_alone, map, plan_arm, positive};
+use openarm_v2::{JOINTS, LEFT, RIGHT};
 
 /// The clearance the plans keep between the arms (m).
 const MIN_CLEARANCE_M: f64 = 0.02;
@@ -175,7 +181,7 @@ impl Drawn {
 impl GoalSampler<2> for Drawn {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; 2],
         attempts: usize,
         _: &mut Draws,
@@ -212,38 +218,28 @@ fn empty() -> (VoxelMap, DistanceField) {
     (map, field)
 }
 
-/// The plan of `arms` from `start`, each arm to its goal of `goals`, in an empty map.
-fn plan(
-    arms: &Arms<2, 4>,
-    start: [f64; 4],
-    goals: Vec<ArmGoal<2>>,
-) -> Result<Vec<[f64; 4]>, PlanFailure> {
+/// The plan of `arms` in an empty map from `start`, each arm to its goal of `goals`, holding
+/// `orientations`.
+fn plan<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    start: [f64; D],
+    goals: Vec<ArmGoal<N>>,
+    orientations: &[PathOrientation],
+) -> Result<Vec<[f64; D]>, PlanFailure> {
     let (map, field) = empty();
-    plan_in(&map, &field, arms, start, goals)
-}
-
-/// The plan of `arms` on `map`, whose distances `field` holds, from `start`, each arm to
-/// its goal of `goals`.
-fn plan_in(
-    map: &VoxelMap,
-    field: &DistanceField,
-    arms: &Arms<2, 4>,
-    start: [f64; 4],
-    goals: Vec<ArmGoal<2>>,
-) -> Result<Vec<[f64; 4]>, PlanFailure> {
     plan_path(
         arms,
         &Scene {
-            map,
-            field,
+            map: &map,
+            field: &field,
             stamp: 1,
             objects: Objects::none(),
         },
         &PlanRequest {
             start,
-            start_tolerance: [0.0; 4],
+            start_tolerance: [0.0; D],
             goals,
-            path_orientations: &[],
+            path_orientations: orientations,
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
             refiner: None,
@@ -259,7 +255,10 @@ fn plan_in(
 
 /// The states of the rounded path through `waypoints` at which no point of a link moves
 /// more than `PROBE_M` from one to the next, as `arms` bounds it.
-fn probes(arms: &Arms<2, 4>, waypoints: &[[f64; 4]]) -> Vec<[f64; 4]> {
+fn probes<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    waypoints: &[[f64; D]],
+) -> Vec<[f64; D]> {
     let vectors: Vec<Vec<f64>> = waypoints.iter().map(|q| q.to_vec()).collect();
     let path = RoundedPath::joint_path(&vectors);
     let step = PROBE_M / arms.lever();
@@ -269,7 +268,7 @@ fn probes(arms: &Arms<2, 4>, waypoints: &[[f64; 4]]) -> Vec<[f64; 4]> {
             path.at((k as f64 * step).min(path.length()))
                 .as_slice()
                 .try_into()
-                .expect("a state of both arms")
+                .expect("a state of the arms")
         })
         .collect()
 }
@@ -312,6 +311,7 @@ fn arms_that_cannot_swap_at_once_pass_each_other_apart() {
                 sampler: &samplers[1],
             },
         ],
+        &[],
     )
     .expect("a path that keeps the arms apart");
     assert_eq!(waypoints.first(), Some(&UP));
@@ -354,6 +354,7 @@ fn an_arm_whose_sampler_finds_nothing_is_named() {
                 sampler: &none,
             },
         ],
+        &[],
     );
     assert_eq!(
         failure,
@@ -396,6 +397,7 @@ fn a_goal_sample_draws_each_arm_against_the_arms_drawn_before_it() {
                 sampler: &right,
             },
         ],
+        &[],
     )
     .expect("a path to the right arm's second try");
     let last = waypoints.last().expect("a waypoint");
@@ -426,6 +428,7 @@ fn a_goal_sampling_that_rejects_every_try_of_an_arm_is_unreachable() {
                 sampler: &right,
             },
         ],
+        &[],
     ) else {
         panic!("every state overlaps");
     };
@@ -472,6 +475,7 @@ fn every_answered_path_of_two_arms_keeps_them_apart(tc: TestCase) {
                 sampler: &right,
             },
         ],
+        &[],
     ) else {
         return;
     };
@@ -534,6 +538,7 @@ fn a_goal_sample_judges_a_pair_of_the_arms_on_the_later_arms_turn() {
                 sampler: &right,
             },
         ],
+        &[],
     )
     .expect("a path to the goals, apart where they hold the arms");
     assert_eq!(waypoints.last(), Some(&end));
@@ -565,6 +570,7 @@ fn arms_that_start_nearer_than_the_clearance_depart_by_the_start_rule() {
                 sampler: &right,
             },
         ],
+        &[],
     )
     .expect("a path that departs and goes around");
     for q in probes(&arms, &waypoints) {
@@ -574,4 +580,301 @@ fn arms_that_start_nearer_than_the_clearance_depart_by_the_start_rule() {
             "the arms come {apart} m apart at {q:?}, from {at_start} m"
         );
     }
+}
+
+/// The joints of OpenArm v2's two arms.
+const OPENARM_BOTH: usize = 2 * JOINTS;
+
+/// How far (m) a goal of the right hand's position in the left hand's frame lets it end.
+const IN_HAND_M: f64 = 0.01;
+
+/// How far (rad) a goal or a path orientation of the right hand in the left hand's frame
+/// lets it turn.
+const IN_HAND_RAD: f64 = 0.05;
+
+/// Each OpenArm v2 arm with its elbow bent half a radian and its other joints at 0.
+const REST: [f64; JOINTS] = [0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0];
+
+/// The left and the right arm at `REST` with their first joints turned the robot's way by
+/// `turn` (rad): the left arm's first joint by `turn`, and the right arm's by the turn about
+/// its own axis that turns it alike, so both hands turn about one axis of the robot.
+fn both_turned(turn: f64) -> ([f64; JOINTS], [f64; JOINTS]) {
+    let axis =
+        |arm: &collision_geometry::chain::ChainGeometry<JOINTS>| arm.chain().at(&REST).axis_root(0);
+    let alike = axis(&LEFT_ARM).dot(&axis(&RIGHT_ARM));
+    assert!(
+        (alike.abs() - 1.0).abs() < 1e-9,
+        "the arms' first joints turn about one axis of the robot, {alike} apart"
+    );
+    let mut left = REST;
+    left[0] += turn;
+    let mut right = REST;
+    right[0] += turn * alike;
+    (left, right)
+}
+
+/// The grasp point's pose of OpenArm v2's left arm at `left` and of its right arm at `right`.
+fn hands(left: &[f64; JOINTS], right: &[f64; JOINTS]) -> (Isometry3<f64>, Isometry3<f64>) {
+    (
+        LEFT_ARM.chain().root_ee_pose(left),
+        RIGHT_ARM.chain().root_ee_pose(right),
+    )
+}
+
+/// The goal of every joint of an OpenArm v2 arm within 0.01 rad of `q`.
+fn openarm_at(q: [f64; JOINTS]) -> Goal {
+    let joints = (0..JOINTS)
+        .map(|joint| JointTarget {
+            joint,
+            position: q[joint],
+            above: positive(0.01),
+            below: positive(0.01),
+        })
+        .collect();
+    Goal::new(JOINTS, joints, Vec::new(), Vec::new()).expect("a valid goal")
+}
+
+/// The left hand's grasp point, the frame of the left arm, the first of the group.
+const LEFT_HAND: Reference = Reference::Arm {
+    arm: 0,
+    frame: Frame::GraspPoint,
+};
+
+/// The goal of a hand at `relative` in the frame of the hand of the arm at place `leader`: its
+/// position, and its orientation where `with_orientation` holds.
+fn in_the_hand_of(leader: usize, relative: &Isometry3<f64>, with_orientation: bool) -> Goal {
+    let reference = Reference::Arm {
+        arm: leader,
+        frame: Frame::GraspPoint,
+    };
+    let orientation = OrientationTarget {
+        frame: Frame::GraspPoint,
+        reference,
+        orientation: relative.rotation,
+        tolerance_rad: positive(IN_HAND_RAD),
+        free_axis: None,
+    };
+    Goal::new(
+        JOINTS,
+        Vec::new(),
+        vec![PositionTarget {
+            frame: Frame::GraspPoint,
+            reference,
+            position: relative.translation.vector,
+            tolerance_m: positive(IN_HAND_M),
+        }],
+        with_orientation
+            .then_some(orientation)
+            .into_iter()
+            .collect(),
+    )
+    .expect("a valid goal")
+}
+
+/// OpenArm v2's two arms, left then right, with no self model.
+fn openarm_both() -> Arms<'static, JOINTS, OPENARM_BOTH> {
+    Arms::new(vec![plan_arm(LEFT), plan_arm(RIGHT)], None)
+}
+
+/// The plan of OpenArm v2's two arms, left then right, with no self model, in an empty map,
+/// from `start`, each arm to its goal of `goals`, holding `orientations`.
+fn plan_openarm(
+    start: [f64; OPENARM_BOTH],
+    goals: [&Goal; 2],
+    orientations: &[PathOrientation],
+) -> Result<Vec<[f64; OPENARM_BOTH]>, PlanFailure> {
+    let samplers = [
+        IkGoalSampler::new(LEFT_ARM.chain().clone()),
+        IkGoalSampler::new(RIGHT_ARM.chain().clone()),
+    ];
+    let goals = goals
+        .iter()
+        .zip(&samplers)
+        .map(|(goal, sampler)| ArmGoal { goal, sampler })
+        .collect();
+    plan(&openarm_both(), start, goals, orientations)
+}
+
+/// Plans OpenArm v2's two arms from `REST`: the arm at place `leader` turns at its shoulder to
+/// a goal of its joints, and the other arm's hand to a goal in the leader's hand frame, a
+/// position and then a pose, that both hands meet where `both_turned` turns them. The other hand
+/// ends at its goal against the leader's hand where the path's last state puts it, far from
+/// where the leader's hand frame stood at the start.
+fn a_goal_in_the_leaders_hand_frame_holds_where_that_hand_ends(leader: usize) {
+    let (left_end, right_end) = both_turned(-0.5);
+    let ends = [left_end, right_end];
+    let follower = 1 - leader;
+    let hands_at = |q: &[f64; OPENARM_BOTH]| {
+        let (left, right) = hands(
+            &Arms::<JOINTS, OPENARM_BOTH>::slice(q, 0),
+            &Arms::<JOINTS, OPENARM_BOTH>::slice(q, 1),
+        );
+        [left, right]
+    };
+    let at_the_end = hands_at(&Arms::<JOINTS, OPENARM_BOTH>::join(&ends));
+    let relative = at_the_end[leader].inverse() * at_the_end[follower];
+    let leader_goal = openarm_at(ends[leader]);
+    let start = Arms::<JOINTS, OPENARM_BOTH>::join(&[REST, REST]);
+    for with_orientation in [false, true] {
+        let follower_goal = in_the_hand_of(leader, &relative, with_orientation);
+        let goals = if leader == 0 {
+            [&leader_goal, &follower_goal]
+        } else {
+            [&follower_goal, &leader_goal]
+        };
+        let path = plan_openarm(start, goals, &[]).unwrap_or_else(|failure| panic!("{failure}"));
+        let ended = hands_at(path.last().expect("a waypoint"));
+        let held = ended[leader] * Point3::from(relative.translation.vector);
+        let off = (held.coords - ended[follower].translation.vector).norm();
+        assert!(off <= IN_HAND_M, "the hand ends {off} m from its goal");
+        if with_orientation {
+            let turned =
+                (ended[leader].rotation * relative.rotation).angle_to(&ended[follower].rotation);
+            assert!(
+                turned <= IN_HAND_RAD,
+                "the hand ends {turned} rad from its goal"
+            );
+        }
+        let at_start = hands_at(&start)[leader] * Point3::from(relative.translation.vector);
+        assert!(
+            (at_start.coords - ended[follower].translation.vector).norm() > 0.1,
+            "the goal held where the leader's hand started"
+        );
+    }
+}
+
+// The left arm turns at its shoulder to a goal of its joints, and the right hand's goal, a
+// position and then a pose in the left hand's frame, holds against the left hand where the
+// path's last state puts it: the right hand ends there, far from where the left hand's frame
+// stood at the start.
+#[test]
+fn a_goal_in_the_other_hands_frame_holds_against_that_hand_where_it_ends() {
+    a_goal_in_the_leaders_hand_frame_holds_where_that_hand_ends(0);
+}
+
+// The right arm, after the left in the group, turns at its shoulder to a goal of its joints,
+// and the left hand's goal is in the right hand's frame: the plan samples the right arm first,
+// as MoveIt orders a sampler after the samplers whose links its frames are, and the left hand
+// ends at its goal against the right hand where the path's last state puts it.
+#[test]
+fn a_goal_in_a_frame_of_an_arm_later_in_the_group_holds_where_that_arm_ends() {
+    a_goal_in_the_leaders_hand_frame_holds_where_that_hand_ends(1);
+}
+
+// Both arms turn at their shoulders about one axis of the robot while the right hand holds
+// its orientation in the left hand's frame: every waypoint, and every probe of the rounded
+// path the robot runs, keeps the right hand within the tolerance of it where the left hand
+// stands, though each hand turns half a radian in the robot frame.
+#[test]
+fn a_path_orientation_in_the_other_hands_frame_holds_at_every_state() {
+    let (left_end, right_end) = both_turned(-0.5);
+    let (left_start, right_start) = hands(&REST, &REST);
+    let relative = left_start.rotation.inverse() * right_start.rotation;
+    let orientations = [PathOrientation {
+        holder: Holder::Arm(1),
+        link_name: &openarm_v2::arm(RIGHT).grasp_link,
+        target: OrientationTarget {
+            frame: Frame::GraspPoint,
+            reference: LEFT_HAND,
+            orientation: relative,
+            tolerance_rad: positive(IN_HAND_RAD),
+            free_axis: None,
+        },
+    }];
+    let start = Arms::<JOINTS, OPENARM_BOTH>::join(&[REST, REST]);
+    let path = plan_openarm(
+        start,
+        [&openarm_at(left_end), &openarm_at(right_end)],
+        &orientations,
+    )
+    .unwrap_or_else(|failure| panic!("{failure}"));
+    let error = |q: &[f64; OPENARM_BOTH]| {
+        let (left, right) = (
+            Arms::<JOINTS, OPENARM_BOTH>::slice(q, 0),
+            Arms::<JOINTS, OPENARM_BOTH>::slice(q, 1),
+        );
+        let (left_hand, right_hand) = hands(&left, &right);
+        (left_hand.rotation * relative).angle_to(&right_hand.rotation)
+    };
+    for q in path.iter().copied().chain(probes(&openarm_both(), &path)) {
+        let turned = error(&q);
+        assert!(
+            turned <= IN_HAND_RAD,
+            "the right hand turns {turned} rad at {q:?}"
+        );
+    }
+    let (left_end_hand, _) = hands(
+        &Arms::<JOINTS, OPENARM_BOTH>::slice(path.last().expect("a waypoint"), 0),
+        &REST,
+    );
+    assert!(left_end_hand.rotation.angle_to(&left_start.rotation) > 0.4);
+}
+
+/// A plan of OpenArm v2's left arm alone from `start` to `goal`, holding `orientations`,
+/// the right arm outside the plan, as `plan_openarm` plans both.
+fn plan_left_alone(
+    start: [f64; JOINTS],
+    goal: &Goal,
+    orientations: &[PathOrientation],
+) -> Result<Vec<[f64; JOINTS]>, PlanFailure> {
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goals = vec![ArmGoal {
+        goal,
+        sampler: &sampler,
+    }];
+    plan(&left_alone(), start, goals, orientations)
+}
+
+/// How far (rad) the right hand, standing outside a plan of the left arm, may turn from its
+/// orientation in the left hand's frame.
+const STANDING_RAD: f64 = 0.6;
+
+// The right hand stands outside a plan of the left arm and holds an orientation in the left
+// hand's frame. MoveIt judges such a constraint at each state against where the state puts
+// the left hand, every joint outside the planning group at the start state's
+// (state_validity_checker.cpp:58, :102-107; kinematic_constraint.cpp:728-735). A turn of the
+// left arm that keeps the right hand within the tolerance plans, every waypoint and every
+// probe of the rounded path within it, and the right hand ends turned from the left hand's
+// frame by about the left hand's turn; a turn past the tolerance fails with no_path.
+#[test]
+fn a_standing_hand_holds_its_orientation_in_the_moving_hands_frame() {
+    let (left_start, right_standing) = hands(&REST, &REST);
+    let relative = left_start.rotation.inverse() * right_standing.rotation;
+    let orientations = [PathOrientation {
+        holder: Holder::Standing(right_standing.rotation),
+        link_name: &openarm_v2::arm(RIGHT).grasp_link,
+        target: OrientationTarget {
+            frame: Frame::GraspPoint,
+            reference: LEFT_HAND,
+            orientation: relative,
+            tolerance_rad: positive(STANDING_RAD),
+            free_axis: None,
+        },
+    }];
+    let error = |left: &[f64; JOINTS]| {
+        (LEFT_ARM.chain().root_ee_pose(left).rotation * relative).angle_to(&right_standing.rotation)
+    };
+    let (within, _) = both_turned(-0.4);
+    let path = plan_left_alone(REST, &openarm_at(within), &orientations)
+        .unwrap_or_else(|failure| panic!("{failure}"));
+    for q in path.iter().copied().chain(probes(&left_alone(), &path)) {
+        let turned = error(&q);
+        assert!(
+            turned <= STANDING_RAD,
+            "the right hand stands {turned} rad off at {q:?}"
+        );
+    }
+    let at_the_end = error(path.last().expect("a waypoint"));
+    assert!(
+        at_the_end > 0.3,
+        "the left hand's turn moves the frame the right hand's orientation is held in: {at_the_end}"
+    );
+    let (past, _) = both_turned(-1.0);
+    assert!(
+        matches!(
+            plan_left_alone(REST, &openarm_at(past), &orientations),
+            Err(PlanFailure::NoPath(_))
+        ),
+        "a turn past the tolerance breaks the orientation"
+    );
 }
