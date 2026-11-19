@@ -261,6 +261,7 @@ pub(crate) mod tests {
                 min_pass_through: u32::MAX,
                 occupancy_threshold: 0.1,
             },
+            map.summary().scans,
             0,
         )
         .expect("a grid karto can count")

@@ -11,7 +11,7 @@ use std::path::Path;
 
 mod common;
 use common::properties::{Room, circle_drive, drifting_odometry, loop_drive, room};
-use common::{CREATED_AT_UNIX_NS, room_map_of, scratch_directory, sync_parameters};
+use common::{MAPPING_START_UNIX_NS, room_map_of, scratch_directory, sync_parameters};
 
 #[hegel::test(test_cases = 5)]
 fn a_saved_map_loads_as_the_same_pose_graph_and_grid(tc: TestCase) {
@@ -24,7 +24,10 @@ fn a_saved_map_loads_as_the_same_pose_graph_and_grid(tc: TestCase) {
     let loaded = RoomMap::load(&directory).expect("the map loads");
     assert_eq!(loaded, map);
     assert_eq!(loaded.summary(), map.summary());
-    assert_eq!(loaded.summary().created_at_unix_ns, CREATED_AT_UNIX_NS);
+    assert_eq!(
+        loaded.summary().mapping_start_unix_ns,
+        MAPPING_START_UNIX_NS
+    );
 }
 
 /// A map of a drive around a room 6 by 4 m, saved in a directory of its own.

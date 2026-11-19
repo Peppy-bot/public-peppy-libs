@@ -24,7 +24,7 @@ use common::properties::{
     planar, position_error, relative, room,
 };
 use common::{
-    CREATED_AT_UNIX_NS, LOCALIZED_POSITION, SCAN_PERIOD_NS, localization_parameters, map_of,
+    LOCALIZED_POSITION, MAPPING_START_UNIX_NS, SCAN_PERIOD_NS, localization_parameters, map_of,
     placed, room_map_of, slam_toolbox_localization, sync_parameters,
 };
 
@@ -200,7 +200,7 @@ fn after_mapping_the_pose_goes_on_from_the_mappings_estimate_within_one_cell(tc:
     let drive = loop_drive(&tc, &room);
     let odometry = drifting_odometry(&tc, &drive);
     let (_, mut localization) = map_of(&room, &drive, &odometry, sync_parameters())
-        .finish(CREATED_AT_UNIX_NS, localization_parameters())
+        .finish(MAPPING_START_UNIX_NS, localization_parameters())
         .expect("valid parameters")
         .expect("the drive maps the room");
     // The base drives the loop again from where mapping left it, its odometry going on.

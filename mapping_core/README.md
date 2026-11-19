@@ -89,7 +89,7 @@ for frame in frames {
 }
 let localization_parameters = LocalizationParameters { slam_toolbox, matching_limits };
 let (map, mut localization) = mapping
-    .finish(created_at_unix_ns, localization_parameters)?
+    .finish(mapping_start_unix_ns, localization_parameters)?
     .expect("a map of the scans");
 map.save(directory)?;
 
