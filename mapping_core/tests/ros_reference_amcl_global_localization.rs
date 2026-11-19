@@ -17,7 +17,7 @@ mod common;
 use camera_core::laser_scan::LaserScan;
 use common::properties::planar;
 use common::{
-    CREATED_AT_UNIX_NS, amcl_parameters, localization_parameters, placed, scratch_directory,
+    MAPPING_START_UNIX_NS, amcl_parameters, localization_parameters, placed, scratch_directory,
 };
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
@@ -113,7 +113,7 @@ fn save_map_of_scans(
         "width": grid.width,
         "height": grid.height,
         "scans": map_scans.len(),
-        "created_at_unix_ns": CREATED_AT_UNIX_NS,
+        "mapping_start_unix_ns": MAPPING_START_UNIX_NS,
     });
     let cell = |character: char| match character {
         '#' => CellState::Occupied,

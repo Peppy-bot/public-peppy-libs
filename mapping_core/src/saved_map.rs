@@ -43,17 +43,19 @@ pub struct RoomMap {
     pub(crate) state: MapperState,
     grid_parameters: GridParameters,
     grid: OccupancyGrid,
-    created_at_unix_ns: i64,
+    /// The scans its mapping read, as [`crate::Mapping::scans`] counts them.
+    scans: u32,
+    mapping_start_unix_ns: i64,
 }
 
 /// A map as `room_map`'s map object describes it: where its grid lies, the number of
-/// scans its mapping added to its graph, and when its mapping started (ns since the Unix
-/// epoch, on the wall clock).
+/// scans its mapping read, and when its mapping started (ns since the Unix epoch, on the
+/// wall clock).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapSummary {
     pub extent: GridExtent,
     pub scans: u32,
-    pub created_at_unix_ns: i64,
+    pub mapping_start_unix_ns: i64,
 }
 
 /// Why a map was not saved.
@@ -150,15 +152,16 @@ struct MetaFile {
     origin: [f64; 2],
     width: u32,
     height: u32,
-    scans: usize,
-    created_at_unix_ns: i64,
+    scans: u32,
+    mapping_start_unix_ns: i64,
 }
 
 impl RoomMap {
     pub(crate) fn new(
         state: MapperState,
         grid_parameters: GridParameters,
-        created_at_unix_ns: i64,
+        scans: u32,
+        mapping_start_unix_ns: i64,
     ) -> Result<Option<Self>, GridError> {
         let Some(grid) =
             OccupancyGrid::from_scans(state.scans.values(), &state.laser, grid_parameters)?
@@ -169,7 +172,8 @@ impl RoomMap {
             state,
             grid_parameters,
             grid,
-            created_at_unix_ns,
+            scans,
+            mapping_start_unix_ns,
         }))
     }
 
@@ -182,8 +186,8 @@ impl RoomMap {
     pub fn summary(&self) -> MapSummary {
         MapSummary {
             extent: self.grid.extent(),
-            scans: self.state.scans.len() as u32,
-            created_at_unix_ns: self.created_at_unix_ns,
+            scans: self.scans,
+            mapping_start_unix_ns: self.mapping_start_unix_ns,
         }
     }
 
@@ -288,8 +292,8 @@ impl RoomMap {
             origin: self.grid.origin(),
             width: self.grid.width(),
             height: self.grid.height(),
-            scans: self.state.scans.len(),
-            created_at_unix_ns: self.created_at_unix_ns,
+            scans: self.scans,
+            mapping_start_unix_ns: self.mapping_start_unix_ns,
         }
     }
 
@@ -298,7 +302,7 @@ impl RoomMap {
         let pose_graph: PoseGraphFile = parse_file(directory, POSE_GRAPH_FILE)?;
         let meta: MetaFile = parse_file(directory, META_FILE)?;
         let state = state_of(&pose_graph)?;
-        if meta.scans != state.scans.len() {
+        if (meta.scans as usize) < state.scans.len() {
             return Err(LoadError::Disagree {
                 file: META_FILE,
                 field: "scans".into(),
@@ -322,13 +326,18 @@ impl RoomMap {
             min_pass_through: meta.min_pass_through,
             occupancy_threshold: meta.occupancy_threshold,
         };
-        let map = RoomMap::new(state, grid_parameters, meta.created_at_unix_ns)
-            .map_err(|error| invalid_resolution(format!("is {resolution}: {error}")))?
-            .ok_or_else(|| LoadError::Invalid {
-                file: POSE_GRAPH_FILE,
-                field: "nodes".into(),
-                reason: "is empty, and a map holds a scan".into(),
-            })?;
+        let map = RoomMap::new(
+            state,
+            grid_parameters,
+            meta.scans,
+            meta.mapping_start_unix_ns,
+        )
+        .map_err(|error| invalid_resolution(format!("is {resolution}: {error}")))?
+        .ok_or_else(|| LoadError::Invalid {
+            file: POSE_GRAPH_FILE,
+            field: "nodes".into(),
+            reason: "is empty, and a map holds a scan".into(),
+        })?;
         let fields = [
             ("origin", meta.origin == map.grid.origin()),
             ("width", meta.width == map.grid.width()),

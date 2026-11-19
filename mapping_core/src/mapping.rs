@@ -409,6 +409,9 @@ pub struct Mapping {
     karto: KartoParameters,
     gate: ScanGate,
     mapper: Option<Mapper>,
+    /// The scans the mapping read: each scan `add` took, whether or not it passed the
+    /// gate and joined the graph. It stays at `u32::MAX` once there.
+    scans: u32,
     /// From the odometry frame to the map, at the last scan the mapping added.
     map_from_odometry: Pose2,
 }
@@ -421,6 +424,7 @@ impl Mapping {
             karto: parameters.karto()?,
             gate: ScanGate::new(&parameters),
             mapper: None,
+            scans: 0,
             map_from_odometry: Pose2::new(0.0, 0.0, 0.0),
         })
     }
@@ -443,6 +447,7 @@ impl Mapping {
         };
         let mapper = self.mapper.insert(mapper);
         mapper.laser().validate(&scan.geometry)?;
+        self.scans = self.scans.saturating_add(1);
         let odometry = scan.odometry;
         if !self.gate.passes(scan.stamp_ns, odometry) {
             return Ok(None);
@@ -471,11 +476,10 @@ impl Mapping {
         }))
     }
 
-    /// The number of scans added to the graph.
+    /// The number of scans the mapping read, whether or not each joined the graph: the
+    /// `scans` of room_map's map object.
     pub fn scans(&self) -> u32 {
-        self.mapper
-            .as_ref()
-            .map_or(0, |mapper| mapper.scans().len() as u32)
+        self.scans
     }
 
     /// The extent of the map's grid as it stands, as karto's `ComputeDimensions` gives it
@@ -492,8 +496,9 @@ impl Mapping {
         self.map_from_odometry.into()
     }
 
-    /// The map as it stands, made at `created_at_unix_ns`; none before a scan was added.
-    pub(crate) fn map(&self, created_at_unix_ns: i64) -> Result<Option<RoomMap>, GridError> {
+    /// The map as it stands, whose mapping started at `mapping_start_unix_ns`; none before a
+    /// scan was added.
+    pub(crate) fn map(&self, mapping_start_unix_ns: i64) -> Result<Option<RoomMap>, GridError> {
         let Some(mapper) = self.mapper.as_ref() else {
             return Ok(None);
         };
@@ -504,20 +509,21 @@ impl Mapping {
                 min_pass_through: self.parameters.min_pass_through,
                 occupancy_threshold: self.parameters.occupancy_threshold,
             },
-            created_at_unix_ns,
+            self.scans,
+            mapping_start_unix_ns,
         )
     }
 
-    /// The end of mapping: the map, whose mapping started at `created_at_unix_ns` on the
+    /// The end of mapping: the map, whose mapping started at `mapping_start_unix_ns` on the
     /// wall clock, and the localization that keeps the base's pose on the graph the
     /// mapping built, from the mapping's estimate. None before a scan was added. When
     /// `localization` keeps no pose, the error holds the map.
     pub fn finish(
         self,
-        created_at_unix_ns: i64,
+        mapping_start_unix_ns: i64,
         localization: LocalizationParameters,
     ) -> Result<Option<(RoomMap, Localization)>, FinishError> {
-        let Some(map) = self.map(created_at_unix_ns)? else {
+        let Some(map) = self.map(mapping_start_unix_ns)? else {
             return Ok(None);
         };
         match Localization::continuing(&map.state, localization, self.map_from_odometry) {
