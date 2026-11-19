@@ -98,7 +98,7 @@ use crate::localization::{
 use crate::localized_scan::{Laser, LocalizedScan, ScanError, ScanId};
 use crate::map_pose::{Deviations, MapPose};
 use crate::mapper::{KartoParameters, Mapper};
-use crate::occupancy_grid::{GridError, GridExtent, GridParameters};
+use crate::occupancy_grid::{GridError, GridExtent, GridParameters, OccupancyGrid};
 use crate::placed_scan::PlacedScan;
 use crate::saved_map::RoomMap;
 use crate::scan_matcher::{MatchParameters, MatcherError, MatcherSizes};
@@ -496,6 +496,28 @@ impl Mapping {
         self.map_from_odometry.into()
     }
 
+    /// The parameters of the map's grid.
+    fn grid_parameters(&self) -> GridParameters {
+        GridParameters {
+            resolution: self.parameters.resolution,
+            min_pass_through: self.parameters.min_pass_through,
+            occupancy_threshold: self.parameters.occupancy_threshold,
+        }
+    }
+
+    /// The grid of the map as it stands, the grid of the map that `finish` gives; none
+    /// before a scan was added.
+    pub fn grid(&self) -> Result<Option<OccupancyGrid>, GridError> {
+        let Some(mapper) = self.mapper.as_ref() else {
+            return Ok(None);
+        };
+        OccupancyGrid::from_scans(
+            mapper.scans().values(),
+            mapper.laser(),
+            self.grid_parameters(),
+        )
+    }
+
     /// The map as it stands, whose mapping started at `mapping_start_unix_ns`; none before a
     /// scan was added.
     pub(crate) fn map(&self, mapping_start_unix_ns: i64) -> Result<Option<RoomMap>, GridError> {
@@ -504,11 +526,7 @@ impl Mapping {
         };
         RoomMap::new(
             mapper.state(),
-            GridParameters {
-                resolution: self.parameters.resolution,
-                min_pass_through: self.parameters.min_pass_through,
-                occupancy_threshold: self.parameters.occupancy_threshold,
-            },
+            self.grid_parameters(),
             self.scans,
             mapping_start_unix_ns,
         )

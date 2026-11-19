@@ -20,7 +20,7 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   with the pose graph optimized by Ceres 2.2.0's Levenberg-Marquardt schedule as
   slam_toolbox configures it, each step's normal equations solved by faer's sparse Cholesky
   factorization. Each scan it adds to the graph is a scan of the map, and answers the
-  base's `MapPose`.
+  base's `MapPose`. `Mapping::grid` is the grid of the map as it stands.
 - `RoomMap` is a map: its pose graph with its scans, the `OccupancyGrid` that karto makes of
   them, and its `MapSummary`. `RoomMap::save` writes it as a directory: `pose_graph.json`,
   `meta.json`, and `map.pgm` with `map.yaml` as Nav2's map saver writes a trinary map.

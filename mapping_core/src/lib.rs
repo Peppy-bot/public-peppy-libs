@@ -30,7 +30,8 @@
 //!   near chains of scans it matches, and each loop it closes against a chain of scans
 //!   nearby closes, by optimizing the pose graph with Ceres's Levenberg-Marquardt
 //!   schedule as slam_toolbox configures it. Its [`RoomMap`] is the pose graph with its
-//!   scans and an [`OccupancyGrid`] made of them as karto makes it.
+//!   scans and an [`OccupancyGrid`] made of them as karto makes it, and
+//!   [`Mapping::grid`] is that grid while the map is built.
 //! - [`RoomMap::save`] and [`RoomMap::load`]: a map as a directory of the pose graph, a
 //!   description, and the grid as Nav2's map saver writes a trinary map.
 //! - [`Localization`]: the base's pose in a map, kept as slam_toolbox keeps it in its
