@@ -6,10 +6,11 @@ use std::num::NonZeroUsize;
 
 use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::GridGeometry;
 use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
-use occupancy_map::{Bounds, Frame};
+use occupancy_map::Bounds;
 use ros_reference::{Grid, SensorTransform};
 
 use super::footprints;
@@ -88,7 +89,7 @@ pub fn live_obstacles_over(
         ],
     };
     let live = LiveObstacles::new(
-        Frame::parse("map").expect("a frame name"),
+        FrameName::parse("map").expect("a frame name"),
         bounds,
         heights,
         padded_footprint,

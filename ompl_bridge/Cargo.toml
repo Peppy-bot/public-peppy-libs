@@ -9,11 +9,13 @@ description = "OMPL's geometric planners from Rust: a real vector state space wi
 [dependencies]
 cxx = "1"
 thiserror = "2"
+tracing = "0.1"
 
 [dev-dependencies]
 diffy = "0.5"
 ros_reference = { path = "../ros_reference" }
 sha2 = "0.11"
+tracing-subscriber = "0.3"
 
 [build-dependencies]
 cc = { version = "1", features = ["parallel"] }

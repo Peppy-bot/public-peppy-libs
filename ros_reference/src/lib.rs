@@ -23,6 +23,7 @@
 //! its reference output, and pairs them for the parity test. The README says how to add a
 //! scenario and a kind.
 
+pub mod amcl_global_localization;
 pub mod arm_planning;
 pub mod cartesian_paths;
 pub mod chain_collision;
@@ -32,6 +33,8 @@ pub mod diff_drive_odometry;
 pub mod forward_kinematics;
 pub mod global_costmap;
 pub mod inflation;
+pub mod laser_projection;
+pub mod map_export;
 pub mod metrics;
 pub mod obstacle_projection;
 pub mod occupancy;
@@ -43,6 +46,7 @@ pub mod pure_pursuit;
 pub mod room_dataset;
 pub mod self_distance;
 pub mod smac_2d;
+pub mod transform_lookup;
 pub mod velocity_smoother;
 
 use robot_description::{Arm, RobotDescription};
@@ -69,6 +73,7 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 #[derive(PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
+    AmclGlobalLocalization,
     ArmPlanning,
     CartesianPaths,
     ChainCollision,
@@ -78,6 +83,8 @@ enum Kind {
     ForwardKinematics,
     GlobalCostmap,
     Inflation,
+    LaserProjection,
+    MapExport,
     ObstacleProjection,
     Occupancy,
     OrientationConstraints,
@@ -89,6 +96,7 @@ enum Kind {
     SelfDistance,
     #[serde(rename = "smac_2d")]
     Smac2d,
+    TransformLookup,
     VelocitySmoother,
 }
 
@@ -132,6 +140,24 @@ impl Outputs {
             Outputs::Named(directory) => directory,
         }
     }
+}
+
+/// The environment variable that names the results directory of the local-only
+/// references, which `run.sh --datasets` sets for the parity tests of the local-only kinds.
+const RESULTS_VARIABLE: &str = "ROS_REFERENCE_RESULTS";
+
+/// The results directory of the local-only references, which `ROS_REFERENCE_RESULTS`
+/// names: the inputs that they prepared and the runs that they ran, under each scenario's
+/// name. Panics when it names none: `run.sh --datasets` runs the tests that read it.
+pub fn results_directory() -> PathBuf {
+    std::env::var_os(RESULTS_VARIABLE)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "{RESULTS_VARIABLE} names no results directory; ros_reference/run.sh --datasets \
+             runs the references and then this test with it"
+            )
+        })
 }
 
 /// The directory of the reference outputs that the parity tests read.
@@ -278,9 +304,7 @@ impl Robot {
     pub fn group_arms(&self, name: &str, group: &str) -> Vec<Arm> {
         self.description
             .group_arms(group)
-            .unwrap_or_else(|| {
-                panic!("{name}: the group {group} is neither an arm nor a group of arms")
-            })
+            .unwrap_or_else(|unknown| panic!("{name}: {unknown}"))
             .into_iter()
             .cloned()
             .collect()

@@ -10,9 +10,9 @@ use collision_geometry::chain::{Padding, PlacedMask};
 use collision_geometry::gjk::Support;
 use collision_geometry::shapes::{PlacedMesh, PlacedShape};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::FrameName;
 use nalgebra::{Point3, Vector3};
 
-use crate::frame::Frame;
 use crate::grid::Grid;
 use crate::key::{Key, TREE_VOXELS, VoxelSize};
 use crate::ray::ray_keys;
@@ -75,19 +75,19 @@ pub enum InsertError {
         "the scan's sensor stands in frame \"{scan}\" and the map is in \"{map}\": give the \
          sensor's pose in \"{map}\""
     )]
-    ScanFrame { scan: Frame, map: Frame },
+    ScanFrame { scan: FrameName, map: FrameName },
     #[error(
         "a cutout stands in frame \"{cutout}\" and the map is in \"{map}\": place the \
          cutout in \"{map}\""
     )]
-    CutoutFrame { cutout: Frame, map: Frame },
+    CutoutFrame { cutout: FrameName, map: FrameName },
 }
 
 /// A shape a scan cuts out of the map: a point inside it is the robot seeing
 /// itself.
 pub trait Cutout {
     /// The frame the shape stands in.
-    fn frame(&self) -> &Frame;
+    fn frame(&self) -> &FrameName;
 
     /// Whether `point`, in the shape's frame, lies inside the shape.
     fn contains(&self, point: [f64; 3]) -> bool;
@@ -98,7 +98,7 @@ pub trait Cutout {
 /// frame of the URDF root, its chains at the frame's joint positions and the
 /// body fixed around them, and where that root stands in the cutout's frame.
 pub struct RobotCutout<'a> {
-    frame: &'a Frame,
+    frame: &'a FrameName,
     /// The cutout's frame placed in the URDF root's: the root's pose,
     /// inverted.
     to_root: Pose,
@@ -108,7 +108,7 @@ pub struct RobotCutout<'a> {
 impl<'a> RobotCutout<'a> {
     /// The robot of grown parts `parts`, whose URDF root stands at `root` in
     /// `frame`.
-    pub fn new(frame: &'a Frame, root: Pose, parts: Vec<PlacedMask<'a>>) -> Self {
+    pub fn new(frame: &'a FrameName, root: Pose, parts: Vec<PlacedMask<'a>>) -> Self {
         Self {
             frame,
             to_root: root.inverse(),
@@ -118,7 +118,7 @@ impl<'a> RobotCutout<'a> {
 }
 
 impl Cutout for RobotCutout<'_> {
-    fn frame(&self) -> &Frame {
+    fn frame(&self) -> &FrameName {
         self.frame
     }
 
@@ -132,13 +132,13 @@ impl Cutout for RobotCutout<'_> {
 /// inside it is the sensor seeing the object.
 pub struct ShapeCutout<'a> {
     /// The frame the shape stands in.
-    pub frame: &'a Frame,
+    pub frame: &'a FrameName,
     pub shape: PlacedShape<'a>,
     pub padding: Padding,
 }
 
 impl Cutout for ShapeCutout<'_> {
-    fn frame(&self) -> &Frame {
+    fn frame(&self) -> &FrameName {
         self.frame
     }
 
@@ -239,7 +239,7 @@ fn decide_regions(grid: &Grid, cells: &mut [Cell], touches: impl Fn(Key) -> bool
 /// as a point cloud carries them, the sensor's pose in `frame`, and how far
 /// it reads.
 pub struct Scan<'a> {
-    pub frame: &'a Frame,
+    pub frame: &'a FrameName,
     pub sensor: Pose,
     pub points: &'a [[f32; 3]],
     pub max_range_m: PositiveFinite,
@@ -303,7 +303,7 @@ pub enum Voxel {
 /// A voxel map of what a sensor sees.
 #[derive(Debug, Clone)]
 pub struct VoxelMap {
-    frame: Frame,
+    frame: FrameName,
     grid: Grid,
     /// Each voxel's log-odds, in the grid's order; NaN where no ray has
     /// reached it.
@@ -313,12 +313,12 @@ pub struct VoxelMap {
 
 impl VoxelMap {
     /// An empty map in `frame` of voxels of `size` over `bounds`.
-    pub fn new(frame: Frame, size: PositiveFinite, bounds: Bounds) -> Result<Self, MapError> {
+    pub fn new(frame: FrameName, size: PositiveFinite, bounds: Bounds) -> Result<Self, MapError> {
         Self::empty(frame, VoxelSize::new(size), bounds)
     }
 
     /// An empty map in `frame` of voxels of `size` over `bounds`.
-    fn empty(frame: Frame, size: VoxelSize, bounds: Bounds) -> Result<Self, MapError> {
+    fn empty(frame: FrameName, size: VoxelSize, bounds: Bounds) -> Result<Self, MapError> {
         let in_tree = |corner: [f64; 3]| {
             size.key(corner).ok_or(MapError::OutsideTree {
                 corner,
@@ -347,7 +347,7 @@ impl VoxelMap {
     }
 
     /// The frame the map holds its voxels in.
-    pub fn frame(&self) -> &Frame {
+    pub fn frame(&self) -> &FrameName {
         &self.frame
     }
 
@@ -481,9 +481,7 @@ impl VoxelMap {
                 "column [{x}, {y}] lies outside the map's {size_x} by {size_y} columns"
             );
             let bottom = (x * size_y + y) * size_z;
-            for index in bottom..bottom + size_z {
-                self.log_odds[index] = miss;
-            }
+            self.log_odds[bottom..bottom + size_z].fill(miss);
         }
     }
 
@@ -719,7 +717,7 @@ mod tests {
 
     fn map() -> VoxelMap {
         VoxelMap::new(
-            Frame::parse("world").expect("a frame"),
+            FrameName::parse("world").expect("a frame"),
             PositiveFinite::parse(0.05).expect("positive"),
             Bounds {
                 min: [-1.0; 3],
@@ -731,7 +729,7 @@ mod tests {
 
     #[test]
     fn a_map_refuses_bounds_it_cannot_hold() {
-        let world = || Frame::parse("world").expect("a frame");
+        let world = || FrameName::parse("world").expect("a frame");
         let size = PositiveFinite::parse(0.05).expect("positive");
         let inverted = Bounds {
             min: [1.0; 3],

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyjson5
-from robot_description_py import HOME, RobotDescription
+from robot_description_py import HOME, FingerSpan, Mimic, RobotDescription
 from robot_description_py import model as bundled_model
 
 from sim_robot_core.cameras import (
@@ -43,10 +43,6 @@ _ENTRIES_DIR = Path(__file__).parent / "models"
 _ENTRY_SUFFIX = ".json5"
 _ENTRY_KEYS = frozenset({"cameras"})
 
-# The least travel a finger has from closed to open, in its joint's unit.
-_LEAST_TRAVEL = 1e-9
-
-
 @dataclass(frozen=True)
 class Arm:
     """One arm of a robot: the name the robot answers to for it, and the
@@ -54,33 +50,6 @@ class Arm:
 
     name: str
     joints: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class FingerSpan:
-    """One finger joint's closed position and its signed travel to fully
-    open, so an opening fraction f sits at closed + f * travel."""
-
-    closed: float
-    travel: float
-
-    def position(self, opening: float) -> float:
-        return self.closed + self.travel * opening
-
-    def opening(self, position: float) -> float:
-        return (position - self.closed) / self.travel
-
-
-@dataclass(frozen=True)
-class Mimic:
-    """How a finger joint follows another finger joint of its gripper, one
-    that moves of its own, as the description's mimic gives it: it stands at
-    multiplier times that joint's position plus offset, in the joints'
-    unit."""
-
-    joint: str
-    multiplier: float
-    offset: float
 
 
 @dataclass(frozen=True)
@@ -196,42 +165,25 @@ def _fail(source: str, reason: str) -> ModelEntryError:
     return ModelEntryError(f"{source}: {reason}")
 
 
-def _gripper(source: str, gripper) -> Gripper:
-    spans = []
-    for finger in gripper.fingers:
-        span = FingerSpan(closed=finger.closed, travel=finger.open - finger.closed)
-        if abs(span.travel) <= _LEAST_TRAVEL:
-            raise _fail(
-                source,
-                f"finger joint '{finger.joint}' of '{gripper.name}' closes at {finger.closed} "
-                f"and opens at {finger.open}: it has no travel",
-            )
-        spans.append(span)
+def _gripper(gripper) -> Gripper:
     return Gripper(
         name=gripper.name,
         joints=tuple(finger.joint for finger in gripper.fingers),
-        spans=tuple(spans),
-        mimics=tuple(
-            None
-            if finger.mimic is None
-            else Mimic(
-                joint=finger.mimic.joint,
-                multiplier=finger.mimic.multiplier,
-                offset=finger.mimic.offset,
-            )
-            for finger in gripper.fingers
-        ),
+        spans=tuple(finger.span for finger in gripper.fingers),
+        mimics=tuple(finger.mimic for finger in gripper.fingers),
     )
 
 
 def _start_posture(source: str, description: RobotDescription) -> dict[str, float]:
     posture: dict[str, float] = {}
     for arm in description.arms:
-        home = description.state(arm.name, HOME)
-        if home is None:
-            raise _fail(source, f"the description gives the arm '{arm.name}' no {HOME} state")
+        try:
+            home = description.state(arm.name, HOME)
+        except KeyError as unknown:
+            reason = f"the description gives the arm '{arm.name}' no {HOME} state"
+            raise _fail(source, reason) from unknown
         posture.update(zip(arm.joints, home, strict=True))
-        posture.update((finger.joint, finger.closed) for finger in arm.gripper.fingers)
+        posture.update((finger.joint, finger.span.closed) for finger in arm.gripper.fingers)
     return posture
 
 
@@ -246,10 +198,10 @@ def _entry_of(
     renders of the entry at `source`, or None where no file is there. A
     camera of the description with no render and a render of no camera of
     the description are refused naming the entry; an arm with no home state
-    and a finger that does not travel, naming the model."""
+    and a description that names no arm, naming the model."""
     described = f"model {model}"
     arms = tuple(Arm(name=arm.name, joints=arm.joints) for arm in description.arms)
-    grippers = tuple(_gripper(described, arm.gripper) for arm in description.arms)
+    grippers = tuple(_gripper(arm.gripper) for arm in description.arms)
     if not arms:
         raise _fail(described, "the description names no arm")
     return ModelEntry(

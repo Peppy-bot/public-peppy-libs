@@ -1,16 +1,23 @@
-//! Room dataset. The reference is slam_toolbox, which maps a room from a TUM RGB-D
-//! sequence and localizes in that map, and Nav2's AMCL, which localizes globally in it,
-//! on the 2-D scans that pointcloud_to_laserscan projects from the sequence's depth
-//! frames, with odometry made from its ground truth and seeded noise.
+//! Room dataset. The reference is slam_toolbox, which maps a room and localizes in the map
+//! of a mapping scenario, and Nav2's AMCL, which localizes globally in it, on 2-D scans: of
+//! a TUM RGB-D sequence, those that pointcloud_to_laserscan projects from its depth frames,
+//! with odometry made from its ground truth and seeded noise; of a lidar drive of `drives/`,
+//! the scans that the reference casts, every ray at its scan's stamp, with odometry made
+//! from the drive's route and seeded noise.
 //!
-//! The reference reads its sequence from the host's dataset cache, so the kind runs
+//! The reference reads its sequences from the host's dataset cache, so the kind runs
 //! locally only, through `run.sh --datasets`: the reference program writes the prepared
 //! inputs and the poses of each run under the results directory, `target/results/` of the
 //! harness, and [`write_statistics`] scores each run with [`crate::metrics`] and writes
 //! the statistics of each seed as the scenario's reference output, which is committed.
 //! [`Statistics`] reads the committed statistics. An estimate of AMCL is a pose that it
-//! published on `amcl_pose`.
+//! published on `amcl_pose`. A parity test of a local-only kind reads the prepared inputs of
+//! a scenario under [`crate::results_directory`] with [`read_prepared`] and
+//! [`read_odometry`], and scores its own runs with [`trajectory_errors_of`],
+//! [`map_from_truth`] and [`localization_errors`], by which the statistics score the
+//! reference's.
 
+use crate::laser_projection::{LaserScanParameters, RangeRead, range_of, single};
 use crate::metrics::{
     self, Deviations, GlobalEstimate, GlobalOutcome, LocalizationLimits, LocalizedWithin,
     PlanarPose, best_alignment, global_outcome, trajectory_errors,
@@ -19,23 +26,30 @@ use crate::{
     Kind, json_file, parse, read_bytes, read_reference, scenario_directory, scenario_names,
     write_json,
 };
-use serde::Deserialize;
-use serde::de::IgnoredAny;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// The repository files of the kind's own code: the reference program's sources of the kind,
-/// the shared reference program it runs (the Nav2 node, whose `set_ros_time` sets each
-/// node's clock), and the crate's statistics. Each output lists them among its inputs, with
-/// the files that the reference read, so `INPUTS.SHA256SUMS` holds their digests, and a
-/// change to one fails the routine tests until `run.sh --datasets` writes the outputs again.
-const SOURCES: [&str; 12] = [
+/// the shared reference programs it runs (the Nav2 node, whose `set_ros_time` sets each
+/// node's clock, the AMCL node, the laser projection, whose projector turns each depth
+/// frame's cloud into a scan, and the point clouds), and the crate's statistics. Each output
+/// lists them among its inputs, with the files that the reference read, so
+/// `INPUTS.SHA256SUMS` holds their digests, and a change to one fails the routine tests
+/// until `run.sh --datasets` writes the outputs again.
+const SOURCES: [&str; 18] = [
     "ros_reference/reference_programs/amcl_map_cspace.cpp",
     "ros_reference/reference_programs/amcl_map_cspace.hpp",
+    "ros_reference/reference_programs/amcl_node.cpp",
+    "ros_reference/reference_programs/amcl_node.hpp",
+    "ros_reference/reference_programs/laser_projection.cpp",
+    "ros_reference/reference_programs/laser_projection.hpp",
     "ros_reference/reference_programs/nav2_node.cpp",
     "ros_reference/reference_programs/nav2_node.hpp",
+    "ros_reference/reference_programs/point_cloud.cpp",
+    "ros_reference/reference_programs/point_cloud.hpp",
     "ros_reference/reference_programs/room_dataset.cpp",
     "ros_reference/reference_programs/room_dataset.hpp",
     "ros_reference/reference_programs/room_dataset_files.cpp",
@@ -58,27 +72,73 @@ pub enum ThisKind {
 /// program sets them.
 pub type RosParameters = BTreeMap<String, Value>;
 
-/// A room dataset scenario: the sequence of `datasets.txt` that it reads, the seeds of its
-/// runs, how it keeps and projects the depth frames, the odometry noise, slam_toolbox's
-/// parameters, and its task.
+/// A room dataset scenario: the source of its scans, the seeds of its runs, the odometry
+/// noise, slam_toolbox's parameters, and its task.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub kind: ThisKind,
     /// The scenario's file name under `scenarios/`, without `.json`.
     pub name: String,
-    pub sequence: String,
+    pub source: Source,
     pub seeds: Vec<i64>,
+    pub odometry_noise: OdometryNoise,
+    pub slam_toolbox: RosParameters,
+    pub task: Task,
+}
+
+/// Where the scans of a scenario come from.
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Source {
+    /// A TUM RGB-D sequence of `datasets.txt`, its depth frames projected to scans.
+    TumRgbd(TumRgbd),
+    /// A lidar drive of `drives/`, which the README describes.
+    LidarDrive(LidarDrive),
+}
+
+/// A TUM RGB-D sequence: its name in `datasets.txt`, and how the reference keeps and
+/// projects its depth frames.
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TumRgbd {
+    pub sequence: String,
     /// The time between the depth frames that the scans come from (s).
     pub scan_period_s: f64,
     /// The longest gap of the ground truth across which a scan's pose is interpolated (s).
     pub max_ground_truth_gap_s: f64,
     pub camera: Camera,
-    /// pointcloud_to_laserscan's parameters.
-    pub laser_scan: RosParameters,
-    pub odometry_noise: OdometryNoise,
-    pub slam_toolbox: RosParameters,
-    pub task: Task,
+    pub laser_scan: LaserScanParameters,
+}
+
+/// A lidar drive: its file, by its path from the repository root, and the scans that the
+/// scenario keeps, `[first, end)` by their index in the drive.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LidarDrive {
+    drive: String,
+    scans: [usize; 2],
+}
+
+/// The member of a lidar drive's file that its readers take beyond the prepared scans.
+#[derive(Debug, Deserialize)]
+struct DriveRead {
+    lidar: DriveLidarRead,
+}
+
+#[derive(Debug, Deserialize)]
+struct DriveLidarRead {
+    time_increment_s: f64,
+}
+
+impl LidarDrive {
+    /// The time (s) from each ray of the drive's scans to the next, at which the drive
+    /// cast it.
+    pub fn time_increment_s(&self) -> f64 {
+        let path = crate::repository_root().join(&self.drive);
+        let drive: DriveRead = parse(&path, &crate::read_input(&path));
+        drive.lidar.time_increment_s
+    }
 }
 
 /// The depth camera's pinhole intrinsics (px) and the depth sample of one meter.
@@ -108,10 +168,10 @@ pub struct OdometryNoise {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Task {
-    /// slam_toolbox maps the room once a seed; the first seed's map is saved.
+    /// slam_toolbox maps the room once a seed, and saves each seed's map.
     Mapping { map_saver: MapSaver },
-    /// slam_toolbox localizes in the first seed's map of `map_scenario` once a seed, and
-    /// AMCL localizes globally in it once a seed. An estimate of AMCL is localized when it
+    /// Once a seed, slam_toolbox localizes in the map that the same seed of `map_scenario`
+    /// made, and AMCL localizes globally in it. An estimate of AMCL is localized when it
     /// lies `localized_within` the truth and, by AMCL's convergence test, the test holds or,
     /// by `search_limits`, the deviations of AMCL's whole filter lie within them.
     Localization {
@@ -149,7 +209,7 @@ pub fn scenarios() -> Vec<Scenario> {
 }
 
 /// The camera's mount on the base that the reference fitted from the ground truth.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MountRead {
     pub floor_normal: [f64; 3],
@@ -160,43 +220,119 @@ pub struct MountRead {
     pub roll: f64,
 }
 
+/// What the reference read of a TUM RGB-D sequence: its name, the camera's mount fitted
+/// from its ground truth, its depth frames, and the stamps (ns) of the depth frames kept a
+/// scan period that lay in a gap of the ground truth, which it dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TumRgbdRead {
+    pub sequence: String,
+    pub mount: MountRead,
+    pub depth_frames: usize,
+    pub dropped_scans: Vec<i64>,
+}
+
+/// What the reference read of a scenario's source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceRead {
+    TumRgbd(TumRgbdRead),
+    /// A lidar drive, of which the reference measures nothing beyond its scans.
+    LidarDrive {},
+}
+
+impl SourceRead {
+    /// Whether this is what the reference reads of `source`.
+    fn read_from(&self, source: &Source) -> bool {
+        match (self, source) {
+            (SourceRead::TumRgbd(read), Source::TumRgbd(tum)) => read.sequence == tum.sequence,
+            (SourceRead::LidarDrive {}, Source::LidarDrive(_)) => true,
+            _ => false,
+        }
+    }
+}
+
 /// What the reference program wrote as its output for a scenario: what it read and
 /// prepared, and the runs it ran.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunsRead {
     kind: ThisKind,
-    sequence: String,
+    source: SourceRead,
     task: String,
     inputs: Vec<String>,
     datasets_read: Vec<String>,
-    mount: MountRead,
-    depth_frames: usize,
     scans: usize,
-    dropped_scans: Vec<i64>,
     seeds: Vec<i64>,
     runs: Vec<String>,
 }
 
 /// A kept scan as the reference prepared it: its stamp, the base's pose in the ground
-/// truth's frame, and its ranges, which the statistics do not read.
+/// truth's frame, and its ranges, each widened from single precision.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PreparedScan {
+struct PreparedScanRead {
     stamp_ns: i64,
     truth: [f64; 3],
-    #[serde(rename = "ranges")]
-    _ranges: IgnoredAny,
+    ranges: Vec<RangeRead>,
 }
 
-/// The inputs that the reference prepared for a scenario: the scan parameters, which the
-/// statistics do not read, and each kept scan.
+/// The scan parameters that pointcloud_to_laserscan wrote into each scan, each widened
+/// from single precision.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Prepared {
-    #[serde(rename = "laser_scan")]
-    _laser_scan: IgnoredAny,
-    scans: Vec<PreparedScan>,
+struct ScanParametersRead {
+    angle_min: f64,
+    angle_max: f64,
+    angle_increment: f64,
+    range_min: f64,
+    range_max: f64,
+    scan_time: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreparedRead {
+    laser_scan: ScanParametersRead,
+    scans: Vec<PreparedScanRead>,
+}
+
+/// The scan parameters that pointcloud_to_laserscan wrote into each scan of a scenario,
+/// in the single precision of the message: its angles (rad), its range limits (m) and its
+/// time (s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScanParameters {
+    pub angle_min: f32,
+    pub angle_max: f32,
+    pub angle_increment: f32,
+    pub range_min: f32,
+    pub range_max: f32,
+    pub scan_time: f32,
+}
+
+/// A kept scan: its stamp (ns), the base's pose in the ground truth's frame, and the
+/// ranges (m) that pointcloud_to_laserscan projected, in single precision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedScan {
+    pub stamp_ns: i64,
+    pub truth: PlanarPose,
+    pub ranges: Vec<f32>,
+}
+
+/// The inputs that the reference prepared for a scenario, which a run reads: the scan
+/// parameters and each kept scan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prepared {
+    pub laser_scan: ScanParameters,
+    pub scans: Vec<PreparedScan>,
+}
+
+/// The pose of a kept scan that a run recorded, by the index of the scan among the kept
+/// scans.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScanPose {
+    pub scan: usize,
+    pub pose: PlanarPose,
 }
 
 /// The pose of a scan that a run recorded, by the index of the scan among the kept scans.
@@ -205,6 +341,15 @@ struct Prepared {
 struct RecordedPose {
     scan: usize,
     pose: [f64; 3],
+}
+
+impl RecordedPose {
+    fn scan_pose(&self) -> ScanPose {
+        ScanPose {
+            scan: self.scan,
+            pose: planar(self.pose),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,28 +368,29 @@ struct LocalizationRun {
     poses: Vec<RecordedPose>,
 }
 
-/// The covariance of AMCL's whole filter, which `amcl_pose` carries: of x and y (m^2), and
-/// the circular variance of the heading.
+/// The covariance that a pose carries: of x and y (m^2), and of the heading: of AMCL's whole
+/// filter, as `amcl_pose` carries it, its heading term the circular variance, or of
+/// slam_toolbox's match, as its pose topic carries it.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FilterCovariance {
+pub(crate) struct PoseCovariance {
     xx: f64,
     xy: f64,
     yy: f64,
     yaw: f64,
 }
 
-impl FilterCovariance {
+impl PoseCovariance {
     /// The standard deviations of the position along its least certain direction, the
     /// square root of the larger eigenvalue of the position block, and of the heading; a
     /// variance that rounding leaves below 0 reads as 0. Panics on a NaN.
-    fn deviations(&self) -> Deviations {
+    pub(crate) fn deviations(&self) -> Deviations {
         let half_trace = 0.5 * (self.xx + self.yy);
         let larger = half_trace + (0.5 * (self.xx - self.yy)).hypot(self.xy);
         let deviation = |variance: f64| {
             assert!(
                 !variance.is_nan(),
-                "AMCL's filter holds a NaN variance: {self:?}"
+                "a pose's covariance holds a NaN variance: {self:?}"
             );
             if variance < 0.0 { 0.0 } else { variance.sqrt() }
         };
@@ -262,7 +408,7 @@ impl FilterCovariance {
 struct GlobalPose {
     scan: usize,
     pose: [f64; 3],
-    covariance: FilterCovariance,
+    covariance: PoseCovariance,
     converged: bool,
 }
 
@@ -286,36 +432,186 @@ fn results_of(results: &Path, name: &str) -> PathBuf {
     results.join(name)
 }
 
-/// The inputs that the reference prepared for the scenario `name`.
-fn read_prepared(results: &Path, name: &str) -> Prepared {
-    read_json(&results_of(results, name).join("prepared.json"))
+/// The inputs that the reference prepared for the scenario `name` under `results`.
+pub fn read_prepared(results: &Path, name: &str) -> Prepared {
+    let read: PreparedRead = read_json(&results_of(results, name).join("prepared.json"));
+    let ScanParametersRead {
+        angle_min,
+        angle_max,
+        angle_increment,
+        range_min,
+        range_max,
+        scan_time,
+    } = read.laser_scan;
+    Prepared {
+        laser_scan: ScanParameters {
+            angle_min: single(name, "a scan parameter", angle_min),
+            angle_max: single(name, "a scan parameter", angle_max),
+            angle_increment: single(name, "a scan parameter", angle_increment),
+            range_min: single(name, "a scan parameter", range_min),
+            range_max: single(name, "a scan parameter", range_max),
+            scan_time: single(name, "a scan parameter", scan_time),
+        },
+        scans: read
+            .scans
+            .into_iter()
+            .map(|scan| PreparedScan {
+                stamp_ns: scan.stamp_ns,
+                truth: planar(scan.truth),
+                ranges: scan
+                    .ranges
+                    .into_iter()
+                    .map(|range| range_of(name, "a range", range))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// The odometry that the reference drew for `seed` of the scenario `name` under
+/// `results`: the base's pose in the odometry frame at each kept scan.
+pub fn read_odometry(results: &Path, name: &str, seed: i64) -> Vec<PlanarPose> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OdometryRead {
+        seed: i64,
+        poses: Vec<[f64; 3]>,
+    }
+    let read: OdometryRead =
+        read_json(&results_of(results, name).join(format!("odometry_{seed}.json")));
+    assert_eq!(read.seed, seed, "{name}: the odometry of seed {seed}");
+    read.poses.into_iter().map(planar).collect()
 }
 
 fn run_file(results: &Path, name: &str, run: &str, seed: i64) -> PathBuf {
     results_of(results, name).join(format!("{run}_{seed}.json"))
 }
 
-/// The ground truth poses of the scans of `poses`, and their recorded poses.
-fn paired(prepared: &Prepared, poses: &[RecordedPose]) -> (Vec<PlanarPose>, Vec<PlanarPose>) {
+/// The ground truth poses of the scans of `poses`, and their poses.
+fn paired(prepared: &Prepared, poses: &[ScanPose]) -> (Vec<PlanarPose>, Vec<PlanarPose>) {
     poses
         .iter()
-        .map(|recorded| {
-            (
-                planar(prepared.scans[recorded.scan].truth),
-                planar(recorded.pose),
-            )
-        })
+        .map(|recorded| (prepared.scans[recorded.scan].truth, recorded.pose))
         .unzip()
 }
 
-/// The rigid motion that takes the ground truth of the map scenario `map_name` into the
-/// frame of its first seed's map, the frame in which its localizations estimate poses.
-fn map_from_truth(results: &Path, map_name: &str, map_seed: i64) -> metrics::PlanarMotion {
-    let prepared = read_prepared(results, map_name);
-    let run: MappingRun = read_json(&run_file(results, map_name, "mapping", map_seed));
-    let (truths, poses) = paired(&prepared, &run.poses);
+/// The trajectory error of a map whose scans `poses` hold, against their ground truth:
+/// the errors after the rigid motion that best aligns the ground truth with the poses.
+/// None when no alignment exists.
+pub fn trajectory_errors_of(prepared: &Prepared, poses: &[ScanPose]) -> Option<metrics::Errors> {
+    let (truths, poses) = paired(prepared, poses);
+    trajectory_errors(&poses, &truths)
+}
+
+/// The rigid motion that takes the ground truth into the frame of a map whose scans
+/// `poses` hold, in which its localizations estimate poses. None when no alignment exists.
+pub fn map_from_truth(prepared: &Prepared, poses: &[ScanPose]) -> Option<metrics::PlanarMotion> {
+    let (truths, poses) = paired(prepared, poses);
     best_alignment(&truths, &poses)
-        .unwrap_or_else(|| panic!("{map_name}: the map of seed {map_seed} aligns with no truth"))
+}
+
+/// The errors of localized `poses` against the ground truth carried into the map by
+/// `map_from_truth`. None for no pose.
+pub fn localization_errors(
+    prepared: &Prepared,
+    poses: &[ScanPose],
+    map_from_truth: metrics::PlanarMotion,
+) -> Option<metrics::Errors> {
+    if poses.is_empty() {
+        return None;
+    }
+    let truths: Vec<PlanarPose> = poses
+        .iter()
+        .map(|pose| map_from_truth.apply(prepared.scans[pose.scan].truth))
+        .collect();
+    let estimates: Vec<PlanarPose> = poses.iter().map(|pose| pose.pose).collect();
+    Some(metrics::errors(&estimates, &truths))
+}
+
+/// The pose of each scan that slam_toolbox added to its map of `seed` of the mapping
+/// scenario `name` under `results`, after the map's last optimization.
+pub fn reference_mapping_poses(results: &Path, name: &str, seed: i64) -> Vec<ScanPose> {
+    let run: MappingRun = read_json(&run_file(results, name, "mapping", seed));
+    assert_eq!(run.seed, seed, "{name}: the mapping run of seed {seed}");
+    run.poses.iter().map(RecordedPose::scan_pose).collect()
+}
+
+/// A scan that slam_toolbox's localization added on a lidar drive spliced from two places: its
+/// index among the spliced scans, its pose in the map, and the deviations of its match.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplicedAnswer {
+    pub scan: usize,
+    pub pose: PlanarPose,
+    pub deviations: Deviations,
+}
+
+/// slam_toolbox's localization of a seed of a lidar drive spliced from two places, as the
+/// reference splices it: the index of the first scan after the splice, the index of the kept
+/// scan it is, and each answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplicedLocalization {
+    pub splice: usize,
+    pub far: usize,
+    pub answers: Vec<SplicedAnswer>,
+}
+
+/// slam_toolbox's localization of `seed` on the drive of the scenario `name` spliced from
+/// two places.
+pub fn reference_spliced_localization(
+    results: &Path,
+    name: &str,
+    seed: i64,
+) -> SplicedLocalization {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AnswerRead {
+        scan: usize,
+        pose: [f64; 3],
+        covariance: PoseCovariance,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SplicedRead {
+        seed: i64,
+        #[serde(rename = "start")]
+        _start: [f64; 3],
+        splice: usize,
+        far: usize,
+        poses: Vec<AnswerRead>,
+    }
+    let read: SplicedRead = read_json(&run_file(results, name, "spliced_localization", seed));
+    assert_eq!(
+        read.seed, seed,
+        "{name}: the spliced localization run of seed {seed}"
+    );
+    SplicedLocalization {
+        splice: read.splice,
+        far: read.far,
+        answers: read
+            .poses
+            .iter()
+            .map(|answer| SplicedAnswer {
+                scan: answer.scan,
+                pose: planar(answer.pose),
+                deviations: answer.covariance.deviations(),
+            })
+            .collect(),
+    }
+}
+
+/// The rigid motion that takes the ground truth of the map scenario `map_name` into the
+/// frame of the map that its seed `map_seed` made.
+pub fn reference_map_from_truth(
+    results: &Path,
+    map_name: &str,
+    map_seed: i64,
+) -> metrics::PlanarMotion {
+    let prepared = read_prepared(results, map_name);
+    map_from_truth(
+        &prepared,
+        &reference_mapping_poses(results, map_name, map_seed),
+    )
+    .unwrap_or_else(|| panic!("{map_name}: the map of seed {map_seed} aligns with no truth"))
 }
 
 /// `x` as a JSON number. Panics on a NaN or an infinity, which JSON has no number for.
@@ -331,14 +627,8 @@ fn mapping_statistics(results: &Path, scenario: &Scenario, prepared: &Prepared) 
         .seeds
         .iter()
         .map(|&seed| {
-            let run: MappingRun = read_json(&run_file(results, &scenario.name, "mapping", seed));
-            assert_eq!(
-                run.seed, seed,
-                "{}: the mapping run of seed {seed}",
-                scenario.name
-            );
-            let (truths, poses) = paired(prepared, &run.poses);
-            let errors = trajectory_errors(&poses, &truths).unwrap_or_else(|| {
+            let poses = reference_mapping_poses(results, &scenario.name, seed);
+            let errors = trajectory_errors_of(prepared, &poses).unwrap_or_else(|| {
                 panic!(
                     "{}: the map of seed {seed} aligns with no truth",
                     scenario.name
@@ -346,7 +636,7 @@ fn mapping_statistics(results: &Path, scenario: &Scenario, prepared: &Prepared) 
             });
             json!({
                 "seed": seed,
-                "processed_scans": run.poses.len(),
+                "processed_scans": poses.len(),
                 "trajectory_rmse_m": number(errors.position_rmse_m),
                 "trajectory_max_m": number(errors.position_max_m),
                 "trajectory_yaw_rmse_rad": number(errors.yaw_rmse_rad),
@@ -368,13 +658,19 @@ fn localization_statistics(
     within: LocalizedWithin,
     search_limits: LocalizationLimits,
 ) -> Value {
-    let map_seed = scenarios()
+    let map_seeds = scenarios()
         .into_iter()
         .find(|candidate| candidate.name == map_scenario)
-        .and_then(|candidate| candidate.seeds.first().copied())
+        .map(|candidate| candidate.seeds)
         .unwrap_or_else(|| panic!("{}: no scenario {map_scenario} maps", scenario.name));
-    let motion = map_from_truth(results, map_scenario, map_seed);
-    let truth_in_map = |scan: usize| motion.apply(planar(prepared.scans[scan].truth));
+    let motion_of = |seed: i64| {
+        assert!(
+            map_seeds.contains(&seed),
+            "{}: {map_scenario} maps no seed {seed}",
+            scenario.name
+        );
+        reference_map_from_truth(results, map_scenario, seed)
+    };
     let first_stamp_ns = prepared.scans[0].stamp_ns;
     let slam_toolbox: Vec<Value> = scenario
         .seeds
@@ -387,19 +683,19 @@ fn localization_statistics(
                 "{}: the localization run of seed {seed}",
                 scenario.name
             );
-            let truths: Vec<PlanarPose> = run.poses.iter().map(|p| truth_in_map(p.scan)).collect();
-            let poses: Vec<PlanarPose> = run.poses.iter().map(|p| planar(p.pose)).collect();
             // The reference started from the first scan's ground truth in the map, by the
             // same alignment, which Eigen's umeyama computed there.
+            let motion = motion_of(seed);
             let (start_position, start_yaw) =
-                metrics::pose_error(planar(run.start), truth_in_map(0));
+                metrics::pose_error(planar(run.start), motion.apply(prepared.scans[0].truth));
             assert!(
                 start_position < START_AGREEMENT && start_yaw < START_AGREEMENT,
                 "{}: the localization of seed {seed} started {start_position} m and \
                  {start_yaw} rad from the ground truth in the map",
                 scenario.name
             );
-            let errors = (!poses.is_empty()).then(|| metrics::errors(&poses, &truths));
+            let poses: Vec<ScanPose> = run.poses.iter().map(RecordedPose::scan_pose).collect();
+            let errors = localization_errors(prepared, &poses, motion);
             let error = |select: fn(&metrics::Errors) -> f64| {
                 errors
                     .as_ref()
@@ -444,7 +740,12 @@ fn localization_statistics(
                     deviations: p.covariance.deviations(),
                 })
                 .collect();
-            let truths: Vec<PlanarPose> = run.poses.iter().map(|p| truth_in_map(p.scan)).collect();
+            let motion = motion_of(seed);
+            let truths: Vec<PlanarPose> = run
+                .poses
+                .iter()
+                .map(|p| motion.apply(prepared.scans[p.scan].truth))
+                .collect();
             let GlobalOutcome {
                 estimates,
                 converged_estimates,
@@ -491,10 +792,9 @@ pub fn write_statistics(results: &Path, outputs: &Path, inputs_list: &Path) {
             kind: ThisKind::RoomDataset,
             ..
         } = runs;
-        assert_eq!(
-            (&runs.sequence, &runs.seeds),
-            (&scenario.sequence, &scenario.seeds),
-            "{}: the reference ran the scenario's sequence and seeds",
+        assert!(
+            runs.source.read_from(&scenario.source) && runs.seeds == scenario.seeds,
+            "{}: the reference ran the scenario's source and seeds",
             scenario.name
         );
         let task_name = match scenario.task {
@@ -537,19 +837,11 @@ pub fn write_statistics(results: &Path, outputs: &Path, inputs_list: &Path) {
             .collect();
         let output = json!({
             "kind": "room_dataset",
-            "sequence": runs.sequence,
+            "source": serde_json::to_value(&runs.source).expect("the source serializes"),
             "task": task,
             "inputs": inputs,
             "datasets_read": runs.datasets_read,
-            "mount": {
-                "floor_normal": runs.mount.floor_normal.map(number),
-                "height": number(runs.mount.height),
-                "pitch": number(runs.mount.pitch),
-                "roll": number(runs.mount.roll),
-            },
-            "depth_frames": runs.depth_frames,
             "scans": runs.scans,
-            "dropped_scans": runs.dropped_scans,
             "runs": runs.runs,
         });
         write_json(&outputs.join(format!("{}.json", scenario.name)), &output);
@@ -624,20 +916,16 @@ pub struct Statistics {
     #[serde(skip)]
     pub name: String,
     pub kind: ThisKind,
-    pub sequence: String,
+    pub source: SourceRead,
     pub task: TaskStatistics,
     /// The repository files that the reference read and the kind's sources, whose digests
     /// `INPUTS.SHA256SUMS` holds.
     pub inputs: Vec<String>,
-    /// Each dataset file that the reference read, as `<sequence>/<path>`.
+    /// Each file of the dataset cache that the reference read, `<sequence>/<path>` of a TUM
+    /// sequence.
     pub datasets_read: Vec<String>,
-    pub mount: MountRead,
-    pub depth_frames: usize,
-    /// The kept scans: one depth frame a scan period, each outside the ground truth's gaps.
+    /// The kept scans.
     pub scans: usize,
-    /// The stamps (ns) of the depth frames kept a scan period that lay in a gap of the
-    /// ground truth.
-    pub dropped_scans: Vec<i64>,
     pub runs: Vec<String>,
 }
 
@@ -699,12 +987,6 @@ mod tests {
                     "{} localizes in {map_scenario}, which maps",
                     scenario.name
                 );
-                assert!(
-                    map_scenario < &scenario.name,
-                    "{map_scenario}, whose map {} localizes in, sorts before it, since run.sh \
-                     runs the scenarios in the order of their names",
-                    scenario.name
-                );
             }
         }
     }
@@ -724,10 +1006,10 @@ mod tests {
 
     /// The covariance of a position whose deviations are `major` (m) along `angle` (rad) and
     /// `minor` across it, and of a heading of variance `yaw`.
-    fn rotated(major: f64, minor: f64, angle: f64, yaw: f64) -> FilterCovariance {
+    fn rotated(major: f64, minor: f64, angle: f64, yaw: f64) -> PoseCovariance {
         let (sin, cos) = angle.sin_cos();
         let (a, b) = (major * major, minor * minor);
-        FilterCovariance {
+        PoseCovariance {
             xx: a * cos * cos + b * sin * sin,
             xy: (a - b) * sin * cos,
             yy: a * sin * sin + b * cos * cos,
@@ -749,7 +1031,7 @@ mod tests {
 
     #[test]
     fn a_variance_that_rounding_leaves_below_zero_reads_as_zero() {
-        let deviations = FilterCovariance {
+        let deviations = PoseCovariance {
             xx: -1e-18,
             xy: 0.0,
             yy: -2e-18,
@@ -781,9 +1063,16 @@ mod tests {
                 .file_name()
                 .into_string()
                 .expect("UTF-8");
-            if ["room_dataset", "amcl_map_cspace", "nav2_node"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            if [
+                "room_dataset",
+                "amcl_map_cspace",
+                "amcl_node",
+                "laser_projection",
+                "nav2_node",
+                "point_cloud",
+            ]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
             {
                 let path = format!("ros_reference/reference_programs/{name}");
                 assert!(SOURCES.contains(&path.as_str()), "SOURCES lists {path}");

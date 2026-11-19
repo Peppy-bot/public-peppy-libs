@@ -12,6 +12,7 @@ find_package(Ceres REQUIRED)
 find_package(chomp_motion_planner REQUIRED)
 find_package(diff_drive_controller REQUIRED)
 find_package(geometric_shapes REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_kinematics REQUIRED)
 find_package(moveit_planners_ompl REQUIRED)
@@ -73,7 +74,9 @@ find_path(POINTCLOUD_TO_LASERSCAN_INCLUDE_DIR pointcloud_to_laserscan/pointcloud
 
 add_executable(ros_reference
   reference_programs/main.cpp
+  reference_programs/amcl_global_localization.cpp
   reference_programs/amcl_map_cspace.cpp
+  reference_programs/amcl_node.cpp
   reference_programs/scenario.cpp
   reference_programs/robot.cpp
   reference_programs/forward_kinematics.cpp
@@ -88,6 +91,9 @@ add_executable(ros_reference
   reference_programs/cartesian_paths.cpp
   reference_programs/chomp_refinement.cpp
   reference_programs/planning_scene.cpp
+  reference_programs/point_cloud.cpp
+  reference_programs/laser_projection.cpp
+  reference_programs/map_export.cpp
   reference_programs/room_dataset.cpp
   reference_programs/room_dataset_files.cpp
   reference_programs/room_dataset_runs.cpp
@@ -102,6 +108,7 @@ add_executable(ros_reference
   reference_programs/pure_pursuit.cpp
   reference_programs/collision_monitor.cpp
   reference_programs/diff_drive_odometry.cpp
+  reference_programs/transform_lookup.cpp
 )
 # The velocity smoother exports its library and headers as variables, and no target.
 target_include_directories(ros_reference PRIVATE ${nav2_velocity_smoother_INCLUDE_DIRS})
@@ -111,6 +118,7 @@ target_link_libraries(ros_reference PRIVATE
   chomp_motion_planner::chomp_motion_planner
   diff_drive_controller::diff_drive_controller
   geometric_shapes::geometric_shapes
+  ${geometry_msgs_TARGETS}
   moveit_core::moveit_collision_detection
   moveit_core::moveit_collision_distance_field
   moveit_core::moveit_collision_detection_fcl

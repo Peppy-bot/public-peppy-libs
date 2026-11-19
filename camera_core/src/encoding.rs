@@ -113,16 +113,14 @@ impl<'a> DepthFrame<'a> {
     /// Each pixel's column, row and sample, row by row from the top left.
     pub fn samples(&self) -> impl Iterator<Item = (u32, u32, u16)> + '_ {
         let width = self.width as usize;
-        self.bytes
-            .chunks_exact(2)
-            .enumerate()
-            .map(move |(index, sample)| {
-                (
-                    (index % width) as u32,
-                    (index / width) as u32,
-                    u16::from_le_bytes([sample[0], sample[1]]),
-                )
-            })
+        let (samples, _) = self.bytes.as_chunks::<2>();
+        samples.iter().enumerate().map(move |(index, sample)| {
+            (
+                (index % width) as u32,
+                (index / width) as u32,
+                u16::from_le_bytes(*sample),
+            )
+        })
     }
 }
 

@@ -134,7 +134,7 @@ nlohmann::json global_costmap(const nlohmann::json& scenario, Inputs&) {
   const auto& entry = scenario.at("cloud");
   const auto transform = sensor_transform(entry.at("sensor"));
   tf.setTransform(transform, "global_costmap_reference", true);
-  const auto cloud = cloud_of(entry.at("points"));
+  const auto cloud = cloud_of(entry.at("points"), sensor_frame);
   obstacle_layer->take(cloud);
   const auto base = scenario.at("base").get<std::vector<double>>();
   if (base.size() != 3) {

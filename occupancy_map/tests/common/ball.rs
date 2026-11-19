@@ -1,17 +1,18 @@
 //! A ball for a scan to cut out, as MoveIt's robot filter holds a sphere body.
 
-use occupancy_map::{Cutout, Frame};
+use frame_tree::FrameName;
+use occupancy_map::Cutout;
 
 /// A ball in `frame`: a point lies inside when it is nearer the center than
 /// the radius, the strict test of the robot filter's bounding sphere.
 pub struct Ball {
-    pub frame: Frame,
+    pub frame: FrameName,
     pub center: [f64; 3],
     pub radius: f64,
 }
 
 impl Cutout for Ball {
-    fn frame(&self) -> &Frame {
+    fn frame(&self) -> &FrameName {
         &self.frame
     }
 

@@ -30,6 +30,10 @@ pub enum GeometryError {
     /// The chain itself could not be built from the URDF.
     #[error(transparent)]
     Chain(#[from] chain_kinematics::ChainError),
+    /// The URDF's links and joints are not one tree of joints that each take one
+    /// position, as chain_kinematics' `Tree` reads them.
+    #[error(transparent)]
+    Tree(#[from] chain_kinematics::TreeError),
     /// A padding scale that is not a positive finite number, or a padding offset that
     /// is not a non-negative finite number.
     #[error(

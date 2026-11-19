@@ -67,7 +67,8 @@ mod tests {
     use camera_core::pose::{PlanarPose, Pose};
     use control_core::non_negative_finite::NonNegativeFinite;
     use control_core::positive_finite::PositiveFinite;
-    use occupancy_map::{Bounds, Frame};
+    use frame_tree::FrameName;
+    use occupancy_map::Bounds;
 
     use super::*;
     use crate::footprint::PaddedFootprint;
@@ -112,7 +113,7 @@ mod tests {
         })
         .unwrap();
         let mut live = LiveObstacles::new(
-            Frame::parse("map").unwrap(),
+            FrameName::parse("map").unwrap(),
             bounds,
             heights,
             footprint,

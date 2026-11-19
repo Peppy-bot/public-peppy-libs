@@ -4,7 +4,7 @@ carries, kept by a small loop the node starts.
 The node's `wrist_cameras` slot takes any number of rgb_camera producers,
 and the `wrist_cameras` parameter names each arm's camera by the instance
 id its fragment gives it ("left_arm:wrist_left,right_arm:wrist_right"),
-the name camera_mounts knows it by. A frame is matched to its camera by
+the name sensor_mounts knows it by. A frame is matched to its camera by
 the producer that published it: in a stack that runs the robot as a copy,
 the instance runs as `<copy>_<id>` (`alpha_wrist_left`), and the slot's
 bound members say which copy each producer belongs to, so the store takes

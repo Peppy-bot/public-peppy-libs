@@ -48,11 +48,11 @@ error, so it is a refusal at construction.
 | Refused | What you would get otherwise |
 |---|---|
 | A joint named twice in `JointSelection::Named` | The later slot wins, so the earlier entry of `q` moves nothing: the caller commands two joints and the arm honours one |
-| An actuated joint with no usable range (absent `<limit>`, or an infinite or inverted one) | A joint that turns freely confined to an invented range, so the chain refuses motion the mechanism has |
+| An actuated joint with no range (a continuous joint, or one whose lower and upper limits are equal, as an absent `<limit>` leaves them) | A joint that turns freely confined to an invented range, so the chain refuses motion the mechanism has |
 | A `<mimic>` coupling with either end among the actuated joints | `q` poses only the joints it names, so the coupled joint stays behind and the reported tip is a pose the mechanism cannot hold. A coupling clear of the chain, as a gripper's two fingers are, is left alone |
 | A tip that is not below the base, or a joint that is not on the path | A frame composed from an unrelated branch |
 | A tool link reached through a joint that moves | A "fixed" tool offset that tracks the gripper opening |
-| A URDF that is not a single tree of joints that each take one position (`TreeError`: a link or a joint given twice, a joint naming a link the URDF lacks, a link on two joints, joints in a loop, other than one root link, a floating, planar or spherical joint), or `N` disagreeing with the chain's joint count | Every fixed-size type below built on a count that is not the robot's |
+| A URDF that is not a single tree of joints that each take one position (`TreeError`: a link or a joint given twice, a joint naming a link the URDF lacks, a link on two joints, joints in a loop, other than one root link, a floating, planar or spherical joint, a moving joint whose axis is not finite or is zero, a revolute or prismatic joint whose limits are not finite and in order, a `<mimic>` whose multiplier or offset is not finite), or `N` disagreeing with the chain's joint count | Every fixed-size type below built on a count that is not the robot's |
 
 robot_description holds the URDF of every description to the same tree rules
 (`Tree::from_robot`).
@@ -74,6 +74,10 @@ robot_description holds the URDF of every description to the same tree rules
 | `interpolate` | the straight line between two poses |
 | `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
 | `clamp_into` / `all_within` / `pose_miss` | joint-limit and pose-distance helpers |
+| `Tree` | the URDF's links and joints as one tree, held to the rules above: `link_index`, `joint_index`, `parent_joint` (the joint a link hangs on), `parent_of` (the link a joint hangs off), `children_of`, `path_to`, `subtree_from`, `fixed_path_to` |
+| `Joint` / `JointPlacement` | a joint's name, child link, limits, mimic and placement: its origin and kind, a `Copy` value whose `pose_at(q)` is the child link's frame in the parent link's at position `q`; `JointKind::turns` tells a revolute or a continuous joint |
+| `Mimic` | how a joint follows another, as its URDF `<mimic>` gives it, its multiplier and offset finite: `position_from(leader)` |
+| `pose_of_origin` | a URDF `<origin>` as a transform |
 | `take_targets` / `Limit::take_target` / `TARGET_SLACK` | a joint target as a robot takes it: a joint at most 0.001 rad outside its limit runs at the limit, one farther out is refused by its joint, position and limits (`OutsideLimits`) |
 
 ## Inverse kinematics
@@ -149,7 +153,7 @@ the edge feels a wall.
 ```text
 src/
   lib.rs        Chain, ChainSpec, JointSelection, Posed, Limit, and the joint-limit and pose-distance helpers
-  tree.rs       the URDF arena: links, joints, adjacency, and the walks over it
+  tree.rs       the URDF arena: links, joints and their placements, adjacency, and the walks over it
   jacobian.rs   the Jacobian's inverses, generic over N
   chain.rs      the serial chain and its posed view: forward kinematics, the Jacobian, limits
   rate.rs       one damped resolved-rate step, holding the joints it would carry past their limits, and the distance between poses

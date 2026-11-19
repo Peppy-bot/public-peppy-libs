@@ -72,7 +72,7 @@ pub fn posture(name: &str) -> PerArm<[f64; JOINTS], ARMS> {
         let arm = &OPENARM_V2.arms()[id.place()].name;
         OPENARM_V2
             .state(arm, name)
-            .unwrap_or_else(|| panic!("{arm} has the posture {name}"))
+            .unwrap_or_else(|unknown| panic!("{unknown}"))
             .try_into()
             .expect("a posture of each of the arm's joints")
     })

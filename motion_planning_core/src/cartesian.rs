@@ -658,7 +658,7 @@ fn frame_lever<const N: usize>(chain: &Chain<N>, frame: Frame) -> f64 {
     let limits = chain.limits();
     let travel = |j: usize| match posed.kind(j) {
         JointKind::Prismatic { .. } => limits[j].lo.abs().max(limits[j].hi.abs()),
-        JointKind::Revolute { .. } | JointKind::Fixed => 0.0,
+        JointKind::Revolute { .. } | JointKind::Continuous { .. } | JointKind::Fixed => 0.0,
     };
     let origins: Vec<Vector3<f64>> = (0..N)
         .map(|j| posed.origin_world(j))
@@ -672,7 +672,7 @@ fn frame_lever<const N: usize>(chain: &Chain<N>, frame: Frame) -> f64 {
         (origins[j + 1] - origins[j]).norm() + if j + 1 < N { travel(j + 1) } else { 0.0 }
     };
     let reach = |j: usize| match posed.kind(j) {
-        JointKind::Revolute { .. } => (j..N).map(link).sum::<f64>(),
+        JointKind::Revolute { .. } | JointKind::Continuous { .. } => (j..N).map(link).sum::<f64>(),
         JointKind::Prismatic { .. } => 1.0,
         JointKind::Fixed => 0.0,
     };

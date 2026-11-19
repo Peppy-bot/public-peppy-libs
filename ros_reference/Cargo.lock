@@ -141,6 +141,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -489,6 +496,7 @@ name = "robot_description"
 version = "0.1.0"
 dependencies = [
  "chain_kinematics",
+ "frame_tree",
  "roxmltree",
  "sha2",
  "thiserror 2.0.21",

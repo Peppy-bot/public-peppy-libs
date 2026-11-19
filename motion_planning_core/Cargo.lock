@@ -101,6 +101,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 name = "camera_core"
 version = "0.1.0"
 dependencies = [
+ "frame_tree",
  "libc",
 ]
 
@@ -220,6 +221,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 name = "control_core"
 version = "0.1.0"
 dependencies = [
+ "frame_tree",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -409,6 +411,13 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "getrandom"
@@ -691,6 +700,7 @@ dependencies = [
  "chain_kinematics",
  "collision_geometry",
  "control_core",
+ "frame_tree",
  "hegeltest",
  "json5",
  "kinematics_properties",
@@ -812,6 +822,7 @@ dependencies = [
  "camera_core",
  "collision_geometry",
  "control_core",
+ "frame_tree",
  "nalgebra",
  "thiserror 2.0.21",
 ]
@@ -829,6 +840,7 @@ dependencies = [
  "sha2",
  "tar",
  "thiserror 2.0.21",
+ "tracing",
  "ureq",
 ]
 
@@ -1023,6 +1035,7 @@ name = "robot_description"
 version = "0.1.0"
 dependencies = [
  "chain_kinematics",
+ "frame_tree",
  "roxmltree",
  "sha2",
  "thiserror 2.0.21",

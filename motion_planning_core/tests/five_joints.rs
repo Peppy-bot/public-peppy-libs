@@ -263,7 +263,7 @@ fn a_plan_departs_from_the_park_pose_within_the_arms_error() {
     let arm = description_arm();
     let home = SO101
         .state(&arm.name, states::HOME)
-        .unwrap_or_else(|| panic!("{} has the posture {}", arm.name, states::HOME));
+        .unwrap_or_else(|unknown| panic!("{unknown}"));
     let mut model = SelfCollisionModel::<JOINTS, 1>::from_description(&SO101, &MESHES)
         .expect("SO-101's self model builds");
     let corners = 3usize.pow(JOINTS as u32);

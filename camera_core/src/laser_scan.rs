@@ -20,6 +20,9 @@
 //! two poses interpolate to no pose places no hit. Each [`PlacedHit`] keeps
 //! the hit in the sensor's frame at its ray's time too, where a body fixed to
 //! the sensor holds it however the sensor moved while it swept.
+//! [`LaserScan::placed_rays`] places every ray, the marks among them, by the
+//! same interpolation, for a reader that takes each ray from where the sensor
+//! stood, as karto traces the free cells of a scan.
 
 use std::fmt;
 
@@ -31,7 +34,7 @@ const UNMEASURED_MARK_M: f32 = 0.0;
 
 /// lidar_2d:v1's range of a ray that met nothing within `max_range_m`, above
 /// every `max_range_m` the contract allows.
-const NO_RETURN_MARK_M: f32 = 10000.0;
+pub const NO_RETURN_MARK_M: f32 = 10000.0;
 
 /// Where a scan's sensor, or the base it rides on, stood at the scan's first
 /// ray, its timestamp, and at its last ray, [`LaserScan::sweep_s`] after it.
@@ -50,6 +53,18 @@ pub struct PlacedHit {
     /// The hit in the frame of the sensor's poses, placed by the sensor's
     /// pose at the ray's time.
     pub placed: [f64; 3],
+}
+
+/// A ray of a scan placed where the sensor stood at the ray's time.
+#[derive(Debug, Clone, Copy)]
+pub struct PlacedRay {
+    /// The sensor's pose at the ray's time, in the frame of the sensor's
+    /// poses.
+    pub sensor: Pose,
+    /// The ray's angle in the sensor frame (rad).
+    pub angle_rad: f64,
+    /// The distance (m) to the surface the ray hit; none for a mark.
+    pub hit_m: Option<f32>,
 }
 
 /// What one ray measured.
@@ -116,6 +131,7 @@ pub struct LaserScan {
     min_angle_rad: f32,
     angle_increment_rad: f32,
     time_increment_s: f32,
+    min_range_m: f32,
     max_range_m: f32,
     ranges: Vec<Range>,
 }
@@ -230,9 +246,30 @@ impl LaserScan {
             min_angle_rad,
             angle_increment_rad,
             time_increment_s,
+            min_range_m,
             max_range_m,
             ranges,
         })
+    }
+
+    /// How many rays the scan holds, at least one.
+    pub fn ray_count(&self) -> usize {
+        self.ranges.len()
+    }
+
+    /// The angle of the first ray (rad).
+    pub fn min_angle_rad(&self) -> f32 {
+        self.min_angle_rad
+    }
+
+    /// The angle between one ray and the next (rad), above 0.
+    pub fn angle_increment_rad(&self) -> f32 {
+        self.angle_increment_rad
+    }
+
+    /// The nearest range the sensor measures (m).
+    pub fn min_range_m(&self) -> f32 {
+        self.min_range_m
     }
 
     /// The farthest range the sensor measures (m).
@@ -273,6 +310,25 @@ impl LaserScan {
                 let in_sensor = ray.hit()?;
                 let placed = self.sensor_at(ray.index, sensor).ok()?.apply(in_sensor);
                 Some(PlacedHit { in_sensor, placed })
+            })
+            .collect()
+    }
+
+    /// Every ray in order, each with the sensor's pose at its time in the
+    /// frame of the sensor's poses `sensor`, by the interpolation of
+    /// [`LaserScan::placed_hits`]; the error of the first ray at whose time the
+    /// poses interpolate to no pose.
+    pub fn placed_rays(&self, sensor: &Sweep<Pose>) -> Result<Vec<PlacedRay>, PoseError> {
+        self.rays()
+            .map(|ray| {
+                Ok(PlacedRay {
+                    sensor: self.sensor_at(ray.index, sensor)?,
+                    angle_rad: ray.angle_rad,
+                    hit_m: match ray.range {
+                        Range::Hit(range) => Some(range),
+                        Range::NoReturn | Range::Unmeasured => None,
+                    },
+                })
             })
             .collect()
     }
@@ -523,6 +579,40 @@ mod tests {
 
     fn scan_with_marks() -> LaserScan {
         scan(&[1.0, 10000.0, 3.0])
+    }
+
+    // The sensor moves 1 m along +X while it sweeps, so each ray stands at its
+    // own share of the sweep; a mark keeps its ray and its pose and holds no
+    // hit, and each hit of a ray lies where placed_hits places it.
+    #[test]
+    fn each_placed_ray_stands_where_its_hit_is_placed() {
+        let scan = scan(&[1.0, 10000.0, 3.0, 0.0]);
+        let moved = Pose::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let sweep = sweep(identity(), moved);
+        let rays = scan.placed_rays(&sweep).expect("every ray placed");
+        assert_eq!(
+            rays.iter().map(|ray| ray.hit_m).collect::<Vec<_>>(),
+            [Some(1.0), None, Some(3.0), None]
+        );
+        for (index, ray) in rays.iter().enumerate() {
+            let at_share = scan.sensor_at(index, &sweep).expect("a share of the sweep");
+            assert_eq!(ray.sensor.origin(), at_share.origin());
+            assert_eq!(ray.sensor.orientation(), at_share.orientation());
+        }
+        let placed: Vec<[f64; 3]> = rays
+            .iter()
+            .filter_map(|ray| {
+                let range = f64::from(ray.hit_m?);
+                let (sin, cos) = ray.angle_rad.sin_cos();
+                Some(ray.sensor.apply([range * cos, range * sin, 0.0]))
+            })
+            .collect();
+        let hits: Vec<[f64; 3]> = scan
+            .placed_hits(&sweep)
+            .iter()
+            .map(|hit| hit.placed)
+            .collect();
+        assert_eq!(placed, hits);
     }
 
     // One ray stands at the scan's timestamp: its pose is the first.

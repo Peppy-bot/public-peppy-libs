@@ -1,0 +1,10 @@
+{
+  "kind": "map_export",
+  "maps": [
+    {"description":"image: map.pgm\nmode: trinary\nresolution: 0.050\norigin: [0.000, 0.000, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196","image":[80,53,10,51,32,49,10,50,53,53,10,205,254,0]},
+    {"description":"image: map.pgm\nmode: trinary\nresolution: 0.050\norigin: [-3.262, 1.000, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196","image":[80,53,10,49,51,32,55,10,50,53,53,10,0,254,205,205,205,205,254,205,205,0,254,0,0,0,205,205,254,205,0,254,0,254,254,205,254,205,0,0,254,205,0,205,205,0,0,0,205,205,254,0,205,254,0,0,205,0,254,205,0,205,0,0,0,0,254,205,205,205,0,254,254,205,0,0,205,205,0,0,205,205,0,205,254,0,205,0,0,0,205,254,254,254,205,254,205,0,254,254,254,0,0]},
+    {"description":"image: map.pgm\nmode: trinary\nresolution: 0.025\norigin: [-0.000, 12.346, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196","image":[80,53,10,50,32,51,10,50,53,53,10,254,205,205,0,254,0]},
+    {"description":"image: map.pgm\nmode: trinary\nresolution: 0.100\norigin: [1234.568, -0.500, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196","image":[80,53,10,50,32,50,10,50,53,53,10,254,0,0,254]},
+    {"description":"image: map.pgm\nmode: trinary\nresolution: 0.050\norigin: [-1.000, -1.000, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196","image":[80,53,10,52,32,50,10,50,53,53,10,205,205,205,205,205,205,205,205]}
+  ]
+}

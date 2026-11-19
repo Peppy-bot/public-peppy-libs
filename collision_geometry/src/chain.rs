@@ -28,7 +28,7 @@
 //! URDF root, the robot's body around its chains. Its [`BodyMask`] grows them by the same
 //! rule, and stands where the body stands as a [`PlacedMask`].
 
-use chain_kinematics::{Chain, ChainSpec, Posed};
+use chain_kinematics::{Chain, ChainSpec, Joint, Posed};
 use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
@@ -37,7 +37,7 @@ use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
 use crate::shapes::{Shape, distance_outside_box, distance_outside_cylinder};
 use crate::spheres::SphereSource;
-use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
+use crate::urdf_collision::{Collision, CollisionGeometry, UrdfCollisions};
 
 /// How far the outer reach of a grown piece reaches past the element's outer ball grown
 /// by the offset, and the inner reach falls short of its inner ball grown by the offset,
@@ -185,19 +185,18 @@ impl<const N: usize> ChainGeometry<N> {
         let collisions = UrdfCollisions::from_urdf(urdf)?;
         let posed = chain.at(&[0.0; N]);
         let segments: Vec<String> = (0..N).map(|i| posed.link_name(i).to_owned()).collect();
-        let path = path_to(&collisions, spec.tip_link)?;
+        let path = path_to(&collisions, spec.tip_link);
         let mut links = Vec::new();
         let mut carried = Vec::new();
         for name in collisions.collision_link_names() {
-            if let Some((segment, offset)) = carrier(&collisions, &segments, &path, &name)? {
+            if let Some((segment, offset)) = carrier(&collisions, &segments, &path, &name) {
                 links.push(LinkGeometry {
                     pieces: pieces_of(&collisions, &name, meshes_dir)?,
                     name,
                     segment,
                     offset,
                 });
-            } else if let Some((segment, offset)) = carrier_of_part(&collisions, &segments, &name)?
-            {
+            } else if let Some((segment, offset)) = carrier_of_part(&collisions, &segments, &name) {
                 let (pieces, sphere_sources): (Vec<Hull>, Vec<SphereSource>) =
                     pieces_of(&collisions, &name, meshes_dir)?
                         .into_iter()
@@ -382,15 +381,14 @@ impl BodyGeometry {
             .collision_link_names()
             .into_iter()
             .filter_map(|name| {
-                let pose = collisions.fixed_pose_in_root(&name).transpose()?;
-                Some(pose.map_err(GeometryError::from).and_then(|frame| {
-                    let pieces = pieces_of(&collisions, &name, meshes_dir)?;
-                    Ok(BodyLink {
+                let frame = collisions.fixed_pose_in_root(&name)?;
+                Some(
+                    pieces_of(&collisions, &name, meshes_dir).map(|pieces| BodyLink {
                         name,
                         frame,
                         pieces,
-                    })
-                }))
+                    }),
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(BodyGeometry { links })
@@ -886,17 +884,14 @@ fn scaled_hull(hull: &Hull, scale: f64) -> Hull {
 }
 
 /// The links on the path from the URDF root to `tip`, the tip included.
-fn path_to(collisions: &UrdfCollisions, tip: &str) -> Result<Vec<String>, GeometryError> {
+fn path_to(collisions: &UrdfCollisions, tip: &str) -> Vec<String> {
     let mut path = vec![tip.to_owned()];
-    while let Some(joint) =
-        collisions.parent_joint(path.last().expect("the path starts at the tip"))
+    while let Some((_, parent)) =
+        collisions.parent_of(path.last().expect("the path starts at the tip"))
     {
-        if path.contains(&joint.parent_link) {
-            return Err(format!("the URDF holds a cycle through '{}'", joint.parent_link).into());
-        }
-        path.push(joint.parent_link.clone());
+        path.push(parent.to_owned());
     }
-    Ok(path)
+    path
 }
 
 /// The pieces of `link`, one per `<collision>` element, each fitted to the element's
@@ -932,9 +927,9 @@ fn carrier(
     segments: &[String],
     path: &[String],
     link: &str,
-) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
+) -> Option<(usize, Isometry3<f64>)> {
     walk_up(collisions, segments, link, |joint, below| {
-        joint.is_fixed() || path.iter().any(|on_path| on_path == below)
+        !joint.placement.kind.is_movable() || path.iter().any(|on_path| on_path == below)
     })
 }
 
@@ -945,7 +940,7 @@ fn carrier_of_part(
     collisions: &UrdfCollisions,
     segments: &[String],
     link: &str,
-) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
+) -> Option<(usize, Isometry3<f64>)> {
     walk_up(collisions, segments, link, |_, _| true)
 }
 
@@ -953,34 +948,24 @@ fn carrier_of_part(
 /// each joint that `crosses` takes, given the joint and the link below it, at 0: that
 /// joint's index and `link`'s frame in its child link's frame; `None` where the walk
 /// reaches the root or a joint it does not cross.
-fn walk_up(
-    collisions: &UrdfCollisions,
+fn walk_up<'a>(
+    collisions: &'a UrdfCollisions,
     segments: &[String],
-    link: &str,
-    crosses: impl Fn(&ParentJoint, &str) -> bool,
-) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
+    link: &'a str,
+    crosses: impl Fn(&Joint, &str) -> bool,
+) -> Option<(usize, Isometry3<f64>)> {
     let mut offset = Isometry3::identity();
-    let mut current = link.to_owned();
-    let mut visited = Vec::new();
+    let mut current = link;
     loop {
-        if let Some(segment) = segments.iter().position(|s| *s == current) {
-            return Ok(Some((segment, offset)));
+        if let Some(segment) = segments.iter().position(|s| s == current) {
+            return Some((segment, offset));
         }
-        if visited.contains(&current) {
-            return Err(format!("the URDF holds a cycle through '{current}'").into());
+        let (joint, parent) = collisions.parent_of(current)?;
+        if !crosses(joint, current) {
+            return None;
         }
-        visited.push(current.clone());
-        let Some(joint) = collisions.parent_joint(&current) else {
-            return Ok(None);
-        };
-        if !crosses(joint, &current) {
-            return Ok(None);
-        }
-        let motion = joint
-            .offset(0.0)
-            .map_err(|e| format!("the joint above '{current}': {e}"))?;
-        offset = motion * offset;
-        current = joint.parent_link.clone();
+        offset = joint.pose_at(0.0) * offset;
+        current = parent;
     }
 }
 

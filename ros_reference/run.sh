@@ -7,6 +7,13 @@
 #                                    image gives differs from the committed files,
 #                                    printing each difference
 #   ros_reference/run.sh --datasets  runs the local-only kinds too, in either mode
+#   ros_reference/run.sh --jobs N    runs at most N references at once, in either mode;
+#                                    without it, as many as the CPUs nproc counts
+#
+# The reference of each scenario runs in a container of its own, at most --jobs of them at
+# once, so a run takes about the time of its longest scenario, or of a mapping scenario and
+# the longest scenario that localizes in its map. The script prints the run
+# time of each reference as it ends, and the output of a reference that fails.
 #
 # A local-only kind reads datasets that the repository does not hold. With --datasets, the
 # script fetches each archive that datasets.txt lists into the dataset cache,
@@ -15,9 +22,9 @@
 # from the digests taken as they were extracted, and mounts the cache read-only in the
 # container, which writes the runs of the local-only references, in either mode, to
 # ros_reference/target/results/ of the checkout that holds this script; the crate's
-# statistics program then scores them into their reference outputs. Without --datasets,
-# the committed outputs of the local-only kinds stand, with the committed digests of the
-# inputs that they list.
+# statistics program then scores them into their reference outputs, and the parity tests
+# of the local-only kinds run on the results. Without --datasets, the committed outputs of
+# the local-only kinds stand, with the committed digests of the inputs that they list.
 #
 # On amd64, the image gives the reference outputs under reference/, with the SHA-256
 # digest of each output in SHA256SUMS and of each file of the repository that an output
@@ -28,10 +35,10 @@
 # (tests/ros_reference_*.rs of each crate) then compare with its outputs, within their
 # bounds.
 #
-# The container runs with no network, one OpenMP thread and the OpenBLAS kernels of a
+# Each container runs with no network, one OpenMP thread and the OpenBLAS kernels of a
 # baseline CPU of the architecture, reads the repository through
 # a read-only mount, and writes its outputs as the user who runs the script. Both mounts
-# carry :z, so SELinux lets the container read and write them. Docker builds with buildx
+# carry :z, so SELinux lets the containers read and write them. Docker builds with buildx
 # when the buildx plugin is installed, loading the image into the engine as a builder of
 # the docker-container driver needs, and with its legacy builder otherwise. The script
 # runs the image by the id that its build gives, so each checkout runs the image of its
@@ -40,10 +47,10 @@
 # that holds this script, each character of it outside A-Z, a-z, 0-9, _, . and - written as
 # - and its leading dashes dropped, <digest> the first 12 hexadecimal digits of the SHA-256
 # of that path, which tells apart paths that the rewriting makes alike, and <step> is
-# references or digests.
+# reference-<scenario>, the scenario's file name without .json, or digests.
 #
 # A run holds an flock on ros_reference/target/run.lock from start to end, and refuses to
-# start while another run holds it or a container of either name exists. With --datasets,
+# start while another run holds it or a container of its names exists. With --datasets,
 # it also holds an flock on the cache's cache.lock until it ends: shared while it reads the
 # cache, and exclusive while it changes the cache by a fetch or an extraction, which it does
 # only when no other run holds that lock. The kernel releases each lock when the run ends,
@@ -56,6 +63,13 @@
 # files differs from its digest at the end. The committed outputs of the local-only kinds,
 # which a run without --datasets keeps, keep the committed digests of the files they list.
 set -euo pipefail
+
+# `wait -n -p`, which tells which reference ended, came with bash 5.1.
+if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+  echo "ros_reference/run.sh runs under bash 5.1 or later, and this is bash $BASH_VERSION;" \
+    "install bash 5.1 or later and run the script again" >&2
+  exit 2
+fi
 
 # The kinds whose references read the dataset cache.
 local_only_kinds=(room_dataset)
@@ -73,33 +87,29 @@ amd64_hwcaps_mask=-SSSE3,-SSE4_1,-SSE4_2,-POPCNT,-AVX,-AVX2,-BMI1,-BMI2,-FMA,-FM
 amd64_openblas_core=Prescott
 arm64_openblas_core=ARMV8
 
-# Runs in the container: the reference of every scenario but the local-only ones that
-# LOCAL_ONLY names, each listing the files it read in inputs.txt, and the version of each
-# package. With DATASETS=1, the reference of a local-only scenario runs too, and writes
-# its output to /results, from which the statistics program scores it.
-read -r -d '' references_script <<'EOF' || true
+# Runs in the container of the scenario whose file name SCENARIO gives: its reference,
+# listing the files it read in inputs/<scenario>.txt. A scenario of a local-only kind,
+# which LOCAL_ONLY names, writes its output to /results, from which the statistics program
+# scores it.
+read -r -d '' reference_script <<'EOF' || true
 set -euo pipefail
 cd /repository
-for scenario in ros_reference/scenarios/*.json; do
-  name=$(basename "$scenario")
-  if [[ " $LOCAL_ONLY " == *" $name "* ]]; then
-    if [[ $DATASETS == 1 ]]; then
-      ros_reference "$scenario" "/results/$name" /repository /outputs/inputs.txt
-    fi
-    continue
-  fi
-  ros_reference "$scenario" "/outputs/reference/$name" /repository /outputs/inputs.txt
-done
-dpkg-query --show --showformat '${Package} ${Version}\n' | sort > /outputs/packages.txt
+output=/outputs/reference/$SCENARIO
+if [[ " $LOCAL_ONLY " == *" $SCENARIO "* ]]; then
+  output=/results/$SCENARIO
+fi
+ros_reference "ros_reference/scenarios/$SCENARIO" "$output" /repository \
+  "/outputs/inputs/$SCENARIO.txt"
 EOF
 
-# Runs in the container, after digest_line_of: the digests of the outputs and of the files
-# that they depend on, each input that carried.SHA256SUMS lists with the digest it gives
-# there and every other with its digest when the run started, which start.SHA256SUMS
-# gives and the file still has.
+# Runs in the container, after digest_line_of: the version of each package, and the
+# digests of the outputs and of the files that they depend on, each input that
+# carried.SHA256SUMS lists with the digest it gives there and every other with its digest
+# when the run started, which start.SHA256SUMS gives and the file still has.
 read -r -d '' digests_script <<'EOF' || true
 set -euo pipefail
 cd /repository
+dpkg-query --show --showformat '${Package} ${Version}\n' | sort > /outputs/packages.txt
 sort -u /outputs/inputs.txt | while IFS= read -r input; do
   carried=$(digest_line_of /outputs/carried.SHA256SUMS "$input")
   if [[ -n $carried ]]; then
@@ -130,21 +140,33 @@ digest_line_of() {
 }
 
 usage() {
-  echo "usage: $0 [--check] [--datasets]" >&2
+  echo "usage: $0 [--check] [--datasets] [--jobs N]" >&2
   exit 2
 }
 
-mode=write
-datasets=0
-for argument in "$@"; do
-  case $argument in
-    --check) mode=check ;;
-    --datasets) datasets=1 ;;
-    *) usage ;;
-  esac
-done
 # The command line of this run, and of the run that writes what this one compares.
 run_command="ros_reference/run.sh${*:+ $*}"
+mode=write
+datasets=0
+jobs=$(nproc)
+while (($#)); do
+  case $1 in
+    --check) mode=check ;;
+    --datasets) datasets=1 ;;
+    --jobs)
+      if [[ ${2:-} =~ ^[1-9][0-9]*$ ]]; then
+        jobs=$2
+        shift
+      else
+        echo "--jobs takes the number of references to run at once, 1 or more, as in" \
+          "--jobs 4" >&2
+        exit 2
+      fi
+      ;;
+    *) usage ;;
+  esac
+  shift
+done
 write_command=ros_reference/run.sh
 if ((datasets)); then
   write_command+=" --datasets"
@@ -222,14 +244,14 @@ if ! flock --exclusive --nonblock 8; then
   exit 1
 fi
 printf '%s\n' "$$" >"$run_lock"
-for step in references digests; do
-  if docker container inspect "$container_prefix-$step" >/dev/null 2>&1; then
-    echo "the container $container_prefix-$step, of a run of ros_reference/run.sh in this" \
-      "checkout that ended without removing it, exists; remove it with" \
-      "docker rm --force $container_prefix-$step and run the script again" >&2
-    exit 1
-  fi
-done
+left=$(docker ps --all --format '{{.Names}}' |
+  awk -v prefix="$container_prefix-" 'index($0, prefix) == 1' | paste -s -d ' ' -)
+if [[ -n $left ]]; then
+  echo "the containers $left of a run of ros_reference/run.sh in this checkout that ended" \
+    "without removing them exist; remove them with docker rm --force $left and run the" \
+    "script again" >&2
+  exit 1
+fi
 
 # The scenarios of the local-only kinds, by file name: each scenario holds its kind on a
 # line of its own, where the layout of the scenarios puts it.
@@ -390,7 +412,95 @@ run_in_image() {
     --platform "linux/$platform" --network none "${user_options[@]}" "${environment[@]}" \
     "${volumes[@]}" "$(<"$scratch/image")" bash -c "$2"
 }
-run_in_image references "$references_script"
+
+# The scenarios whose references run: every scenario but those of the local-only kinds,
+# which run with --datasets alone.
+scenarios=()
+for scenario in "$harness"/scenarios/*.json; do
+  name=$(basename "$scenario")
+  if ((!datasets)) && [[ " ${local_only[*]} " == *" $name "* ]]; then
+    continue
+  fi
+  scenarios+=("$name")
+done
+
+# Runs the reference of the scenario $1 in a container of its own, its output kept in
+# logs/, and prints its run time; when the reference fails, prints that output and fails.
+run_reference() {
+  local name=$1 started=$SECONDS log=$scratch/logs/$1.log
+  if run_in_image "reference-${name%.json}" \
+    "SCENARIO=$(printf '%q' "$name")"$'\n'"$reference_script" >"$log" 2>&1; then
+    echo "$name: $((SECONDS - started)) s"
+    return
+  fi
+  echo "the reference of $name failed after $((SECONDS - started)) s; it printed:" >&2
+  cat "$log" >&2
+  return 1
+}
+
+# The running references, each scenario by the pid that runs it, the scenarios whose
+# references ended, and those whose references failed.
+declare -A running=()
+declare -A ended=()
+failed_references=()
+
+# Waits for one running reference to end.
+wait_for_a_reference() {
+  local pid status=0
+  wait -n -p pid || status=$?
+  if ((status)); then
+    failed_references+=("${running[$pid]}")
+  fi
+  ended[${running[$pid]}]=1
+  unset "running[$pid]"
+}
+
+# The file name of the scenario whose map the scenario $1 localizes in, or nothing for a
+# scenario that names none.
+map_scenario_of() {
+  { grep -o '"map_scenario": *"[^"]*"' "$harness/scenarios/$1" || true; } |
+    sed 's/.*"\([^"]*\)"$/\1.json/'
+}
+
+mkdir "$scratch/logs" "$outputs/inputs"
+# Each scenario starts as soon as a job is free, and a scenario that localizes once the
+# scenario whose map it reads has ended.
+declare -A map_of_scenario=()
+for name in "${scenarios[@]}"; do
+  map=$(map_scenario_of "$name")
+  map_of_scenario[$name]=$map
+  if [[ -n $map && " ${scenarios[*]} " != *" $map "* ]]; then
+    echo "$name localizes in the map of $map, which is no scenario of this run: name a" \
+      "mapping scenario of ros_reference/scenarios/" >&2
+    exit 1
+  fi
+done
+pending=("${scenarios[@]}")
+while ((${#pending[@]})); do
+  waiting=()
+  for name in "${pending[@]}"; do
+    map=${map_of_scenario[$name]}
+    if ((${#running[@]} >= jobs)) || [[ -n $map && -z ${ended[$map]-} ]]; then
+      waiting+=("$name")
+      continue
+    fi
+    run_reference "$name" &
+    running[$!]=$name
+  done
+  pending=("${waiting[@]}")
+  if ((${#pending[@]})); then
+    wait_for_a_reference
+  fi
+done
+while ((${#running[@]})); do
+  wait_for_a_reference
+done
+if ((${#failed_references[@]})); then
+  echo "the references of ${failed_references[*]} failed" >&2
+  exit 1
+fi
+cat "$outputs"/inputs/*.txt >>"$outputs/inputs.txt"
+rm -r "$outputs/inputs"
 
 # With --datasets, the outputs of the local-only scenarios are the statistics of their runs,
 # which the crate's statistics program computes on the host, on amd64 under the container's
@@ -425,6 +535,22 @@ else
     cp "$outputs"/reference/* "$harness/reference/"
   fi
   echo "wrote what the $platform image gives"
+fi
+
+# With --datasets, the parity tests of the local-only kinds, tests/ros_reference_<kind>.rs
+# of each crate, which read the results of the references, whose directory
+# ROS_REFERENCE_RESULTS names to them, and which print the statistics they compare.
+if ((datasets)); then
+  shopt -s nullglob
+  for kind in "${local_only_kinds[@]}"; do
+    for parity_test in "$repository"/*/tests/ros_reference_"$kind".rs; do
+      (cd "$(dirname "$(dirname "$parity_test")")" &&
+        ROS_REFERENCE_RESULTS=$results \
+          cargo test --locked --release --test "ros_reference_$kind" -- --ignored \
+          --show-output) || failed=1
+    done
+  done
+  shopt -u nullglob
 fi
 
 if [[ $platform == arm64 ]]; then

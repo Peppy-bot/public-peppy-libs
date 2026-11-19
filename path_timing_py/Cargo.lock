@@ -6,9 +6,17 @@ version = 4
 name = "control_core"
 version = "0.1.0"
 dependencies = [
+ "frame_tree",
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "frame_tree"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

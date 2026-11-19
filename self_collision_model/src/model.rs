@@ -14,13 +14,13 @@
 use std::collections::HashSet;
 
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
-use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use robot_description::{Finger, RobotDescription};
+use chain_kinematics::{Chain, ChainSpec, Joint, JointKind, JointPlacement, JointSelection};
+use robot_description::{Finger, FingerSpan, RobotDescription};
 
 use crate::assemble::fit_bodies;
 use collision_geometry::chain::{CarriedPart, Rider};
 use collision_geometry::gjk::{self, Hull, Placed};
-use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
+use collision_geometry::urdf_collision::UrdfCollisions;
 
 use crate::{BuildError, CollisionError, FingerError};
 
@@ -90,45 +90,61 @@ impl Body {
     }
 }
 
-/// A finger's parent joint, parsed at build into an infallible placer: the joint
-/// origin, its unit axis, whether it rotates (revolute) or slides (prismatic), and
-/// the joint positions at which the finger is shut and fully open. Validated once
-/// here (bounded 1-DOF, non-zero axis) so placing it at any opening cannot fail in
+/// How a finger's joint moves it: it turns about its axis or slides along it, the axis a
+/// unit vector in the joint's frame.
+#[derive(Clone, Copy)]
+enum FingerMotion {
+    Turn { axis: Unit<Vector3<f64>> },
+    Slide { axis: Unit<Vector3<f64>> },
+}
+
+impl FingerMotion {
+    /// The joint kind that moves a link as this motion does.
+    fn kind(self) -> JointKind {
+        match self {
+            FingerMotion::Turn { axis } => JointKind::Revolute { axis },
+            FingerMotion::Slide { axis } => JointKind::Prismatic { axis },
+        }
+    }
+}
+
+/// A finger's parent joint, built into an infallible placer: the joint's origin, how
+/// it moves the finger, and the joint positions at which the finger is shut and fully
+/// open. It is checked once here, so placing the finger at any opening cannot fail in
 /// the per-tick hot path.
 #[derive(Clone, Copy)]
 struct FingerJoint {
     origin: Isometry3<f64>,
-    axis: Unit<Vector3<f64>>,
-    revolute: bool,
-    /// Joint position (URDF joint units) at shut and at fully open.
-    closed: f64,
-    open: f64,
+    motion: FingerMotion,
+    /// The joint's positions at shut and at fully open.
+    span: FingerSpan,
 }
 
 impl FingerJoint {
-    /// Parse a finger's parent joint into a validated placer, the single gate
-    /// for finger-joint kinds: only a prismatic or revolute finger can be
-    /// placed, and its axis must normalize.
-    fn from_joint(
-        name: &str,
-        joint: &ParentJoint,
-        closed: f64,
-        open: f64,
-    ) -> Result<Self, BuildError> {
-        if joint.kind == JointKind::Continuous {
-            return Err(BuildError::Geometry(format!(
-                "finger '{name}' joint is continuous, which bounds no travel"
-            )));
-        }
-        let (axis, revolute) = joint
-            .one_dof()
-            .map_err(|e| BuildError::Geometry(format!("finger '{name}': {e}")))?;
+    /// The placer of the finger `link` on its parent `joint`, the single gate for
+    /// finger-joint kinds: a finger turns on a revolute joint or slides on a prismatic
+    /// one; a continuous finger joint bounds no travel and is refused, and a fixed one
+    /// moves no finger.
+    fn from_joint(link: &str, joint: &Joint, span: FingerSpan) -> Result<Self, BuildError> {
+        let motion = match joint.placement.kind {
+            JointKind::Revolute { axis } => FingerMotion::Turn { axis },
+            JointKind::Prismatic { axis } => FingerMotion::Slide { axis },
+            JointKind::Continuous { .. } => {
+                return Err(BuildError::ContinuousFinger {
+                    link: link.to_owned(),
+                    joint: joint.name.clone(),
+                });
+            }
+            JointKind::Fixed => {
+                return Err(BuildError::NoSuchFinger {
+                    link: link.to_owned(),
+                });
+            }
+        };
         Ok(FingerJoint {
-            origin: joint.origin,
-            axis,
-            revolute,
-            closed,
-            open,
+            origin: joint.placement.origin,
+            motion,
+            span,
         })
     }
 
@@ -136,8 +152,11 @@ impl FingerJoint {
     /// in `[0, 1]` (0 = shut, 1 = fully open), linearly interpolating the
     /// finger-joint travel, for a prismatic and a revolute finger alike.
     fn offset(&self, fraction: f64) -> Isometry3<f64> {
-        let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
-        place_1dof(&self.origin, &self.axis, self.revolute, q)
+        let placement = JointPlacement {
+            origin: self.origin,
+            kind: self.motion.kind(),
+        };
+        placement.pose_at(self.span.position_at(fraction.clamp(0.0, 1.0)))
     }
 
     /// World velocity of a point riding this finger per unit opening fraction,
@@ -152,12 +171,11 @@ impl FingerJoint {
         point: &Point3<f64>,
     ) -> Vector3<f64> {
         let joint_world = link_world * self.origin;
-        let axis_world = joint_world.rotation * self.axis.into_inner();
-        let travel = self.open - self.closed;
-        if self.revolute {
-            (axis_world * travel).cross(&(point.coords - joint_world.translation.vector))
-        } else {
-            axis_world * travel
+        let travel = self.span.travel();
+        match self.motion {
+            FingerMotion::Turn { axis } => (joint_world.rotation * axis.into_inner() * travel)
+                .cross(&(point.coords - joint_world.translation.vector)),
+            FingerMotion::Slide { axis } => joint_world.rotation * axis.into_inner() * travel,
         }
     }
 }
@@ -442,8 +460,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         for finger in fitted.fingers {
             let placement = chain_segment(&names, &finger.parent_link)
                 .expect("fit_bodies only emits fingers hosted on a chain link");
-            let placer =
-                FingerJoint::from_joint(&finger.name, &finger.joint, finger.closed, finger.open)?;
+            let placer = FingerJoint::from_joint(&finger.name, &finger.joint, finger.span)?;
             let bound = BoundingSphere::of(&finger.hulls);
             push_body(
                 &mut bodies,
@@ -507,18 +524,19 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         // inflation radius. Non-finger bodies do not move with an opening.
         let opening_reach = |body: &Body| -> f64 {
             let Some(f) = &body.finger else { return 0.0 };
-            let travel = (f.open - f.closed).abs();
-            if !f.revolute {
-                return travel;
-            }
+            let travel = f.span.travel().abs();
+            let axis = match f.motion {
+                FingerMotion::Turn { axis } => axis,
+                FingerMotion::Slide { .. } => return travel,
+            };
             let r_max = body
                 .local
                 .iter()
                 .flat_map(|h| {
                     let radius = h.inflation();
                     h.vertices().iter().map(move |p| {
-                        let along = p.coords.dot(&f.axis);
-                        (p.coords - f.axis.into_inner() * along).norm() + radius
+                        let along = p.coords.dot(&axis);
+                        (p.coords - axis.into_inner() * along).norm() + radius
                     })
                 })
                 .fold(0.0, f64::max);
@@ -1095,10 +1113,9 @@ fn body_reaches<const N: usize>(chains: &[Chain<N>], bodies: &[Body]) -> Vec<[f6
                 return [0.0; N]; // never moved by a joint
             };
             let finger_reach = body.finger.as_ref().map_or(0.0, |f| {
-                let travel = if f.revolute {
-                    0.0
-                } else {
-                    f.closed.abs().max(f.open.abs())
+                let travel = match f.motion {
+                    FingerMotion::Slide { .. } => f.span.closed().abs().max(f.span.open().abs()),
+                    FingerMotion::Turn { .. } => 0.0,
                 };
                 f.origin.translation.vector.norm() + travel
             });
@@ -1382,6 +1399,34 @@ mod tests {
         );
     }
 
+    // A finger on a continuous joint is refused, naming the finger and its joint.
+    #[test]
+    fn a_finger_on_a_continuous_joint_is_refused() {
+        let continuous = edited(
+            MODEL,
+            |urdf| {
+                urdf.replacen(
+                    r#"<joint name="openarm_left_finger_joint1" type="prismatic">"#,
+                    r#"<joint name="openarm_left_finger_joint1" type="continuous">"#,
+                    1,
+                )
+            },
+            str::to_owned,
+        )
+        .expect("a continuous finger joint describes a robot");
+        let e = built(&continuous)
+            .err()
+            .expect("a continuous finger must fail");
+        assert!(
+            matches!(
+                &e,
+                CollisionError::Build(BuildError::ContinuousFinger { link, joint })
+                    if link == "openarm_left_right_finger" && joint == "openarm_left_finger_joint1"
+            ),
+            "{e}"
+        );
+    }
+
     // Every link on a moving joint off a chain link that has collision geometry is a
     // finger of its arm's gripper, and the grippers name no other.
     #[test]
@@ -1407,8 +1452,7 @@ mod tests {
         extra.push(Finger {
             joint: "openarm_left_joint7".to_string(),
             link: "openarm_left_link7".to_string(),
-            closed: 0.0,
-            open: 1.0,
+            span: FingerSpan::new(0.0, 1.0).expect("a span"),
             mimic: None,
         });
         let e = refused(&extra);

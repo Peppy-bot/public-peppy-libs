@@ -189,10 +189,9 @@ fn arm_joints<const N: usize>(
 ) -> Result<[f64; N], String> {
     let positions = match args.joints.iter().rfind(|(name, _)| *name == arm.name) {
         Some((_, positions)) => positions.as_slice(),
-        None => description.state(&arm.name, states::HOME).ok_or(format!(
-            "{} has no home state; give --joints {}=<positions>",
-            arm.name, arm.name
-        ))?,
+        None => description
+            .state(&arm.name, states::HOME)
+            .map_err(|unknown| format!("{unknown}; give --joints {}=<positions>", arm.name))?,
     };
     positions.try_into().map_err(|_| {
         format!(
@@ -362,10 +361,10 @@ fn mesh_wireframes<const N: usize, const K: usize>(
                 if on_a_chain(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
                 }
-                let joint = urdf
-                    .parent_joint(&child)
+                let (joint, _) = urdf
+                    .parent_of(&child)
                     .expect("children_of implies a parent joint");
-                let position = if joint.is_fixed() {
+                let position = if !joint.placement.kind.is_movable() {
                     0.0
                 } else {
                     let finger = arm
@@ -377,7 +376,7 @@ fn mesh_wireframes<const N: usize, const K: usize>(
                             "'{child}' rides a moving joint and {} names no finger of it",
                             arm.gripper.name
                         ))?;
-                    finger.closed + opening * (finger.open - finger.closed)
+                    finger.span.position_at(*opening)
                 };
                 verts.extend(
                     urdf.child_surfaces_in_parent(&child, position, meshes)?

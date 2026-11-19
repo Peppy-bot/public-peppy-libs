@@ -1,12 +1,14 @@
 #include "room_dataset_files.hpp"
 
-#include <cmath>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 
+#include <tf2/LinearMath/Quaternion.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+#include "laser_projection.hpp"
 #include "scenario.hpp"
 
 namespace ros_reference::room_dataset_files {
@@ -19,51 +21,6 @@ nlohmann::json read_document(const std::filesystem::path& path) {
     throw std::runtime_error("cannot read " + path.string());
   }
   return nlohmann::json::parse(file);
-}
-
-// The ranges of a scan: each finite range widened to a double, a JSON number that
-// write_json writes as its shortest decimal, and each mark of REP 117, which JSON has no
-// number for, as the string "inf", "-inf" or "nan".
-nlohmann::json ranges_json(const std::vector<float>& ranges) {
-  auto out = nlohmann::json::array();
-  for (const float range : ranges) {
-    if (std::isnan(range)) {
-      out.push_back("nan");
-    } else if (std::isinf(range)) {
-      out.push_back(range > 0 ? "inf" : "-inf");
-    } else {
-      out.push_back(static_cast<double>(range));
-    }
-  }
-  return out;
-}
-
-// The single-precision value whose widening `number` holds.
-float narrowed(const nlohmann::json& number) {
-  const auto wide = number.get<double>();
-  const auto narrow = static_cast<float>(wide);
-  if (static_cast<double>(narrow) != wide) {
-    throw std::runtime_error(number.dump() + " is not a single-precision value");
-  }
-  return narrow;
-}
-
-// A range of ranges_json.
-float range_of(const nlohmann::json& range) {
-  if (!range.is_string()) {
-    return narrowed(range);
-  }
-  const auto mark = range.get<std::string>();
-  if (mark == "inf") {
-    return std::numeric_limits<float>::infinity();
-  }
-  if (mark == "-inf") {
-    return -std::numeric_limits<float>::infinity();
-  }
-  if (mark == "nan") {
-    return std::numeric_limits<float>::quiet_NaN();
-  }
-  throw std::runtime_error(range.dump() + " is neither a range nor a mark of REP 117");
 }
 
 }  // namespace
@@ -152,6 +109,29 @@ std::vector<PlanarPose> read_odometry(const std::filesystem::path& results, int 
   return poses;
 }
 
+rclcpp::NodeOptions options_of(const nlohmann::json& parameters,
+                               std::vector<rclcpp::Parameter> program_parameters) {
+  for (const auto& [name, value] : parameters.items()) {
+    program_parameters.push_back(parameter_of(name, value));
+  }
+  return rclcpp::NodeOptions().parameter_overrides(program_parameters);
+}
+
+geometry_msgs::msg::TransformStamped odometry_transform(std::int64_t stamp_ns,
+                                                        const PlanarPose& pose) {
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = odometry_frame;
+  transform.header.stamp = stamp_of_nanoseconds(stamp_ns);
+  transform.child_frame_id = base_frame;
+  transform.transform.translation.x = pose.x;
+  transform.transform.translation.y = pose.y;
+  transform.transform.translation.z = 0.0;
+  tf2::Quaternion rotation;
+  rotation.setRPY(0.0, 0.0, pose.yaw);
+  transform.transform.rotation = tf2::toMsg(rotation);
+  return transform;
+}
+
 sensor_msgs::msg::LaserScan::SharedPtr laser_scan_of(const ScanParameters& parameters,
                                                      const PreparedScan& scan) {
   auto message = std::make_shared<sensor_msgs::msg::LaserScan>();
@@ -182,22 +162,8 @@ std::vector<RecordedPose> read_recorded_poses(const std::filesystem::path& file)
   return poses;
 }
 
-std::filesystem::path map_of(const std::filesystem::path& results) { return results / "map"; }
-
-rclcpp::Parameter parameter_of(const std::string& name, const nlohmann::json& value) {
-  if (value.is_boolean()) {
-    return {name, value.get<bool>()};
-  }
-  if (value.is_number_integer()) {
-    return {name, value.get<std::int64_t>()};
-  }
-  if (value.is_number_float()) {
-    return {name, value.get<double>()};
-  }
-  if (value.is_string()) {
-    return {name, value.get<std::string>()};
-  }
-  throw std::runtime_error("the parameter " + name + " is not a bool, a number or a string");
+std::filesystem::path map_of(const std::filesystem::path& results, int seed) {
+  return results / ("map_" + std::to_string(seed));
 }
 
 }  // namespace ros_reference::room_dataset_files

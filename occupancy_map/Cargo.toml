@@ -10,6 +10,7 @@ description = "A voxel map of what a depth sensor sees, in a frame the caller na
 camera_core = { path = "../camera_core" }
 collision_geometry = { path = "../collision_geometry" }
 control_core = { path = "../control_core" }
+frame_tree = { path = "../frame_tree" }
 nalgebra = "0.35"
 thiserror = "2"
 

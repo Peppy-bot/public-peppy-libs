@@ -35,7 +35,7 @@ impl<const N: usize> Posed<'_, N> {
                 .map(|i| {
                     let weight = self.mass(i) * STANDARD_GRAVITY;
                     match self.kind(j) {
-                        JointKind::Revolute { .. } => {
+                        JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
                             let r = self.com_world(i) - origin_j;
                             weight * axis_j.cross(&r).z
                         }
@@ -89,7 +89,9 @@ impl<const N: usize> Posed<'_, N> {
                 + 2.0 * omega_parent.cross(&slide_parent);
 
             let (qd_spin, qd_slide) = match self.kind(i) {
-                JointKind::Revolute { .. } => (qdot[i] * axis, Vector3::zeros()),
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
+                    (qdot[i] * axis, Vector3::zeros())
+                }
                 JointKind::Prismatic { .. } => (Vector3::zeros(), qdot[i] * axis),
                 JointKind::Fixed => (Vector3::zeros(), Vector3::zeros()),
             };
@@ -143,7 +145,9 @@ impl<const N: usize> Posed<'_, N> {
                 moment_com + r_com.cross(&force_com) + n_child + r_child.cross(&f_child);
 
             tau[i] = match self.kind(i) {
-                JointKind::Revolute { .. } => self.axis_world(i).dot(&moment_joint),
+                JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
+                    self.axis_world(i).dot(&moment_joint)
+                }
                 JointKind::Prismatic { .. } => self.axis_world(i).dot(&force_joint),
                 JointKind::Fixed => 0.0,
             };

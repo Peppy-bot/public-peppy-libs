@@ -1,11 +1,11 @@
 """The camera model: what turns a pixel and its depth into a position in
 the robot frame. The camera contracts carry image size and encoding only:
-the intrinsics come from the camera through camera_geometry, and the
-camera's pose from the robot through camera_mounts, both once they have
-answered.
+the intrinsics come from the camera through camera_geometry, once it has
+answered, and the camera's pose at the time of each picture from the
+robot's tree of frames through transform_lookup.
 
-Conventions, camera_geometry's and camera_mounts': the optical frame has
-+X to the right of the image, +Y down it and +Z along the view; a depth
+Conventions, camera_geometry's and transforms': the optical frame has +X
+to the right of the image, +Y down it and +Z along the view; a depth
 sample is the distance along the optical axis; the pose is the optical
 frame in the robot frame limb_motion uses, position in metres and a unit
 quaternion [x, y, z, w], so a point p of the optical frame is R(q) p + t
@@ -79,6 +79,10 @@ class Intrinsics:
         return Intrinsics(width, height, self.fx * sx, self.fy * sy, (self.cx + 0.5) * sx - 0.5, (self.cy + 0.5) * sy - 0.5, self.distortion_model, self.distortion)
 
 
+# The least norm of a quaternion that is turned into a unit one.
+_LEAST_QUATERNION_NORM = 1e-9
+
+
 @dataclass(frozen=True)
 class CameraPose:
     """The optical frame in the robot frame: metres, and a unit quaternion
@@ -87,21 +91,10 @@ class CameraPose:
     position: Vec3
     orientation: Quat
 
-
-@dataclass(frozen=True)
-class CameraModel:
-    """The camera the brain looks through: the pose of its optical frame in
-    the robot frame, from the robot's camera_mounts once it has answered,
-    and its intrinsics, from the camera itself once it has. Not ready until
-    both have."""
-
-    pose: Optional[CameraPose] = None
-    intrinsics: Optional[Intrinsics] = None
-
-    def with_pose(self, position: Vec3, orientation: Quat) -> "CameraModel":
-        """The pose camera_mounts reports: three finite metres and a unit
-        quaternion [x, y, z, w], normalised here, refused as a ValueError
-        when it is no pose."""
+    @classmethod
+    def parse(cls, position: Sequence[float], orientation: Sequence[float]) -> "CameraPose":
+        """The pose of three finite metres and a quaternion [x, y, z, w],
+        normalised here; a ValueError when they are no pose."""
         if len(position) != 3 or len(orientation) != 4:
             raise ValueError("a camera pose is three coordinates and a quaternion of four")
         values = [float(value) for value in (*position, *orientation)]
@@ -109,22 +102,26 @@ class CameraModel:
             raise ValueError("a camera pose must be finite")
         x, y, z, qx, qy, qz, qw = values
         norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-        if norm < 1e-9:
+        if norm < _LEAST_QUATERNION_NORM:
             raise ValueError("a camera pose's quaternion must not be zero")
-        pose = CameraPose((x, y, z), (qx / norm, qy / norm, qz / norm, qw / norm))
+        return cls((x, y, z), (qx / norm, qy / norm, qz / norm, qw / norm))
+
+
+@dataclass(frozen=True)
+class CameraModel:
+    """The camera the brain looks through: its intrinsics, from the camera
+    itself once it has answered, and the pose of its optical frame in the
+    robot frame when one picture was taken. It places a pixel once it holds
+    both."""
+
+    pose: Optional[CameraPose] = None
+    intrinsics: Optional[Intrinsics] = None
+
+    def with_pose(self, pose: CameraPose) -> "CameraModel":
         return CameraModel(pose, self.intrinsics)
 
     def with_intrinsics(self, intrinsics: Intrinsics) -> "CameraModel":
         return CameraModel(self.pose, intrinsics)
-
-    @property
-    def placed(self) -> bool:
-        """Whether the pose is known."""
-        return self.pose is not None
-
-    @property
-    def ready(self) -> bool:
-        return self.intrinsics is not None and self.placed
 
     def deproject(self, u: float, v: float, depth_m: float, width: int, height: int) -> Vec3:
         """The robot-frame position of pixel (u, v), x right and y down,

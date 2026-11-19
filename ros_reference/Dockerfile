@@ -3,7 +3,8 @@
 # urdf, OMPL, MoveIt's point cloud updater (moveit_ros_perception) with its occupancy
 # map monitor, MoveIt's planning pipeline (moveit_ros_planning) with its OMPL planner
 # (moveit_planners_ompl) and its KDL inverse kinematics (moveit_kinematics), MoveIt's
-# CHOMP optimizer (chomp_motion_planner), random_numbers, rclcpp and sensor_msgs,
+# CHOMP optimizer (chomp_motion_planner), random_numbers, rclcpp, sensor_msgs, tf2's
+# buffer (tf2) with the transforms it takes (geometry_msgs),
 # pointcloud_to_laserscan, slam_toolbox, Nav2's AMCL, cost map (nav2_costmap_2d), map
 # server (nav2_map_server), Smac planner (nav2_smac_planner), regulated pure pursuit
 # controller (nav2_regulated_pure_pursuit_controller), controller server plugins
@@ -68,6 +69,7 @@ RUN rm /etc/apt/sources.list.d/ros2.sources \
       ros-lyrical-sensor-msgs \
       ros-lyrical-slam-toolbox \
       ros-lyrical-srdfdom \
+      ros-lyrical-tf2 \
       ros-lyrical-urdf \
  && rm -rf /var/lib/apt/lists/*
 

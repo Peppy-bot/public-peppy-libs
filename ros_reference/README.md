@@ -21,12 +21,16 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners, in a real vector space measured as MoveIt measures a joint group, the bridge's: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
+| `amcl_global_localization` | Nav2's AMCL global localization in karto's grid of a drawn room's map scans at their poses: the `amcl_pose` it publishes after each scan of a drive through the room, the mean of the filter's heaviest cluster and the covariance of the whole filter, every draw on `drand48` seeded by the search (`tools/draw_amcl_global_localization.py` writes it) | `mapping_core/tests/ros_reference_amcl_global_localization.rs` |
+| `laser_projection` | pointcloud_to_laserscan: the 2-D scan of each point cloud with no target frame, the range of the nearest point of each bearing's bin among the points inside a height band and range limits | `mapping_core/tests/ros_reference_laser_projection.rs` |
+| `map_export` | Nav2's map saver: the bytes of the image and the text of the description that `nav2_map_server::saveMapToFile` writes of each occupancy grid as a trinary map, at the thresholds its caller leaves it (`tools/draw_map_export.py` writes it) | `mapping_core/tests/ros_reference_map_export.rs` |
 | `arm_planning` | MoveIt's planning pipeline with the OMPL planner the scenario names, RRTConnect for `rrt_connect` and RRTstar for `rrt_star`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, the path it answers refined by MoveIt's CHOMP where the scenario's refiner is `chomp`, as the CHOMP refinement reference refines one, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, or of SO-101's arm among collision objects, a group under six joints searching with `position_only_ik`, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of a group that holds every arm of the robot, both of OpenArm v2's arms or SO-101's arm, checks every pair of the robot's own links but those its SRDF disables: MoveIt's answer to each scene, planned to the goal state itself or to a pose or a position of each grasp point, which MoveIt's KDL inverse kinematics reaches, its search ended by passes (rule 2), of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, built in the order of the arms' names (rule 2), and MoveIt's collision check, smallest distances, to the scene and, where the plans check pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries, and of each path rounded by MoveIt's time-optimal path at the scenario's corner tolerance, its turning and its bending, the integrals of its curvature's norm and squared norm over its length, and its duration, timed by MoveIt's time-optimal trajectory at each joint's bounds (`tools/draw_arm_planning.py` writes it, with the answers and the search budget of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`, and with `--robot so101` SO-101's scenes, to what `--goal` names) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 | `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 | `orientation_constraints` | MoveIt's kinematic constraint under rotation-vector tolerances about the axes of the target: whether a link at each configuration keeps each target within a box of tolerances inside a contract's `tolerance_rad` and within one around it (`tools/draw_orientation_constraints.py` writes it) | `motion_planning_core/tests/ros_reference_orientation_constraints.rs` |
 | `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with MoveIt's KDL as the inverse kinematics, its search ended by passes (rule 2), on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the step and the search budget of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
 | `chomp_refinement` | MoveIt's CHOMP optimizer (`chomp::ChompPlanner` of chomp_motion_planner) at the parameters MoveIt's CHOMP plugin loads by default, its initial trajectory the scene's input path (`fillTrajectory`), in a diff of the scene in MoveIt's hybrid collision environment, as the plugin plans, on scenes of an arm of OpenArm v2 among boxes of voxels as an octomap: CHOMP's error code, its path of 101 waypoints where its optimizer ran, and MoveIt's collision check, the robot's links padded by the scenario's clearance, smallest distance to the scene and length along CHOMP's path and along the input path, each straight between its waypoints, and along `motion_planning_core`'s CHOMP refinement of it with its corners rounded as MoveIt's time-optimal trajectory generation rounds them, with each path's turning, bending and duration as arm planning measures them, the input path the one `motion_planning_core`'s RRTConnect plans through the scene, which the scenario carries with our refinement (`tools/draw_chomp_refinement.py` writes it, with the paths and the probe spacing of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_chomp_refinement.rs` |
-| `room_dataset` | slam_toolbox, which maps a room in synchronous mode and localizes in the saved map, and Nav2's AMCL, which localizes globally in it, on the 2-D scans that pointcloud_to_laserscan projects from the depth frames of a TUM RGB-D sequence, with odometry made from its ground truth and seeded noise: the statistics of each seed's run, scored by `ros_reference::metrics`. A local-only kind | `ros_reference/tests/ros_reference_room_dataset.rs`, which checks the numbers of `reports/ROBOTCTRL-60.md` |
+| `room_dataset` | slam_toolbox, which maps a room in synchronous mode and localizes in the saved map, and Nav2's AMCL, which localizes globally in it, on the 2-D scans that pointcloud_to_laserscan projects from the depth frames of a TUM RGB-D sequence, with odometry made from its ground truth and seeded noise, or on the scans cast on a lidar drive (Lidar drives), which the references take with every ray at its scan's stamp, with odometry made from its route and seeded noise: the statistics of each seed's run, scored by `ros_reference::metrics`. A local-only kind | `mapping_core/tests/ros_reference_room_dataset.rs`, and `ros_reference/tests/ros_reference_room_dataset.rs`, which checks the numbers of `reports/ROBOTCTRL-60.md` |
+| `transform_lookup` | tf2's buffer (`tf2::BufferCore` of geometry2 0.45.10), which takes the scenario's transforms in order, a static transform as tf2_ros's static broadcaster sends it, with every static transform sent before it: whether it takes each transform, and its answer to each lookup, the source frame's transform in the target frame and the time it holds at, or the exception it throws, on a drawn tree of static and moving transforms and on a few steps for each rule of the buffer (`tools/draw_transform_lookup.py` writes them) | `frame_tree/tests/ros_reference_transform_lookup.rs` |
 | `smac_2d` | Nav2's Smac 2D planner: on a cost grid, the path of each start and goal by `SmacPlanner2D::createPlan`'s steps at a goal tolerance of 0, with its smoother off and smoothed at an iteration bound, or the failure it throws | `navigation_core/tests/ros_reference_smac_2d.rs` |
 | `inflation` | Nav2's inflation layer: the costs of a grid inflated around its lethal cells for a footprint padded as Costmap2DROS pads it, over the whole grid, the padded footprint, and the inscribed radius it takes from it | `navigation_core/tests/ros_reference_inflation.rs` |
 | `obstacle_projection` | Nav2's obstacle layer: the lethal cells of the points of a depth frame in a height band, from one observation source with clearing off, after it clears the cells under a padded footprint at a base pose, and the points in the grid's frame as it transforms them | `navigation_core/tests/ros_reference_obstacle_projection.rs` |
@@ -41,12 +45,13 @@ change of the reference, which `run.sh --check` proves.
 | Path | What it holds |
 |---|---|
 | `scenarios/` | One JSON file per scenario. Its `kind` names the reference that runs on it. |
+| `drives/` | The lidar drives that room dataset scenarios name, each a lidar, the walls of a room and a timed route through it (see Lidar drives). |
 | `robots/` | The model directories of the robots that the tools draw for scenarios, each in robot_description's layout, its URDF, its SRDF and its meshes: `primitive_arm/`, an arm of 7 joints dressed in boxes, cylinders and spheres and in `meshes/wedge.stl`, turned about its origin. A scenario that poses a robot names its model directory as its `description`: `robot_description/models/<model id>` for a robot model of the repository, or a directory of `robots/`. |
 | `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that an output depends on, by its path from the repository root: each scenario and the files it names, which the reference program lists as it reads them, and the sources of each local-only kind, which the statistics program adds. Every number of an output is a JSON number, the shortest decimal that reads back to the reference's own bits. |
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario; and its plugins of MoveIt's base classes, which `moveit_plugins.xml` names to pluginlib, in the package that `package.xml` names. `amcl_map_cspace.cpp` is a changed copy of a file of Nav2's AMCL, under the GPL-3.0-or-later, as section 3 of AMCL's LGPL-2.1-or-later lets code copied into a program be; the copy carries the upstream notice, changed to name the GPL, with the notice of its changes, and `LICENSE-GPL-3.0` holds the GPL's text. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, each run as `uv run ros_reference/tools/<script>.py`, which builds this repository's `robot_description_py` into the script's environment, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, the model directory of each robot the scenarios pose, its parsed URDF, its arms and the limits of its joints as `robot_description_py` reads its URDF and SRDF, the links of an arm's chain and of its gripper, the finger joint of a gripper that moves of its own, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, each run as `uv run ros_reference/tools/<script>.py`, which builds this repository's `robot_description_py` into the script's environment, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, the model directory of each robot the scenarios pose, its parsed URDF, its arms and the limits of its joints as `robot_description_py` reads its URDF and SRDF, the links of an arm's chain and of its gripper, the finger joint of a gripper that moves of its own, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, `write`, which writes a scenario, and `write_input`, which writes a file that scenarios name. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program and its plugins in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 | `datasets.txt`, `NOTICE`, `LICENSE-GPL-3.0` | The datasets that the local-only kinds read, one archive a line: its SHA-256, its address and the name by which a scenario names it; the attribution of their data and the notice of `reference_programs/amcl_map_cspace.cpp`; and the text of that file's license. |
@@ -58,32 +63,37 @@ change of the reference, which `run.sh --check` proves.
 ros_reference/run.sh             # writes what the reference image gives
 ros_reference/run.sh --check     # fails when that differs from the committed files
 ros_reference/run.sh --datasets  # runs the local-only kinds too, in either mode
+ros_reference/run.sh --jobs 4    # runs at most 4 references at once, in either mode
 ```
 
 The script builds the reference image for the architecture of the host, and runs the
-reference program on each scenario in it. It runs the image by the id that its build
+reference program on each scenario in it, each scenario in a container of its own, at most
+`--jobs` of them at once, as many as the CPUs `nproc` counts without it, so a run takes
+about the time of its longest scenario, or of a mapping scenario and the longest scenario
+that localizes in its map. It prints the run time of each reference as it
+ends, and the output of a reference that fails. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. It names each container that it starts
 `ros_reference-<checkout>-<digest>-<step>`: the checkout's path, each character outside
 letters, digits, `_`, `.` and `-` written as `-` and its leading dashes dropped; the first
 12 hexadecimal digits of the SHA-256 of that path, which tell apart paths that the
-rewriting makes alike; and the step, `references` or `digests`. A run holds an flock on
-`target/run.lock` of the harness from start to end, through a descriptor that the
-processes it starts inherit, and refuses to start while another run holds it or a
-container of either name exists; the kernel releases the lock when the run and those
-processes end, however they end. When it starts, it takes the digest of each file of the
-checkout outside `.git` and the `target/` directories: `INPUTS.SHA256SUMS` holds those
-digests of the files that the outputs it writes depend on, and the run fails, naming the
-file, when one of them differs from its digest at the end. When it exits, on an error or
-on SIGTERM as well, it removes the containers that it started and its scratch directory.
-On a host without the base image, the build fetches about
-751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB; and 355 MB of
-packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the image takes
-about 3.7 GB of disk on amd64 and 2.6 GB on arm64.
-The reference outputs and their checks run on the developer's machine; the Tests
-workflow runs the parity tests on the committed outputs.
+rewriting makes alike; and the step, `reference-<scenario>`, the scenario's file name
+without `.json`, or `digests`. A run holds an flock on `target/run.lock` of the harness
+from start to end, through a descriptor that the processes it starts inherit, and refuses
+to start while another run holds it or a container of its names exists; the kernel
+releases the lock when the run and those processes end, however they end. When it starts,
+it takes the digest of each file of the checkout outside `.git` and the `target/`
+directories: `INPUTS.SHA256SUMS` holds those digests of the files that the outputs it
+writes depend on, and the run fails, naming the file, when one of them differs from its
+digest at the end. When it exits, on an error or on SIGTERM as well, it removes the
+containers that it started and its scratch directory. On a host without the base image,
+the build fetches about 751 MB on amd64 (the base image, 341 MB; the apt indexes, 54.7 MB;
+and 355 MB of packages) and about 708 MB on arm64 (326 MB, 55.3 MB and 327 MB), and the
+image takes about 3.7 GB of disk on amd64 and 2.6 GB on arm64. The reference outputs and
+their checks run on the developer's machine; the Tests workflow runs the parity tests on
+the committed outputs.
 
-The host runs bash and a container engine as the `docker` command: Docker, rootful or
+The host runs bash 5.1 or later and a container engine as the `docker` command: Docker, rootful or
 rootless, with buildx (its default builder or one of the docker-container driver) or with
 its legacy builder; or Podman, rootful or rootless, which names itself in
 `docker --version`, as the podman-docker package installs it. The container writes its
@@ -287,15 +297,16 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    as small as the committed one. The committed cases of such
    a kind compare bit for bit, as every other output does: the arm planning scenario plans
    `rrt_connect`, refined by `none`, on its iterations. A reference whose runs are seeded
-   over a fixed recording, as the room dataset kind runs slam_toolbox and AMCL, runs over
+   over fixed scans, as the room dataset kind runs slam_toolbox and AMCL, runs over
    the seeds that its scenario lists, and its committed output holds the statistics of
    each seed. The crate's `statistics` program computes them on the host from the runs
    that the image gives, through the host's libm, on amd64 under the container's
    `glibc.cpu.hwcaps` mask: they change when the image's runs change, and they can change
    with the host's glibc. Each output of the room dataset kind lists among its inputs the
    kind's sources, `reference_programs/room_dataset*.cpp` and `.hpp`,
-   `reference_programs/amcl_map_cspace.cpp` and `.hpp`, the shared reference program it
-   runs, `reference_programs/nav2_node.cpp` and `.hpp`, `src/room_dataset.rs`,
+   `reference_programs/amcl_map_cspace.cpp` and `.hpp`, the shared reference programs it
+   runs, `reference_programs/amcl_node.cpp`, `laser_projection.cpp`, `nav2_node.cpp` and
+   `point_cloud.cpp`, each with its `.hpp`, `src/room_dataset.rs`,
    `src/metrics.rs` and `src/bin/statistics.rs`, so `INPUTS.SHA256SUMS` holds their
    digests, and a change to one fails the routine tests until `run.sh --datasets` writes
    the outputs again. The kind's sources are its own files and the shared reference
@@ -407,10 +418,22 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    of MoveIt's, which checks no start, the parity test prints; for CHOMP refinement, among
    boxes of voxels, of the first 40 scenes that `tools/draw_chomp_refinement.py` draws,
    the first four whose input path turns at a waypoint and the first whose path is
-   straight; for room datasets, pioneer_slam and pioneer_360, the TUM sequences of a
+   straight; for laser projection, one cloud of each case of
+   `tools/draw_laser_projection.py`, 40 points scattered inside the height band, the range
+   limits and the fan, the points of one bearing at five ranges in both orders, points at
+   each end of the band and of the range limits and at the next single precision value
+   beyond each, points a hair inside and outside each end of the fan and either side of
+   four boundaries between bins, points behind and beside the origin, and an empty cloud;
+   for map export, one grid of each case of `tools/draw_map_export.py`, one cell of each
+   state, a drawn grid of odd width and height, a cell side and an origin that the
+   description rounds, among them a coordinate that rounds to -0.000, an origin far from
+   the map frame's, and a grid that no ray reached;
+   for room datasets, pioneer_slam and pioneer_360, the TUM sequences of a
    Pioneer whose drives hold loops, which map, and pioneer_slam2 and pioneer_slam3, which
-   share pioneer_slam's motion capture frame and localize in the map of its first seed,
-   each over ten seeds;
+   share pioneer_slam's motion capture frame and localize in its maps, and the first lap
+   of the lidar drive `drives/l_room.json`, which maps, and its second from its start, a
+   fifth of it and two fifths of it, each of which localizes in the first lap's maps, each
+   over ten seeds, a seed localizing in the map that the same seed made;
    for Smac 2D, four grids of `tools/draw_smac_2d.py`, each planned at a goal
    tolerance of 0, a free floor where every step onto a cell costs the same, a cluttered
    grid of inflated blocks and unknown patches crossed with unknown cells passable, one
@@ -461,7 +484,12 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    its edge, a shallow step, and a turn towards a drop; for diff drive
    odometry, the wheel positions of `tools/draw_diff_drive_odometry.py` for wheels of one
    radius and of two, a straight run, an arc, a spin in place, a turn too slight to leave
-   the straight branch, a run backwards, and four drawn segments on each.
+   the straight branch, a run backwards, and four drawn segments on each; for AMCL global
+   localization, the two rooms of `tools/draw_amcl_global_localization.py`, an L-shaped
+   room with a box searched with each motion model, the omnidirectional one resampling
+   every second update, and a rectangular room with two boxes searched with 30 beams a
+   scan, each drive standing still, turning in place, and driving on around a corner, and
+   the L-shaped room's back again.
    A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
@@ -498,23 +526,45 @@ in the container, whose network stays off. The repository holds none of the
 data; `NOTICE` gives its attribution. The four room dataset sequences take 4.9 GB of
 archives and 1.2 GB extracted.
 
+## Lidar drives
+
+A lidar drive is a 2-D lidar on a base that drives a route through a room, whose scans the
+room dataset reference casts: a file of `drives/` that `tools/draw_room_dataset.py`
+writes. Its `lidar` holds `rays`, `min_angle_rad`, `angle_increment_rad`,
+`time_increment_s`, `min_range_m`, `max_range_m` and `scan_period_s`, as lidar_2d names
+them; `walls` holds each wall `[x0, y0, x1, y1]` (m); and `route` the base's timed poses
+`[t, x, y, yaw]` (s, m, rad) where each turn in place and each straight move starts and
+ends; a gap in the walls is a doorway. Scan k is stamped k scan periods into the route, and its ray i is cast
+`i × time_increment_s` after the stamp from the base's pose on the route then, interpolated
+between the timed poses around it, the lidar above the base frame's origin facing the way
+the base faces: the distance to the nearest wall in single precision, or lidar_2d's marks,
+0 for a wall nearer than `min_range_m` and 10000 for none within `max_range_m`. The ground
+truth at a scan is the route's pose at its stamp. A scenario of a drive keeps the scans
+`[first, end)` of its `scans`.
+
 ## Local-only kinds
 
-`room_dataset` reads the dataset cache, so it runs on a developer's machine alone, with
-`run.sh --datasets`. The reference program writes the prepared inputs of each scenario
+`room_dataset` is a local-only kind: its TUM sequences come from the dataset cache, and
+`run.sh --datasets` runs all its scenarios, those of its lidar drives among them, on a
+developer's machine alone. The reference program writes the prepared inputs of each scenario
 (the kept scans with their ground truth, and each seed's odometry) and the poses of each
 run under `target/results/<scenario>/` of the harness, in either mode, so each checkout
 holds the runs of its own files; `run.sh` then runs the crate's `statistics`
 program, which scores each run with `ros_reference::metrics`, the one implementation of
 the metrics, and writes the statistics of each seed as the scenario's reference output.
+It then runs the parity test of each local-only kind, `tests/ros_reference_<kind>.rs` of
+the crate under test, whose tests are `#[ignore]`d and which `run.sh` runs with
+`--ignored` and `ROS_REFERENCE_RESULTS` naming the results directory: the test reads the
+prepared inputs there, runs the library on them, and scores its runs with the same
+metrics.
 The scenarios and those statistics are committed, small and digest-checked like every
 output, and the routine tests read them. Without `--datasets`, `run.sh` skips the
 local-only kinds and keeps their committed outputs, with the committed digests of the
 repository files that each output lists under `inputs`, so a developer who checks a drawn
 kind fetches nothing, and a scenario or a source of a local-only kind that differs from its
 digest fails the routine tests until `run.sh --datasets` writes its output again. A room
-dataset scenario that localizes names the scenario whose map it localizes in, whose name
-sorts before its own, so `run.sh` maps before it localizes.
+dataset scenario that localizes names the scenario whose map it localizes in, and `run.sh`
+starts it once that scenario's reference has ended.
 
 A run with `--datasets` holds an flock on the cache's `cache.lock` until it ends: shared
 while it reads the cache, and exclusive while it fetches or extracts a dataset, which it
@@ -575,7 +625,11 @@ arm64 host.
    digests, and `ros_reference/run.sh --check` on an arm64 host, which runs the parity
    tests on the outputs of the arm64 image.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
-   runs on the new one. The forward kinematics parity test poses arms of 1 to 7 joints,
+   runs on the new one. The arm planning parity test plans the scenes of each scenario in
+   a test of its own: add the name of a new arm planning scenario to
+   `a_test_per_scenario!` in `motion_planning_core/tests/ros_reference_arm_planning.rs`,
+   whose `each_scenario_has_a_test_that_plans_it` fails until each scenario is named
+   there. The forward kinematics parity test poses arms of 1 to 7 joints,
    the chain collision parity test arms of 7 joints, the self distance parity test asks
    the scenarios for a robot of two arms of 7 joints, as OpenArm v2 is, and for one of one
    arm of 5, as SO-101 is, builds the self model of each scenario's robot by those counts,
@@ -622,4 +676,6 @@ differs from its digest.
 6. A kind whose reference reads a dataset lists the dataset in `datasets.txt`, reads its
    files through `Inputs::dataset`, joins `local_only_kinds` in `run.sh`, and gives its
    output an `inputs` member that lists the repository files it depends on: those its
-   reference read and the kind's sources.
+   reference read and the kind's sources. Its
+   parity test reads the results directory that `results_directory` gives, and each of
+   its tests is `#[ignore = "reads the local datasets: run.sh --datasets runs it"]`.

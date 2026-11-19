@@ -25,7 +25,7 @@
 
 use std::num::NonZeroU32;
 
-use chain_kinematics::{Chain, ChainFrame, JointKind};
+use chain_kinematics::{Chain, ChainFrame};
 use control_core::positive_finite::PositiveFinite;
 use ompl_bridge::{CONSTRAINED_SPACING, CheckError, Constraint, Projection};
 
@@ -361,7 +361,7 @@ impl<const N: usize, const D: usize> Constraint for PathOrientations<'_, N, D> {
     fn jacobian(&self, state: &[f64], out: &mut [f64]) -> Result<(), CheckError> {
         let q: [f64; D] = state.try_into()?;
         out.fill(0.0);
-        for (row, held) in out.chunks_exact_mut(D).zip(&self.held) {
+        for (row, held) in out.as_chunks_mut::<D>().0.iter_mut().zip(&self.held) {
             held.write_row(&q, row);
         }
         Ok(())
@@ -372,7 +372,7 @@ impl<const N: usize, const D: usize> Constraint for PathOrientations<'_, N, D> {
 fn turning_joints<const N: usize>(chain: &Chain<N>, frame: Frame) -> [bool; N] {
     let moving = ChainFrame::from(frame).moving_joints(chain);
     let posed = chain.at(&[0.0; N]);
-    std::array::from_fn(|j| moving[j] && matches!(posed.kind(j), JointKind::Revolute { .. }))
+    std::array::from_fn(|j| moving[j] && posed.kind(j).turns())
 }
 
 /// The largest error a state of a plan's walk may hold of a tolerance.

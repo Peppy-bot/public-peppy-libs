@@ -28,17 +28,8 @@ rclcpp::ParameterValue array_value_of(const std::string& name, const nlohmann::j
 }
 
 rclcpp::ParameterValue value_of(const std::string& name, const nlohmann::json& value) {
-  if (value.is_boolean()) {
-    return rclcpp::ParameterValue(value.get<bool>());
-  }
-  if (value.is_number_integer()) {
-    return rclcpp::ParameterValue(value.get<std::int64_t>());
-  }
-  if (value.is_number_float()) {
-    return rclcpp::ParameterValue(value.get<double>());
-  }
-  if (value.is_string()) {
-    return rclcpp::ParameterValue(value.get<std::string>());
+  if (const auto scalar = scalar_value_of(value)) {
+    return *scalar;
   }
   if (value.is_array()) {
     return array_value_of(name, value);

@@ -31,6 +31,13 @@
 //! order is the order of `q`, and it is usually the order the robot's wire
 //! protocol uses, which no URDF knows about.
 //!
+//! The URDF's tree: [`Tree`] holds the links and the joints, each [`Joint`] with its
+//! [`JointPlacement`], the origin and kind whose [`JointPlacement::pose_at`] places the
+//! child link in the parent link at a position, and its [`Mimic`] where it follows
+//! another joint. A caller walks it by name ([`Tree::link_index`],
+//! [`Tree::joint_index`]) and by link ([`Tree::parent_joint`], [`Tree::parent_of`]),
+//! and [`pose_of_origin`] reads a URDF `<origin>`.
+//!
 //! Frames: forward kinematics reports poses in the **base frame** named by the
 //! spec, and [`Chain::base_from_world`] relates that to the URDF root for a
 //! caller that needs the world frame (gravity, or composing two chains of one
@@ -61,7 +68,7 @@ mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use draws::Draws;
-pub use error::{ChainError, TreeError};
+pub use error::{ChainError, MimicError, TreeError};
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
 pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
 pub use line::{
@@ -73,7 +80,7 @@ pub use payload::{Payload, segments_carrying};
 pub use rate::{
     DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
-pub use tree::{JointKind, Tree};
+pub use tree::{Joint, JointKind, JointPlacement, Mimic, Tree, pose_of_origin};
 
 /// Re-exported so downstream crates speak the same `nalgebra` version this crate
 /// was built against, rather than each picking their own and finding the
