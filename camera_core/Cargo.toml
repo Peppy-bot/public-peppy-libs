@@ -2,10 +2,14 @@
 name = "camera_core"
 version = "0.1.0"
 edition = "2024"
-description = "What the camera nodes and the crates that read them, occupancy_map, workspace_core, navigation_core and mapping_core, share: the failure of a control write by its kind, the errno mapping and its error reply in a generated service, the value a control answers when it has none, the auto/manual mode, the color encodings and the depth one, a z16 depth frame read pixel by pixel, the V4L2 control ids, the checks a camera geometry passes, a stream's pinhole model with its lens, or a rendered camera's, and the arithmetic between its pixels and points, the depth model of a stream, the scans of a 2-D lidar with each ray's hit placed where the sensor stood at the ray's time, the `z` depth model and the refusal a color camera gives for its depth members, the pieces of a simulated camera's relay that name no generated type, and the robot frame and a camera's frame in the robot's tree as sensor_mounts' describe_sensors names them."
+description = "What the camera nodes and the crates that read them, occupancy_map, workspace_core, navigation_core and mapping_core, share: the failure of a control write by its kind, the errno mapping and its error reply in a generated service, the value a control answers when it has none, the auto/manual mode, the color encodings and the depth one, a z16 depth frame read pixel by pixel, the V4L2 control ids, the checks a camera geometry passes, a stream's pinhole model with its lens, or a rendered camera's, and the arithmetic between its pixels and points, the depth model of a stream, the scans of a 2-D lidar with each ray's hit placed where the sensor stood at the ray's time, the `z` depth model and the refusal a color camera gives for its depth members, the pieces of a simulated camera's relay that name no generated type, and the sensor a node runs as, of a class that holds the kinds it takes, the camera class among them, the name it runs under and the frame it names in each measurement, read once from sensor_mounts' describe_sensors through the node's poll of its bound link, or a frame of its own name with the link vacant, with the check that holds a value a relay forwards to that frame."
 
 [workspace]
 
 [dependencies]
+control_core = { path = "../control_core" }
 frame_tree = { path = "../frame_tree" }
 libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }

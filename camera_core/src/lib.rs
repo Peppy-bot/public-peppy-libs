@@ -22,11 +22,15 @@
 //!   point of a depth reading and the reading of a point.
 //! - [`laser_scan`]: the scans of a 2-D lidar as lidar_2d:v1 carries them,
 //!   each ray's hit placed where the sensor stood at the ray's time.
-//! - [`relay`]: the pieces of a simulated camera's relay: the camera a relay
-//!   is in its copy, why a forwarded call has no answer, and the bounds and
-//!   messages of the relay.
-//! - [`sensor_mounts`]: the robot frame and a camera's frame in the robot's
-//!   tree, as sensor_mounts:v1's `describe_sensors` names them.
+//! - [`relay`]: the pieces of a simulated camera's relay: why a forwarded
+//!   call has no answer, and the bounds and messages of the relay.
+//! - [`sensor_mounts`]: the sensor a node runs as, of a class that holds the
+//!   kinds it takes, the camera class among them, read once at its start: the
+//!   name it runs under in its copy and the frame it names in each
+//!   measurement, the one sensor_mounts:v1's `describe_sensors` gives that
+//!   name through the node's poll of its bound link, or a frame of its own name
+//!   with the link vacant, and the check that holds a value a relay forwards to
+//!   that frame.
 
 pub mod controls;
 pub mod encoding;

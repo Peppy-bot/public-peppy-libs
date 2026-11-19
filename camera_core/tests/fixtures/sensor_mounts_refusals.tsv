@@ -1,0 +1,20 @@
+# The refusals of camera_core::sensor_mounts and camera_core_py.sensor_mounts for a camera, which
+# both suites hold byte for byte: on each line a call, its arguments and the message of its refusal,
+# separated by tabs. sensor_name takes a copy and an instance id; sensor_frame takes the name it asks
+# for and the sensor_names, sensor_kinds, sensor_frames and carried_by of an answer, each a list
+# separated by commas, an empty field none. In an argument, \u{X} is the character of code point X.
+sensor_name	alpha	bravo_wrist_left	the instance id "bravo_wrist_left" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	alphawrist_left	the instance id "alphawrist_left" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	alpha	the instance id "alpha" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	alpha_	the instance id "alpha_" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	café	bravo_caméra	the instance id "bravo_caméra" names no camera of copy "café": write it as `café_` followed by the camera's name
+sensor_name	alpha	bravo_wrist\u{1}	the instance id "bravo_wrist\u{1}" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	bravo\u{9}wrist\u{a}	the instance id "bravo\twrist\n" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	bravo_"wrist"\left	the instance id "bravo_\"wrist\"\\left" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_name	alpha	bravo_e\u{301}\u{200b}	the instance id "bravo_e\u{301}\u{200b}" names no camera of copy "alpha": write it as `alpha_` followed by the camera's name
+sensor_frame	head	chest,wrist_left,lidar	rgbd_camera,rgb_camera,lidar_2d	chest_color_optical_frame,wrist_left_color_optical_frame,lidar_link	,left,	sensor_mounts' describe_sensors names no sensor "head" (its sensor_names: chest, wrist_left, lidar): run the camera under one of those names, or bind its sensor_mounts link to the robot that carries it, whose robot_identity implementer serves sensor_mounts
+sensor_frame	head					sensor_mounts' describe_sensors names no sensor "head" (its sensor_names: none): run the camera under one of those names, or bind its sensor_mounts link to the robot that carries it, whose robot_identity implementer serves sensor_mounts
+sensor_frame	lidar	chest,wrist_left,lidar	rgbd_camera,rgb_camera,lidar_2d	chest_color_optical_frame,wrist_left_color_optical_frame,lidar_link	,left,	sensor_mounts' describe_sensors names "lidar" a sensor of "lidar_2d": run the camera under the name of a camera, a sensor of rgb_camera or rgbd_camera
+sensor_frame	tête\u{7f}	tête\u{7f}	caméra_rgb	tête_optical_frame	left	sensor_mounts' describe_sensors names "tête\u{7f}" a sensor of "caméra_rgb": run the camera under the name of a camera, a sensor of rgb_camera or rgbd_camera
+sensor_frame	chest	chest,wrist_left,lidar	rgbd_camera,rgb_camera,lidar_2d	,wrist_left_color_optical_frame,lidar_link	,left,	sensor_mounts' describe_sensors gives "chest" a sensor_frames entry: a frame name is empty: name a link of the robot's URDF, odom or map
+sensor_frame	chest	chest,wrist_left,lidar	rgbd_camera,rgb_camera,lidar_2d	chest_color_optical_frame,wrist_left_color_optical_frame,lidar_link	,left	sensor_mounts' describe_sensors names 3 sensors and gives 3 sensor_kinds, 3 sensor_frames and 2 carried_by: one of each for each sensor
