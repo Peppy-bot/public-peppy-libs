@@ -15,7 +15,7 @@ use common::finite::{non_negative, positive};
 use common::footprints::padded;
 use common::poses::planar;
 use control_core::planar_pose::PlanarPose;
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -143,8 +143,8 @@ fn origin() -> PlanarPose {
     planar(0.0, 0.0, 0.0)
 }
 
-fn moving(linear: f64, angular: f64) -> Twist {
-    Twist::new(linear, 0.0, angular).expect("finite")
+fn moving(linear: f64, angular: f64) -> PlanarTwist {
+    PlanarTwist::new(linear, 0.0, angular).expect("finite")
 }
 
 /// The command of a fresh controller for a base at `pose` moving at
@@ -152,9 +152,9 @@ fn moving(linear: f64, angular: f64) -> Twist {
 fn command(
     poses: Vec<PlanarPose>,
     pose: PlanarPose,
-    speed: Twist,
+    speed: PlanarTwist,
     grid: &CostGrid,
-) -> Result<Twist, ControlError> {
+) -> Result<PlanarTwist, ControlError> {
     command_of(params(), poses, pose, speed, grid)
 }
 
@@ -164,9 +164,9 @@ fn command_of(
     params: PurePursuitParams,
     poses: Vec<PlanarPose>,
     pose: PlanarPose,
-    speed: Twist,
+    speed: PlanarTwist,
     grid: &CostGrid,
-) -> Result<Twist, ControlError> {
+) -> Result<PlanarTwist, ControlError> {
     let (mut plan, ahead) = pruned(poses, pose, grid);
     PurePursuit::new(params, &inflation()).compute(pose, speed, plan.goal_checker(), &ahead, grid)
 }
@@ -455,7 +455,7 @@ fn driving(
     params: PurePursuitParams,
     poses: Vec<PlanarPose>,
     grid: &CostGrid,
-) -> Result<Twist, ControlError> {
+) -> Result<PlanarTwist, ControlError> {
     command_of(params, poses, origin(), moving(0.5, 0.0), grid)
 }
 

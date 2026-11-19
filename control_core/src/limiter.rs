@@ -84,7 +84,7 @@ use thiserror::Error;
 use crate::non_negative_finite::NonNegativeFinite;
 use crate::positive_finite::{NotPositiveFinite, PositiveFinite};
 use crate::time::{elapsed_ns, nanoseconds};
-use crate::twist::Twist;
+use crate::twist::PlanarTwist;
 
 /// The frequencies the limiter steps at, in Hz: each whole number of hertz whose period,
 /// 1000 / the frequency, is a whole number of milliseconds, from 20 Hz, a step of at most
@@ -271,7 +271,7 @@ pub struct LimiterParams {
 }
 
 impl LimiterParams {
-    /// The limits of the axis at `axis` in the order of [`Twist::axes`]:
+    /// The limits of the axis at `axis` in the order of [`PlanarTwist::axes`]:
     /// linear_x, linear_y, angular_z.
     fn axis(&self, axis: usize) -> &AxisLimits {
         [&self.linear_x, &self.linear_y, &self.angular_z][axis]
@@ -323,7 +323,7 @@ impl LimiterParams {
 struct LastStep {
     called_ns: i64,
     next_slot_ns: i64,
-    output: Option<Twist>,
+    output: Option<PlanarTwist>,
 }
 
 /// The limiter's state: the latest setpoint and when it came, the velocity of
@@ -333,10 +333,10 @@ pub struct Limiter {
     params: LimiterParams,
     velocity_timeout_ns: i64,
     period_ns: i64,
-    setpoint: Twist,
+    setpoint: PlanarTwist,
     setpoint_time_ns: i64,
     received_a_setpoint: bool,
-    last_velocity: Twist,
+    last_velocity: PlanarTwist,
     last_step: Option<LastStep>,
 }
 
@@ -355,16 +355,16 @@ impl Limiter {
             velocity_timeout_ns: nanoseconds(params.velocity_timeout_s.get()),
             period_ns: timer_period_ns(frequency_hz),
             params,
-            setpoint: Twist::ZERO,
+            setpoint: PlanarTwist::ZERO,
             setpoint_time_ns: 0,
             received_a_setpoint: false,
-            last_velocity: Twist::ZERO,
+            last_velocity: PlanarTwist::ZERO,
             last_step: None,
         })
     }
 
     /// Take a setpoint that arrived at `received_ns` on the caller's clock.
-    pub fn take_setpoint(&mut self, setpoint: Twist, received_ns: i64) {
+    pub fn take_setpoint(&mut self, setpoint: PlanarTwist, received_ns: i64) {
         self.setpoint = setpoint;
         self.setpoint_time_ns = received_ns;
         self.received_a_setpoint = true;
@@ -372,7 +372,7 @@ impl Limiter {
 
     /// The velocity of the last step, before the deadband: where the next
     /// step starts from.
-    pub fn last_velocity(&self) -> Twist {
+    pub fn last_velocity(&self) -> PlanarTwist {
         self.last_velocity
     }
 
@@ -381,7 +381,7 @@ impl Limiter {
     /// tick steps on the timer's grid; any other tick gives the last step's
     /// output. A setpoint whose time lies after `now_ns`, from before a clock
     /// that went back, takes `now_ns` as its time.
-    pub fn tick(&mut self, now_ns: i64) -> Option<Twist> {
+    pub fn tick(&mut self, now_ns: i64) -> Option<PlanarTwist> {
         self.setpoint_time_ns = self.setpoint_time_ns.min(now_ns);
         if let Some(last) = self.last_step
             && now_ns < last.called_ns
@@ -412,15 +412,15 @@ impl Limiter {
     /// zero gives nothing, as Nav2's test of `last_cmd_` and `stopped_` does in
     /// open loop, where `stopped_` holds only while `last_cmd_` is zero
     /// (velocity_smoother.cpp:329-337).
-    fn step(&mut self, now_ns: i64) -> Option<Twist> {
+    fn step(&mut self, now_ns: i64) -> Option<PlanarTwist> {
         if !self.received_a_setpoint {
             return None;
         }
         if elapsed_ns(self.setpoint_time_ns, now_ns) > self.velocity_timeout_ns {
-            if self.last_velocity == Twist::ZERO {
+            if self.last_velocity == PlanarTwist::ZERO {
                 return None;
             }
-            self.setpoint = Twist::ZERO;
+            self.setpoint = PlanarTwist::ZERO;
         }
 
         let current = self.last_velocity;

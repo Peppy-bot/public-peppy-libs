@@ -17,7 +17,7 @@ mod common;
 
 use common::finite::{non_negative, positive};
 use control_core::limiter::{AxisLimits, AxisLimitsParams, Limiter, LimiterError, LimiterParams};
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 use hegel::TestCase;
 use hegel::generators as gs;
 
@@ -77,7 +77,7 @@ fn axis(tc: &TestCase) -> AxisLimitsParams {
     axis_params([min, max], [acceleration, deceleration], deadband)
 }
 
-/// The limiter of `axes`, in the order of `Twist::axes`, at `frequency_hz`, a setpoint
+/// The limiter of `axes`, in the order of `PlanarTwist::axes`, at `frequency_hz`, a setpoint
 /// holding for 0.5 s.
 fn limiter_at(axes: [AxisLimits; 3], frequency_hz: f64) -> Limiter {
     let [linear_x, linear_y, angular_z] = axes;
@@ -102,9 +102,9 @@ fn limits(tc: &TestCase) -> ([AxisLimitsParams; 3], Limiter) {
     (params, limiter(axes))
 }
 
-fn setpoint(tc: &TestCase) -> Twist {
+fn setpoint(tc: &TestCase) -> PlanarTwist {
     let value = || tc.draw(gs::floats().min_value(-4.0).max_value(4.0));
-    Twist::new(value(), value(), value()).expect("finite")
+    PlanarTwist::new(value(), value(), value()).expect("finite")
 }
 
 /// The largest change of an axis in one step at 20 Hz.
@@ -157,11 +157,14 @@ fn a_limited_velocity_leaves_its_range_by_no_more_than_one_rounding_of_a_step(tc
 fn a_step_to_the_end_of_the_range_lands_where_nav2s_arithmetic_puts_it() {
     let x = axis_limits([-1.0, 0.3], [1.0, 8.0], 0.0).expect("valid limits");
     let mut limiter = limiter([x, still_axis(), still_axis()]);
-    limiter.take_setpoint(Twist::new(-0.1, 0.0, 0.0).expect("finite"), 0);
+    limiter.take_setpoint(PlanarTwist::new(-0.1, 0.0, 0.0).expect("finite"), 0);
     limiter.tick(0);
     limiter.tick(CYCLE_NS);
     assert_eq!(limiter.last_velocity().linear_x(), -0.1);
-    limiter.take_setpoint(Twist::new(1.0, 0.0, 0.0).expect("finite"), 2 * CYCLE_NS);
+    limiter.take_setpoint(
+        PlanarTwist::new(1.0, 0.0, 0.0).expect("finite"),
+        2 * CYCLE_NS,
+    );
     let reached = limiter.tick(2 * CYCLE_NS).expect("moving").linear_x();
     assert_eq!(reached.to_bits(), (-0.1_f64 + 0.4).to_bits(), "{reached}");
     assert!(reached > 0.3, "{reached}");
@@ -171,7 +174,7 @@ fn a_step_to_the_end_of_the_range_lands_where_nav2s_arithmetic_puts_it() {
 fn a_limited_velocity_ramps_within_the_acceleration_and_deceleration_limits(tc: TestCase) {
     let (params, mut limiter) = limits(&tc);
     let steps = tc.draw(gs::integers::<i64>().min_value(1).max_value(60));
-    let mut previous = Twist::ZERO;
+    let mut previous = PlanarTwist::ZERO;
     for step in 0..steps {
         let now = step * CYCLE_NS;
         if tc.draw(gs::booleans()) {
@@ -240,7 +243,7 @@ fn a_stream_that_stops_rests_by_its_timeout_and_deceleration_time(tc: TestCase) 
     let rest = held + steps_to_rest;
     let rested = (held + 1..=rest).any(|step| {
         limiter.tick(step * CYCLE_NS);
-        limiter.last_velocity() == Twist::ZERO
+        limiter.last_velocity() == PlanarTwist::ZERO
     });
     assert!(
         rested || rest == held,
@@ -262,7 +265,7 @@ fn a_still_axis_takes_zero_limits_and_stays_at_rest() {
     let still = still_axis();
     assert_eq!(still.velocity_range(), (0.0, 0.0));
     let mut limiter = limiter([moving, still, moving]);
-    limiter.take_setpoint(Twist::new(0.6, 0.5, -0.3).expect("finite"), 0);
+    limiter.take_setpoint(PlanarTwist::new(0.6, 0.5, -0.3).expect("finite"), 0);
     for step in 0..10 {
         let velocity = limiter.tick(step * CYCLE_NS).expect("moving");
         assert_eq!(
@@ -310,7 +313,7 @@ fn scaled_axes_keep_the_direction_of_the_change(tc: TestCase) {
 fn half_a_second_after_the_last_setpoint_the_velocity_ramps_to_rest_and_then_gives_nothing() {
     let axis = axis_limits([-1.0, 1.0], [1.0, 2.0], 0.0).expect("valid limits");
     let mut limiter = limiter([axis; 3]);
-    limiter.take_setpoint(Twist::new(0.5, 0.0, 0.0).expect("finite"), 0);
+    limiter.take_setpoint(PlanarTwist::new(0.5, 0.0, 0.0).expect("finite"), 0);
     // Accelerate at 1 m/s^2: 0.05 m/s per step, at 0.5 m/s after ten steps.
     for step in 0..=10 {
         limiter.tick(step * CYCLE_NS);
@@ -336,7 +339,7 @@ fn half_a_second_after_the_last_setpoint_the_velocity_ramps_to_rest_and_then_giv
     // one more step takes to zero.
     let (rest, _) = (16..20)
         .map(|step| (step, limiter.tick(step * CYCLE_NS)))
-        .find(|(_, velocity)| velocity.is_none_or(|velocity| velocity == Twist::ZERO))
+        .find(|(_, velocity)| velocity.is_none_or(|velocity| velocity == PlanarTwist::ZERO))
         .expect("the velocity comes to rest");
     for later in rest + 1..rest + 5 {
         assert_eq!(
@@ -357,7 +360,7 @@ fn nothing_comes_before_the_first_setpoint() {
 fn the_deadband_zeroes_a_small_output_and_the_next_step_starts_from_before_it() {
     let axis = axis_limits([-1.0, 1.0], [1.0, 1.0], 0.08).expect("valid limits");
     let mut limiter = limiter([axis; 3]);
-    limiter.take_setpoint(Twist::new(1.0, 0.0, 0.0).expect("finite"), 0);
+    limiter.take_setpoint(PlanarTwist::new(1.0, 0.0, 0.0).expect("finite"), 0);
     let first = limiter.tick(0).expect("a setpoint was taken");
     assert_eq!(first.linear_x(), 0.0, "0.05 lies inside the deadband");
     let second = limiter.tick(CYCLE_NS).expect("moving");
@@ -371,7 +374,7 @@ fn the_deadband_zeroes_a_small_output_and_the_next_step_starts_from_before_it() 
 fn the_deadband_keeps_an_output_equal_to_it() {
     let axis = axis_limits([-1.0, 1.0], [1.0, 1.0], 0.05).expect("valid limits");
     let mut limiter = limiter([axis; 3]);
-    limiter.take_setpoint(Twist::new(1.0, 0.0, 0.0).expect("finite"), 0);
+    limiter.take_setpoint(PlanarTwist::new(1.0, 0.0, 0.0).expect("finite"), 0);
     let first = limiter.tick(0).expect("a setpoint was taken");
     assert_eq!(first.linear_x(), 0.05, "{first:?}");
 }
@@ -472,8 +475,8 @@ fn ramping_at(frequency_hz: f64) -> Limiter {
 }
 
 /// The setpoint `ramping_at`'s limiter ramps toward.
-fn far_ahead() -> Twist {
-    Twist::new(100.0, 0.0, 0.0).expect("finite")
+fn far_ahead() -> PlanarTwist {
+    PlanarTwist::new(100.0, 0.0, 0.0).expect("finite")
 }
 
 /// Takes the far setpoint at `now_ns` and ticks there, and gives whether the tick stepped.
@@ -564,13 +567,13 @@ fn a_clock_that_goes_back_starts_the_grid_again_a_period_later() {
     let axis = axis_limits([-1.0, 1.0], [1.0, 1.0], 0.0).expect("valid limits");
     let mut limiter = limiter([axis; 3]);
     let start_ns = 100_000_000_000;
-    limiter.take_setpoint(Twist::new(0.5, 0.0, 0.0).expect("finite"), start_ns);
+    limiter.take_setpoint(PlanarTwist::new(0.5, 0.0, 0.0).expect("finite"), start_ns);
     for step in 0..10 {
         limiter.tick(start_ns + step * CYCLE_NS);
     }
-    let forward = |velocity: Option<Twist>| velocity.expect("a setpoint holds").linear_x();
+    let forward = |velocity: Option<PlanarTwist>| velocity.expect("a setpoint holds").linear_x();
     assert!((limiter.last_velocity().linear_x() - 0.5).abs() < TOLERANCE);
-    limiter.take_setpoint(Twist::ZERO, 0);
+    limiter.take_setpoint(PlanarTwist::ZERO, 0);
     let at_the_jump = forward(limiter.tick(CYCLE_NS));
     assert!((at_the_jump - 0.5).abs() < TOLERANCE, "{at_the_jump}");
     let within = forward(limiter.tick(2 * CYCLE_NS - 1));
@@ -591,7 +594,10 @@ fn a_setpoint_from_before_a_clock_that_goes_back_times_out_after_the_step() {
     let back_ns = 40_500_000_000;
     let taking_the_setpoint = || {
         let mut limiter = limiter([axis; 3]);
-        limiter.take_setpoint(Twist::new(0.5, 0.0, 0.0).expect("finite"), setpoint_ns);
+        limiter.take_setpoint(
+            PlanarTwist::new(0.5, 0.0, 0.0).expect("finite"),
+            setpoint_ns,
+        );
         limiter
     };
     let mut ticked_before = taking_the_setpoint();
@@ -602,10 +608,10 @@ fn a_setpoint_from_before_a_clock_that_goes_back_times_out_after_the_step() {
         ("ticked before the step", ticked_before),
         ("first ticked after it", taking_the_setpoint()),
     ] {
-        let outputs: Vec<Option<Twist>> = (0..30)
+        let outputs: Vec<Option<PlanarTwist>> = (0..30)
             .map(|step| limiter.tick(back_ns + step * CYCLE_NS))
             .collect();
-        let forward_at = |step: usize| outputs[step].map(Twist::linear_x);
+        let forward_at = |step: usize| outputs[step].map(PlanarTwist::linear_x);
         let holding = forward_at(10).expect("the setpoint holds to 41 s");
         assert!((holding - 0.5).abs() < TOLERANCE, "{what}: {holding}");
         let ramping = forward_at(11).expect("a ramp to rest from 41.05 s");

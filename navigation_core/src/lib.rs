@@ -39,7 +39,7 @@
 //!   approach mode, and a stop while a source's readings stop arriving.
 //!
 //! Poses on the floor are `control_core::planar_pose::PlanarPose`s, and a body velocity
-//! is a `control_core::twist::Twist`.
+//! is a `control_core::twist::PlanarTwist`.
 //!
 //! Each module names the Nav2 file and function it ports, and keeps its
 //! types and order of operations where the parity tests of the ROS reference

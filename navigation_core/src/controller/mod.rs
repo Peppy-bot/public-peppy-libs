@@ -38,7 +38,7 @@ mod lookahead;
 use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 
 use crate::footprint::PaddedFootprint;
 use crate::goal_checker::GoalChecker;
@@ -240,11 +240,11 @@ impl PurePursuit {
     pub fn compute(
         &self,
         pose: PlanarPose,
-        speed: Twist,
+        speed: PlanarTwist,
         goal_checker: &mut GoalChecker,
         plan: &PrunedPlan,
         grid: &CostGrid,
-    ) -> Result<Twist, ControlError> {
+    ) -> Result<PlanarTwist, ControlError> {
         let check = FootprintCheck {
             grid,
             footprint: &self.footprint,
@@ -279,11 +279,11 @@ impl PurePursuit {
         if self.collision_imminent(&check, pose, arc) {
             return Err(ControlError::NoValidControl);
         }
-        Ok(Twist::new(linear, 0.0, angular).expect("a regulated command is finite"))
+        Ok(PlanarTwist::new(linear, 0.0, angular).expect("a regulated command is finite"))
     }
 
     /// `getLookAheadDistance`.
-    fn lookahead_distance(&self, speed: Twist) -> f64 {
+    fn lookahead_distance(&self, speed: PlanarTwist) -> f64 {
         match self.params.lookahead {
             Lookahead::Fixed(distance) => distance.get(),
             Lookahead::VelocityScaled(scaled) => (speed.linear_x().abs() * scaled.time_s.get())
@@ -303,7 +303,7 @@ impl PurePursuit {
     /// `angle_to_path`, within the angular acceleration of one control
     /// period from the current turn rate, and slow enough to stop at the
     /// angle.
-    fn rotate_to_heading(&self, angle_to_path: f64, speed: Twist) -> f64 {
+    fn rotate_to_heading(&self, angle_to_path: f64, speed: PlanarTwist) -> f64 {
         let sign = if angle_to_path > 0.0 { 1.0 } else { -1.0 };
         let accel = self.params.max_angular_accel_rad_s2.get();
         let dt = self.control_duration_s;

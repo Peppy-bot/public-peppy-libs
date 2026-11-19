@@ -20,7 +20,7 @@ use common::footprints::padded;
 use common::layers::layer;
 use common::poses::moved;
 use control_core::planar_pose::PlanarPose;
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 use frame_tree::FrameName;
 use frame_tree::Transform;
 use navigation_core::PaddedFootprint;
@@ -107,9 +107,9 @@ fn monitor_footprint(cases: &Cases) -> PaddedFootprint {
     padded(&cases.polygon, 0.0)
 }
 
-fn velocity(case: &Case) -> Twist {
+fn velocity(case: &Case) -> PlanarTwist {
     let [x, y, z] = case.velocity;
-    Twist::new(x, y, z).expect("finite")
+    PlanarTwist::new(x, y, z).expect("finite")
 }
 
 /// The scenario's stop holding the case's newest reading of the one source of `live`, which
@@ -289,7 +289,7 @@ fn drive_to_rest(
         let allowed = stop
             .decide(live, velocity(case), &seen, case.now_ns)
             .velocity();
-        if allowed == Twist::ZERO {
+        if allowed == PlanarTwist::ZERO {
             return;
         }
         assert!(

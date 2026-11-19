@@ -35,7 +35,7 @@
 //!   against its ratings.
 //! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
 //!   as Nav2's controller reads it, in frame_tree's arithmetic.
-//! - [`twist`]: a body velocity in the robot frame, finite by construction.
+//! - [`twist`]: a body velocity on the floor plane in the robot frame, finite by construction.
 //! - [`limiter`]: the limiter of a base's body velocity, as Nav2 1.5.2's
 //!   velocity smoother limits a stream of setpoints in open loop: each axis
 //!   clamped to its velocity range, ramped at its acceleration and

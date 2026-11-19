@@ -61,7 +61,8 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   the clock passes the stamp plus its source timeout.
 
 Poses on the floor are `control_core::planar_pose::PlanarPose`s, a laser scan is
-`camera_core::laser_scan::LaserScan`, and a body velocity is `control_core::twist::Twist`.
+`camera_core::laser_scan::LaserScan`, and a body velocity is
+`control_core::twist::PlanarTwist`.
 
 ## Quick start
 
