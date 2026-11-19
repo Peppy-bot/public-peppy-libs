@@ -13,7 +13,7 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   interpolates them (`camera_core::laser_scan::LaserScan::placed_rays`), in the base's frame
   at the scan's timestamp, with the base's odometry there.
 - `Mapping` maps a room from scans and odometry as slam_toolbox 2.10.0 does in its
-  synchronous mode, its map frame the robot frame where mapping started: each scan that
+  synchronous mode, its map frame the odometry frame where mapping started: each scan that
   passes slam_toolbox's gate is matched against a running buffer of recent scans by karto's
   correlative scan matcher, linked to the scan before it, to the buffer and to the near
   chains of scans it matches, and the loops it closes against chains of scans nearby close,
@@ -76,9 +76,9 @@ let projection = LaserProjection::new(LaserProjectionParameters {
     range_max: 8.0,
 })?;
 
-// slam_toolbox's parameters, each by its name in mapper_params_online_sync.yaml, and the
-// base's odometry where mapping starts.
-let mut mapping = Mapping::start(parameters, start_odometry)?;
+// slam_toolbox's parameters, each by its name in mapper_params_online_sync.yaml; the map
+// frame is the odometry frame.
+let mut mapping = Mapping::start(parameters)?;
 for frame in frames {
     // The points of a depth frame in the base frame, and the base's odometric pose at the
     // frame's timestamp. The projected scan lies in the base frame, so its sensor stands at

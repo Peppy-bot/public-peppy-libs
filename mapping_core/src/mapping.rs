@@ -400,35 +400,28 @@ pub(crate) fn tf2_yaw(yaw: f64) -> f64 {
 }
 
 /// A room mapped from a sequence of scans: the laser and karto's mapper, made of the
-/// first scan, and the gate that each scan passes first. The map frame is the robot frame
-/// where mapping started: each odometric pose is taken relative to the odometry there.
+/// first scan, and the gate that each scan passes first. The map frame is the odometry
+/// frame where mapping started, as karto keeps the odometric pose of its first scan
+/// (`Mapper::Process`): each scan's odometric pose is its odometry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mapping {
     parameters: MappingParameters,
     karto: KartoParameters,
     gate: ScanGate,
     mapper: Option<Mapper>,
-    /// From the map to the odometry frame: the base's odometry where mapping started.
-    start: Pose2,
     /// From the odometry frame to the map, at the last scan the mapping added.
     map_from_odometry: Pose2,
 }
 
 impl Mapping {
-    /// Mapping that starts with the base at `start_odometry` in the odometry frame, the
-    /// origin of the map frame.
-    pub fn start(
-        parameters: MappingParameters,
-        start_odometry: PlanarPose,
-    ) -> Result<Self, ParameterError> {
-        let start = start_odometry.into();
+    /// Mapping in the odometry frame of the scans it takes.
+    pub fn start(parameters: MappingParameters) -> Result<Self, ParameterError> {
         Ok(Self {
             parameters,
             karto: parameters.karto()?,
             gate: ScanGate::new(&parameters),
             mapper: None,
-            start,
-            map_from_odometry: inverse(start),
+            map_from_odometry: Pose2::new(0.0, 0.0, 0.0),
         })
     }
 
@@ -450,11 +443,11 @@ impl Mapping {
         };
         let mapper = self.mapper.insert(mapper);
         mapper.laser().validate(&scan.geometry)?;
-        let in_map = compose(inverse(self.start), scan.odometry);
-        if !self.gate.passes(scan.stamp_ns, in_map) {
+        let odometry = scan.odometry;
+        if !self.gate.passes(scan.stamp_ns, odometry) {
             return Ok(None);
         }
-        let pose = Pose2::new(in_map.x, in_map.y, tf2_yaw(in_map.yaw));
+        let pose = Pose2::new(odometry.x, odometry.y, tf2_yaw(odometry.yaw));
         let localized = LocalizedScan::new(
             mapper.laser(),
             scan.beams.clone(),
@@ -581,7 +574,7 @@ pub(crate) mod tests {
             ..parameters()
         };
         assert_eq!(
-            Mapping::start(parameters, PlanarPose::IDENTITY).map(|_| ()),
+            Mapping::start(parameters).map(|_| ()),
             Err(ParameterError::ZeroCount {
                 name: "scan_buffer_size"
             })

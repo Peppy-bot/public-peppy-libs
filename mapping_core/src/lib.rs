@@ -24,7 +24,7 @@
 //! - [`PlacedScan`]: a scan of `camera_core::laser_scan` with each ray placed where the
 //!   sensor stood at the ray's time, in the base's frame at the scan's timestamp.
 //! - [`Mapping`]: a room mapped from scans and odometry as slam_toolbox 2.10.0 maps in its
-//!   synchronous mode, its map frame the robot frame where mapping started: each scan that
+//!   synchronous mode, its map frame the odometry frame where mapping started: each scan that
 //!   passes slam_toolbox's gate is matched against a running buffer of recent scans with
 //!   karto's correlative matcher, linked to the scan before it, to the buffer and to the
 //!   near chains of scans it matches, and each loop it closes against a chain of scans
