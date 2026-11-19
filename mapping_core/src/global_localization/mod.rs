@@ -211,8 +211,7 @@ pub(crate) mod tests {
     /// The map of the room that a scan from its center makes.
     fn room_map() -> RoomMap {
         let parameters = crate::mapping::tests::parameters();
-        let mut mapping =
-            Mapping::start(parameters, PlanarPose::IDENTITY).expect("valid parameters");
+        let mut mapping = Mapping::start(parameters).expect("valid parameters");
         let center = PlanarPose::IDENTITY;
         mapping.add(&room_scan(0, center, center)).expect("a scan");
         mapping

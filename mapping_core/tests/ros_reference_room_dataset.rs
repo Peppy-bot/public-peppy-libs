@@ -192,8 +192,8 @@ fn map_seed(
     rays: RayTimes,
 ) -> (Mapping, Vec<ScanPose>) {
     let name = &scenario.name;
-    let mut mapping = Mapping::start(slam_toolbox_parameters(scenario), PlanarPose::IDENTITY)
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut mapping =
+        Mapping::start(slam_toolbox_parameters(scenario)).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut kept = Vec::new();
     for (index, scan) in placed_scans(prepared, odometry, rays).iter().enumerate() {
         if mapping

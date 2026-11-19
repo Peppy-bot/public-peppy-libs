@@ -71,7 +71,7 @@ pub fn map_of(
     odometry: &[PlanarPose],
     parameters: MappingParameters,
 ) -> Mapping {
-    let mut mapping = Mapping::start(parameters, PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(parameters).expect("valid parameters");
     for (index, (truth, odometry)) in drive.iter().zip(odometry).enumerate() {
         mapping
             .add(&placed(

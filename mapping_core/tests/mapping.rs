@@ -1,9 +1,9 @@
 //! Properties of rooms mapped from drawn scans: the matcher recovers a scan's pose from
 //! odometry off by a drawn offset; a drive around a drawn room closes its loop, so the
 //! walls of its last scan lie where its first scan put them, within the map's resolution;
-//! each scan added to the graph answers once and counts once; the map frame is the robot
-//! frame where mapping started; parameters that keep no localization leave the map in the
-//! error; and a start pose that is not finite is refused.
+//! each scan added to the graph answers once and counts once; the map frame is the odometry
+//! frame where mapping started; and parameters that keep no localization leave the map in the
+//! error.
 
 use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
@@ -13,7 +13,7 @@ use mapping_core::{CellState, FinishError, GridError, LocalizationError, Mapping
 mod common;
 use common::properties::{
     Room, circle_drive, compose, drifting_odometry, heading_error, largest_point_displacement,
-    loop_drive, planar, position_error, relative, room,
+    loop_drive, planar, position_error, room,
 };
 use common::{
     CREATED_AT_UNIX_NS, SCAN_PERIOD_NS, localization_parameters, map_of, placed, room_map_of,
@@ -40,8 +40,7 @@ fn the_matcher_recovers_the_pose_of_a_scan_from_odometry_off_by_a_drawn_offset(t
         tc.draw(gs::floats().min_value(-0.2).max_value(0.2)),
     );
     let odometry = compose(truth, offset);
-    let mut mapping =
-        Mapping::start(sync_parameters(), PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     // slam_toolbox's gate passes the first scan and holds the second to the fourth.
     for index in 0..4 {
         mapping
@@ -66,7 +65,7 @@ fn a_drive_around_a_drawn_room_closes_its_loop(tc: TestCase) {
     let drive = loop_drive(&tc, &room);
     let odometry = drifting_odometry(&tc, &drive);
     let parameters = sync_parameters();
-    let mut mapping = Mapping::start(parameters, PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(parameters).expect("valid parameters");
     let added: Vec<usize> = drive
         .iter()
         .zip(&odometry)
@@ -142,8 +141,7 @@ fn each_scan_added_to_the_graph_answers_once_and_counts_once(tc: TestCase) {
     let room = room(&tc);
     let drive = loop_drive(&tc, &room);
     let odometry = drifting_odometry(&tc, &drive);
-    let mut mapping =
-        Mapping::start(sync_parameters(), PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     let mut answered = 0;
     for (index, (truth, odometry)) in drive.iter().zip(&odometry).enumerate() {
         let before = mapping.scans();
@@ -171,18 +169,18 @@ fn each_scan_added_to_the_graph_answers_once_and_counts_once(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 5)]
-fn the_map_frame_is_the_robot_frame_where_mapping_started(tc: TestCase) {
+fn the_map_frame_is_the_odometry_frame_where_mapping_started(tc: TestCase) {
     let room = room(&tc);
     let drive = loop_drive(&tc, &room);
-    // The odometry frame lies anywhere; the base's odometry where mapping starts is that
-    // frame's pose of the first scan.
+    // The odometry frame lies anywhere in the room, so the first scan's odometry is any
+    // pose.
     let frame = planar(
         tc.draw(gs::floats().min_value(-5.0).max_value(5.0)),
         tc.draw(gs::floats().min_value(-5.0).max_value(5.0)),
         tc.draw(gs::floats().min_value(-3.0).max_value(3.0)),
     );
     let odometry: Vec<PlanarPose> = drive.iter().map(|pose| compose(frame, *pose)).collect();
-    let mut mapping = Mapping::start(sync_parameters(), odometry[0]).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     for (index, (truth, odometry)) in drive.iter().zip(&odometry).enumerate() {
         let Some(added) = mapping
             .add(&placed(
@@ -194,12 +192,11 @@ fn the_map_frame_is_the_robot_frame_where_mapping_started(tc: TestCase) {
         else {
             continue;
         };
-        let expected = relative(drive[0], *truth);
+        let expected = compose(frame, *truth);
         assert!(
             position_error(added.pose, expected) <= MATCHED_POSITION
                 && heading_error(added.pose, expected) <= MATCHED_HEADING,
-            "scan {index} at {:?} in the map, where the robot frame at the start puts it at \
-             {expected:?}",
+            "scan {index} at {:?} in the map, where the odometry frame puts it at {expected:?}",
             added.pose
         );
     }
