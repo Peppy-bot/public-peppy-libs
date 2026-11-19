@@ -54,10 +54,11 @@ let depth_model = DepthModel::parse(&intrinsics.depth_model)?;
 let points = depth_points(&frame, &depth, depth_unit, depth_model)?;
 
 // The depth stream stands where the color camera's pose in the map's frame, composed
-// with get_depth_to_color_extrinsics, the depth frame's pose in the color frame, puts it.
+// with depth_to_color of get_depth_to_color_extrinsics, the depth optical frame's pose in
+// the color optical frame, puts it.
 let depth_to_color = Transform::new(
-    extrinsics.depth_to_color_position,
-    extrinsics.depth_to_color_orientation,
+    extrinsics.depth_to_color.position,
+    extrinsics.depth_to_color.orientation,
 )?;
 let sensor = color_in_world.compose(&depth_to_color);
 
