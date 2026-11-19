@@ -27,7 +27,7 @@
 use camera_core::laser_scan::{LaserScan, Sweep};
 use control_core::planar_pose::PlanarPose;
 use mapping_core::{
-    GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
+    Drand48, GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
     LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan, RoomMap, SearchStep,
 };
 use ros_reference::metrics::PlanarPose as HarnessPose;
@@ -874,8 +874,10 @@ fn search_run(
     let name = &searched.scenario.name;
     let (map, _) = searched.map_of(seed);
     let draw_seed = u32::try_from(seed).expect("a seed of the drive fits the search's seed");
+    // The harness seeds AMCL's stream right before it asks for each search.
+    let mut stream = Drand48::seeded(draw_seed);
     let mut search = Some(
-        GlobalLocalization::start(map, searched.parameters, draw_seed)
+        GlobalLocalization::start(map, searched.parameters, &mut stream)
             .unwrap_or_else(|e| panic!("{name}: {e}")),
     );
     let mut localization: Option<Localization> = None;
@@ -892,7 +894,7 @@ fn search_run(
             }
             continue;
         }
-        match search.take().expect("a search").add(scan) {
+        match search.take().expect("a search").add(scan, &mut stream) {
             SearchStep::Searching(going_on, pose) => {
                 search = Some(going_on);
                 answers.extend(pose.map(|pose| (index, pose)));

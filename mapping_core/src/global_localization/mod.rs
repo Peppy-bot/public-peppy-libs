@@ -39,6 +39,7 @@ mod parameters;
 mod particle_filter;
 mod pose_arithmetic;
 
+pub use drand48::Drand48;
 pub use motion_model::RobotModelType;
 pub use parameters::{AmclParameterError, AmclParameters};
 
@@ -102,16 +103,20 @@ pub enum SearchStep {
 
 impl GlobalLocalization {
     /// `reinitialize_global_localization` in `map`: the particles spread over the free
-    /// cells of its grid, every random draw on the stream of `srand48(seed)`. The next scan
-    /// weighs them where they lie.
+    /// cells of its grid by draws on `stream`. The next scan weighs them where they lie.
+    /// Nav2's AMCL node seeds its stream once, with its `random_seed`, when it initializes
+    /// its filter (amcl_node.cpp:1499-1505), and its `globalLocalizationCallback` seeds
+    /// nothing (:361-376), so its searches draw on one stream, as successive starts on one
+    /// `stream` do.
     pub fn start(
         map: &RoomMap,
         parameters: GlobalLocalizationParameters,
-        seed: u32,
+        stream: &mut Drand48,
     ) -> Result<Self, GlobalLocalizationError> {
         let amcl = parameters.amcl.checked()?;
         let localization = RestoredLocalization::new(&map.state, parameters.localization)?;
-        let amcl = Amcl::new(map.grid(), amcl, seed).ok_or(GlobalLocalizationError::NoFreeCell)?;
+        let amcl =
+            Amcl::new(map.grid(), amcl, stream).ok_or(GlobalLocalizationError::NoFreeCell)?;
         Ok(Self {
             amcl,
             search_limits: parameters.search_limits,
@@ -119,12 +124,10 @@ impl GlobalLocalization {
         })
     }
 
-    /// `laserReceived` of `scan`: the search goes on, or ends once the pose that AMCL
-    /// publishes after it has deviations within the search limits. It takes a scan, as
-    /// `Mapping::add` and `Localization::add` do.
-    #[allow(clippy::should_implement_trait)]
-    pub fn add(mut self, scan: &PlacedScan) -> SearchStep {
-        let Some(pose) = self.amcl.add(scan) else {
+    /// `laserReceived` of `scan`, its random draws on `stream`: the search goes on, or ends
+    /// once the pose that AMCL publishes after it has deviations within the search limits.
+    pub fn add(mut self, scan: &PlacedScan, stream: &mut Drand48) -> SearchStep {
+        let Some(pose) = self.amcl.add(scan, stream) else {
             return SearchStep::Searching(self, None);
         };
         let deviations = Deviations::of_covariance(self.amcl.covariance());
@@ -246,7 +249,27 @@ pub(crate) mod tests {
 
     #[test]
     fn a_search_starts_in_a_map_with_free_floor() {
-        assert!(GlobalLocalization::start(&room_map(), parameters(), 0).is_ok());
+        assert!(
+            GlobalLocalization::start(&room_map(), parameters(), &mut Drand48::seeded(0)).is_ok()
+        );
+    }
+
+    #[test]
+    fn successive_searches_draw_on_one_stream() {
+        let map = room_map();
+        let mut stream = Drand48::seeded(0);
+        let first = GlobalLocalization::start(&map, parameters(), &mut stream).expect("a search");
+        let second = GlobalLocalization::start(&map, parameters(), &mut stream).expect("a search");
+        let fresh = GlobalLocalization::start(&map, parameters(), &mut Drand48::seeded(0))
+            .expect("a search");
+        assert_eq!(
+            first, fresh,
+            "the first search draws from the stream's seed"
+        );
+        assert_ne!(
+            second, fresh,
+            "the second search draws on from where the first left the stream"
+        );
     }
 
     #[test]
@@ -267,7 +290,7 @@ pub(crate) mod tests {
         .expect("a grid karto can count")
         .expect("a grid of the scans");
         assert_eq!(
-            GlobalLocalization::start(&unknown, parameters(), 0).err(),
+            GlobalLocalization::start(&unknown, parameters(), &mut Drand48::seeded(0)).err(),
             Some(GlobalLocalizationError::NoFreeCell)
         );
     }
@@ -283,7 +306,7 @@ pub(crate) mod tests {
             ..parameters()
         };
         assert_eq!(
-            GlobalLocalization::start(&map, amcl, 0).err(),
+            GlobalLocalization::start(&map, amcl, &mut Drand48::seeded(0)).err(),
             Some(GlobalLocalizationError::Amcl(
                 AmclParameterError::NoResampleInterval
             ))
@@ -291,7 +314,7 @@ pub(crate) mod tests {
         let mut localization = parameters();
         localization.localization.slam_toolbox.scan_buffer_size = 0;
         assert!(matches!(
-            GlobalLocalization::start(&map, localization, 0).err(),
+            GlobalLocalization::start(&map, localization, &mut Drand48::seeded(0)).err(),
             Some(GlobalLocalizationError::Localization(
                 LocalizationError::Parameters(_)
             ))

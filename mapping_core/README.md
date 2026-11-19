@@ -52,7 +52,9 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   `max_particles` particles spread over the free cells of the map's grid, weighed by AMCL's
   likelihood field model, moved by its differential or omnidirectional motion model
   (`robot_model_type`) and resampled by KLD sampling between `min_particles` and
-  `max_particles`, every random draw on glibc's `drand48` stream of a seed. Each scan that
+  `max_particles`, every random draw on the caller's `Drand48` stream, glibc's `drand48`,
+  which a caller seeds once and hands to each search, as Nav2's AMCL node seeds its stream
+  once when it initializes its filter and its global localization seeds nothing. Each scan that
   AMCL publishes a pose after answers the mean of the heaviest cluster of particles, its
   `MapPose` carrying the deviations of the whole filter's covariance as `amcl_pose` carries
   it; once they lie within the search limits, the search ends in the `Localization` that
@@ -118,15 +120,16 @@ if let Some(map_pose) = localization.add(&next_scan)? {
 
 // From no known pose: AMCL's parameters, each by its name in Nav2's amcl parameters, the
 // search limits, the parameters of the localization that keeps the pose once the search
-// ends, and the seed of the random draws.
+// ends; and the node's one stream of random draws, seeded once, as AMCL's node seeds it.
 let parameters = GlobalLocalizationParameters {
     amcl,
     search_limits,
     localization: localization_parameters,
 };
-let mut search = GlobalLocalization::start(&map, parameters, seed)?;
+let mut stream = Drand48::seeded(random_seed);
+let mut search = GlobalLocalization::start(&map, parameters, &mut stream)?;
 let localization = loop {
-    match search.add(&next_scan) {
+    match search.add(&next_scan, &mut stream) {
         // AMCL's pose after the scan, when it publishes one, outside the search limits.
         SearchStep::Searching(going_on, _map_pose) => search = going_on,
         // The search ended at map_pose: the localization keeps the pose from the next scan.

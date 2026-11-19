@@ -73,9 +73,10 @@ const STATE_MASK: u64 = (1 << STATE_BITS) - 1;
 /// The low 16 bits of the state that `srand48` sets.
 const SEED_LOW_BITS: u64 = 0x330E;
 
-/// The state of `drand48`.
+/// The state of `drand48`: the stream every random draw of a search takes, which a caller
+/// seeds once and hands to each search, as Nav2's AMCL node seeds its stream once.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Drand48 {
+pub struct Drand48 {
     state: u64,
 }
 
@@ -89,7 +90,7 @@ impl Drand48 {
     }
 
     /// `drand48()`: the next state, as the double in [0, 1) that holds its 48 bits.
-    pub fn draw(&mut self) -> f64 {
+    pub(crate) fn draw(&mut self) -> f64 {
         self.state = MULTIPLIER.wrapping_mul(self.state).wrapping_add(INCREMENT) & STATE_MASK;
         self.state as f64 / (1u64 << STATE_BITS) as f64
     }
@@ -98,7 +99,7 @@ impl Drand48 {
     /// `sigma`, by the polar form of the Box-Muller transform: two draws other than 0 make
     /// a point of the square (-1, 1)^2, drawn again until it lies within the unit circle
     /// and off its center.
-    pub fn gaussian(&mut self, sigma: f64) -> f64 {
+    pub(crate) fn gaussian(&mut self, sigma: f64) -> f64 {
         loop {
             let x1 = 2.0 * self.draw_other_than_zero() - 1.0;
             let x2 = 2.0 * self.draw_other_than_zero() - 1.0;
