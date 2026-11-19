@@ -161,6 +161,37 @@ async def test_consume_gated_drops_stale_future_and_unstampable():
     assert handled == ["fresh"]
 
 
+async def test_consume_gated_passes_a_message_with_no_timestamp():
+    handled = []
+    await run_gated(
+        [Message(None, "latest"), Message(time.time() - 60.0, "stale")],
+        lambda m: handled.append(m.value),
+    )
+    assert handled == ["latest"]
+
+
+async def test_consume_gated_awaits_an_awaitable_handler_in_order():
+    handled = []
+
+    async def handle(m):
+        await asyncio.sleep(0)
+        if m.value == "bad":
+            raise SetpointError("bad value")
+        handled.append(m.value)
+
+    rejected = []
+
+    async def on_reject(reason):
+        rejected.append(reason)
+
+    await run_gated(
+        [Message(time.time(), "first"), Message(time.time(), "bad"), Message(time.time(), "second")],
+        handle,
+        on_reject=on_reject,
+    )
+    assert (handled, rejected) == (["first", "second"], ["bad value"])
+
+
 async def test_consume_gated_reject_and_conform_lifecycle():
     events = []
 

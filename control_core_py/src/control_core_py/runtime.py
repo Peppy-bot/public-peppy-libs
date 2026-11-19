@@ -5,6 +5,7 @@ asking another node until it answers, and wire timestamps."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -159,9 +160,11 @@ async def consume_gated(
     on_conform=None,
 ) -> None:
     """One wire-input stream: age-gate on the wire timestamp, then
-    handle(message). The gate is symmetric and what arrival-side freshness
-    cannot give: a backlog replayed after a stall, a future-stamped message,
-    or an unstampable one must not be followed as fresh commands.
+    handle(message), awaiting what it returns when that is awaitable. The
+    gate is symmetric and what arrival-side freshness cannot give: a backlog
+    replayed after a stall, a future-stamped message, or an unstampable one
+    must not be followed as fresh commands. A message with no timestamp, a
+    command at the latest time, has no age, and the gate passes it.
 
     A SetpointError rejects the message (on_reject may raise an alert; a
     later conforming message calls on_conform); any other handler surprise,
@@ -174,12 +177,15 @@ async def consume_gated(
     stale = Latch()
     async for _producer, message in messages(subscription, token, label):
         try:
-            age_s = now_s() - message.timestamp
-            if not math.isfinite(age_s) or abs(age_s) > stale_timeout_s:
-                stale.trip(f"{label} stale, future-stamped, or unstampable on arrival; dropping")
-                continue
+            if message.timestamp is not None:
+                age_s = now_s() - message.timestamp
+                if not math.isfinite(age_s) or abs(age_s) > stale_timeout_s:
+                    stale.trip(f"{label} stale, future-stamped, or unstampable on arrival; dropping")
+                    continue
             stale.clear()
-            handle(message)
+            handled = handle(message)
+            if inspect.isawaitable(handled):
+                await handled
         except SetpointError as e:
             rejected.trip(f"{label} rejected: {e}")
             if on_reject is not None:
