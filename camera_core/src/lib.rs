@@ -23,8 +23,8 @@
 //! - [`laser_scan`]: the scans of a 2-D lidar as lidar_2d:v1 carries them,
 //!   each ray's hit placed where the sensor stood at the ray's time.
 //! - [`relay`]: the pieces of a simulated camera's relay: the camera a relay
-//!   is in its copy, the timestamp check of a relayed frame, why a forwarded
-//!   call has no answer, and the bounds and messages of the relay.
+//!   is in its copy, why a forwarded call has no answer, and the bounds and
+//!   messages of the relay.
 //! - [`sensor_mounts`]: the robot frame and a camera's frame in the robot's
 //!   tree, as sensor_mounts:v1's `describe_sensors` names them.
 

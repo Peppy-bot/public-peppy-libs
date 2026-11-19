@@ -1,11 +1,10 @@
 //! The pieces of a simulated camera's relay that name no generated type: the
-//! camera a relay is in its copy, the timestamp check of a frame it forwards,
-//! why a call it forwards to the simulation's camera response model has no
-//! answer, and the bounds and messages of the relay. The relay node maps each
-//! onto its own generated contract members.
+//! camera a relay is in its copy, why a call it forwards to the simulation's
+//! camera response model has no answer, and the bounds and messages of the
+//! relay. The relay node maps each onto its own generated contract members.
 
 use std::fmt::Display;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 /// Bounds every call forwarded to the simulation's camera response model. A
 /// control is one round trip through the simulation's device model, so an
@@ -24,13 +23,6 @@ pub const NO_RESPONSE_MODEL_MESSAGE: &str =
 /// simulation's first geometry arrives. The relay has no camera model of its
 /// own: every pinhole model it answers is one the simulation sent.
 pub const NO_GEOMETRY_MESSAGE: &str = "no camera geometry received from the simulation yet";
-
-/// Whether a frame's capture time is after the Unix epoch. A simulation
-/// stamps its frames at the epoch before its clock resolves, and no consumer
-/// can age such a sample.
-pub fn timestamp_is_valid(timestamp: SystemTime) -> bool {
-    timestamp > SystemTime::UNIX_EPOCH
-}
 
 /// The camera a relay is, as the simulation names it: the relay's name in
 /// its copy. A launch mints a copy's instance ids as `<copy>_<id>`, so relay
@@ -143,17 +135,6 @@ mod tests {
                 "{unnamed}"
             );
         }
-    }
-
-    #[test]
-    fn timestamp_guard_rejects_epoch_and_earlier() {
-        assert!(timestamp_is_valid(
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1)
-        ));
-        assert!(!timestamp_is_valid(SystemTime::UNIX_EPOCH));
-        assert!(!timestamp_is_valid(
-            SystemTime::UNIX_EPOCH - Duration::from_secs(1)
-        ));
     }
 
     #[test]
