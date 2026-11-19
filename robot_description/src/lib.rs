@@ -21,6 +21,10 @@
 //!   Gazebo's URDF extension: a `<gazebo>` element that references the optical frame and
 //!   holds a `<sensor type="depth">` whose `<camera><clip>` gives the `<near>` and
 //!   `<far>` depths.
+//! - [`RobotDescription::lidars`]: each 2-D lidar the robot carries ([`LidarFrame`]), as
+//!   Gazebo's URDF extension gives one: a `<gazebo>` element that references the lidar's
+//!   frame, a link on a fixed joint, and holds a `<sensor type="gpu_lidar">` named for the
+//!   lidar whose `<lidar><range>` gives the `<min>` and `<max>` ranges ([`LidarRange`]).
 //! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame,
 //!   [`RobotDescription::parent_joint`]: the joint a link hangs on, and
 //!   [`RobotDescription::arm_carrying`]: the arm whose chain carries a link, such as a
@@ -86,7 +90,7 @@ pub use bundled::{
 };
 pub use description::{
     Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
-    RobotDescription, mesh_name,
+    LidarFrame, LidarRange, RobotDescription, mesh_name,
 };
 pub use driven::{Driven, DrivenModels, UndrivenModel};
 pub use error::{
