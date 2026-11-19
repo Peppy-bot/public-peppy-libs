@@ -3,8 +3,8 @@
 //! walls of its last scan lie where its first scan put them, within the map's resolution;
 //! each scan the mapping reads counts once and each scan added to the graph answers once, and
 //! a scan of another number of rays is refused and not counted; the map frame is the odometry
-//! frame where mapping started; and parameters that keep no localization leave the map in the
-//! error.
+//! frame where mapping started; the grid of a mapping is the grid of the map it finishes
+//! with; and parameters that keep no localization leave the map in the error.
 
 use camera_core::laser_scan::LaserScan;
 use control_core::planar_pose::PlanarPose;
@@ -226,6 +226,29 @@ fn the_map_frame_is_the_odometry_frame_where_mapping_started(tc: TestCase) {
             added.pose
         );
     }
+}
+
+#[test]
+fn the_grid_of_a_mapping_is_the_grid_of_the_map_it_finishes_with() {
+    assert_eq!(
+        Mapping::start(sync_parameters())
+            .expect("valid parameters")
+            .grid(),
+        Ok(None),
+        "no grid before the first scan"
+    );
+    let room = Room::new(3.0, 2.0, 0.25, 1);
+    let drive = circle_drive(0.6);
+    let mapping = map_of(&room, &drive, &drive, sync_parameters());
+    let grid = mapping
+        .grid()
+        .expect("a grid karto can count")
+        .expect("the drive maps the room");
+    let (map, _) = mapping
+        .finish(MAPPING_START_UNIX_NS, localization_parameters())
+        .expect("valid parameters")
+        .expect("the drive maps the room");
+    assert_eq!(&grid, map.grid());
 }
 
 #[test]
