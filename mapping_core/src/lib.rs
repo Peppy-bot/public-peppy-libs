@@ -82,8 +82,8 @@ mod scan_matcher;
 mod slam_toolbox_parameters;
 
 pub use global_localization::{
-    AmclParameterError, AmclParameters, Drand48, GlobalLocalization, GlobalLocalizationError,
-    GlobalLocalizationParameters, RobotModelType, SearchStep,
+    AmclParameterError, AmclParameters, AmclSettings, Drand48, GlobalLocalization,
+    GlobalLocalizationError, GlobalLocalizationParameters, RobotModelType, SearchStep,
 };
 pub use laser_projection::{
     LaserProjection, LaserProjectionError, LaserProjectionParameters, ProjectedScan,

@@ -13,8 +13,8 @@
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
-    AmclParameters, Drand48, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits,
-    PlacedScan, RobotModelType, SearchStep,
+    AmclParameters, AmclSettings, Drand48, GlobalLocalization, GlobalLocalizationParameters,
+    LocalizationLimits, PlacedScan, RobotModelType, SearchStep,
 };
 use std::ops::ControlFlow;
 
@@ -148,7 +148,7 @@ fn search_in_a_drawn_room(draws: &impl DrawSource) -> Search {
         .collect();
     let search_limit = PositiveFinite::parse(SEARCH_LIMIT).expect("a positive limit");
     let parameters = GlobalLocalizationParameters {
-        amcl: AMCL,
+        amcl: AmclSettings::parse(AMCL).expect("Nav2's parameters"),
         search_limits: LocalizationLimits {
             position_std_m: search_limit,
             yaw_std_rad: search_limit,

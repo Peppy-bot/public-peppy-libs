@@ -52,7 +52,7 @@ use super::drand48::Drand48;
 use super::likelihood_field::LikelihoodField;
 use super::map::Map;
 use super::motion_model::MotionModel;
-use super::parameters::CheckedParameters;
+use super::parameters::AmclSettings;
 use super::particle_filter::ParticleFilter;
 use super::pose_arithmetic::{angle_diff, odometry_yaw};
 use crate::geometry::{Matrix3, Pose2};
@@ -79,7 +79,7 @@ impl Amcl {
     /// AMCL with the map of `grid`, started on `stream`; none for a grid with no free cell.
     pub fn new(
         grid: &OccupancyGrid,
-        parameters: CheckedParameters,
+        parameters: AmclSettings,
         stream: &mut Drand48,
     ) -> Option<Self> {
         let map = Map::of_grid(grid, parameters.laser_likelihood_max_dist);
@@ -211,7 +211,7 @@ mod tests {
     fn started(parameters: AmclParameters, stream: &mut Drand48) -> Amcl {
         Amcl::new(
             &room_grid(),
-            parameters.checked().expect("valid parameters"),
+            AmclSettings::parse(parameters).expect("valid parameters"),
             stream,
         )
         .expect("a room with free floor")
