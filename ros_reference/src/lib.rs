@@ -49,6 +49,9 @@ pub mod smac_2d;
 pub mod transform_lookup;
 pub mod velocity_smoother;
 
+#[cfg(test)]
+mod copies;
+
 use robot_description::{Arm, RobotDescription};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
