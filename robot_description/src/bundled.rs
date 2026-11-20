@@ -28,6 +28,21 @@ pub struct UnknownModel {
     id: String,
 }
 
+/// A description the robot's initializer serves under another digest than the bundled
+/// description of its model that a node was built with: the two builds read different
+/// descriptions of one model.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error(
+    "the robot's initializer serves the description {served} of {model}, and this backbone \
+     was built with {built}: build the backbone and the initializer from one \
+     public-peppy-libs commit"
+)]
+pub struct OtherDescription {
+    pub model: &'static str,
+    pub served: String,
+    pub built: &'static str,
+}
+
 fn model_ids() -> String {
     let ids: Vec<String> = models().map(|model| format!("{:?}", model.id)).collect();
     ids.join(", ")
@@ -78,6 +93,20 @@ impl Model {
     /// meshes. Two builds that hold the same digest hold the same description.
     pub fn digest(&self) -> &'static str {
         self.digest
+    }
+
+    /// Holds the digest `served`, the digest of the description the robot's initializer
+    /// serves for this model, to this bundled description's: another digest is refused,
+    /// naming both ([`OtherDescription`]).
+    pub fn hold_digest(&self, served: &str) -> Result<(), OtherDescription> {
+        if served == self.digest {
+            return Ok(());
+        }
+        Err(OtherDescription {
+            model: self.id,
+            served: served.to_owned(),
+            built: self.digest,
+        })
     }
 
     /// The model's description. Panics only if a bundled file is malformed, which this
@@ -340,6 +369,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    // A model holds its own digest, and refuses another, naming both and what to rebuild.
+    #[test]
+    fn a_model_holds_its_digest_and_refuses_another() {
+        let base = model("botshare_base").expect("the bundled base");
+        assert_eq!(base.hold_digest(base.digest()), Ok(()));
+        let other = "0".repeat(64);
+        let refused = base.hold_digest(&other).expect_err("another digest");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the robot's initializer serves the description {other} of botshare_base, and \
+                 this backbone was built with {}: build the backbone and the initializer from \
+                 one public-peppy-libs commit",
+                base.digest()
+            )
+        );
     }
 
     #[cfg(feature = "meshes")]

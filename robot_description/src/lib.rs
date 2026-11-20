@@ -51,8 +51,9 @@
 //! model id, the id robot_identity carries: its files, the [`Model::directory`] the build
 //! bundled them from, the [`Model::digest`] of them all and, behind the `meshes` feature,
 //! the collision meshes the URDF names, which [`write_meshes`] writes where a builder of
-//! the URDF's collision geometry reads them. [`models_with_arms`] gives the bundled models
-//! that have an arm.
+//! the URDF's collision geometry reads them. [`Model::hold_digest`] refuses a description
+//! served under another digest ([`OtherDescription`]). [`models_with_arms`] gives the
+//! bundled models that have an arm.
 //!
 //! [`on_shape`] runs code compiled for the shapes of a robot's arms, its arm count and
 //! its arms' joint count, at the shape of a description's arms. [`NodeArms`] holds a
@@ -78,7 +79,9 @@ mod xml;
 
 pub use arms::{ArmId, PerArm};
 pub use base::{DifferentialBase, NoDifferentialBase, NoOutline, Outline, Wheel};
-pub use bundled::{Model, UnknownModel, model, models, models_with_arms, write_meshes};
+pub use bundled::{
+    Model, OtherDescription, UnknownModel, model, models, models_with_arms, write_meshes,
+};
 pub use description::{
     Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
     RobotDescription, mesh_name,
