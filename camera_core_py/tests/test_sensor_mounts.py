@@ -144,7 +144,7 @@ async def test_a_camera_of_either_kind_names_the_frame_sensor_mounts_gives_its_n
 ):
     script = Script(Answer())
     camera = await read_sensor(CAMERA, None, name, script, Token())
-    assert camera == MountedSensor(sensor_class=CAMERA, name=name, frame=frame)
+    assert camera == MountedSensor(name=name, frame=frame)
     assert script.asks == 1
 
 
@@ -157,7 +157,7 @@ async def test_a_camera_with_a_vacant_link_names_a_frame_of_its_name_and_asks_no
 ):
     # The read ends though its cancel never comes.
     camera = await read_sensor(CAMERA, copy, instance_id, None, Token())
-    assert camera == MountedSensor(sensor_class=CAMERA, name=name, frame=name)
+    assert camera == MountedSensor(name=name, frame=name)
 
 
 async def test_a_vacant_link_refuses_an_id_that_names_no_camera_of_its_copy():
@@ -176,7 +176,7 @@ async def test_sensor_mounts_is_asked_until_it_answers(monkeypatch):
     script = Script(TimeoutError("no reply"), TimeoutError("no reply"), Answer())
     camera = await read_sensor(CAMERA, None, "chest", script, Token())
     assert camera == MountedSensor(
-        sensor_class=CAMERA, name="chest", frame="chest_color_optical_frame"
+        name="chest", frame="chest_color_optical_frame"
     )
     assert script.asks == 3
 
@@ -194,7 +194,7 @@ async def test_a_camera_in_a_copy_runs_under_its_id_after_the_copy():
         CAMERA, "alpha", "alpha_wrist_left", Script(Answer()), Token()
     )
     assert camera == MountedSensor(
-        sensor_class=CAMERA, name="wrist_left", frame="wrist_left_color_optical_frame"
+        name="wrist_left", frame="wrist_left_color_optical_frame"
     )
 
 

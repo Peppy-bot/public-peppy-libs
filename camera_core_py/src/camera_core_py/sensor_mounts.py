@@ -51,10 +51,9 @@ class DescribedSensors(Protocol):
 
 @dataclass(frozen=True)
 class MountedSensor:
-    """A sensor as sensor_mounts places it: the class it was read as, the name
-    it runs under and the frame each of its measurements names."""
+    """A sensor as sensor_mounts places it: the name it runs under and the
+    frame each of its measurements names."""
 
-    sensor_class: SensorClass
     name: str
     frame: str
 
@@ -65,6 +64,7 @@ class SensorMountsError(ValueError):
 
 # The characters Rust's `{:?}` writes as an escape of their own in a string.
 _DEBUG_ESCAPES = {"\0": "\\0", "\t": "\\t", "\r": "\\r", "\n": "\\n", '"': '\\"', "\\": "\\\\"}
+
 
 # The characters that Python's Unicode database, 15.0 under CPython 3.12 and 15.1 under 3.13,
 # calls printable and no mark of Mn or Me, and that Rust 1.100's `{:?}` writes as \u{hex}: the
@@ -82,7 +82,6 @@ _ESCAPED_BEYOND_MARKS = frozenset({
 # The one mark of Mn in Python's Unicode database that Rust 1.100's `{:?}` writes as it is:
 # U+1171E, a spacing mark in Rust's.
 _KEPT_MARKS = frozenset({0x1171E})
-
 
 
 def _quoted(text: str) -> str:
@@ -123,12 +122,11 @@ async def read_sensor(
     of the class under the name is refused with what to run."""
     name = sensor_name(sensor_class, copy, instance_id)
     if describe_sensors is None:
-        return MountedSensor(sensor_class=sensor_class, name=name, frame=name)
+        return MountedSensor(name=name, frame=name)
     sensors = await ask("describe_sensors", token, describe_sensors)
     if sensors is None:
         return None
     return MountedSensor(
-        sensor_class=sensor_class,
         name=name,
         frame=sensor_frame(sensor_class, sensors, name),
     )
