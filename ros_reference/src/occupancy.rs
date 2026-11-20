@@ -29,7 +29,7 @@ struct Scenario {
 }
 
 /// A sphere in the map frame.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sphere {
     pub center: [f64; 3],
@@ -44,19 +44,11 @@ struct CloudInput {
     points: Vec<[f64; 3]>,
 }
 
-/// The parameters, the sphere and the clouds as the reference read them, each cloud's
-/// points in the single precision of the cloud, and each voxel that the map holds after
-/// the clouds.
+/// Each voxel that the map holds after the clouds.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    voxel_size: f64,
-    max_range: f64,
-    padding_offset: f64,
-    padding_scale: f64,
-    cut_out: Sphere,
-    clouds: Vec<CloudInput>,
     /// Each voxel the map holds: its key on the three axes and its log-odds.
     voxels: Vec<(i32, i32, i32, f64)>,
 }
@@ -85,8 +77,7 @@ pub struct Cases {
 
 impl Cases {
     /// Every occupancy scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: the reference read the scenario's parameters, its
-    /// sphere and each of its clouds, and holds each voxel of the map once.
+    /// paired with its reference output, which holds each voxel of the map once.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::Occupancy)
             .into_iter()
@@ -97,6 +88,15 @@ impl Cases {
             })
             .collect()
     }
+}
+
+/// `points` as the updater reads them from a cloud, whose coordinates are single
+/// precision numbers.
+fn in_single_precision(points: &[[f64; 3]]) -> Vec<[f32; 3]> {
+    points
+        .iter()
+        .map(|point| point.map(|coordinate| coordinate as f32))
+        .collect()
 }
 
 fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
@@ -111,57 +111,13 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
     } = scenario;
     let Reference {
         kind: ThisKind::Occupancy,
-        voxel_size: voxel_size_read,
-        max_range: max_range_read,
-        padding_offset: padding_offset_read,
-        padding_scale: padding_scale_read,
-        cut_out: cut_out_read,
-        clouds: clouds_read,
         voxels,
     } = reference;
-    assert_eq!(
-        [
-            voxel_size_read,
-            max_range_read,
-            padding_offset_read,
-            padding_scale_read,
-        ],
-        [voxel_size, max_range, padding_offset, padding_scale],
-        "{name}: the reference read the voxel size, the range and the padding"
-    );
-    assert_eq!(
-        cut_out_read, cut_out,
-        "{name}: the reference read the sphere"
-    );
-    assert_eq!(
-        clouds.len(),
-        clouds_read.len(),
-        "{name}: the reference read every cloud"
-    );
     let clouds = clouds
         .into_iter()
-        .zip(clouds_read)
-        .enumerate()
-        .map(|(index, (cloud, read))| {
-            assert_eq!(
-                read.sensor, cloud.sensor,
-                "{name} cloud {index}: the reference read the sensor's pose"
-            );
-            let points: Vec<[f32; 3]> = cloud
-                .points
-                .iter()
-                .map(|point| point.map(|coordinate| coordinate as f32))
-                .collect();
-            let points_widened: Vec<[f64; 3]> =
-                points.iter().map(|point| point.map(f64::from)).collect();
-            assert_eq!(
-                read.points, points_widened,
-                "{name} cloud {index}: the reference read the points in single precision"
-            );
-            Cloud {
-                sensor: cloud.sensor,
-                points,
-            }
+        .map(|cloud| Cloud {
+            sensor: cloud.sensor,
+            points: in_single_precision(&cloud.points),
         })
         .collect();
     let voxels: Vec<([i32; 3], f64)> = voxels
@@ -191,9 +147,11 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
 mod tests {
     use super::*;
 
-    /// 0.1, and 0.1 in single precision, as the reference writes each.
-    const TENTH: &str = "0.1";
-    const TENTH_IN_SINGLE: &str = "0.10000000149011612";
+    /// A point of the first cloud of `occupancy_room`, and its coordinates as the reference
+    /// program reads them from the cloud: the doubles that hold their single precision
+    /// numbers.
+    const ROOM_POINT: [f64; 3] = [0.18336085911150296, 1.7327322845055468, 0.534251987237059];
+    const ROOM_POINT_READ: [f64; 3] = [0.18336085975170135, 1.7327322959899902, 0.5342519879341125];
 
     /// A scenario of one cloud of one point, at 0.1 on each axis, from a sensor at the
     /// origin, unturned.
@@ -209,18 +167,10 @@ mod tests {
         .expect("parses")
     }
 
-    /// The output that read the scenario of [`scenario`], with each coordinate of the
-    /// point read as `coordinate`, and the voxels `voxels`.
-    fn reference(coordinate: &str, voxels: &str) -> Reference {
-        serde_json::from_str(&format!(
-            r#"{{"kind": "occupancy", "voxel_size": 1, "max_range": 1,
-                 "padding_offset": 0, "padding_scale": 1,
-                 "cut_out": {{"center": [0, 0, 0], "radius": 1}},
-                 "clouds": [{{"sensor": {{"position": [0, 0, 0], "orientation": [0, 0, 0, 1]}},
-                              "points": [[{coordinate}, {coordinate}, {coordinate}]]}}],
-                 "voxels": {voxels}}}"#
-        ))
-        .expect("parses")
+    /// The output of the scenario of [`scenario`] that holds the voxels `voxels`.
+    fn reference(voxels: &str) -> Reference {
+        serde_json::from_str(&format!(r#"{{"kind": "occupancy", "voxels": {voxels}}}"#))
+            .expect("parses")
     }
 
     #[test]
@@ -232,24 +182,27 @@ mod tests {
     }
 
     #[test]
-    fn a_cloud_pairs_with_the_output_that_read_its_points_in_single_precision() {
-        let cases = pair(
-            "scenario".into(),
-            scenario(),
-            reference(TENTH_IN_SINGLE, "[[0, 0, 0, 1]]"),
-        );
+    fn a_cloud_pairs_with_its_points_in_single_precision() {
+        let cases = pair("scenario".into(), scenario(), reference("[[0, 0, 0, 1]]"));
         assert_eq!(cases.clouds[0].points, [[0.1f32; 3]]);
         assert_eq!(cases.voxels, [([0, 0, 0], 1.0)]);
     }
 
     #[test]
-    #[should_panic(expected = "the reference read the points in single precision")]
-    fn an_output_that_read_the_points_in_double_precision_does_not_pair() {
-        pair(
-            "scenario".into(),
-            scenario(),
-            reference(TENTH, "[[0, 0, 0, 1]]"),
-        );
+    fn the_cut_out_grows_by_the_padding_scale_and_offset() {
+        let scenario = Scenario {
+            padding_scale: 2.0,
+            padding_offset: 0.25,
+            ..scenario()
+        };
+        let cases = pair("scenario".into(), scenario, reference("[[0, 0, 0, 1]]"));
+        assert_eq!(cases.cut_out.radius, 2.25);
+    }
+
+    #[test]
+    fn a_point_reads_in_single_precision_as_the_reference_program_reads_it() {
+        let read = in_single_precision(&[ROOM_POINT]);
+        assert_eq!(read[0].map(f64::from), ROOM_POINT_READ);
     }
 
     #[test]
@@ -258,7 +211,7 @@ mod tests {
         pair(
             "scenario".into(),
             scenario(),
-            reference(TENTH_IN_SINGLE, "[[0, 0, 0, 1], [0, 0, 0, 0]]"),
+            reference("[[0, 0, 0, 1], [0, 0, 0, 0]]"),
         );
     }
 

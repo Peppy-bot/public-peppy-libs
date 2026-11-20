@@ -108,16 +108,6 @@ geometry_msgs::msg::TransformStamped sensor_transform(const nlohmann::json& sens
   return transform;
 }
 
-// The sensor's pose as the transform holds it.
-nlohmann::json pose_read(const geometry_msgs::msg::TransformStamped& transform) {
-  const auto& t = transform.transform.translation;
-  const auto& r = transform.transform.rotation;
-  return {
-      {"position", {t.x, t.y, t.z}},
-      {"orientation", {r.x, r.y, r.z, r.w}},
-  };
-}
-
 Eigen::Isometry3d isometry(const geometry_msgs::msg::TransformStamped& transform) {
   const auto& t = transform.transform;
   Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
@@ -167,14 +157,12 @@ nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
         return true;
       });
 
-  auto clouds = nlohmann::json::array();
   for (const auto& scan : scenario.at("clouds")) {
     const auto transform = sensor_transform(scan.at("sensor"));
     map_h_sensor = isometry(transform);
     (updater.*pointer(TfBuffer{}))->setTransform(transform, "occupancy_reference", true);
     const auto cloud = cloud_of(scan.at("points"), sensor_frame);
     (updater.*pointer(CloudCallback{}))(cloud);
-    clouds.push_back({{"sensor", pose_read(transform)}, {"points", points_read(*cloud)}});
   }
 
   // Every voxel the map holds, its pruned regions expanded to single voxels.
@@ -191,20 +179,7 @@ nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
                       static_cast<int>(key[2]) - key_of_zero,
                       static_cast<double>(leaf->getLogOdds())});
   }
-  // The updater's parameters as the node holds them, where setParams read them.
-  const auto parameter = [&](const char* key) {
-    return node->get_parameter(std::string(sensor_name) + "." + key).as_double();
-  };
-  return {
-      {"kind", "occupancy"},
-      {"voxel_size", tree->getResolution()},
-      {"max_range", parameter("max_range")},
-      {"padding_offset", parameter("padding_offset")},
-      {"padding_scale", parameter("padding_scale")},
-      {"cut_out", {{"center", center}, {"radius", radius}}},
-      {"clouds", clouds},
-      {"voxels", voxels},
-  };
+  return {{"kind", "occupancy"}, {"voxels", voxels}};
 }
 
 }  // namespace ros_reference
