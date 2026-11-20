@@ -29,7 +29,7 @@ struct Scenario {
 }
 
 /// An axis-aligned box, open: a state on its surface is free.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Obstacle {
     pub min: Vec<f64>,
@@ -37,7 +37,7 @@ pub struct Obstacle {
 }
 
 /// A world of boxes in the unit cube, with the start and the goal of its plans.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct World {
     pub obstacles: Vec<Obstacle>,
@@ -45,7 +45,7 @@ pub struct World {
     pub goal: Vec<f64>,
 }
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanScenario {
     world: usize,
@@ -55,27 +55,19 @@ struct PlanScenario {
     simplification: u32,
 }
 
-/// The scenario as the reference read it, and the answer of each plan.
+/// The answer of each plan of the scenario, in its order.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    motion_step: f64,
-    worlds: Vec<World>,
     plans: Vec<PlanRead>,
 }
 
-/// A plan as the reference read it, and its answer. An ending, a path, a length or a
-/// simplification that the plan does not have is null, and an answer that leaves one out
-/// is refused.
+/// A plan's answer. An ending, a path, a length or a simplification that the plan does not
+/// have is null, and an answer that leaves one out is refused.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanRead {
-    world: usize,
-    planner: String,
-    seed: u32,
-    iterations: u64,
-    simplification: u32,
     status: PlanStatus,
     #[serde(deserialize_with = "Option::deserialize")]
     ended_by: Option<Ending>,
@@ -145,9 +137,8 @@ pub struct Case {
 
 impl Case {
     /// Every planning scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: the reference read the scenario's motion step,
-    /// worlds and plans, and gave an ending, a path, its length and its simplification
-    /// exactly where the plan has them.
+    /// paired with its reference output, which gave an ending, a path, its length and its
+    /// simplification exactly where the plan has them.
     pub fn load_all() -> Vec<Self> {
         load_with(read_reference)
     }
@@ -181,15 +172,8 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Case {
     } = scenario;
     let Reference {
         kind: ThisKind::Planning,
-        motion_step: motion_step_read,
-        worlds: worlds_read,
         plans: plans_read,
     } = reference;
-    assert_eq!(
-        motion_step_read, motion_step,
-        "{name}: the reference read the motion step"
-    );
-    assert_eq!(worlds_read, worlds, "{name}: the reference read the worlds");
     assert_eq!(
         plans_read.len(),
         plans.len(),
@@ -201,14 +185,6 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Case {
         .enumerate()
         .map(|(index, (plan, read))| {
             let what = format!("{name} plan {index}");
-            let echoed = PlanScenario {
-                world: read.world,
-                planner: read.planner.clone(),
-                seed: read.seed,
-                iterations: read.iterations,
-                simplification: read.simplification,
-            };
-            assert_eq!(echoed, plan, "{what}: the reference read the plan");
             let dimension = worlds[plan.world].start.len();
             let status = read.status;
             let planned = planned(&what, &plan, read, dimension);
@@ -281,9 +257,6 @@ fn planned(what: &str, plan: &PlanScenario, read: PlanRead, dimension: usize) ->
 mod tests {
     use super::*;
 
-    const HALF: &str = "0.5";
-    const ONE: &str = "1";
-
     /// A scenario of one world in two dimensions with no obstacle, a plan of RRTConnect
     /// simplified, and a plan of PRM.
     fn scenario() -> Scenario {
@@ -298,22 +271,9 @@ mod tests {
         .expect("parses")
     }
 
-    /// The answer of the plan of RRTConnect of [`scenario`]: `fields`, after what the
-    /// reference read.
-    fn plan(fields: &str) -> String {
-        format!(
-            r#"{{"world": 0, "planner": "RRTConnect", "seed": 1, "iterations": 10,
-                 "simplification": 5, {fields}}}"#
-        )
-    }
-
-    /// The answer of the plan of PRM of [`scenario`]: `fields`, after what the reference
-    /// read.
-    fn prm_plan(fields: &str) -> String {
-        format!(
-            r#"{{"world": 0, "planner": "PRM", "seed": 1, "iterations": 10,
-                 "simplification": 0, {fields}}}"#
-        )
+    /// The answer of a plan: `fields`.
+    fn answer(fields: &str) -> String {
+        format!("{{{fields}}}")
     }
 
     const SOLVED: &str = r#""status": "Exact solution", "ended_by": "PlannerReturned",
@@ -323,19 +283,16 @@ mod tests {
     const PRM_FOUND: &str = r#""status": "Exact solution", "ended_by": null, "path": null,
         "length": null, "simplified": null"#;
 
-    /// The output that read the scenario of [`scenario`], with the answers `plan` and
-    /// `prm`, and the start read as `start`.
-    fn reference(plan: &str, prm: &str, start: &str) -> Result<Reference, serde_json::Error> {
+    /// The output of the scenario of [`scenario`], with the answers `plan`, of its plan of
+    /// RRTConnect, and `prm`, of its plan of PRM.
+    fn reference(plan: &str, prm: &str) -> Result<Reference, serde_json::Error> {
         serde_json::from_str(&format!(
-            r#"{{"kind": "planning", "motion_step": {HALF},
-                 "worlds": [{{"obstacles": [], "start": [{start}, {HALF}],
-                              "goal": [{ONE}, {ONE}]}}],
-                 "plans": [{plan}, {prm}]}}"#
+            r#"{{"kind": "planning", "plans": [{plan}, {prm}]}}"#
         ))
     }
 
-    fn solved(start: &str) -> Reference {
-        reference(&plan(SOLVED), &prm_plan(PRM_FOUND), start).expect("parses")
+    fn solved() -> Reference {
+        reference(&answer(SOLVED), &answer(PRM_FOUND)).expect("parses")
     }
 
     #[test]
@@ -348,8 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_pairs_with_the_output_that_read_it() {
-        let case = pair("scenario".into(), scenario(), solved(HALF));
+    fn a_plan_pairs_with_its_answer() {
+        let case = pair("scenario".into(), scenario(), solved());
         let planned = case.plans[0].planned.as_ref().expect("RRTConnect's answer");
         assert_eq!(case.plans[0].status, PlanStatus::Exact);
         assert_eq!(planned.ended_by, Ending::PlannerReturned);
@@ -360,12 +317,6 @@ mod tests {
             case.plans[1].planned.is_none(),
             "PRM answers its status alone"
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "the reference read the worlds")]
-    fn an_output_that_read_another_world_does_not_pair() {
-        pair("scenario".into(), scenario(), solved(ONE));
     }
 
     #[test]
@@ -380,7 +331,7 @@ mod tests {
         let unsolved = pair(
             "scenario".into(),
             scenario(),
-            reference(&plan(&fields.join(", ")), &prm_plan(PRM_FOUND), HALF).expect("parses"),
+            reference(&answer(&fields.join(", ")), &answer(PRM_FOUND)).expect("parses"),
         );
         assert_eq!(unsolved.plans[0].status, PlanStatus::Timeout);
         let planned = unsolved.plans[0]
@@ -392,7 +343,7 @@ mod tests {
             let mut without = fields.to_vec();
             let field = without.remove(left_out);
             assert!(
-                reference(&plan(&without.join(", ")), &prm_plan(PRM_FOUND), HALF).is_err(),
+                reference(&answer(&without.join(", ")), &answer(PRM_FOUND)).is_err(),
                 "an answer without {field} parses"
             );
         }
@@ -407,7 +358,7 @@ mod tests {
         pair(
             "scenario".into(),
             scenario(),
-            reference(&plan(&fields), &prm_plan(PRM_FOUND), HALF).expect("parses"),
+            reference(&answer(&fields), &answer(PRM_FOUND)).expect("parses"),
         );
     }
 
@@ -418,7 +369,7 @@ mod tests {
         pair(
             "scenario".into(),
             scenario(),
-            reference(&plan(SOLVED), &prm_plan(&prm), HALF).expect("parses"),
+            reference(&answer(SOLVED), &answer(&prm)).expect("parses"),
         );
     }
 
@@ -429,7 +380,7 @@ mod tests {
         pair(
             "scenario".into(),
             scenario(),
-            reference(&plan(&fields), &prm_plan(PRM_FOUND), HALF).expect("parses"),
+            reference(&answer(&fields), &answer(PRM_FOUND)).expect("parses"),
         );
     }
 

@@ -152,12 +152,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
       for (const auto& link : links) {
         poses.push_back(link_pose(state, link));
       }
-      auto echoed_positions = nlohmann::json::array();
-      for (const auto position : positions) {
-        echoed_positions.push_back(position);
-      }
       std::vector<Eigen::Vector3d> points;
-      auto echoed_points = nlohmann::json::array();
       for (const auto& point : configuration.at("points")) {
         const auto link = point.at("link").get<std::string>();
         const auto position = point.at("position").get<std::vector<double>>();
@@ -166,9 +161,6 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
         }
         points.push_back(state.getGlobalLinkTransform(link) *
                          Eigen::Vector3d(position[0], position[1], position[2]));
-        echoed_points.push_back(
-            {{"link", link},
-             {"position", {position[0], position[1], position[2]}}});
       }
       auto inside = nlohmann::json::array();
       for (const auto& padding : scenario.at("paddings")) {
@@ -192,9 +184,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
         }
         inside.push_back(held);
       }
-      configurations.push_back({{"positions", echoed_positions},
-                                {"points", echoed_points},
-                                {"links", poses},
+      configurations.push_back({{"links", poses},
                                 {"inside", inside}});
     }
     arms.push_back({{"name", arm.name},
@@ -203,19 +193,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
                       {"spheres", collision_spheres(*model, links, scenario.at("sphere_paddings"))},
                       {"configurations", configurations}});
   }
-  auto paddings = nlohmann::json::array();
-  for (const auto& padding : scenario.at("paddings")) {
-    paddings.push_back({{"scale", padding.at("scale").get<double>()},
-                        {"offset", padding.at("offset").get<double>()}});
-  }
-  auto sphere_paddings = nlohmann::json::array();
-  for (const auto& padding : scenario.at("sphere_paddings")) {
-    sphere_paddings.push_back(padding.get<double>());
-  }
-  return {{"kind", "chain_collision"},
-          {"paddings", paddings},
-          {"sphere_paddings", sphere_paddings},
-          {"arms", arms}};
+  return {{"kind", "chain_collision"}, {"arms", arms}};
 }
 
 }  // namespace ros_reference

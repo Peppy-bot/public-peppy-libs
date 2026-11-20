@@ -39,23 +39,14 @@ nlohmann::json path_timing(const nlohmann::json& scenario, Inputs&) {
   for (const auto& path : scenario.at("paths")) {
     const auto name = path.at("name").get<std::string>();
     std::vector<Eigen::VectorXd> waypoints;
-    auto echoed_waypoints = nlohmann::json::array();
     for (const auto& waypoint : path.at("waypoints")) {
       waypoints.push_back(vector_of(waypoint));
-      echoed_waypoints.push_back(numbers_of(waypoints.back()));
     }
     const auto max_deviation = path.at("max_deviation").get<double>();
     const auto max_velocity = vector_of(path.at("max_velocity"));
     const auto max_acceleration = vector_of(path.at("max_acceleration"));
     const auto fractions = vector_of(path.at("fractions"));
-    nlohmann::json output = {
-        {"name", name},
-        {"waypoints", echoed_waypoints},
-        {"max_deviation", max_deviation},
-        {"max_velocity", numbers_of(max_velocity)},
-        {"max_acceleration", numbers_of(max_acceleration)},
-        {"fractions", numbers_of(fractions)},
-    };
+    nlohmann::json output = {{"name", name}};
     const auto created = trajectory_processing::Path::create(waypoints, max_deviation);
     if (!created) {
       output["refused"] = true;

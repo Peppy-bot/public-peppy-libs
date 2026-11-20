@@ -35,7 +35,7 @@ struct Scenario {
 
 /// How the robot filter grows each link: MoveIt's padding scale, and its padding offset
 /// in meters.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Padding {
     pub scale: f64,
@@ -59,24 +59,20 @@ struct Posed {
 }
 
 /// A probe point, in the frame of `link`.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probe {
     pub link: String,
     pub position: [f64; 3],
 }
 
-/// The paddings and the sphere paddings of the scenario as the reference read them, and
-/// for each arm of the scenario, in its order, and each of its configurations: the
-/// positions and the probe points as the reference read them, the global transform of
-/// each link the arm carries, in the order of the links, and for each padding, in its
-/// order, whether each probe point lies inside the grown links.
+/// For each arm of the scenario, in its order, and each of its configurations: the global
+/// transform of each link the arm carries, in the order of the links, and for each padding,
+/// in its order, whether each probe point lies inside the grown links.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    paddings: Vec<Padding>,
-    sphere_paddings: Vec<f64>,
     arms: Vec<ArmOutput>,
 }
 
@@ -113,8 +109,6 @@ pub struct Sphere {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PosedOutput {
-    positions: Vec<f64>,
-    points: Vec<Probe>,
     links: Vec<LinkPose>,
     inside: Vec<Vec<bool>>,
 }
@@ -156,11 +150,10 @@ pub struct Configuration {
 
 impl Cases {
     /// Every chain collision scenario under `scenarios/`, in the order of their names,
-    /// each paired with its reference output: the reference read the scenario's
-    /// paddings and sphere paddings, each arm's output names a body of a carried link
-    /// with each center, holds the spheres of each link for each sphere padding, and
-    /// one output per arm and per configuration, which read its positions and probe
-    /// points, holds one pose per carried link and one answer per padding and per probe.
+    /// each paired with its reference output: each arm's output names a body of a carried
+    /// link with each center, holds the spheres of each link for each sphere padding, and
+    /// one output per arm and per configuration, which holds one pose per carried link and
+    /// one answer per padding and per probe.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::ChainCollision)
             .into_iter()
@@ -179,18 +172,8 @@ impl Cases {
         let robot = read_robot(&name, &description);
         let Reference {
             kind: ThisKind::ChainCollision,
-            paddings: paddings_read,
-            sphere_paddings: sphere_paddings_read,
             arms: outputs,
         } = read_reference(&name);
-        assert_eq!(
-            paddings_read, paddings,
-            "{name}: the reference read the paddings"
-        );
-        assert_eq!(
-            sphere_paddings_read, sphere_paddings,
-            "{name}: the reference read the sphere paddings"
-        );
         assert_eq!(arms.len(), outputs.len(), "{name}: one output per arm");
         let arms = arms
             .into_iter()
@@ -263,14 +246,6 @@ fn pair(
                 arm.joints.len(),
                 "{context}: one position per joint"
             );
-            assert_eq!(
-                output.positions, posed.positions,
-                "{context}: the reference read the positions"
-            );
-            assert_eq!(
-                output.points, posed.points,
-                "{context}: the reference read the probe points"
-            );
             let linked: Vec<&str> = output.links.iter().map(|pose| pose.link.as_str()).collect();
             assert_eq!(linked, links, "{context}: one pose per carried link");
             assert_eq!(
@@ -307,7 +282,7 @@ mod tests {
     use super::*;
 
     /// SO-101's arm, and a configuration of it posing one probe.
-    fn so101_arm(probe: Probe) -> (Arm, ArmPosed) {
+    fn so101_arm() -> (Arm, ArmPosed) {
         let arm = robot_description::model("so101")
             .expect("a bundled model")
             .description()
@@ -317,33 +292,27 @@ mod tests {
             name: arm.name.clone(),
             configurations: vec![Posed {
                 positions: vec![0.0; arm.joints.len()],
-                points: vec![probe],
+                points: vec![Probe {
+                    link: "l".into(),
+                    position: [0.0; 3],
+                }],
             }],
         };
         (arm, posed)
     }
 
-    /// An output of `arm` at its configuration of `so101_arm`, which read `probe` and
-    /// answers `inside` for each padding.
-    fn output_of(arm: &Arm, probe: Probe, inside: Vec<Vec<bool>>) -> ArmOutput {
+    /// An output of `arm` at its configuration of `so101_arm`, which answers `inside` for
+    /// each padding.
+    fn output_of(arm: &Arm, inside: Vec<Vec<bool>>) -> ArmOutput {
         ArmOutput {
             name: arm.name.clone(),
             links: vec![],
             bodies: vec![],
             spheres: vec![],
             configurations: vec![PosedOutput {
-                positions: vec![0.0; arm.joints.len()],
-                points: vec![probe],
                 links: vec![],
                 inside,
             }],
-        }
-    }
-
-    fn probe(x: f64) -> Probe {
-        Probe {
-            link: "l".into(),
-            position: [x, 0.0, 0.0],
         }
     }
 
@@ -361,29 +330,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "one answer per probe")]
     fn an_output_missing_an_answer_does_not_pair() {
-        let (arm, posed) = so101_arm(probe(0.0));
-        let output = output_of(&arm, probe(0.0), vec![vec![]]);
-        pair("scenario", (1, 0), arm, posed, output);
-    }
-
-    #[test]
-    #[should_panic(expected = "the reference read the probe points")]
-    fn an_output_that_read_another_probe_does_not_pair() {
-        let (arm, posed) = so101_arm(probe(0.5));
-        let output = output_of(&arm, probe(0.25), vec![vec![true]]);
+        let (arm, posed) = so101_arm();
+        let output = output_of(&arm, vec![vec![]]);
         pair("scenario", (1, 0), arm, posed, output);
     }
 
     #[test]
     #[should_panic(expected = "the body of l belongs to a carried link")]
     fn a_body_of_a_link_the_arm_does_not_carry_does_not_pair() {
-        let (arm, posed) = so101_arm(probe(0.0));
+        let (arm, posed) = so101_arm();
         let output = ArmOutput {
             bodies: vec![Body {
                 link: "l".into(),
                 center: [0.0; 3],
             }],
-            ..output_of(&arm, probe(0.0), vec![vec![true]])
+            ..output_of(&arm, vec![vec![true]])
         };
         pair("scenario", (1, 0), arm, posed, output);
     }

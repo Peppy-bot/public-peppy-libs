@@ -1,7 +1,7 @@
 // Inflation: Nav2's inflation layer (nav2_costmap_2d 1.5.2) inflates the costs of each
 // grid of the scenario for its footprint, padded as Costmap2DROS pads it, and the layer's
-// parameters, over the whole grid, and gives the inflated costs. The output holds each
-// grid, the padded footprint and the parameters as the reference read them.
+// parameters, over the whole grid, and gives the inflated costs. The output holds the
+// padded footprint and, for each grid, the inscribed radius and the inflated costs.
 #pragma once
 
 #include <nlohmann/json.hpp>

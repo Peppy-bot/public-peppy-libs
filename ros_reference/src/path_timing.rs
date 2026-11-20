@@ -24,7 +24,7 @@ struct Scenario {
 
 /// A path through `waypoints`, blended at `max_deviation` and timed under the limits;
 /// TOTG gives the point at each of `fractions` of its length.
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathInput {
     name: String,
@@ -35,8 +35,7 @@ struct PathInput {
     fractions: Vec<f64>,
 }
 
-/// For each path of the scenario, in its order, the path as the reference read it and
-/// what TOTG made of it.
+/// For each path of the scenario, in its order, what TOTG made of it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
@@ -44,7 +43,7 @@ struct Reference {
     paths: Vec<PathOutput>,
 }
 
-/// A path as the reference read it, and what TOTG made of it: a refusal, or a timed
+/// What TOTG made of a path of the scenario, under the path's name: a refusal, or a timed
 /// path. An output holds the fields of one alone.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -53,30 +52,20 @@ enum PathOutput {
     Timed(TimedOutput),
 }
 
-/// A path that TOTG refused, as the reference read it.
+/// A path that TOTG refused.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RefusedOutput {
     name: String,
-    waypoints: Vec<Vec<f64>>,
-    max_deviation: f64,
-    max_velocity: Vec<f64>,
-    max_acceleration: Vec<f64>,
-    fractions: Vec<f64>,
     refused: Refusal,
 }
 
-/// A path that TOTG timed, as the reference read it: the blended path's length, its
-/// point at each fraction of the length, and its duration (s).
+/// A path that TOTG timed: the blended path's length, its point at each fraction of the
+/// length, and its duration (s).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TimedOutput {
     name: String,
-    waypoints: Vec<Vec<f64>>,
-    max_deviation: f64,
-    max_velocity: Vec<f64>,
-    max_acceleration: Vec<f64>,
-    fractions: Vec<f64>,
     length: f64,
     configs: Vec<Vec<f64>>,
     duration: f64,
@@ -95,47 +84,20 @@ impl<'de> Deserialize<'de> for Refusal {
 }
 
 impl PathOutput {
-    /// The path as the reference read it, and what TOTG made of it.
-    fn read(self) -> (PathInput, Totg) {
+    /// The name of the path, and what TOTG made of it.
+    fn read(self) -> (String, Totg) {
         match self {
             Self::Refused(RefusedOutput {
                 name,
-                waypoints,
-                max_deviation,
-                max_velocity,
-                max_acceleration,
-                fractions,
                 refused: Refusal,
-            }) => (
-                PathInput {
-                    name,
-                    waypoints,
-                    max_deviation,
-                    max_velocity,
-                    max_acceleration,
-                    fractions,
-                },
-                Totg::Refused,
-            ),
+            }) => (name, Totg::Refused),
             Self::Timed(TimedOutput {
                 name,
-                waypoints,
-                max_deviation,
-                max_velocity,
-                max_acceleration,
-                fractions,
                 length,
                 configs,
                 duration,
             }) => (
-                PathInput {
-                    name,
-                    waypoints,
-                    max_deviation,
-                    max_velocity,
-                    max_acceleration,
-                    fractions,
-                },
+                name,
                 Totg::Timed {
                     length,
                     configs,
@@ -180,9 +142,8 @@ pub struct Cases {
 
 impl Cases {
     /// Every path timing scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: one output per path, which read the path,
-    /// holds TOTG's refusal of it, or its length, one point per fraction and its
-    /// duration.
+    /// paired with its reference output: one output per path, which holds TOTG's refusal
+    /// of it, or its length, one point per fraction and its duration.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::PathTiming)
             .into_iter()
@@ -211,12 +172,11 @@ impl Cases {
 
 fn pair(name: &str, input: PathInput, output: PathOutput) -> PathCase {
     let context = format!("{name} {}", input.name);
-    let (read_back, totg) = output.read();
+    let (output_name, totg) = output.read();
     assert_eq!(
-        input.name, read_back.name,
+        input.name, output_name,
         "{context}: the paths are in one order"
     );
-    assert_eq!(read_back, input, "{context}: the reference read the path");
     if let Totg::Timed { configs, .. } = &totg {
         assert_eq!(
             configs.len(),
@@ -239,10 +199,6 @@ fn pair(name: &str, input: PathInput, output: PathOutput) -> PathCase {
 mod tests {
     use super::*;
 
-    /// The fields of an output that read the path of [`input`].
-    const READ: &str = r#""waypoints": [[0], [1]], "max_deviation": 0.1, "max_velocity": [1],
-        "max_acceleration": [1], "fractions": [0]"#;
-
     const REFUSED: &str = r#""refused": true"#;
 
     fn input() -> PathInput {
@@ -256,9 +212,14 @@ mod tests {
         }
     }
 
-    /// The output that read the path of [`input`], with `outcome`.
+    /// The output of the path named `name`, with `outcome`.
+    fn output_of(name: &str, outcome: &str) -> PathOutput {
+        serde_json::from_str(&format!(r#"{{"name": "{name}", {outcome}}}"#)).expect("parses")
+    }
+
+    /// The output of the path of [`input`], with `outcome`.
     fn output(outcome: &str) -> PathOutput {
-        serde_json::from_str(&format!(r#"{{"name": "a", {READ}, {outcome}}}"#)).expect("parses")
+        output_of("a", outcome)
     }
 
     /// A timed outcome with the points `configs`.
@@ -267,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_pairs_with_the_output_that_read_it() {
+    fn a_path_pairs_with_its_output() {
         assert!(pair("scenario", input(), output(REFUSED)).totg == Totg::Refused);
         assert!(matches!(
             pair("scenario", input(), output(&timed("[[0]]"))).totg,
@@ -275,10 +236,9 @@ mod tests {
         ));
     }
 
-    /// Whether `fields`, beside the name and the path an output read, parse as an
-    /// output.
+    /// Whether `fields`, beside the path's name, parse as an output.
     fn parses(fields: &str) -> bool {
-        serde_json::from_str::<PathOutput>(&format!(r#"{{"name": "a", {READ}, {fields}}}"#)).is_ok()
+        serde_json::from_str::<PathOutput>(&format!(r#"{{"name": "a", {fields}}}"#)).is_ok()
     }
 
     #[test]
@@ -297,13 +257,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "the reference read the path")]
-    fn an_output_that_read_another_path_does_not_pair() {
-        let other = PathInput {
-            max_deviation: 0.2,
-            ..input()
-        };
-        pair("scenario", other, output(REFUSED));
+    #[should_panic(expected = "the paths are in one order")]
+    fn the_output_of_another_path_does_not_pair() {
+        pair("scenario", input(), output_of("b", REFUSED));
     }
 
     #[test]

@@ -656,7 +656,10 @@ arm64 host.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF, an SRDF or a mesh
-differs from its digest.
+differs from its digest. Another fails when a field of a kind's reference outputs copies
+their scenarios: each value of the field that is a list of two or more lists or objects
+equals a whole list of its scenario, with each number of both in single precision
+(`src/copies.rs`).
 
 ## Adding a kind of scenario
 
@@ -669,9 +672,11 @@ differs from its digest.
 2. In `reference_programs/`, add the function that runs the reference on a scenario of
    the kind, reading every file of the repository through `Inputs::read`, which lists it
    for `INPUTS.SHA256SUMS`; a file that a ROS library reads, as MoveIt loads a mesh, goes
-   to it by `Inputs::file_uri`, which reads it through `Inputs::read`. Add the function to
-   `references` in `main.cpp` and to `CMakeLists.txt`, and install the ROS packages it
-   needs in the Dockerfile.
+   to it by `Inputs::file_uri`, which reads it through `Inputs::read`. Its output holds
+   what the reference computes and the names that pair each result with its case of the
+   scenario, and the module takes each input it compares from the scenario. Add the
+   function to `references` in `main.cpp` and to `CMakeLists.txt`, and install the ROS
+   packages it needs in the Dockerfile.
 3. In `tools/`, add a script that writes the scenarios through `write` of `drawing.py`,
    its random draws from the `generator` of each scenario, seeded by the scenario's name.
 4. Run `run.sh` on an amd64 host, which writes their reference outputs and

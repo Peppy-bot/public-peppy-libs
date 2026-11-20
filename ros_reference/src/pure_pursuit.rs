@@ -126,21 +126,15 @@ struct StepInput {
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    grid: Grid,
-    costs: Vec<Vec<u8>>,
-    footprint: Vec<[f64; 2]>,
     inscribed_radius: f64,
     circumscribed_radius: f64,
-    plan: Vec<[f64; 3]>,
+    /// One record a step of the scenario, in its order.
     steps: Vec<StepRead>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StepRead {
-    at_ns: i64,
-    pose: [f64; 3],
-    speed: [f64; 3],
     pruned: Vec<usize>,
     outcome: Outcome,
     /// Null when the step ended before the check; each field is required.
@@ -171,8 +165,7 @@ pub enum Outcome {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Step {
     pub at_ns: i64,
-    /// The base's pose as the scenario gives it; the reference read it back within
-    /// 1e-12 rad.
+    /// The base's pose as the scenario gives it.
     pub pose: [f64; 3],
     pub speed: [f64; 3],
     /// The index in the plan of the pruned plan's first pose, and its count of poses.
@@ -205,14 +198,9 @@ pub struct Cases {
     pub steps: Vec<Step>,
 }
 
-/// How far a heading read back from its quaternion may lie from the heading that made it,
-/// in radians.
-const HEADING_READ_RAD: f64 = 1e-12;
-
 impl Cases {
     /// Every pure pursuit scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: the reference read the grid, its costs, the
-    /// footprint, the plan and each step's pose and speed.
+    /// paired with its reference output.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::PurePursuit)
             .into_iter()
@@ -223,15 +211,6 @@ impl Cases {
             })
             .collect()
     }
-}
-
-/// Panics unless `read`, a pose as the reference read it, holds `given`'s position and,
-/// within [`HEADING_READ_RAD`], its heading.
-fn check_pose(read: [f64; 3], given: [f64; 3], what: &str) {
-    assert!(
-        read[..2] == given[..2] && (read[2] - given[2]).abs() < HEADING_READ_RAD,
-        "{what}: the reference read the pose {given:?} as {read:?}"
-    );
 }
 
 fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
@@ -251,28 +230,10 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
     } = scenario;
     let Reference {
         kind: ThisKind::PurePursuit,
-        grid: grid_read,
-        costs: costs_read,
-        footprint: footprint_read,
         inscribed_radius,
         circumscribed_radius,
-        plan: plan_read,
         steps: steps_read,
     } = reference;
-    assert_eq!(grid_read, grid, "{name}: the reference read the grid");
-    assert_eq!(costs_read, costs, "{name}: the reference read the costs");
-    assert_eq!(
-        footprint_read, footprint,
-        "{name}: the reference read the footprint"
-    );
-    assert_eq!(
-        plan_read.len(),
-        plan.len(),
-        "{name}: the reference read the plan"
-    );
-    for (index, (read, &given)) in plan_read.iter().zip(&plan).enumerate() {
-        check_pose(*read, given, &format!("{name} plan pose {index}"));
-    }
     assert_eq!(
         steps_read.len(),
         steps.len(),
@@ -284,12 +245,6 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
         .enumerate()
         .map(|(index, (input, read))| {
             let what = format!("{name} step {index}");
-            check_pose(read.pose, input.pose, &what);
-            assert_eq!(
-                (read.at_ns, read.speed),
-                (input.at_ns, input.speed),
-                "{what}: the reference read the step"
-            );
             let pruned = match read.pruned.as_slice() {
                 &[first, count] => Some((first, count)),
                 [] => None,
