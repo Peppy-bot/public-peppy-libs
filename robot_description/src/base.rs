@@ -1,8 +1,9 @@
 //! The differential base a description gives ([`RobotDescription::differential_base`]):
-//! the two wheels a robot drives on, read from its tree of links and joints in the frame of
-//! its root link, the robot frame, with every joint at zero.
+//! the two wheels a robot drives on, and the outline of its parts on the floor
+//! ([`RobotDescription::outline`]), each read from its tree of links and joints in the frame
+//! of its root link, the robot frame, with every joint at zero.
 
-use chain_kinematics::nalgebra::{Isometry3, Vector3};
+use chain_kinematics::nalgebra::{Isometry3, UnitQuaternion, Vector3};
 use chain_kinematics::{JointKind, pose_of_origin};
 use urdf_rs::Geometry;
 
@@ -86,6 +87,52 @@ pub enum NoDifferentialBase {
     },
 }
 
+/// The rectangle on the floor plane of the root link's frame that holds every collision
+/// element of a robot, every joint at zero: how far it reaches ahead of the root link's
+/// origin along +x (`front`) and behind it (`rear`, at most `front`), and along +y
+/// (`left`) and -y (`right`, at most `left`), each in meters as a coordinate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Outline {
+    pub front: f64,
+    pub rear: f64,
+    pub left: f64,
+    pub right: f64,
+}
+
+impl Outline {
+    /// The rectangle's corners, counterclockwise from the front right one.
+    pub fn corners(&self) -> [[f64; 2]; 4] {
+        let Self {
+            front,
+            rear,
+            left,
+            right,
+        } = *self;
+        [[front, right], [front, left], [rear, left], [rear, right]]
+    }
+
+    /// The rectangle that holds this one and `other`.
+    fn holding(self, other: Outline) -> Outline {
+        Outline {
+            front: self.front.max(other.front),
+            rear: self.rear.min(other.rear),
+            left: self.left.max(other.left),
+            right: self.right.min(other.right),
+        }
+    }
+}
+
+/// Why a description gives no outline.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum NoOutline {
+    #[error(
+        "link {link}: the outline holds boxes, cylinders and spheres, and one of its collision elements is none of them"
+    )]
+    Shape { link: String },
+    #[error("no link has collision geometry, so the robot has no outline")]
+    NoGeometry,
+}
+
 impl RobotDescription {
     /// The differential base this description gives: its two wheels, the continuous
     /// joints that no group of its SRDF holds, on a link that fixed joints alone join to its
@@ -105,6 +152,28 @@ impl RobotDescription {
             right: self.wheel(&right)?,
             separation_m: left.position[1] - right.position[1],
         })
+    }
+
+    /// The outline of the robot on the floor: the rectangle that holds every collision
+    /// element of every link, each a box, a cylinder or a sphere, placed in the root
+    /// link's frame with every joint at zero. A description with an element of another
+    /// shape, or with no collision element, gives none.
+    pub fn outline(&self) -> Result<Outline, NoOutline> {
+        let mut parts = Vec::new();
+        for (link, frame) in self.link_frames_at_zero() {
+            for collision in &link.collision {
+                let placed = frame * pose_of_origin(&collision.origin);
+                let part =
+                    floor_reach(&collision.geometry, &placed).ok_or_else(|| NoOutline::Shape {
+                        link: link.name.clone(),
+                    })?;
+                parts.push(part);
+            }
+        }
+        parts
+            .into_iter()
+            .reduce(Outline::holding)
+            .ok_or(NoOutline::NoGeometry)
     }
 
     /// The frame of the link `link` (an index of the tree) in the root link's, where fixed
@@ -255,6 +324,49 @@ struct PlacedJoint<'d> {
 
 fn same(a: [f64; 3], b: [f64; 3]) -> bool {
     a.iter().zip(b).all(|(a, b)| (a - b).abs() <= SAME)
+}
+
+/// How far a collision element of `geometry`, placed by `placed` in the root link's frame,
+/// reaches on the floor: the rectangle along the frame's x and y that holds it, for a box, a
+/// cylinder and a sphere; none for another shape.
+fn floor_reach(geometry: &Geometry, placed: &Isometry3<f64>) -> Option<Outline> {
+    let rotation: &UnitQuaternion<f64> = &placed.rotation;
+    let [x, y, z] = [Vector3::x(), Vector3::y(), Vector3::z()].map(|unit| rotation * unit);
+    let [reach_x, reach_y] = match *geometry {
+        Geometry::Sphere { radius } => [radius, radius],
+        Geometry::Box { ref size } => {
+            let half = size.0.map(|side| side / 2.0);
+            let along = |i: usize| {
+                [x, y, z]
+                    .iter()
+                    .zip(half)
+                    .map(|(column, half)| column[i].abs() * half)
+                    .sum::<f64>()
+            };
+            [along(0), along(1)]
+        }
+        Geometry::Cylinder { radius, length } => {
+            // The axis's own reach along i, and the disc's: its radius times the part of
+            // the axis across i, which the two other components give.
+            let along = |i: usize| {
+                let across = (0..3)
+                    .filter(|&j| j != i)
+                    .map(|j| z[j] * z[j])
+                    .sum::<f64>()
+                    .sqrt();
+                z[i].abs() * length / 2.0 + radius * across
+            };
+            [along(0), along(1)]
+        }
+        _ => return None,
+    };
+    let center = placed.translation.vector;
+    Some(Outline {
+        front: center.x + reach_x,
+        rear: center.x - reach_x,
+        left: center.y + reach_y,
+        right: center.y - reach_y,
+    })
 }
 
 #[cfg(test)]
@@ -607,6 +719,73 @@ mod tests {
         assert_eq!(
             refusal(&flat),
             "wheel link right_link: a wheel's collision geometry is one cylinder about its joint's axis, of a radius and a length above 0"
+        );
+    }
+
+    fn assert_corners_near(outline: Outline, expected: [[f64; 2]; 4]) {
+        let corners = outline.corners();
+        assert!(
+            corners
+                .iter()
+                .flatten()
+                .zip(expected.iter().flatten())
+                .all(|(a, b)| (a - b).abs() <= SAME),
+            "{corners:?} != {expected:?}"
+        );
+    }
+
+    // The bundled botshare base's outline is its chassis's 0.78 m by 0.58 m, which holds
+    // the wheels, the casters and the lidar.
+    #[test]
+    fn the_bundled_base_gives_its_outline() {
+        let outline = crate::model("botshare_base")
+            .expect("the bundled base")
+            .description()
+            .outline()
+            .expect("an outline");
+        assert_corners_near(
+            outline,
+            [[0.39, -0.29], [0.39, 0.29], [-0.39, 0.29], [-0.39, -0.29]],
+        );
+    }
+
+    // The outline holds every part placed with every joint at zero: the wheels' cylinders,
+    // turned to stand on edge, reach 0.02 m to each side past their joints, beyond the
+    // chassis.
+    #[test]
+    fn the_outline_holds_every_part_at_zero() {
+        let parts = CHASSIS.to_owned()
+            + &wheel_part("left", "0 0.2 0.05", "0 1 0", 0.05)
+            + &wheel_part("right", "0 -0.2 0.05", "0 1 0", 0.05);
+        let outline = base(&parts).outline().expect("an outline");
+        assert_corners_near(
+            outline,
+            [[0.2, -0.22], [0.2, 0.22], [-0.2, 0.22], [-0.2, -0.22]],
+        );
+        let lifted = base(&on_footprint("revolute", "0 0 1.5707963267948966", CHASSIS))
+            .outline()
+            .expect("an outline");
+        assert_corners_near(
+            lifted,
+            [[0.15, -0.2], [0.15, 0.2], [-0.15, 0.2], [-0.15, -0.2]],
+        );
+    }
+
+    // A part of another shape than a box, a cylinder or a sphere gives no outline, naming
+    // its link, and a robot with no collision element has none.
+    #[test]
+    fn a_mesh_or_no_collision_element_gives_no_outline() {
+        let parts = CHASSIS.to_owned()
+            + r#"<link name="bumper"><collision><geometry><mesh filename="bumper.stl"/></geometry></collision></link>
+                 <joint name="bumper_joint" type="fixed"><origin rpy="0 0 0" xyz="0.2 0 0.1"/>
+                   <parent link="base_link"/><child link="bumper"/></joint>"#;
+        assert_eq!(
+            base(&parts).outline().expect_err("a mesh").to_string(),
+            "link bumper: the outline holds boxes, cylinders and spheres, and one of its collision elements is none of them"
+        );
+        assert_eq!(
+            base(r#"<link name="base_link"/>"#).outline(),
+            Err(NoOutline::NoGeometry)
         );
     }
 }
