@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -204,3 +205,63 @@ def test_a_placement_carries_a_pose():
     pose = placement.place(g.Pose.parse([1.0, 0.0, 0.0], quarter))
     assert close(pose.position.position, (1.0, 1.0, 0.0))
     assert close(pose.orientation.quaternion, (0.0, 0.0, 1.0, 0.0))
+
+
+def about_x(angle: float) -> g.Quaternion:
+    return (math.sin(angle / 2.0), 0.0, 0.0, math.cos(angle / 2.0))
+
+
+def about_y(angle: float) -> g.Quaternion:
+    return (0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
+
+
+@pytest.mark.parametrize("roll, pitch, yaw", [(0.3, -0.4, 2.0), (-2.5, 1.2, -0.7), (1.5707963267948966, 0.0, 0.0)])
+def test_a_roll_a_pitch_and_a_yaw_turn_about_the_parents_x_then_its_y_then_its_z(roll: float, pitch: float, yaw: float):
+    expected = g.product(about_z(yaw), g.product(about_y(pitch), about_x(roll)))
+    origin = ET.fromstring(f'<origin rpy="{roll!r} {pitch!r} {yaw!r}"/>')
+    assert close(g.Placement.of_urdf_origin(origin).orientation, expected)
+
+
+def test_a_urdf_origin_places_its_child_at_its_xyz_turned_by_its_rpy():
+    origin = ET.fromstring('<origin xyz="1 -2 0.5" rpy="1.5707963267948966 0 0"/>')
+    placement = g.Placement.of_urdf_origin(origin)
+    assert placement.position == (1.0, -2.0, 0.5)
+    # A quarter roll takes the child's +y to the parent's +z.
+    assert close(g.rotate(placement.orientation, (0.0, 1.0, 0.0)), (0.0, 0.0, 1.0))
+
+
+def test_an_attribute_or_an_origin_left_out_is_zeros_or_the_frame_in_itself():
+    moved = g.Placement.of_urdf_origin(ET.fromstring('<origin xyz="1 2 3"/>'))
+    assert moved == g.Placement((1.0, 2.0, 3.0), g.IDENTITY)
+    assert g.Placement.of_urdf_origin(ET.fromstring('<origin rpy="0 0 0"/>')) == g.Placement.IDENTITY
+    assert g.Placement.of_urdf_origin(None) == g.Placement((0.0, 0.0, 0.0), g.IDENTITY)
+
+
+@pytest.mark.parametrize(
+    "origin, message",
+    [
+        ('<origin xyz="1 2"/>', 'the URDF origin\'s xyz "1 2" is not three numbers: give x y z, in m'),
+        (
+            '<origin rpy="0 0 0 1"/>',
+            'the URDF origin\'s rpy "0 0 0 1" is not three numbers: give roll pitch yaw, in rad',
+        ),
+        ('<origin xyz="1 a 2"/>', 'the URDF origin\'s xyz "1 a 2" is not three numbers: give x y z, in m'),
+    ],
+)
+def test_an_origin_attribute_of_other_than_three_numbers_is_refused_with_what_to_give(origin: str, message: str):
+    with pytest.raises(g.GeometryError) as refused:
+        g.Placement.of_urdf_origin(ET.fromstring(origin))
+    assert str(refused.value) == message
+
+
+def test_a_composed_placement_places_a_point_through_the_inner_placement_then_the_outer():
+    outer = g.Placement((1.0, 0.0, 0.0), about_z(math.pi / 2.0))
+    inner = g.Placement((1.0, 0.0, 0.5), about_x(0.4))
+    composed = outer.compose(inner)
+    assert close(composed.position, (1.0, 1.0, 0.5))
+    assert close(composed.orientation, g.product(about_z(math.pi / 2.0), about_x(0.4)))
+    point = g.Point.parse([0.2, -0.3, 0.7])
+    assert close(composed.place(point).position, outer.place(inner.place(point)).position)
+    assert g.Placement.IDENTITY.compose(inner) == inner
+    assert close(inner.compose(g.Placement.IDENTITY).position, inner.position)
+    assert close(inner.compose(g.Placement.IDENTITY).orientation, inner.orientation)
