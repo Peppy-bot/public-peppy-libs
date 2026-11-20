@@ -303,11 +303,9 @@ fn sensor_frame(
             kind: sensor.kind.to_owned(),
         });
     }
-    FrameName::parse(sensor.frame).map_err(|error| {
-        SensorMountsError::SensorFrame {
-            name: name.to_owned(),
-            error,
-        }
+    FrameName::parse(sensor.frame).map_err(|error| SensorMountsError::SensorFrame {
+        name: name.to_owned(),
+        error,
     })
 }
 
