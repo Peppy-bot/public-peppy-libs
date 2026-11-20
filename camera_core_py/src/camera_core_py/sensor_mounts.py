@@ -66,13 +66,31 @@ class SensorMountsError(ValueError):
 # The characters Rust's `{:?}` writes as an escape of their own in a string.
 _DEBUG_ESCAPES = {"\0": "\\0", "\t": "\\t", "\r": "\\r", "\n": "\\n", '"': '\\"', "\\": "\\\\"}
 
+# The characters that Python's Unicode database, 15.0 under CPython 3.12 and 15.1 under 3.13,
+# calls printable and no mark of Mn or Me, and that Rust 1.100's `{:?}` writes as \u{hex}: the
+# spacing marks of Rust's Grapheme_Extend, such as U+09BE and U+1D165, and the four Hangul
+# fillers. Measured over every code point both databases assign, as is _KEPT_MARKS.
+_ESCAPED_BEYOND_MARKS = frozenset({
+    0x09BE, 0x09D7, 0x0B3E, 0x0B57, 0x0BBE, 0x0BD7, 0x0CC0, 0x0CC2, 0x0CC7, 0x0CC8, 0x0CCA,
+    0x0CCB, 0x0CD5, 0x0CD6, 0x0D3E, 0x0D57, 0x0DCF, 0x0DDF, 0x115F, 0x1160, 0x1715, 0x1734,
+    0x1B35, 0x1B3B, 0x1B3D, 0x1B43, 0x1B44, 0x1BAA, 0x1BF2, 0x1BF3, 0x302E, 0x302F, 0x3164,
+    0xA953, 0xA9C0, 0xFFA0, 0x111C0, 0x11235, 0x1133E, 0x1134D, 0x11357, 0x114B0, 0x114BD,
+    0x115AF, 0x116B6, 0x11930, 0x1193D, 0x11F41, 0x16FF0, 0x16FF1, 0x1D165, 0x1D166, 0x1D16D,
+    0x1D16E, 0x1D16F, 0x1D170, 0x1D171, 0x1D172
+})
+
+# The one mark of Mn in Python's Unicode database that Rust 1.100's `{:?}` writes as it is:
+# U+1171E, a spacing mark in Rust's.
+_KEPT_MARKS = frozenset({0x1171E})
+
+
 
 def _quoted(text: str) -> str:
-    """`text` in double quotes, as Rust's `{:?}` writes a string: `\\0`,
+    """`text` in double quotes, as Rust 1.100's `{:?}` writes a string: `\\0`,
     `\\t`, `\\r`, `\\n`, `\\"` and `\\\\` for those characters, `\\u{hex}`
-    for a character that is not printable or that is a mark of the category
-    Mn or Me, which extends the grapheme before it, and every other character
-    as it is."""
+    for a character that is not printable, that is a mark of the category
+    Mn or Me but U+1171E, or that _ESCAPED_BEYOND_MARKS holds, and every other
+    character as it is."""
     return '"' + "".join(map(_debug_character, text)) + '"'
 
 
@@ -80,8 +98,10 @@ def _debug_character(character: str) -> str:
     """`character` as Rust's `{:?}` writes it in a string."""
     if character in _DEBUG_ESCAPES:
         return _DEBUG_ESCAPES[character]
-    if not character.isprintable() or unicodedata.category(character) in ("Mn", "Me"):
-        return f"\\u{{{ord(character):x}}}"
+    code = ord(character)
+    is_mark = unicodedata.category(character) in ("Mn", "Me") and code not in _KEPT_MARKS
+    if not character.isprintable() or is_mark or code in _ESCAPED_BEYOND_MARKS:
+        return f"\\u{{{code:x}}}"
     return character
 
 
