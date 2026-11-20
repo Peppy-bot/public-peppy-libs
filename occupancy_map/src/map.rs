@@ -666,7 +666,7 @@ impl VoxelMap {
         }
         let sensor = scan.sensor;
         let size = self.grid.size;
-        let origin = sensor.origin().map(|c| c as f32);
+        let origin = sensor.position().map(|c| c as f32);
         let mut hits = HashSet::new();
         let mut cut_out = HashSet::new();
         let mut beyond_range = HashSet::new();
@@ -735,6 +735,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use frame_tree::UnitQuaternion;
 
     fn map() -> VoxelMap {
         VoxelMap::new(
@@ -791,7 +792,7 @@ mod tests {
     #[test]
     fn a_clone_holds_no_bytes_of_an_insert_and_takes_a_scan_alike() {
         let frame = FrameName::parse("world").expect("a frame");
-        let sensor = Transform::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let sensor = Transform::new([0.01, 0.02, 0.03], UnitQuaternion::IDENTITY).expect("a pose");
         let scan = |points| Scan {
             frame: &frame,
             sensor,

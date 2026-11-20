@@ -1074,7 +1074,7 @@ mod tests {
             (x - 1.0).abs() < 1e-12 && (y - 1.0).abs() < 1e-12 && z == 0.0,
             "{x} {y} {z}"
         );
-        let [qx, qy, qz, qw] = placed.orientation().quaternion();
+        let [qx, qy, qz, qw] = placed.orientation().to_xyzw();
         assert!(
             qx.abs() < 1e-12 && qy.abs() < 1e-12 && (qz - 1.0).abs() < 1e-12 && qw.abs() < 1e-12
         );

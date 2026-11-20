@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from hypothesis import settings
 
-from control_core_py.geometry import Placement, PoseTarget, Stamped
+from control_core_py.geometry import Placement, PoseTarget, Stamped, UnitQuaternion
 
 from brain_core.brain import Brain
 from brain_core.manipulators.none import NoneManipulator
@@ -55,7 +55,7 @@ CAMERA_16X12 = Intrinsics(16, 12, 6.0, 6.0, 8.0, 6.0)
 CAMERA_FRAME = "chest_color_optical_frame"
 
 # The camera's pose at the robot frame's origin, looking along its +Z.
-ORIGIN = Placement((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+ORIGIN = Placement((0.0, 0.0, 0.0), UnitQuaternion.IDENTITY)
 
 # A deadline no search reaches, and one every search has passed.
 NEVER = Deadline(at=float("inf"), budget_s=float("inf"))
@@ -470,7 +470,7 @@ class FixedPlacer:
         if self.pose is None:
             raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, self.reason.reason)
         placed = self.pose.place(stamped.value)
-        return Pose(placed.position.position, None if placed.orientation is None else placed.orientation.quaternion)
+        return Pose(placed.position.position, None if placed.orientation is None else placed.orientation.xyzw)
 
 
 def rgb_frame(width: int = 16, height: int = 12, *, capture_index: int = 1, align_mode: str = "depth_to_color", frame: str = CAMERA_FRAME):

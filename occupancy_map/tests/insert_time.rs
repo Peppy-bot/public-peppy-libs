@@ -21,12 +21,9 @@ use robot_description::states;
 
 #[path = "common/arms.rs"]
 mod arms;
-#[path = "common/pose.rs"]
-mod pose;
 #[path = "common/slab.rs"]
 mod slab;
 use arms::{OPENARM_V2, OPENARM_V2_ARMS, posture};
-use pose::pose_of;
 use slab::box_entry;
 
 /// The frames the test times, each into a map of its own.
@@ -162,7 +159,7 @@ fn time_one_640x360_frame() {
             Translation3::from(chest.xyz),
             UnitQuaternion::from_euler_angles(roll, pitch, yaw),
         );
-    let optical = pose_of(&camera_in_root);
+    let optical = Transform::try_from(&camera_in_root).expect("a finite pose");
 
     let arms = &*OPENARM_V2_ARMS;
     let ready = posture(states::READY);
@@ -203,7 +200,7 @@ fn time_one_640x360_frame() {
         .expect("a valid map")
     };
     let max_range_m = PositiveFinite::parse(3.0).expect("positive");
-    let at_root = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let at_root = Transform::IDENTITY;
 
     let (mut deprojected, mut cut, mut bare, mut fields) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());

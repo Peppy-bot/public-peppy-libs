@@ -29,7 +29,7 @@ nearest occupied voxel, with its gradient. No hardware or messaging dependencies
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
-use frame_tree::{FrameName, Transform};
+use frame_tree::{FrameName, Transform, UnitQuaternion};
 use occupancy_map::{Bounds, DistanceField, RobotCutout, Scan, VoxelMap, depth_points};
 
 let world = FrameName::parse("world")?;
@@ -58,7 +58,7 @@ let points = depth_points(&frame, &depth, depth_unit, depth_model)?;
 // the color optical frame, puts it.
 let depth_to_color = Transform::new(
     extrinsics.depth_to_color.position,
-    extrinsics.depth_to_color.orientation,
+    UnitQuaternion::parse(extrinsics.depth_to_color.orientation)?,
 )?;
 let sensor = color_in_world.compose(&depth_to_color);
 

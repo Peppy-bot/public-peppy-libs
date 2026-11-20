@@ -33,13 +33,10 @@ mod arms;
 mod ball;
 #[path = "common/meshes.rs"]
 mod meshes;
-#[path = "common/pose.rs"]
-mod pose;
 #[path = "common/slab.rs"]
 mod slab;
 use arms::{LEFT, OPENARM_V2_ARMS, RIGHT};
 use ball::Ball;
-use pose::pose_of;
 use slab::box_entry;
 
 const VOXEL_M: f64 = 0.05;
@@ -91,11 +88,6 @@ fn one_hit() -> f32 {
     (0.7_f64 / (1.0 - 0.7)).ln() as f32
 }
 
-/// The pose that places nothing anywhere else.
-fn identity() -> Transform {
-    Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
-}
-
 /// A sensor somewhere in the middle of the map, turned any way.
 fn sensor(tc: &TestCase) -> Transform {
     let origin: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-0.5).max_value(0.5)));
@@ -106,7 +98,11 @@ fn sensor(tc: &TestCase) -> Transform {
     } else {
         [0.0, 0.0, 0.0, 1.0]
     };
-    Transform::new(origin, q).expect("a unit quaternion")
+    Transform::new(
+        origin,
+        frame_tree::UnitQuaternion::parse(q).expect("a normalized quaternion"),
+    )
+    .expect("a finite origin")
 }
 
 /// A unit vector, any way.
@@ -180,7 +176,7 @@ fn a_ray_clears_what_it_crosses_and_marks_its_hit(tc: TestCase) {
     assert!(!ray.is_empty(), "the ray crosses no voxel");
     // The rays run from the origin in single precision.
     let origin = map
-        .key(sensor.origin().map(|c| f64::from(c as f32)))
+        .key(sensor.position().map(|c| f64::from(c as f32)))
         .expect("in the map");
     assert!(ray.contains(&origin) || origin == hit);
     let before: Vec<f32> = ray
@@ -203,7 +199,8 @@ fn a_ray_clears_what_it_crosses_and_marks_its_hit(tc: TestCase) {
 #[test]
 fn a_point_that_is_not_a_finite_number_changes_nothing() {
     let mut map = map();
-    let sensor = Transform::new([0.12, -0.07, 0.31], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor =
+        Transform::new([0.12, -0.07, 0.31], frame_tree::UnitQuaternion::IDENTITY).expect("a pose");
     let points = [
         [f32::NAN, 0.0, 1.0],
         [0.0, f32::NAN, 1.0],
@@ -351,7 +348,7 @@ fn a_scan_reads_each_point_as_a_return_or_no_return_at_the_range(tc: TestCase) {
     };
     let readings: Vec<Reading> = scan.readings().collect();
     assert_eq!(readings.len(), points.len(), "a reading for each point");
-    let origin = Vector3::from(sensor.origin());
+    let origin = Vector3::from(sensor.position());
     for (p, reading) in points.iter().zip(readings) {
         let local = p.map(f64::from);
         let beyond = Vector3::from(local).norm() > max_range;
@@ -457,7 +454,7 @@ fn points_that_clear_free_their_rays_and_mark_nothing(tc: TestCase) {
 // changes nothing.
 #[test]
 fn a_point_that_clears_frees_its_ray_up_to_its_voxel_and_marks_nothing() {
-    let sensor = Transform::new([0.012; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([0.012; 3], frame_tree::UnitQuaternion::IDENTITY).expect("a pose");
     let (hit, clearing) = ([0.5_f32, 0.0, 0.0], [1.0_f32, 0.0, 0.0]);
     let frame = frame();
     let mut map = map();
@@ -575,7 +572,8 @@ fn each_voxel_takes_the_strongest_update_of_a_scan_once(tc: TestCase) {
     )
     .expect("a valid map");
     let sensor_key = Key(tc.draw(gs::arrays(gs::integers().min_value(-4).max_value(4))));
-    let sensor = Transform::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new(map.center(sensor_key), frame_tree::UnitQuaternion::IDENTITY)
+        .expect("a pose");
     // A whole number of voxels, so a point at the range lies far from a face of its
     // voxel.
     let max_range_m =
@@ -748,7 +746,11 @@ fn the_padded_robot_is_cut_out_where_it_stands(tc: TestCase) {
         UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.4),
     );
     let reading: [f32; 3] = (sensor.inverse() * in_map).coords.map(|c| c as f32).into();
-    let (frame, sensor, root) = (frame(), pose_of(&sensor), pose_of(&root));
+    let (frame, sensor, root) = (
+        frame(),
+        Transform::try_from(&sensor).expect("a finite pose"),
+        Transform::try_from(&root).expect("a finite pose"),
+    );
     let key = map().key(in_map.coords.into()).expect("in the map");
 
     let mut cut = map();
@@ -801,7 +803,11 @@ fn a_point_inside_the_robots_body_is_cut_out() {
     // A sensor half a meter from the point, along the map's x axis.
     let sensor = Isometry3::translation(in_map.x - 0.5, in_map.y, in_map.z);
     let reading: [f32; 3] = (sensor.inverse() * in_map).coords.map(|c| c as f32).into();
-    let (frame, sensor, root) = (frame(), pose_of(&sensor), pose_of(&root));
+    let (frame, sensor, root) = (
+        frame(),
+        Transform::try_from(&sensor).expect("a finite pose"),
+        Transform::try_from(&root).expect("a finite pose"),
+    );
     let key = map().key(in_map.coords.into()).expect("in the map");
 
     let mut cut = map();
@@ -835,7 +841,7 @@ fn a_map_refuses_a_scan_or_a_cutout_in_another_frame() {
     let points = [[0.0_f32, 0.0, 1.0]];
     let scan = |frame| Scan {
         frame,
-        sensor: identity(),
+        sensor: Transform::IDENTITY,
         points: &points,
         max_range_m: range(RANGE_M),
     };
@@ -910,7 +916,7 @@ fn a_still_scene_settles_and_a_stray_reading_does_not_undo_it() {
     let mut map = map();
     // Off the voxels' faces, so no ray starts on one.
     let origin = [0.012, -0.013, 0.007];
-    let sensor = Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new(origin, frame_tree::UnitQuaternion::IDENTITY).expect("a pose");
     let points = wall(1.0, 0.3, 0.02);
     for _ in 0..10 {
         insert(&mut map, sensor, &points, &[]);
@@ -959,7 +965,7 @@ fn drawn_map(tc: &TestCase) -> VoxelMap {
         .map(|_| point(tc, 0.3, 1.5))
         .collect();
     let mut map = map();
-    insert(&mut map, identity(), &points, &[]);
+    insert(&mut map, Transform::IDENTITY, &points, &[]);
     map
 }
 
@@ -1045,7 +1051,7 @@ fn straight_out_from_the_face_the_bound_is_the_distance(tc: TestCase) {
     let hits: Vec<[f32; 3]> = (0..tc.draw(gs::integers::<usize>().min_value(1).max_value(6)))
         .map(|_| map.center(on_face(&tc)).map(|c| c as f32))
         .collect();
-    insert(&mut map, identity(), &hits, &[]);
+    insert(&mut map, Transform::IDENTITY, &hits, &[]);
     let centers = occupied_centers(&map);
     assert!(!centers.is_empty());
     assert!(
@@ -1157,7 +1163,7 @@ fn a_cap_flattens_the_gradient_where_a_neighbor_reaches_it() {
     let mut map = map();
     let hit = map.key([1.0, 0.0, 0.0]).expect("in the map");
     let point = map.center(hit).map(|c| c as f32);
-    insert(&mut map, identity(), &[point], &[]);
+    insert(&mut map, Transform::IDENTITY, &[point], &[]);
     assert_eq!(map.occupied().collect::<Vec<_>>(), vec![hit]);
     let field = DistanceField::of(&map);
     let q = map.center(stepped(hit, 0, 3));
@@ -1297,7 +1303,9 @@ fn a_rendered_box_marks_the_faces_the_camera_sees() {
 
     let camera = Pinhole::parse(&BOX_CAMERA).expect("a valid model");
     let points = depth_points(&frame, &camera, BOX_UNIT, DepthModel::Z).expect("a valid frame");
-    let sensor = pose_of(&color_in_map).compose(&pose_of(&depth_in_color));
+    let sensor = Transform::try_from(&color_in_map)
+        .expect("a finite pose")
+        .compose(&Transform::try_from(&depth_in_color).expect("a finite pose"));
     let mut map = map();
     for _ in 0..5 {
         insert(&mut map, sensor, &points, &[]);
@@ -1364,13 +1372,13 @@ fn the_occupied_voxels_in_a_box_are_those_whose_centers_it_holds(tc: TestCase) {
 fn a_cleared_map_is_an_empty_one() {
     let points = wall(1.0, 0.5, 0.02);
     let mut cleared = map();
-    insert(&mut cleared, identity(), &points, &[]);
-    insert(&mut cleared, identity(), &points, &[]);
+    insert(&mut cleared, Transform::IDENTITY, &points, &[]);
+    insert(&mut cleared, Transform::IDENTITY, &points, &[]);
     cleared.clear();
     assert_eq!(cleared.known().count(), 0);
-    insert(&mut cleared, identity(), &points, &[]);
+    insert(&mut cleared, Transform::IDENTITY, &points, &[]);
     let mut empty = map();
-    insert(&mut empty, identity(), &points, &[]);
+    insert(&mut empty, Transform::IDENTITY, &points, &[]);
     assert!(!voxels(&empty).is_empty());
     assert_eq!(voxels(&cleared), voxels(&empty));
 }
@@ -1704,7 +1712,7 @@ fn a_cleared_voxel_is_marked_again_by_one_hit() {
     let mut map = map();
     let point = [0.52_f32, 0.21, 0.33];
     for _ in 0..10 {
-        insert(&mut map, identity(), &[point], &[]);
+        insert(&mut map, Transform::IDENTITY, &[point], &[]);
     }
     let key = map
         .key(point.map(f64::from))
@@ -1713,7 +1721,7 @@ fn a_cleared_voxel_is_marked_again_by_one_hit() {
     let column = column_of(&map, map.columns(), key);
     map.clear_columns([column]);
     assert_eq!(map.voxel(key), Voxel::Free(one_miss()));
-    insert(&mut map, identity(), &[point], &[]);
+    insert(&mut map, Transform::IDENTITY, &[point], &[]);
     assert!(map.is_occupied(key), "{:?}", map.voxel(key));
 }
 

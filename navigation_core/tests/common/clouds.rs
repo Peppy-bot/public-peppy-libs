@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
-use frame_tree::Transform;
+use frame_tree::{Transform, UnitQuaternion};
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::GridGeometry;
 use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
@@ -114,7 +114,8 @@ pub fn insert_cloud(
     base: [f64; 3],
     range_m: f64,
 ) {
-    let pose = Transform::new(sensor.position, sensor.orientation).expect("the sensor's pose");
+    let orientation = UnitQuaternion::parse(sensor.orientation).expect("tf2's sensor quaternion");
+    let pose = Transform::new(sensor.position, orientation).expect("the sensor's pose");
     let [x, y, yaw] = base;
     live.insert_depth_frame(
         0,

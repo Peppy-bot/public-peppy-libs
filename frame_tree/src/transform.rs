@@ -1,86 +1,83 @@
-//! tf2's `Transform`: where one frame sits in another, as a rotation matrix and an origin, a
-//! position in meters and a unit quaternion [x, y, z, w] as camera_geometry:v1 carries one. A
-//! transform carries a point into the frame it is placed in, composes with another and inverts,
-//! each in tf2's arithmetic ([`crate::arithmetic`]), operation for operation, so a point lands on
-//! the bits tf2 gives it. occupancy_map's parity with MoveIt's point cloud updater, which places
-//! each point by tf2, compares those bits. A transform also gives its orientation back as a
-//! quaternion and runs a share of the way to another, for a sensor that moves while it measures.
-
-use std::fmt;
+//! tf2's `Transform`: where one frame sits in another, as a rotation matrix and a position, made
+//! from a position in meters and a [`UnitQuaternion`]. A transform carries a point into the frame
+//! it is placed in, composes with another and inverts, each in tf2's arithmetic
+//! ([`crate::arithmetic`]), operation for operation, so a point lands on the bits tf2 gives it.
+//! occupancy_map's parity with MoveIt's point cloud updater, which places each point by tf2,
+//! compares those bits. A transform also gives its orientation back and runs a share of the way
+//! to another, for a sensor that moves while it measures.
 
 use crate::arithmetic::{self, Rotation, Vector};
-
-/// How far from 1 the length of a transform's quaternion may be. A quaternion that is not of
-/// unit length scales every point it turns.
-const UNIT_QUATERNION_TOLERANCE: f64 = 1e-6;
+use crate::not_finite::NotFinite;
+#[cfg(feature = "nalgebra")]
+use crate::unit_quaternion::OrientationError;
+use crate::unit_quaternion::UnitQuaternion;
 
 /// Where one frame, the placed one, sits in another: the rotation of the
-/// placed frame as tf2 builds the matrix of a quaternion, and its origin. A
-/// point `p` of the placed frame is `R * p + origin` in the other.
+/// placed frame as tf2 builds the matrix of a quaternion, and its position. A
+/// point `p` of the placed frame is `R * p + position` in the other.
 #[derive(Debug, Clone, Copy)]
 pub struct Transform {
     rows: Rotation,
-    origin: Vector,
+    position: Vector,
 }
 
-/// A position and an orientation that make no transform: a coordinate that is not
-/// a number, or a quaternion that is not of unit length.
-#[derive(Debug)]
-pub struct NotATransform {
-    position: [f64; 3],
-    orientation: [f64; 4],
+/// `position`, in meters, when every coordinate of it is finite; else its refusal, each
+/// coordinate named.
+pub fn finite_position(position: [f64; 3]) -> Result<[f64; 3], NotFinite<3>> {
+    let [x, y, z] = position;
+    NotFinite::check(
+        "a position",
+        [("x", x), ("y", y), ("z", z)],
+        "a finite number of meters on each axis",
+    )?;
+    Ok(position)
 }
 
-impl fmt::Display for NotATransform {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "position {:?} and orientation {:?} make no transform: give a position of numbers \
-             and a unit quaternion [x, y, z, w]",
-            self.position, self.orientation
-        )
-    }
+/// An isometry that makes no transform: a coordinate of its position or of its rotation that
+/// is not finite.
+#[cfg(feature = "nalgebra")]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum NotATransform {
+    #[error(transparent)]
+    Position(Box<NotFinite<3>>),
+    #[error(transparent)]
+    Orientation(#[from] OrientationError),
 }
-
-impl std::error::Error for NotATransform {}
 
 impl Transform {
-    /// The pose whose origin is `position` and whose orientation is the unit
-    /// quaternion `orientation`, [x, y, z, w], with its matrix built as tf2's
-    /// `Matrix3x3::setRotation` builds it.
-    pub fn new(position: [f64; 3], orientation: [f64; 4]) -> Result<Self, NotATransform> {
-        if !is_valid(&position, &orientation) {
-            return Err(NotATransform {
-                position,
-                orientation,
-            });
-        }
-        Ok(Self {
-            rows: arithmetic::rotation_of(orientation),
-            origin: position,
-        })
+    /// The frame in itself, tf2's `Transform::getIdentity`.
+    pub const IDENTITY: Transform = Transform {
+        rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        position: [0.0; 3],
+    };
+
+    /// The pose at `position` turned by `orientation`, with its matrix built as tf2's
+    /// `Matrix3x3::setRotation` builds it; refused for a position that is not finite.
+    pub fn new(position: [f64; 3], orientation: UnitQuaternion) -> Result<Self, NotFinite<3>> {
+        Ok(Self::from_computed(finite_position(position)?, orientation))
     }
 
-    /// The transform at `position` turned by the unit quaternion `orientation`, its matrix built
-    /// as `Matrix3x3::setRotation` builds it, as tf2 makes the transform of a lookup's answer
-    /// (buffer_core.cpp:794-805): unchecked, since a lookup composes unit quaternions.
-    pub(crate) fn of_unit(position: [f64; 3], orientation: [f64; 4]) -> Self {
+    /// The transform at `position` turned by `orientation`, its matrix built as
+    /// `Matrix3x3::setRotation` builds it, as tf2 makes the transform of a lookup's answer
+    /// (buffer_core.cpp:794-805): a position the crate's arithmetic computed from finite ones,
+    /// taken as it stands.
+    pub(crate) fn from_computed(position: [f64; 3], orientation: UnitQuaternion) -> Self {
         Self {
-            rows: arithmetic::rotation_of(orientation),
-            origin: position,
+            rows: arithmetic::rotation_of(orientation.to_xyzw()),
+            position,
         }
     }
 
-    /// The placed frame's origin, in the frame it is placed in.
-    pub fn origin(&self) -> [f64; 3] {
-        self.origin
+    /// The placed frame's position, in the frame it is placed in.
+    pub fn position(&self) -> [f64; 3] {
+        self.position
     }
 
     /// A point of the placed frame in the frame it is placed in: each row of
-    /// the rotation dotted with the point, plus the origin.
+    /// the rotation dotted with the point, plus the position.
     pub fn apply(&self, point: [f64; 3]) -> [f64; 3] {
         let turned = arithmetic::rotated(&self.rows, point);
-        std::array::from_fn(|i| turned[i] + self.origin[i])
+        std::array::from_fn(|i| turned[i] + self.position[i])
     }
 
     /// The pose of the frame `inner` places in this pose's placed frame, in
@@ -89,53 +86,65 @@ impl Transform {
     pub fn compose(&self, inner: &Transform) -> Transform {
         Transform {
             rows: arithmetic::rotation_product(&self.rows, &inner.rows),
-            origin: self.apply(inner.origin),
+            position: self.apply(inner.position),
         }
     }
 
-    /// The placed frame's orientation, a unit quaternion [x, y, z, w], from the
-    /// rotation as tf2's `Matrix3x3::getRotation` takes it: from the trace when
-    /// it is above 0, else from the largest diagonal entry.
-    pub fn orientation(&self) -> [f64; 4] {
-        arithmetic::quaternion_of(&self.rows)
+    /// The placed frame's orientation, from the rotation as tf2's `Matrix3x3::getRotation`
+    /// takes it: from the trace when it is above 0, else from the largest diagonal entry.
+    pub fn orientation(&self) -> UnitQuaternion {
+        UnitQuaternion::from_computed(arithmetic::quaternion_of(&self.rows))
     }
 
     /// The pose `ratio` of the way from this pose to `to`, 0 this pose and 1
-    /// `to`: the origins interpolated as tf2's `Vector3::setInterpolate3`, and
+    /// `to`: the positions interpolated as tf2's `Vector3::setInterpolate3`, and
     /// the orientations by tf2's `Quaternion::slerp`, the shorter way round. A
-    /// ratio that is not finite, or one that carries the origin past the
-    /// largest double, makes no pose: the error gives the position and the
-    /// orientation.
-    pub fn interpolated(&self, to: &Transform, ratio: f64) -> Result<Transform, NotATransform> {
-        let origin = arithmetic::interpolated(self.origin, to.origin, ratio);
-        let orientation = arithmetic::slerp(self.orientation(), to.orientation(), ratio);
-        Transform::new(origin, orientation)
+    /// ratio that is not finite, or one that carries the position past the
+    /// largest double, makes no pose: the error gives the position.
+    pub fn interpolated(&self, to: &Transform, ratio: f64) -> Result<Transform, NotFinite<3>> {
+        // A ratio that is not finite makes every coordinate of the position not finite, so the
+        // ratio the slerp takes is finite.
+        let position =
+            finite_position(arithmetic::interpolated(self.position, to.position, ratio))?;
+        let orientation = self.orientation().slerp(to.orientation(), ratio);
+        Ok(Transform::from_computed(position, orientation))
     }
 
     /// The pose of the frame this pose is placed in, in the placed frame:
-    /// tf2's inverse, the rotation transposed and the origin carried back
+    /// tf2's inverse, the rotation transposed and the position carried back
     /// through it and negated.
     pub fn inverse(&self) -> Transform {
         let rows = arithmetic::transposed(&self.rows);
-        let back = self.origin.map(|c| -c);
+        let back = self.position.map(|c| -c);
         Transform {
             rows,
-            origin: arithmetic::rotated(&rows, back),
+            position: arithmetic::rotated(&rows, back),
         }
     }
 }
 
-/// A transform a consumer can apply: a position made of numbers and a quaternion of unit
-/// length.
-fn is_valid(position: &[f64; 3], orientation: &[f64; 4]) -> bool {
-    let length = orientation.iter().map(|c| c * c).sum::<f64>().sqrt();
-    position.iter().all(|c| c.is_finite()) && (length - 1.0).abs() <= UNIT_QUATERNION_TOLERANCE
+/// The transform of nalgebra's isometry: its translation as the position, and its rotation;
+/// refused where a coordinate of either is not finite.
+#[cfg(feature = "nalgebra")]
+impl TryFrom<&nalgebra::Isometry3<f64>> for Transform {
+    type Error = NotATransform;
+
+    fn try_from(isometry: &nalgebra::Isometry3<f64>) -> Result<Self, NotATransform> {
+        let orientation = UnitQuaternion::try_from(isometry.rotation)?;
+        Transform::new(isometry.translation.vector.into(), orientation)
+            .map_err(|refusal| NotATransform::Position(Box::new(refusal)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::arithmetic::{quaternion_of_yaw, yaw_of_quaternion};
+
+    /// The unit quaternion `orientation`, [x, y, z, w], as the contracts' parse takes it.
+    fn unit(orientation: [f64; 4]) -> UnitQuaternion {
+        UnitQuaternion::parse(orientation).expect("a unit quaternion")
+    }
 
     /// Whether every coordinate of `a` lies within `tolerance` of `b`'s.
     fn close(a: [f64; 3], b: [f64; 3], tolerance: f64) -> bool {
@@ -145,23 +154,29 @@ mod tests {
     /// A pose with a turn about each axis and an offset on each.
     fn tilted() -> Transform {
         let norm = (0.1_f64 * 0.1 + 0.2 * 0.2 + 0.3 * 0.3 + 0.9 * 0.9).sqrt();
-        Transform::new([0.4, -0.5, 0.6], [0.1, 0.2, 0.3, 0.9].map(|c| c / norm))
-            .expect("a unit quaternion")
+        Transform::new(
+            [0.4, -0.5, 0.6],
+            unit([0.1, 0.2, 0.3, 0.9].map(|c| c / norm)),
+        )
+        .expect("a finite position")
     }
 
     #[test]
-    fn a_pose_turns_a_point_and_moves_it_by_its_origin() {
-        // A quarter turn about +Z takes +X to +Y, then the origin is added.
+    fn a_pose_turns_a_point_and_moves_it_by_its_position() {
+        // A quarter turn about +Z takes +X to +Y, then the position is added.
         let half = std::f64::consts::FRAC_PI_4;
-        let pose = Transform::new([0.015, 0.0, -0.001], [0.0, 0.0, half.sin(), half.cos()])
-            .expect("a unit quaternion");
+        let pose = Transform::new(
+            [0.015, 0.0, -0.001],
+            unit([0.0, 0.0, half.sin(), half.cos()]),
+        )
+        .expect("a finite position");
         assert!(close(
             pose.apply([1.0, 0.0, 2.0]),
             [0.015, 1.0, 1.999],
             1e-12
         ));
-        assert_eq!(pose.origin(), [0.015, 0.0, -0.001]);
-        let identity = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity");
+        assert_eq!(pose.position(), [0.015, 0.0, -0.001]);
+        let identity = Transform::IDENTITY;
         assert_eq!(identity.apply([0.3, -0.2, 1.5]), [0.3, -0.2, 1.5]);
     }
 
@@ -171,8 +186,11 @@ mod tests {
     fn composing_runs_the_inner_pose_first_and_the_inverse_undoes_a_pose() {
         let outer = tilted();
         let half = 0.35_f64;
-        let inner = Transform::new([-0.06, 0.01, 0.002], [0.0, half.sin(), 0.0, half.cos()])
-            .expect("a unit quaternion");
+        let inner = Transform::new(
+            [-0.06, 0.01, 0.002],
+            unit([0.0, half.sin(), 0.0, half.cos()]),
+        )
+        .expect("a finite position");
         let point = [0.7, -0.3, 1.1];
         let composed = outer.compose(&inner);
         assert!(close(
@@ -202,9 +220,9 @@ mod tests {
         let (sin, cos) = (angle_rad / 2.0).sin_cos();
         Transform::new(
             [0.4, -0.5, 0.6],
-            [axis[0] * sin, axis[1] * sin, axis[2] * sin, cos],
+            unit([axis[0] * sin, axis[1] * sin, axis[2] * sin, cos]),
         )
-        .expect("a unit quaternion")
+        .expect("a finite position")
     }
 
     // The quaternion a pose gives back makes the same pose, by either branch of
@@ -213,14 +231,14 @@ mod tests {
     #[test]
     fn a_pose_gives_back_its_orientation() {
         let half_turn =
-            Transform::new([0.0; 3], [1.0, 0.0, 0.0, 0.0]).expect("a half turn about +X");
+            Transform::new([0.0; 3], unit([1.0, 0.0, 0.0, 0.0])).expect("a half turn about +X");
         for pose in [tilted(), half_turn] {
             let again =
-                Transform::new(pose.origin(), pose.orientation()).expect("a unit quaternion");
+                Transform::new(pose.position(), pose.orientation()).expect("a finite position");
             let point = [0.3, -1.2, 0.8];
             assert!(close(again.apply(point), pose.apply(point), 1e-12));
         }
-        assert_eq!(half_turn.orientation(), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(half_turn.orientation().to_xyzw(), [1.0, 0.0, 0.0, 0.0]);
     }
 
     // A turn of 120 degrees or more has a trace of at most 0, so tf2 reads its
@@ -247,7 +265,7 @@ mod tests {
         for (axis, angle_rad) in turns {
             let pose = turned_about(axis, angle_rad);
             let again =
-                Transform::new(pose.origin(), pose.orientation()).expect("a unit quaternion");
+                Transform::new(pose.position(), pose.orientation()).expect("a finite position");
             assert!(
                 close(again.apply(point), pose.apply(point), 1e-12),
                 "{angle_rad} rad about {axis:?}"
@@ -256,17 +274,17 @@ mod tests {
     }
 
     // An interpolated pose runs from the first pose at 0 to the second at 1,
-    // its origin along the line between them and its heading turning by the
+    // its position along the line between them and its heading turning by the
     // share of the turn between them, the shorter way round whichever sign the
     // second quaternion carries.
     #[test]
     fn an_interpolated_pose_runs_from_one_pose_to_the_other() {
-        let start = Transform::new([1.0, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let start = Transform::new([1.0, 0.0, 0.5], UnitQuaternion::IDENTITY).expect("a pose");
         let quarter = std::f64::consts::FRAC_PI_4;
         let turned = [0.0, 0.0, quarter.sin(), quarter.cos()];
         for orientation in [turned, turned.map(|c| -c)] {
-            let end =
-                Transform::new([3.0, -2.0, 0.5], orientation).expect("a quarter turn about +Z");
+            let end = Transform::new([3.0, -2.0, 0.5], unit(orientation))
+                .expect("a quarter turn about +Z");
             let point = [1.0, 0.0, 0.0];
             assert!(close(
                 start.interpolated(&end, 0.0).unwrap().apply(point),
@@ -288,12 +306,13 @@ mod tests {
         }
     }
 
-    // A ratio that is not finite, and one that carries the origin past the
+    // A ratio that is not finite, and one that carries the position past the
     // largest double, interpolate to no pose.
     #[test]
     fn an_interpolation_to_no_pose_is_refused() {
-        let start = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
-        let far = Transform::new([f64::MAX / 1.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let start = Transform::IDENTITY;
+        let far =
+            Transform::new([f64::MAX / 1.5, 0.0, 0.0], UnitQuaternion::IDENTITY).expect("a pose");
         for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(start.interpolated(&far, ratio).is_err(), "{ratio}");
         }
@@ -332,24 +351,33 @@ mod tests {
         assert_eq!(yaw_of_quaternion(down), -2.0 * down[1].atan2(down[0]));
     }
 
+    // The identity is the transform tf2 builds of no turn at the origin.
     #[test]
-    fn a_pose_wants_numbers_and_a_unit_quaternion() {
-        for (position, orientation) in [
-            ([0.0; 3], [0.0; 4]),
-            ([0.0; 3], [0.0, 0.0, 0.0, 2.0]),
-            ([0.0; 3], [f64::NAN, 0.0, 0.0, 1.0]),
-            ([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
-            ([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
-        ] {
+    fn the_identity_is_no_turn_at_the_origin() {
+        let built = Transform::new([0.0; 3], UnitQuaternion::IDENTITY).expect("the origin");
+        assert_eq!(Transform::IDENTITY.rows, built.rows);
+        assert_eq!(Transform::IDENTITY.position(), built.position());
+        assert_eq!(
+            Transform::IDENTITY.apply([0.3, -0.2, 1.1]),
+            [0.3, -0.2, 1.1]
+        );
+    }
+
+    // A position that is not finite makes no transform, the refusal saying what to give.
+    #[test]
+    fn a_pose_wants_a_position_of_numbers() {
+        for position in [[f64::NAN, 0.0, 0.0], [f64::INFINITY, 0.0, 0.0]] {
             assert!(
-                Transform::new(position, orientation).is_err(),
-                "{position:?} {orientation:?}"
+                Transform::new(position, UnitQuaternion::IDENTITY).is_err(),
+                "{position:?}"
             );
         }
         assert_eq!(
-            Transform::new([0.0; 3], [0.0; 4]).unwrap_err().to_string(),
-            "position [0.0, 0.0, 0.0] and orientation [0.0, 0.0, 0.0, 0.0] make no transform: \
-             give a position of numbers and a unit quaternion [x, y, z, w]"
+            Transform::new([f64::NAN, 0.0, 0.0], UnitQuaternion::IDENTITY)
+                .unwrap_err()
+                .to_string(),
+            "a position must be finite: got x NaN, y 0, z 0; give a finite number of meters on \
+             each axis"
         );
     }
 }

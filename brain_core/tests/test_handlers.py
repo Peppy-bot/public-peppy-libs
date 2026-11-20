@@ -22,7 +22,7 @@ from fake_peppygen import place_item as place_action
 from fake_peppygen import scan_items as scan_action
 from fake_peppygen import LEFT_AT_REST, ROBOT_FRAME, FakeTopic, PointRecord, fake_bindings, limb_states_message
 
-from control_core_py.geometry import GeometryError, Placement, PoseTarget
+from control_core_py.geometry import GeometryError, Placement, PoseTarget, UnitQuaternion
 
 from brain_core.brain import Brain, Decider
 from brain_core.handlers import abort, drop_item, forget, get_state, grab_item, identify_item, place_item, scan_items
@@ -221,7 +221,7 @@ async def test_a_grab_by_pose_mints_an_id_and_a_failed_grab_changes_nothing():
 # The robot's tree stands the target's frame 1 m ahead of the robot frame,
 # turned a quarter turn about +Z.
 QUARTER_TURN = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
-AHEAD = Placement((1.0, 0.0, 0.0), QUARTER_TURN)
+AHEAD = Placement((1.0, 0.0, 0.0), UnitQuaternion(QUARTER_TURN))
 
 
 async def test_a_grab_by_pose_runs_at_the_target_its_decision_placed_in_the_robot_frame():
@@ -311,7 +311,7 @@ async def test_a_target_no_contract_takes_refuses_the_goal_with_rejected_before_
 
 
 async def test_a_target_placed_past_the_finite_numbers_refuses_the_goal_with_rejected_naming_the_target_once():
-    far = Placement((1.7976931348623157e308, 0.0, 0.0), (0.0, 0.0, math.sin(math.pi / 8.0), math.cos(math.pi / 8.0)))
+    far = Placement((1.7976931348623157e308, 0.0, 0.0), UnitQuaternion((0.0, 0.0, math.sin(math.pi / 8.0), math.cos(math.pi / 8.0))))
     brain = await make_brain(manipulator=FakeManipulator(), placer=FixedPlacer(far))
     record = target((1.7976931348623157e308, 0.0, 0.0))
     with pytest.raises(GeometryError) as placing:

@@ -61,8 +61,7 @@
 //! passes through tf2's rotation matrix, as `frame_tree::Transform` holds it.
 
 use crate::geometry::Pose2;
-use frame_tree::Transform;
-use frame_tree::arithmetic::{quaternion_of_yaw, yaw_of_quaternion};
+use frame_tree::{Transform, UnitQuaternion};
 use std::f64::consts::PI;
 
 /// `pf_vector_sub(a, b)`.
@@ -99,9 +98,9 @@ pub(crate) fn angle_diff(a: f64, b: f64) -> f64 {
 /// of a `tf2::Transform` when tf2 transforms the base's pose into the odometry frame, and
 /// the pose's quaternion is that basis's, whose `getYaw` AMCL reads.
 pub(crate) fn odometry_yaw(yaw: f64) -> f64 {
-    let basis = Transform::new([0.0; 3], quaternion_of_yaw(yaw))
-        .expect("the quaternion of a finite heading makes a transform");
-    yaw_of_quaternion(basis.orientation())
+    let heading = UnitQuaternion::from_yaw(yaw).expect("an odometry heading is finite");
+    let basis = Transform::new([0.0; 3], heading).expect("the origin is finite");
+    basis.orientation().yaw()
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Sequence, Optional
 
 import numpy as np
-from control_core_py.geometry import Placement, rotate
+from control_core_py.geometry import Placement
 
 from ..ports import Vec3
 
@@ -123,7 +123,7 @@ class CameraModel:
         k = self.intrinsics.scaled_to(width, height)
         x, y = pixel_to_ray(u, v, k.fx, k.fy, k.cx, k.cy, k.distortion_model, k.distortion)
         camera = (x * depth_m, y * depth_m, depth_m)
-        turned = rotate(self.pose.orientation, camera)
+        turned = self.pose.orientation.rotate(camera)
         return (
             self.pose.position[0] + turned[0],
             self.pose.position[1] + turned[1],
@@ -134,7 +134,7 @@ class CameraModel:
         """The robot-frame direction the camera looks along."""
         if self.pose is None:
             raise ValueError("the camera's pose is not known yet")
-        return rotate(self.pose.orientation, (0.0, 0.0, 1.0))
+        return self.pose.orientation.rotate((0.0, 0.0, 1.0))
 
 
 def pixel_to_ray(

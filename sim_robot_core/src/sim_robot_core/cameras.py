@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import numpy as np
 from control_core_py.geometry import (
-    IDENTITY,
     Point,
     Pose,
     UnitQuaternion,
@@ -41,7 +40,7 @@ ALIGN_MODE = "depth_to_color"
 # time, so depth_to_color holds no timestamp.
 DISTORTION_MODEL = "none"
 DEPTH_MODEL = "z"
-DEPTH_TO_COLOR = Pose(Point((0.0, 0.0, 0.0)), UnitQuaternion(IDENTITY))
+DEPTH_TO_COLOR = Pose(Point((0.0, 0.0, 0.0)), UnitQuaternion.IDENTITY)
 
 # The engines' camera frame in the optical frame, (x, y, z, w): half a turn
 # about the optical frame's X, which takes its +Z view to -Z and its +Y down

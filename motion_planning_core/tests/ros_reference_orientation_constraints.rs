@@ -11,8 +11,8 @@
 mod common;
 mod openarm_v2;
 
-use control_core::geometry::UnitQuaternion;
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::UnitQuaternion;
 use motion_planning_core::{Axis, Frame, OrientationTarget, Reference};
 use ros_reference::orientation_constraints::{Case, Cases};
 

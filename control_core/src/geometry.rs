@@ -1,9 +1,10 @@
 //! The geometry types of the contracts, as contracts-hub's README defines them: a point, a
-//! unit quaternion, a pose and a twist, and each stamped in a frame at a time. A node's generated
-//! code holds its own struct for each field, and the node converts the fields of each into these
-//! types through the one parse here, which refuses what no contract takes: a number that is not
-//! finite, an orientation whose squared norm lies [`QUATERNION_NORMALIZATION_TOLERANCE`] or more from
-//! 1, an empty frame, and a timestamp a stamp does not hold. A command with no timestamp is placed
+//! pose, whose orientation is frame_tree's [`UnitQuaternion`], and a twist, and each stamped in a
+//! frame at a time. A node's generated code holds its own struct for each field, and the node
+//! converts the fields of each into these types through the one parse here, which refuses what no
+//! contract takes: a number that is not finite, an orientation whose squared norm lies
+//! [`frame_tree::QUATERNION_NORMALIZATION_TOLERANCE`] or more from 1, an empty frame, and a
+//! timestamp a stamp does not hold. A command with no timestamp is placed
 //! at the latest time, which tf2 names `TimePointZero`, and a given timestamp is a time like any
 //! other, 0 the Unix epoch; a target with no orientation gives none ([`PoseTarget`]). A
 //! planar member reads a pose or a twist on the floor plane through [`Pose::planar`] and
@@ -12,18 +13,18 @@
 //! and control_core_py's geometry gives the same text for each refusal it also gives
 //! (`tests/fixtures/geometry_refusals.tsv`).
 //!
-//! Behind the `nalgebra` feature a point, an orientation and a pose go into nalgebra's types with
-//! `From`, and `pose_arrays` gives an isometry back as the contracts' arrays.
+//! Behind the `nalgebra` feature a point and a pose go into nalgebra's types with `From`, as
+//! frame_tree's feature takes an orientation to and from nalgebra's, and `pose_arrays` gives an
+//! isometry back as the contracts' arrays.
 
 use std::time::SystemTime;
 
-use frame_tree::arithmetic::{self, Quaternion, Vector};
+use frame_tree::arithmetic::Vector;
 use frame_tree::{
-    DenormalizedQuaternion, FrameName, LookupTime, Placement, QUATERNION_NORMALIZATION_TOLERANCE,
-    Stamp, Transform,
+    FrameName, LookupTime, NotFinite, OrientationError, Placement, Stamp, Transform,
+    UnitQuaternion, finite_position,
 };
 
-use crate::not_finite::NotFinite;
 use crate::planar_pose::PlanarPose;
 use crate::twist::PlanarTwist;
 
@@ -42,47 +43,10 @@ pub struct Point(Vector);
 
 impl Point {
     pub fn parse(position: [f64; 3]) -> Result<Self, GeometryError> {
-        let [x, y, z] = position;
-        NotFinite::check(
-            "a position",
-            [("x", x), ("y", y), ("z", z)],
-            "a finite number of meters on each axis",
-        )?;
-        Ok(Self(position))
+        Ok(Self(finite_position(position)?))
     }
 
     pub fn position(self) -> [f64; 3] {
-        self.0
-    }
-}
-
-/// An orientation, a unit quaternion [x, y, z, w], normalized from the one a caller gave.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UnitQuaternion(Quaternion);
-
-impl UnitQuaternion {
-    pub const IDENTITY: UnitQuaternion = UnitQuaternion(arithmetic::IDENTITY);
-
-    /// The orientation `orientation` normalized, as tf2's buffer normalizes the quaternion of a
-    /// transform it keeps; refused when a number is not finite or tf2's check of a quaternion
-    /// ([`frame_tree::check_quaternion`]) refuses it.
-    pub fn parse(orientation: [f64; 4]) -> Result<Self, GeometryError> {
-        let [x, y, z, w] = orientation;
-        NotFinite::check(
-            "an orientation",
-            [("x", x), ("y", y), ("z", z), ("w", w)],
-            "a unit quaternion [x, y, z, w] of finite numbers, such as [0, 0, 0, 1]",
-        )?;
-        frame_tree::check_quaternion(orientation).map_err(
-            |DenormalizedQuaternion { squared_norm }| GeometryError::NotUnit {
-                orientation,
-                squared_norm,
-            },
-        )?;
-        Ok(Self(arithmetic::normalized(orientation)))
-    }
-
-    pub fn quaternion(self) -> [f64; 4] {
         self.0
     }
 }
@@ -120,8 +84,8 @@ impl Pose {
 
     /// The pose as tf2's transform, its matrix built as tf2's `setRotation` builds it.
     pub fn transform(self) -> Transform {
-        Transform::new(self.position.position(), self.orientation.quaternion())
-            .expect("a finite position and a normalized quaternion make a transform")
+        Transform::new(self.position.position(), self.orientation)
+            .expect("a parsed point is finite, so it makes a transform")
     }
 
     /// The pose on the floor plane: its position's x and y and its heading as tf2's `getYaw`
@@ -131,26 +95,16 @@ impl Pose {
         if z.abs() > PLANAR_TOLERANCE {
             return Err(GeometryError::OffFloor { z });
         }
-        let quaternion = self.orientation.quaternion();
-        let tilt_rad = tilt_of(quaternion);
+        let tilt_rad = self.orientation.tilt();
         if tilt_rad > PLANAR_TOLERANCE {
             return Err(GeometryError::Tilted {
-                orientation: quaternion,
+                orientation: self.orientation,
                 tilt_rad,
             });
         }
-        Ok(
-            PlanarPose::new(x, y, arithmetic::yaw_of_quaternion(quaternion)).expect(
-                "the finite x and y of a parsed point and the heading of a unit quaternion",
-            ),
-        )
+        Ok(PlanarPose::new(x, y, self.orientation.yaw())
+            .expect("the finite x and y of a parsed point and the heading of a unit quaternion"))
     }
-}
-
-/// The angle (rad) between a unit quaternion's +Z and its frame's +Z: its turn about a
-/// horizontal axis, `2 asin(sqrt(x^2 + y^2))`.
-fn tilt_of([x, y, _, _]: Quaternion) -> f64 {
-    2.0 * (x * x + y * y).sqrt().min(1.0).asin()
 }
 
 /// The target of a goal: a position, and an orientation or none, as a command leaves out an
@@ -251,14 +205,6 @@ pub trait Placed: Sized {
     fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError>;
 }
 
-/// The orientation turned by the placement's.
-fn turned(placement: &Placement, orientation: UnitQuaternion) -> UnitQuaternion {
-    UnitQuaternion(arithmetic::normalized(arithmetic::product(
-        placement.orientation(),
-        orientation.quaternion(),
-    )))
-}
-
 impl Placed for Point {
     fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
         Point::parse(placement.transform().apply(self.0))
@@ -269,7 +215,7 @@ impl Placed for Pose {
     fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
         Ok(Pose::new(
             self.position.placed_by(placement)?,
-            turned(placement, self.orientation),
+            placement.orientation().compose(self.orientation),
         ))
     }
 }
@@ -280,7 +226,7 @@ impl Placed for PoseTarget {
             position: self.position.placed_by(placement)?,
             orientation: self
                 .orientation
-                .map(|orientation| turned(placement, orientation)),
+                .map(|orientation| placement.orientation().compose(orientation)),
         })
     }
 }
@@ -289,8 +235,8 @@ impl Placed for Twist {
     fn placed_by(&self, placement: &Placement) -> Result<Self, GeometryError> {
         let orientation = placement.orientation();
         Twist::parse(
-            arithmetic::rotate(orientation, self.linear_velocity),
-            arithmetic::rotate(orientation, self.angular_velocity),
+            orientation.rotate(self.linear_velocity),
+            orientation.rotate(self.angular_velocity),
         )
     }
 }
@@ -379,27 +325,15 @@ pub fn report_timestamp(time: Option<Stamp>) -> Option<SystemTime> {
     time.map(Stamp::time)
 }
 
-/// `values` as a refusal prints them: `[a, b, ...]`, each number as `Display` prints it.
-fn listed(values: &[f64]) -> String {
-    let printed: Vec<String> = values.iter().map(f64::to_string).collect();
-    format!("[{}]", printed.join(", "))
-}
-
 /// What no contract takes, each refused with `rejected`, the message saying what to send.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GeometryError {
-    /// A number that is not finite, the refusal naming each value and what to give.
+    /// A position or a velocity that is not finite, the refusal naming each value and what to
+    /// give.
     #[error("{0}")]
     NotFinite(String),
-    #[error(
-        "the orientation {} has a squared norm of {squared_norm}, {QUATERNION_NORMALIZATION_TOLERANCE} \
-         or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]",
-        listed(.orientation)
-    )]
-    NotUnit {
-        orientation: [f64; 4],
-        squared_norm: f64,
-    },
+    #[error(transparent)]
+    Orientation(#[from] OrientationError),
     #[error("the target gives no orientation: send a unit quaternion [x, y, z, w]")]
     NoOrientation,
     #[error(
@@ -420,12 +354,11 @@ pub enum GeometryError {
     )]
     OffFloor { z: f64 },
     #[error(
-        "the orientation {} tilts {tilt_rad} rad off the vertical: send a turn about +z alone, \
-         [0, 0, sin(yaw/2), cos(yaw/2)]",
-        listed(.orientation)
+        "the orientation {orientation} tilts {tilt_rad} rad off the vertical: send a turn about \
+         +z alone, [0, 0, sin(yaw/2), cos(yaw/2)]"
     )]
     Tilted {
-        orientation: [f64; 4],
+        orientation: UnitQuaternion,
         tilt_rad: f64,
     },
     #[error("the linear velocity moves {z} m/s along z: send [vx, vy, 0]")]
@@ -458,17 +391,6 @@ impl From<Point> for nalgebra::Vector3<f64> {
 impl From<Point> for nalgebra::Translation3<f64> {
     fn from(point: Point) -> Self {
         Self::from(point.0)
-    }
-}
-
-/// nalgebra holds a quaternion's coordinates in the contracts' order, [x, y, z, w], and the
-/// orientation is unit as its parse normalized it, so nalgebra takes it as it stands.
-#[cfg(feature = "nalgebra")]
-impl From<UnitQuaternion> for nalgebra::UnitQuaternion<f64> {
-    fn from(orientation: UnitQuaternion) -> Self {
-        Self::new_unchecked(nalgebra::Quaternion::from_vector(nalgebra::Vector4::from(
-            orientation.0,
-        )))
     }
 }
 
@@ -543,7 +465,7 @@ mod tests {
             ("lookup_time", [seconds]) => lookup_time(time_of(seconds)).unwrap_err(),
             ("Point.parse", [position]) => Point::parse(array(position)).unwrap_err(),
             ("UnitQuaternion.parse", [orientation]) => {
-                UnitQuaternion::parse(array(orientation)).unwrap_err()
+                GeometryError::from(UnitQuaternion::parse(array(orientation)).unwrap_err())
             }
             ("PoseTarget.parse", [position, orientation]) => {
                 PoseTarget::parse(array(position), optional_array(orientation)).unwrap_err()
@@ -586,31 +508,6 @@ mod tests {
         }
     }
 
-    // A quaternion within tf2's tolerance of unit length parses and comes out of unit length;
-    // one at or past it, or with a number that is not finite, is refused.
-    #[test]
-    #[expect(
-        clippy::approx_constant,
-        reason = "a quarter turn typed to four places, as a caller types one"
-    )]
-    fn an_orientation_parses_within_tf2s_tolerance_and_comes_out_normalized() {
-        let typed = UnitQuaternion::parse([0.0, 0.0, 0.7071, 0.7071]).unwrap();
-        let norm = typed.quaternion().iter().map(|c| c * c).sum::<f64>();
-        assert!((norm - 1.0).abs() < 1e-15, "{norm}");
-        assert!(matches!(
-            UnitQuaternion::parse([0.0, 0.0, 0.0, 1.006]),
-            Err(GeometryError::NotUnit { .. })
-        ));
-        assert!(matches!(
-            UnitQuaternion::parse([f64::NAN, 0.0, 0.0, 1.0]),
-            Err(GeometryError::NotFinite(_))
-        ));
-        assert!(matches!(
-            UnitQuaternion::parse([0.0; 4]),
-            Err(GeometryError::NotUnit { .. })
-        ));
-    }
-
     // A target with no orientation gives none, and a member that needs one refuses it; a given
     // orientation is parsed as a unit quaternion.
     #[test]
@@ -622,7 +519,7 @@ mod tests {
         assert_eq!(some.orientation(), Some(UnitQuaternion::IDENTITY));
         assert!(matches!(
             PoseTarget::parse([1.0, 2.0, 0.0], Some([0.0; 4])),
-            Err(GeometryError::NotUnit { .. })
+            Err(GeometryError::Orientation(OrientationError::NotUnit { .. }))
         ));
         assert!(matches!(
             PoseTarget::parse([f64::INFINITY, 0.0, 0.0], None),
@@ -782,8 +679,7 @@ mod tests {
             twist.placed_by(&turn),
             Err(GeometryError::NotFinite(_))
         ));
-        let pose =
-            Pose::parse([f64::MAX, 0.0, 0.0], UnitQuaternion::IDENTITY.quaternion()).unwrap();
+        let pose = Pose::parse([f64::MAX, 0.0, 0.0], UnitQuaternion::IDENTITY.to_xyzw()).unwrap();
         assert!(matches!(
             pose.placed_by(&turn),
             Err(GeometryError::NotFinite(_))
@@ -817,7 +713,7 @@ mod tests {
         let isometry = nalgebra::Isometry3::from(pose);
         assert_eq!(
             pose_arrays(&isometry),
-            (pose.position().position(), pose.orientation().quaternion())
+            (pose.position().position(), pose.orientation().to_xyzw())
         );
         assert_eq!(
             nalgebra::Point3::from(pose.position()),

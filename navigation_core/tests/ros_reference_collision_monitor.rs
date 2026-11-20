@@ -22,7 +22,7 @@ use common::poses::moved;
 use control_core::planar_pose::PlanarPose;
 use control_core::twist::PlanarTwist;
 use frame_tree::FrameName;
-use frame_tree::Transform;
+use frame_tree::{Transform, UnitQuaternion};
 use navigation_core::PaddedFootprint;
 use navigation_core::obstacles::{
     GridPoses, LiveObstacles, ObstacleHeights, ObstacleHeightsParams,
@@ -140,7 +140,7 @@ fn as_monitor(decision: StopDecision, case: &Case) -> (Action, &'static str, [f6
 fn grid_of_depth(cases: &Cases, case: &Case) -> (LiveObstacles, Vec<[f64; 2]>) {
     let mut live = live_of(cases);
     let sensor_on_base =
-        Transform::new([0.0, 0.0, SENSOR_HEIGHT_M], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        Transform::new([0.0, 0.0, SENSOR_HEIGHT_M], UnitQuaternion::IDENTITY).expect("a pose");
     let points: Vec<[f32; 3]> = case
         .points
         .iter()

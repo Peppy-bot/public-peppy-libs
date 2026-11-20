@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
-use control_core::geometry::UnitQuaternion;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
 use frame_tree::Transform;
+use frame_tree::UnitQuaternion;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, Holder, IkGoalSampler, JointTarget, Moving,
     ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest, PlanningScene,
@@ -566,7 +566,7 @@ pub fn map_of(size: f64, half: f64, boxes: &[VoxelBox]) -> VoxelMap {
     map.insert(
         &Scan {
             frame: &frame,
-            sensor: Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            sensor: Transform::IDENTITY,
             points: &points,
             max_range_m: PositiveFinite::parse(MAX_RANGE_M).expect("a positive range"),
         },

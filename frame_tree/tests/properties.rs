@@ -71,7 +71,7 @@ fn pose(tc: &TestCase) -> Pose {
 
 /// A point of the placed frame in the frame it is placed in: R(q) p + t.
 fn apply(placement: &Placement, p: [f64; 3]) -> [f64; 3] {
-    let [x, y, z, w] = placement.orientation();
+    let [x, y, z, w] = placement.orientation().to_xyzw();
     let [px, py, pz] = p;
     // q p q*, expanded for a unit quaternion.
     let (tx, ty, tz) = (

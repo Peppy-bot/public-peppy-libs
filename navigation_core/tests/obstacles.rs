@@ -25,7 +25,7 @@ use common::poses::{on_base, planar};
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
-use frame_tree::Transform;
+use frame_tree::{Transform, UnitQuaternion};
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -120,8 +120,8 @@ fn small_square() -> PaddedFootprint {
 
 /// The pose of a sensor at `position` turned by `yaw` about +Z.
 fn sensor_at(position: [f64; 3], yaw: f64) -> Transform {
-    let half = yaw / 2.0;
-    Transform::new(position, [0.0, 0.0, half.sin(), half.cos()]).expect("a turn about +Z")
+    let heading = UnitQuaternion::from_yaw(yaw).expect("a finite yaw");
+    Transform::new(position, heading).expect("a turn about +Z")
 }
 
 /// `points`, in the map's frame, in the frame of `sensor`, in single precision.

@@ -26,7 +26,7 @@
 
 use std::fmt;
 
-use frame_tree::{NotATransform, Transform};
+use frame_tree::{NotFinite, Transform};
 
 /// lidar_2d:v1's range of a ray the sensor could not measure, or of a surface
 /// nearer than `min_range_m`.
@@ -318,7 +318,7 @@ impl LaserScan {
     /// frame of the sensor's poses `sensor`, by the interpolation of
     /// [`LaserScan::placed_hits`]; the error of the first ray at whose time the
     /// poses interpolate to no pose.
-    pub fn placed_rays(&self, sensor: &Sweep<Transform>) -> Result<Vec<PlacedRay>, NotATransform> {
+    pub fn placed_rays(&self, sensor: &Sweep<Transform>) -> Result<Vec<PlacedRay>, NotFinite<3>> {
         self.rays()
             .map(|ray| {
                 Ok(PlacedRay {
@@ -341,7 +341,7 @@ impl LaserScan {
         &self,
         index: usize,
         sensor: &Sweep<Transform>,
-    ) -> Result<Transform, NotATransform> {
+    ) -> Result<Transform, NotFinite<3>> {
         let intervals = self.ranges.len() - 1;
         let ranges_norm = if intervals > 0 {
             1.0 / intervals as f64
@@ -358,10 +358,7 @@ impl LaserScan {
 mod tests {
     use super::*;
     use crate::test_support::close;
-
-    fn identity() -> Transform {
-        Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity")
-    }
+    use frame_tree::UnitQuaternion;
 
     fn sweep(first_ray: Transform, last_ray: Transform) -> Sweep<Transform> {
         Sweep {
@@ -499,7 +496,7 @@ mod tests {
             let angle = -0.5 + index as f64 * 0.25;
             [angle.cos(), angle.sin(), 0.0]
         };
-        let still = scan.placed_hits(&sweep(identity(), identity()));
+        let still = scan.placed_hits(&sweep(Transform::IDENTITY, Transform::IDENTITY));
         assert_eq!(still.len(), 5);
         for (index, hit) in still.iter().enumerate() {
             assert!(close(hit.placed, along_ray(index), 1e-12));
@@ -507,10 +504,13 @@ mod tests {
         }
         // The sensor turns back by the whole fan while it sweeps, so every ray
         // points along the first ray's direction in the frame of the poses.
-        let half = -0.5_f64;
-        let turned = Transform::new([0.0; 3], [0.0, 0.0, half.sin(), half.cos()]).expect("a turn");
+        let turned = Transform::new(
+            [0.0; 3],
+            UnitQuaternion::from_yaw(-1.0).expect("a finite yaw"),
+        )
+        .expect("a turn");
         for (index, hit) in scan
-            .placed_hits(&sweep(identity(), turned))
+            .placed_hits(&sweep(Transform::IDENTITY, turned))
             .into_iter()
             .enumerate()
         {
@@ -525,7 +525,8 @@ mod tests {
         }
         // The mark of ray 1 places no hit; rays 0 and 2 stand at -0.5 and
         // 0 rad.
-        let marked = scan_with_marks().placed_hits(&sweep(identity(), identity()));
+        let marked =
+            scan_with_marks().placed_hits(&sweep(Transform::IDENTITY, Transform::IDENTITY));
         assert_eq!(marked.len(), 2);
         assert!(close(
             marked[0].placed,
@@ -541,12 +542,12 @@ mod tests {
     #[test]
     fn each_ray_stands_at_laser_geometrys_share_of_the_sweep() {
         let scan = scan(&[1.0; 6]);
-        let moved = Transform::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let moved = Transform::new([1.0, 0.0, 0.0], UnitQuaternion::IDENTITY).expect("a pose");
         let shares: Vec<f64> = (0..6)
             .map(|index| {
-                scan.sensor_at(index, &sweep(identity(), moved))
+                scan.sensor_at(index, &sweep(Transform::IDENTITY, moved))
                     .expect("a share of the sweep")
-                    .origin()[0]
+                    .position()[0]
             })
             .collect();
         let expected: Vec<f64> = (0..6).map(|i| f64::from(i) * (1.0 / 5.0)).collect();
@@ -565,8 +566,11 @@ mod tests {
         let scan = LaserScan::parse(-0.25, degree, 0.001, 0.1, 10.0, &[1.0; RAYS])
             .expect("a scan of one ray a degree");
         let heading = |yaw: f64| {
-            Transform::new([0.0; 3], [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()])
-                .expect("a turn about +Z")
+            Transform::new(
+                [0.0; 3],
+                UnitQuaternion::from_yaw(yaw).expect("a finite yaw"),
+            )
+            .expect("a turn about +Z")
         };
         let hits = scan.placed_hits(&sweep(heading(2.6), heading(2.9)));
         assert_eq!(hits.len(), RAYS);
@@ -591,8 +595,8 @@ mod tests {
     #[test]
     fn each_placed_ray_stands_where_its_hit_is_placed() {
         let scan = scan(&[1.0, 10000.0, 3.0, 0.0]);
-        let moved = Transform::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
-        let sweep = sweep(identity(), moved);
+        let moved = Transform::new([1.0, 0.0, 0.0], UnitQuaternion::IDENTITY).expect("a pose");
+        let sweep = sweep(Transform::IDENTITY, moved);
         let rays = scan.placed_rays(&sweep).expect("every ray placed");
         assert_eq!(
             rays.iter().map(|ray| ray.hit_m).collect::<Vec<_>>(),
@@ -600,7 +604,7 @@ mod tests {
         );
         for (index, ray) in rays.iter().enumerate() {
             let at_share = scan.sensor_at(index, &sweep).expect("a share of the sweep");
-            assert_eq!(ray.sensor.origin(), at_share.origin());
+            assert_eq!(ray.sensor.position(), at_share.position());
             assert_eq!(ray.sensor.orientation(), at_share.orientation());
         }
         let placed: Vec<[f64; 3]> = rays
@@ -623,8 +627,8 @@ mod tests {
     #[test]
     fn a_scan_of_one_ray_places_its_hit_by_the_first_pose() {
         let scan = scan(&[1.0]);
-        let moved = Transform::new([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
-        let hits = scan.placed_hits(&sweep(identity(), moved));
+        let moved = Transform::new([5.0, 0.0, 0.0], UnitQuaternion::IDENTITY).expect("a pose");
+        let hits = scan.placed_hits(&sweep(Transform::IDENTITY, moved));
         assert_eq!(hits.len(), 1);
         assert!(close(
             hits[0].placed,

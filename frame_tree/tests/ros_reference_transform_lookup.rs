@@ -207,7 +207,7 @@ fn answer(found: Result<frame_tree::Found, LookupError>) -> Result<Found, Tf2Err
     match found {
         Ok(found) => Ok(Found {
             position: found.placement.position(),
-            orientation: found.placement.orientation(),
+            orientation: found.placement.orientation().to_xyzw(),
             time: found.time.map(Stamp::as_nanos),
         }),
         Err(error) => Err(tf2_error(error)),

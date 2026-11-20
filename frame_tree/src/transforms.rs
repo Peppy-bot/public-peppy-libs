@@ -17,13 +17,10 @@
 use std::collections::BTreeSet;
 use std::time::SystemTime;
 
-use crate::arithmetic;
 use crate::frame::{FrameName, FrameNameError, Stamp, Start, TimeError};
-use crate::transform::Transform;
-
-/// tf2's tolerance on a quaternion's squared norm: an orientation whose squared norm
-/// differs from 1 by this much or more is refused (buffer_core.cpp:66, 250-255).
-pub const QUATERNION_NORMALIZATION_TOLERANCE: f64 = 10e-3;
+use crate::not_finite::NotFinite;
+use crate::transform::{Transform, finite_position};
+use crate::unit_quaternion::{OrientationError, UnitQuaternion};
 
 /// Where a child frame sits in its parent: a point `p` of the child frame is
 /// `R(orientation) * p + position` of the parent frame, the position in meters and the
@@ -31,17 +28,16 @@ pub const QUATERNION_NORMALIZATION_TOLERANCE: f64 = 10e-3;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Placement {
     position: [f64; 3],
-    orientation: [f64; 4],
+    orientation: UnitQuaternion,
 }
 
 impl Placement {
     /// A frame in itself.
-    pub const IDENTITY: Self = Self {
-        position: [0.0; 3],
-        orientation: [0.0, 0.0, 0.0, 1.0],
-    };
+    pub const IDENTITY: Self = Self::new([0.0; 3], UnitQuaternion::IDENTITY);
 
-    pub(crate) const fn new(position: [f64; 3], orientation: [f64; 4]) -> Self {
+    /// The placement at `position` turned by `orientation`: a parsed transform's, or one the
+    /// crate's arithmetic computed from finite placements.
+    pub(crate) const fn new(position: [f64; 3], orientation: UnitQuaternion) -> Self {
         Self {
             position,
             orientation,
@@ -52,19 +48,19 @@ impl Placement {
         self.position
     }
 
-    pub fn orientation(&self) -> [f64; 4] {
+    pub fn orientation(&self) -> UnitQuaternion {
         self.orientation
     }
 
     /// The placement as tf2's transform, as tf2 makes the transform of a lookup's answer.
     pub fn transform(&self) -> Transform {
-        Transform::of_unit(self.position, self.orientation)
+        Transform::from_computed(self.position, self.orientation)
     }
 
-    /// The placement of `transform`: its origin, and its orientation as tf2's `getRotation`
+    /// The placement of `transform`: its position, and its orientation as tf2's `getRotation`
     /// reads it.
-    pub(crate) fn of_transform(transform: &Transform) -> Self {
-        Self::new(transform.origin(), transform.orientation())
+    pub(crate) fn from_transform(transform: &Transform) -> Self {
+        Self::new(transform.position(), transform.orientation())
     }
 }
 
@@ -92,15 +88,14 @@ impl FrameTransform {
         if child == parent {
             return Err(TransformErrorReason::SelfTransform);
         }
-        if !position.iter().all(|c| c.is_finite()) {
-            return Err(TransformErrorReason::Position(position));
-        }
-        check_quaternion(orientation)
-            .map_err(|_| TransformErrorReason::Orientation(orientation))?;
+        let position = finite_position(position)
+            .map_err(|refusal| TransformErrorReason::Position(Box::new(refusal)))?;
+        let orientation =
+            UnitQuaternion::parse(orientation).map_err(TransformErrorReason::Orientation)?;
         Ok(Self {
             parent,
             child,
-            placement: Placement::new(position, arithmetic::normalized(orientation)),
+            placement: Placement::new(position, orientation),
         })
     }
 
@@ -210,7 +205,7 @@ impl StaticMessage {
                         t.parent.as_str(),
                         t.child.as_str(),
                         t.placement.position,
-                        t.placement.orientation,
+                        t.placement.orientation.to_xyzw(),
                     )
                 })
                 .collect(),
@@ -263,16 +258,12 @@ pub enum TransformErrorReason {
     SelfTransform,
     /// tf2 refuses a NaN (TF_NAN_INPUT, buffer_core.cpp:238-248) and stores an infinite
     /// coordinate; a position of the contract is in meters, so every coordinate is finite.
-    #[error("its position {0:?} is not three finite numbers of meters")]
-    Position([f64; 3]),
+    #[error("its position: {0}")]
+    Position(Box<NotFinite<3>>),
     /// tf2's TF_NAN_INPUT and TF_DENORMALIZED_QUATERNION (buffer_core.cpp:238-266), and an
-    /// infinite coordinate, whose squared norm is no number near 1.
-    #[error(
-        "its orientation {0:?} is not a unit quaternion [x, y, z, w]: give four finite \
-         numbers whose squared norm differs from 1 by less than \
-         {QUATERNION_NORMALIZATION_TOLERANCE}"
-    )]
-    Orientation([f64; 4]),
+    /// infinite coordinate, as the contracts' parse refuses each.
+    #[error("its orientation: {0}")]
+    Orientation(OrientationError),
     /// A stamp older than the newest stamp of its child frame by more than the cache
     /// window, as tf2's `insertData` refuses it (cache.cpp:260-264).
     #[error(
@@ -316,26 +307,6 @@ fn parse(records: &[TransformRecord]) -> Result<Parsed, MessageError> {
 fn repeated_child<'a>(children: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let mut named = BTreeSet::new();
     children.into_iter().find(|child| !named.insert(*child))
-}
-
-/// A quaternion [x, y, z, w] that tf2's buffer refuses as TF_DENORMALIZED_QUATERNION: its
-/// squared norm, as tf2 sums it, lies [`QUATERNION_NORMALIZATION_TOLERANCE`] or more from 1, or
-/// is no number for a coordinate that is not finite.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct DenormalizedQuaternion {
-    pub squared_norm: f64,
-}
-
-/// tf2's check of a quaternion [x, y, z, w]: its squared norm, summed w first, within
-/// [`QUATERNION_NORMALIZATION_TOLERANCE`] of 1 (buffer_core.cpp:250-255). A coordinate that is
-/// not finite makes a squared norm that is infinite or NaN, which the check refuses.
-pub fn check_quaternion(orientation: [f64; 4]) -> Result<(), DenormalizedQuaternion> {
-    let [x, y, z, w] = orientation;
-    let squared_norm = w * w + x * x + y * y + z * z;
-    if (squared_norm - 1.0).abs() < QUATERNION_NORMALIZATION_TOLERANCE {
-        return Ok(());
-    }
-    Err(DenormalizedQuaternion { squared_norm })
 }
 
 #[cfg(test)]
@@ -385,7 +356,10 @@ mod tests {
         assert_eq!(first.child().as_str(), "base_footprint");
         assert_eq!(first.parent().as_str(), "odom");
         assert_eq!(first.placement().position(), [1.0, 2.0, 0.0]);
-        assert_eq!(second.placement().orientation(), [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(
+            second.placement().orientation().to_xyzw(),
+            [0.0, 0.0, 1.0, 0.0]
+        );
     }
 
     #[test]
@@ -417,7 +391,12 @@ mod tests {
         );
         assert_eq!(
             transform,
-            Err(TransformErrorReason::Orientation([0.0, 0.0, 0.0, 2.0]))
+            Err(TransformErrorReason::Orientation(
+                OrientationError::NotUnit {
+                    orientation: [0.0, 0.0, 0.0, 2.0],
+                    squared_norm: 4.0,
+                }
+            ))
         );
         let transform =
             FrameTransform::parse("odom", "base_footprint", [1.0, 0.0, 0.0], UNIT).unwrap();
@@ -527,28 +506,36 @@ mod tests {
                 "p",
                 [f64::INFINITY, 0.0, 0.0],
                 UNIT,
-                TransformErrorReason::Position([f64::INFINITY, 0.0, 0.0]),
+                TransformErrorReason::Position(Box::new(
+                    finite_position([f64::INFINITY, 0.0, 0.0]).unwrap_err(),
+                )),
             ),
             (
                 "c",
                 "p",
                 [0.0; 3],
                 [0.0, 0.0, 0.0, 1.01],
-                TransformErrorReason::Orientation([0.0, 0.0, 0.0, 1.01]),
+                TransformErrorReason::Orientation(
+                    UnitQuaternion::parse([0.0, 0.0, 0.0, 1.01]).unwrap_err(),
+                ),
             ),
             (
                 "c",
                 "p",
                 [0.0; 3],
                 [0.0, 0.0, 0.0, f64::INFINITY],
-                TransformErrorReason::Orientation([0.0, 0.0, 0.0, f64::INFINITY]),
+                TransformErrorReason::Orientation(
+                    UnitQuaternion::parse([0.0, 0.0, 0.0, f64::INFINITY]).unwrap_err(),
+                ),
             ),
             (
                 "c",
                 "p",
                 [0.0; 3],
                 [f64::NAN, 0.0, 0.0, 1.0],
-                TransformErrorReason::Orientation([f64::NAN, 0.0, 0.0, 1.0]),
+                TransformErrorReason::Orientation(
+                    UnitQuaternion::parse([f64::NAN, 0.0, 0.0, 1.0]).unwrap_err(),
+                ),
             ),
         ];
         for (child, parent, position, orientation, reason) in cases {
@@ -573,9 +560,8 @@ mod tests {
 
     #[test]
     fn a_quaternion_within_tf2s_tolerance_is_taken_and_normalized() {
-        // A squared norm of 1.009 is within 10e-3 of 1.
-        assert_eq!(check_quaternion([0.0, 0.0, 0.0, 1.009_f64.sqrt()]), Ok(()));
-        assert!(check_quaternion([0.0, 0.0, 0.0, 1.0101_f64.sqrt()]).is_err());
+        // A quaternion scaled by 1.004, a squared norm of 1.008016, lies within 10e-3 of 1 and is
+        // normalized.
         let parsed = fixed(vec![TransformRecord::new(
             "p",
             "c",
@@ -584,7 +570,7 @@ mod tests {
         )])
         .parse()
         .unwrap();
-        let [x, y, z, w] = parsed.transforms[0].placement().orientation();
+        let [x, y, z, w] = parsed.transforms[0].placement().orientation().to_xyzw();
         assert_eq!([x, y], [0.0, 0.0]);
         assert!(
             (z - 0.6).abs() < TOLERANCE && (w - 0.8).abs() < TOLERANCE,
