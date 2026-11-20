@@ -15,13 +15,17 @@ import numpy as np
 import pytest
 from hypothesis import settings
 
+from control_core_py.geometry import Placement, PoseTarget, Stamped
+
 from brain_core.brain import Brain
 from brain_core.manipulators.none import NoneManipulator
-from brain_core.perception.camera import CameraPose, Intrinsics
-from brain_core.perception.geometry import NOT_DESCRIBED
+from brain_core.perception.camera import Intrinsics
+from brain_core.perception.geometry import NOT_DESCRIBED, LookupFailure
 from brain_core.perception.perceiver import SourceReason
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role, TargetItem
+
+from fake_peppygen import ROBOT_FRAME
 
 # Every property test runs the same examples on every host: no deadline,
 # which would judge the host's speed, a seed fixed per test, and no example
@@ -46,8 +50,11 @@ PARAMS = {
 # image height, and the principal point is the image centre.
 CAMERA_16X12 = Intrinsics(16, 12, 6.0, 6.0, 8.0, 6.0)
 
+# The frame the camera's pictures name.
+CAMERA_FRAME = "chest_color_optical_frame"
+
 # The camera's pose at the robot frame's origin, looking along its +Z.
-ORIGIN = CameraPose.parse((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+ORIGIN = Placement((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 
 # A deadline no search reaches, and one every search has passed.
 NEVER = Deadline(at=float("inf"), budget_s=float("inf"))
@@ -132,6 +139,10 @@ class FakeDetector:
         return self.coverage
 
 
+# When the fake manipulator's backbone measured the grasp point of a place.
+PLACE_MEASURED_AT = 2.5
+
+
 class FakeManipulator:
     """Succeeds at once unless told to fail, to wait for a stop or to wait
     for `release` to be set. `begun` resolves when a sequence has reached
@@ -179,7 +190,7 @@ class FakeManipulator:
             await self.release.wait()
         if self.fail:
             return Outcome(False, self.fail)
-        return Outcome(True, "", final_position, closed_at)
+        return Outcome(True, "", final_position, PLACE_MEASURED_AT if final_position is not None else 0.0, closed_at)
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
         self.calls.append(("grab", item.item_id, gripper.name, max_effort))
@@ -191,7 +202,8 @@ class FakeManipulator:
 
     async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
         """A place at a pose reports the jaws opened 1 cm above it; a place
-        into a target item, 1 cm above the item's top at its centre."""
+        into a target item, 1 cm above the item's top at its centre; each
+        measured at PLACE_MEASURED_AT."""
         if isinstance(to, TargetItem):
             self.calls.append(("place", gripper.name, to.item_id))
             return await self._run(cancel, final_position=(to.centre[0], to.centre[1], to.top_z + 0.01))
@@ -276,7 +288,7 @@ def failed_with(ctx: FakeCtx, kind: FailureKind, message: str) -> bool:
     return ctx.completed is None and ctx.cancelled is None and ctx.failed == ctx.action.Failure(kind.value, message)
 
 
-def sensors_described(names=("chest",), kinds=None, robot_frame="base_link"):
+def sensors_described(names=("chest",), kinds=None, robot_frame=ROBOT_FRAME):
     """The robot's describe_sensors response: each sensor of `names` an
     rgbd camera fixed to the base unless `kinds` names its kind, its frame
     `<name>_color_optical_frame`."""
@@ -289,50 +301,93 @@ def sensors_described(names=("chest",), kinds=None, robot_frame="base_link"):
     )
 
 
-def lookup_answer(position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 0.0, 1.0), timestamp=None):
-    """The robot's lookup_transform response: the source frame at
-    `position` and `orientation` in the target frame."""
-    return SimpleNamespace(position=list(position), orientation=list(orientation), timestamp=timestamp)
+def lookup_answer(position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 0.0, 1.0), timestamp=0.0, frame=ROBOT_FRAME, child_frame=CAMERA_FRAME):
+    """The robot's lookup_transform response: the transform record of the
+    source frame `child_frame` at `position` and `orientation` in the target
+    frame `frame`."""
+    return SimpleNamespace(
+        frame=frame, child_frame=child_frame, timestamp=timestamp, position=list(position), orientation=list(orientation)
+    )
+
+
+def target(position, orientation=None, frame=ROBOT_FRAME, timestamp=None) -> SimpleNamespace:
+    """The target record of a goal: `position` in `frame`, the robot frame
+    when none, at `timestamp`, the latest time when none, with
+    `orientation`, or none."""
+    return SimpleNamespace(
+        frame=frame, timestamp=timestamp, position=list(position), orientation=None if orientation is None else list(orientation)
+    )
+
+
+# The target a grab_item goal that names an item_id, or a place_item goal
+# that names a target_item_id, sends, which is not read: a zero position with
+# no frame, no timestamp and no orientation.
+UNREAD_TARGET = target((0.0, 0.0, 0.0), frame=None)
 
 
 class FixedPlacer:
-    """A CameraPlacer whose robot has described its sensors and stands
-    every camera at `pose` at every time; each (camera, time) it is asked
-    for is kept in `asked`. With no pose, the robot has not described its
-    sensors yet, and every ask is refused with that reason."""
+    """A Placer whose robot frame is ROBOT_FRAME and whose tree stands every
+    frame at `pose` at every time: the frame and the time of each picture
+    header it places are kept in `asked`, and each target it places in
+    `targets`. With `refusal`, a LookupFailure, every target is refused with
+    it. With no pose, the robot has not described its sensors yet, and every
+    ask is refused with that reason."""
 
-    def __init__(self, pose: Optional[CameraPose] = ORIGIN) -> None:
+    def __init__(self, pose: Optional[Placement] = ORIGIN, *, refusal: Optional[LookupFailure] = None) -> None:
         self.pose = pose
+        self.refusal = refusal
         self.asked: list[tuple[str, float]] = []
+        self.targets: list[Stamped[PoseTarget]] = []
         self.reason = SourceReason("" if pose is not None else NOT_DESCRIBED, starting=pose is None)
 
-    async def pose_at(self, camera_name: str, timestamp: float) -> CameraPose:
-        self.asked.append((camera_name, timestamp))
+    async def learn(self, token) -> None:
+        """Nothing to learn: the robot frame is fixed."""
+
+    @property
+    def robot_frame(self) -> str:
+        if self.pose is None:
+            raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, self.reason.reason)
+        return ROBOT_FRAME
+
+    async def place_picture(self, header) -> Placement:
+        self.asked.append((header.frame, header.timestamp))
         if self.pose is None:
             raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, self.reason.reason)
         return self.pose
 
+    async def place_target(self, stamped: Stamped[PoseTarget]) -> Pose:
+        self.targets.append(stamped)
+        if self.refusal is not None:
+            raise self.refusal
+        if self.pose is None:
+            raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, self.reason.reason)
+        placed = self.pose.place(stamped.value)
+        return Pose(placed.position.position, None if placed.orientation is None else placed.orientation.quaternion)
 
-def rgb_frame(width: int = 16, height: int = 12, *, frame_id: int = 1, align_mode: str = "depth_to_color"):
+
+def rgb_frame(width: int = 16, height: int = 12, *, capture_index: int = 1, align_mode: str = "depth_to_color", frame: str = CAMERA_FRAME):
     """A video_stream message of the given size, plain grey."""
     return SimpleNamespace(
-        header=SimpleNamespace(timestamp=1.0, frame_id=frame_id, align_mode=align_mode),
+        header=SimpleNamespace(timestamp=1.0, frame=frame, capture_index=capture_index, align_mode=align_mode),
         encoding="rgb8",
         width=width,
         height=height,
-        frame=bytes([128]) * (width * height * 3),
+        data=bytes([128]) * (width * height * 3),
     )
 
 
-def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float = 0.001, *, frame_id: int = 1, align_mode: str = "depth_to_color"):
+def depth_frame(
+    depth_m: float, width: int = 16, height: int = 12, unit: float = 0.001, *, capture_index: int = 1,
+    align_mode: str = "depth_to_color", frame: str = CAMERA_FRAME,
+):
     """A z16 depth_stream message of the given size, `depth_m` everywhere."""
     value = int(round(depth_m / unit))
     return SimpleNamespace(
-        header=SimpleNamespace(timestamp=1.0, frame_id=frame_id, align_mode=align_mode),
+        header=SimpleNamespace(timestamp=1.0, frame=frame, capture_index=capture_index, align_mode=align_mode),
         encoding="z16",
         width=width,
         height=height,
-        frame=np.full((height, width), value, dtype="<u2").tobytes(),
+        data=np.full((height, width), value, dtype="<u2").tobytes(),
     )
 
 
@@ -415,12 +470,15 @@ class FakeSource:
 
 
 async def make_brain(
-    *, detector=None, manipulator=None, source=None, ticks=None, bindings=None, perception_model=None, manipulation_model=None
+    *, detector=None, manipulator=None, source=None, ticks=None, bindings=None, perception_model=None, manipulation_model=None,
+    placer: Optional[FixedPlacer] = None,
 ) -> Brain:
     """A started brain on fake bindings whose roles run `detector` and
     `manipulator`, the none backends when not given, from `source` or from
     a FakeSource that offers those two. The model parameters name the two,
-    unless the test names others."""
+    unless the test names others. Its robot and its goals' targets are
+    placed by `placer`, a FixedPlacer at the origin when not given; its
+    perceiver keeps the brain's own Placer."""
     from fake_peppygen import fake_bindings
 
     detector = detector or NoneDetector()
@@ -432,5 +490,21 @@ async def make_brain(
         "manipulation_model": manipulation_model or manipulator.name,
     })
     brain = Brain(params, None, bindings or fake_bindings(), source, now=ticks or Ticks(), run_token="t0")
+    brain.placer = placer or FixedPlacer()
     await brain.start()
     return brain
+
+
+# The handlers whose decision makes the goal they run from the request:
+# each other handler runs its request data, and makes the checks of its
+# decision again when its goal starts.
+ADMITTING = ("grab_item", "place_item")
+
+
+async def run_goal(handler, brain: Brain, ctx: FakeCtx) -> None:
+    """Runs the goal of `ctx` through `handler` as the action's loop runs an
+    accepted goal: grab_item and place_item take the goal their `admit`
+    makes of the request data, every other handler that data."""
+    data = ctx.request().data
+    goal = await handler.admit(brain, data) if handler.__name__.rsplit(".", 1)[-1] in ADMITTING else data
+    await handler.run(brain, ctx, goal)

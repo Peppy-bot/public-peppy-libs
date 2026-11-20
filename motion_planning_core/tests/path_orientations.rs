@@ -16,15 +16,16 @@ use chain_kinematics::{Aims, ChainFrame, ChainSpec, Draws, Ends, IkSolver, Joint
 use collision_geometry::chain::ChainGeometry;
 use control_core::path_timing::RoundedPath;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, Axis, Frame, Goal, GoalSampler, IkGoalSampler, JointTarget, Objects,
-    OrientationTarget, PathOrientation, PlanFailure, PlanRequest, PositionTarget, Scene, plan_path,
+    Arm, ArmGoal, Arms, Axis, Frame, Goal, GoalSampler, Holder, IkGoalSampler, JointTarget,
+    Objects, OrientationTarget, PathOrientation, PlacedGoal, PlanFailure, PlanRequest,
+    PositionTarget, Reference, Scene, plan_path,
 };
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    LEFT_ARM, PLAN_SPARE_M, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at,
+    LEFT_ARM, PLAN_SPARE_M, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at, placed,
     plan_arm, positive,
 };
 use openarm_v2::{JOINTS, LEFT, RIGHT};
@@ -74,6 +75,7 @@ fn target(
     free_axis: Option<Axis>,
 ) -> OrientationTarget {
     OrientationTarget {
+        reference: Reference::Robot,
         frame,
         orientation,
         tolerance_rad: positive(tolerance_rad),
@@ -89,7 +91,7 @@ fn cup_upright(free_axis: Option<Axis>) -> OrientationTarget {
 /// `target` held by the left hand's grasp point.
 fn of_the_left_hand(target: OrientationTarget) -> [PathOrientation<'static>; 1] {
     [PathOrientation {
-        arm: 0,
+        holder: Holder::Arm(0),
         link_name: &openarm_v2::arm(LEFT).grasp_link,
         target,
     }]
@@ -101,6 +103,7 @@ fn pose_goal(position: [f64; 3], orientation: &OrientationTarget) -> Goal {
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: position.into(),
             tolerance_m: positive(AT_POSE_M),
@@ -116,6 +119,7 @@ fn position_goal(position: [f64; 3]) -> Goal {
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: position.into(),
             tolerance_m: positive(AT_POSE_M),
@@ -148,7 +152,7 @@ fn found_at(
         &target(Frame::GraspPoint, orientation, AT_POSE_RAD, None),
     );
     IkGoalSampler::new(geometry.chain().clone()).sample_from(
-        &goal,
+        &placed(&goal),
         &[0.0; JOINTS],
         IK_ATTEMPTS,
         &mut Draws::new(1),
@@ -163,7 +167,7 @@ fn found_at(
 fn walk_of_the_line(start: &[f64; JOINTS], end: [f64; 3]) -> Option<[f64; JOINTS]> {
     let chain = LEFT_ARM.chain();
     let ik = IkSolver::new(chain, ChainFrame::EndEffector, Aims::Both, Ends::Converged);
-    let pose = chain.world_ee_pose(start);
+    let pose = chain.root_ee_pose(start);
     let line = Vector3::from(end) - pose.translation.vector;
     let steps = (line.norm() / LINE_STEP_M).ceil() as usize;
     (1..=steps).try_fold(*start, |at, k| {
@@ -336,7 +340,7 @@ fn every_state_of_the_rounded_path_holds_the_orientation() {
             "free about {free_axis:?}: the path turns the hand {largest} rad"
         );
         let last = path.last().expect("a path");
-        assert!(goal.met(LEFT_ARM.chain(), last));
+        assert!(placed(&goal).met(LEFT_ARM.chain(), last));
     }
 }
 
@@ -424,14 +428,14 @@ fn the_orientations_hold_in_either_order() {
     };
     let upper_arm = target(
         frame,
-        posed.link_pose_world(2).rotation,
+        posed.link_pose_root(2).rotation,
         UPPER_ARM_TOLERANCE_RAD,
         None,
     );
     let goal = pose_goal(NEARBY, &hand);
     let [of_the_hand] = of_the_left_hand(hand);
     let of_the_upper_arm = PathOrientation {
-        arm: 0,
+        holder: Holder::Arm(0),
         link_name: posed.link_name(2),
         target: upper_arm,
     };
@@ -506,7 +510,7 @@ fn each_of_two_arms_holds_its_orientation() {
     let (path, _) = plan_both_arms_holding(&[
         of_the_left_hand,
         PathOrientation {
-            arm: 1,
+            holder: Holder::Arm(1),
             link_name: &openarm_v2::arm(RIGHT).grasp_link,
             target: hand,
         },
@@ -527,7 +531,7 @@ fn one_of_two_arms_holds_its_orientation() {
     assert!(largest <= TOLERANCE_RAD, "the left arm turns {largest} rad");
     let last = path.last().expect("a path");
     let right: [f64; JOINTS] = std::array::from_fn(|j| last[JOINTS + j]);
-    assert!(right_goal.met(RIGHT_ARM.chain(), &right));
+    assert!(placed(&right_goal).met(RIGHT_ARM.chain(), &right));
 }
 
 // A start past the tolerance fails with no path, and says what to send.
@@ -632,7 +636,7 @@ fn a_goal_orientation_inside_the_allowed_angle_plans() {
         .unwrap_or_else(|failure| panic!("{failure}"));
     let largest = largest_error(&path, 0, &LEFT_ARM, &hand);
     assert!(largest <= TOLERANCE_RAD, "the hand turns {largest} rad");
-    assert!(goal.met(LEFT_ARM.chain(), path.last().expect("a path")));
+    assert!(placed(&goal).met(LEFT_ARM.chain(), path.last().expect("a path")));
 }
 
 /// The goal sampler of one configuration of the left arm: it finds the configuration where a
@@ -642,7 +646,7 @@ struct OnlyAt([f64; JOINTS]);
 impl GoalSampler<JOINTS> for OnlyAt {
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -663,7 +667,7 @@ struct OnlyWhenHeld {
 impl GoalSampler<JOINTS> for OnlyWhenHeld {
     fn sample_from(
         &self,
-        goal: &Goal,
+        goal: &PlacedGoal,
         _: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -733,7 +737,7 @@ struct Nowhere;
 impl<const N: usize> GoalSampler<N> for Nowhere {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         _: &[f64; N],
         _: usize,
         _: &mut Draws,
@@ -886,7 +890,7 @@ fn a_passage_no_path_can_hold_fails_with_no_path() {
     )
     .expect("a valid goal");
     let orientations = [PathOrientation {
-        arm: 0,
+        holder: Holder::Arm(0),
         link_name: "link_2",
         target: along_x(),
     }];
@@ -929,7 +933,7 @@ fn as_many_orientations_as_joints_are_refused() {
     )
     .expect("a valid goal");
     let held = PathOrientation {
-        arm: 0,
+        holder: Holder::Arm(0),
         link_name: "link_2",
         target: along_x(),
     };

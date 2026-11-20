@@ -25,13 +25,14 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::{PlanarPose, Pose};
 use common::finite::positive;
 use common::footprints::padded;
 use common::layers::{layer, lethal_cells};
 use common::poses::{moved, on_base, planar};
-use control_core::twist::Twist;
+use control_core::planar_pose::PlanarPose;
+use control_core::twist::PlanarTwist;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -128,12 +129,12 @@ fn wall(gap: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
-fn forward(speed: f64) -> Twist {
-    Twist::new(speed, 0.0, 0.0).expect("finite")
+fn forward(speed: f64) -> PlanarTwist {
+    PlanarTwist::new(speed, 0.0, 0.0).expect("finite")
 }
 
 /// The decision for `occupied` at `velocity`, one source's reading just arrived.
-fn decide(occupied: &[[f64; 2]], velocity: Twist) -> StopDecision {
+fn decide(occupied: &[[f64; 2]], velocity: PlanarTwist) -> StopDecision {
     let (mut stop, live) = stop_read_at(NOW_NS);
     stop.decide(&live, velocity, occupied, NOW_NS)
 }
@@ -205,7 +206,7 @@ fn a_contact_now_scales_the_velocity_to_rest() {
         assert_eq!(
             decide(&wall(gap), forward(0.5)),
             StopDecision::Slow {
-                velocity: Twist::ZERO,
+                velocity: PlanarTwist::ZERO,
                 collision_time_s: 0.0
             },
             "a wall {gap} m ahead"
@@ -220,7 +221,7 @@ const EDGE_M: f64 = 1.41;
 /// points every 2 cm.
 fn ledge() -> LiveObstacles {
     let mut live = live_obstacles(footprint(), 1);
-    let sensor = Pose::new([1.0, 0.0, 1.2], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([1.0, 0.0, 1.2], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let points: Vec<[f32; 3]> = (0..150)
         .flat_map(|i| (0..50).map(move |j| (i, j)))
         .map(|(i, j)| {
@@ -261,7 +262,11 @@ fn a_drop_cell_within_the_projected_footprint_stops_the_base() {
         executed = stop.decide(&live, commanded, &occupied, now).velocity();
         base = planar(base.x() + executed.linear_x() * 0.05, base.y(), base.yaw());
     }
-    assert_eq!(executed, Twist::ZERO, "the base comes to rest, at {base:?}");
+    assert_eq!(
+        executed,
+        PlanarTwist::ZERO,
+        "the base comes to rest, at {base:?}"
+    );
     assert!(
         base.x() + FRONT < EDGE_M,
         "the base stops before the edge, at {base:?}"
@@ -317,13 +322,13 @@ fn occupied_of(live: &LiveObstacles, base: PlanarPose) -> Vec<[f64; 2]> {
 }
 
 /// A sensor `height_m` up over the base's center, facing along +X.
-fn sensor_on_base(height_m: f64) -> Pose {
-    Pose::new([0.0, 0.0, height_m], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
+fn sensor_on_base(height_m: f64) -> Transform {
+    Transform::new([0.0, 0.0, height_m], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
 }
 
 /// `points`, in the map's frame, seen from the sensor `sensor_on_base` of a base at `base`.
-fn frame_of(points: &[[f64; 3]], base: PlanarPose, sensor_on_base: &Pose) -> Vec<[f32; 3]> {
-    let to_sensor = base.to_pose().compose(sensor_on_base).inverse();
+fn frame_of(points: &[[f64; 3]], base: PlanarPose, sensor_on_base: &Transform) -> Vec<[f32; 3]> {
+    let to_sensor = base.to_transform().compose(sensor_on_base).inverse();
     points
         .iter()
         .map(|&point| to_sensor.apply(point).map(|c| c as f32))
@@ -336,11 +341,11 @@ fn frame_of(points: &[[f64; 3]], base: PlanarPose, sensor_on_base: &Pose) -> Vec
 /// velocity the stop let the base execute there.
 fn drive(
     start: PlanarPose,
-    commanded: Twist,
+    commanded: PlanarTwist,
     frames: i64,
     sensor_height_m: f64,
     scene: impl Fn(PlanarPose) -> Vec<[f64; 3]>,
-) -> Vec<(PlanarPose, Twist)> {
+) -> Vec<(PlanarPose, PlanarTwist)> {
     let mut live = live_obstacles(padded_footprint(), 1);
     let mut stop = approach_stop();
     let mount = sensor_on_base(sensor_height_m);
@@ -396,7 +401,7 @@ fn a_post_at_the_padded_front_edge_stops_the_base_before_contact() {
         );
     }
     let (rest, executed) = decisions.last().expect("a drive");
-    assert_eq!(*executed, Twist::ZERO, "the base rests, at {rest:?}");
+    assert_eq!(*executed, PlanarTwist::ZERO, "the base rests, at {rest:?}");
 }
 
 /// Where the floor drops away 0.3 m, along x, in meters: two fifths of a cell into the
@@ -444,7 +449,7 @@ fn a_slow_approach_over_a_drop_stops_the_base_before_the_edge() {
         );
     }
     let (rest, executed) = decisions.last().expect("a drive");
-    assert_eq!(*executed, Twist::ZERO, "the base rests, at {rest:?}");
+    assert_eq!(*executed, PlanarTwist::ZERO, "the base rests, at {rest:?}");
 }
 
 // A base whose front overhangs the drop's edge by 10 cm, its sensor seeing the lower floor
@@ -538,7 +543,7 @@ fn the_base_own_body_on_its_outline_holds_it() {
         own_body(base, 0.0)
     });
     for (base, executed) in &decisions {
-        assert_eq!(*executed, Twist::ZERO, "the base at {base:?} moves");
+        assert_eq!(*executed, PlanarTwist::ZERO, "the base at {base:?} moves");
     }
 }
 
@@ -558,7 +563,7 @@ fn a_post_in_the_padding_holds_the_base() {
         post_face(IN_THE_PADDING_X_M)
     });
     for (base, executed) in &decisions {
-        assert_eq!(*executed, Twist::ZERO, "the base at {base:?} moves");
+        assert_eq!(*executed, PlanarTwist::ZERO, "the base at {base:?} moves");
     }
 }
 
@@ -606,7 +611,7 @@ fn each_source_keeps_its_newest_frame() {
     let occupied = insert_by_the_post(&mut live, 1, &[]);
     assert_eq!(
         decide(&live, &occupied).velocity(),
-        Twist::ZERO,
+        PlanarTwist::ZERO,
         "{occupied:?}"
     );
     let occupied = insert_by_the_post(&mut live, 0, &[]);
@@ -663,7 +668,10 @@ fn a_clear_empties_the_grid_and_keeps_the_source_newest_frame() {
         .flat_map(|x| [-0.5, 0.5].map(|side| in_mm([x, side * VOXEL_M])))
         .collect();
     assert_eq!(read, posts_columns);
-    assert_eq!(decide_at(&live, &occupied, NOW_NS).velocity(), Twist::ZERO);
+    assert_eq!(
+        decide_at(&live, &occupied, NOW_NS).velocity(),
+        PlanarTwist::ZERO
+    );
     let occupied = insert_by_the_post(&mut live, 0, &[]);
     assert!(occupied.is_empty(), "{occupied:?}");
     assert_eq!(
@@ -705,10 +713,10 @@ fn mast_scan(mast_ray: usize, mast_m: f32) -> LaserScan {
 /// the base execute there, and the points it read.
 fn lidar_drive(
     start: PlanarPose,
-    commanded: Twist,
+    commanded: PlanarTwist,
     sweeps: i64,
     scan: &LaserScan,
-) -> Vec<(PlanarPose, Twist, Vec<[f64; 2]>)> {
+) -> Vec<(PlanarPose, PlanarTwist, Vec<[f64; 2]>)> {
     let mut live = live_obstacles(padded_footprint(), 1);
     let mut stop = approach_stop();
     let lidar = sensor_on_base(0.3);
@@ -736,7 +744,7 @@ fn lidar_drive(
 
 /// Asserts that the stop read no point at any sweep of `drive` and let the base execute
 /// `commanded` at each.
-fn assert_never_slowed(drive: &[(PlanarPose, Twist, Vec<[f64; 2]>)], commanded: Twist) {
+fn assert_never_slowed(drive: &[(PlanarPose, PlanarTwist, Vec<[f64; 2]>)], commanded: PlanarTwist) {
     for (base, executed, occupied) in drive {
         assert!(
             occupied.is_empty() && *executed == commanded,
@@ -769,7 +777,7 @@ fn a_lidar_that_sees_the_base_own_mast_marks_nothing_and_never_slows_it() {
             assert_never_slowed(&ahead, forward(speed));
         }
     }
-    let turning = Twist::new(0.0, 0.0, 1.0).expect("finite");
+    let turning = PlanarTwist::new(0.0, 0.0, 1.0).expect("finite");
     for mast in [mast_scan(220, 0.3002), mast_scan(218, 0.3061)] {
         assert_never_slowed(
             &lidar_drive(planar(0.0, 0.0, 0.0), turning, 20, &mast),
@@ -985,7 +993,7 @@ fn a_source_whose_readings_stop_arriving_stops_the_base() {
     );
     let stale = stop.decide(&live, moving, &clear, NOW_NS + 1);
     assert_stale(stale, 1);
-    assert_eq!(stale.velocity(), Twist::ZERO);
+    assert_eq!(stale.velocity(), PlanarTwist::ZERO);
 }
 
 // The stop gives back the source whose readings stopped arriving, the one a decision stops

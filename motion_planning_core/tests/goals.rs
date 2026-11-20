@@ -13,13 +13,14 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
     ArmGoal, Axis, Body, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
-    OrientationTarget, PositionTarget, sample_goals,
+    OrientationTarget, PlacedGoal, PositionTarget, Reference, sample_goals,
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
 use srs_model::ArmAnglePolicy;
 
 use common::{
-    LEFT_ARM, branch, left_fingers, left_srs_arm, off_the_branch_seams, plan_arm, positive,
+    LEFT_ARM, branch, left_alone, left_fingers, left_srs_arm, off_the_branch_seams, placed,
+    plan_arm, positive,
 };
 use openarm_v2::{JOINTS, LEFT};
 
@@ -44,6 +45,7 @@ fn drawn_orientation(tc: &TestCase) -> UnitQuaternion<f64> {
 
 fn target(orientation: UnitQuaternion<f64>, free_axis: Option<Axis>) -> OrientationTarget {
     OrientationTarget {
+        reference: Reference::Robot,
         frame: Frame::GraspPoint,
         orientation,
         tolerance_rad: positive(0.1),
@@ -90,14 +92,12 @@ fn joint(joint: usize) -> JointTarget {
 
 /// The child link of the fourth joint.
 fn elbow() -> Frame {
-    Frame::Link {
-        segment: 3,
-        offset: Isometry3::identity(),
-    }
+    link(3)
 }
 
 fn position(frame: Frame, tolerance_m: f64) -> PositionTarget {
     PositionTarget {
+        reference: Reference::Robot,
         frame,
         position: Vector3::new(0.3, 0.1, 0.2),
         tolerance_m: positive(tolerance_m),
@@ -174,6 +174,68 @@ fn malformed_goals_are_refused() {
     );
 }
 
+/// The child link of joint `segment`.
+fn link(segment: usize) -> Frame {
+    Frame::Link {
+        segment,
+        offset: Isometry3::identity(),
+    }
+}
+
+// A joint, a target's frame and the frame of an arm a target is in name a joint of an arm,
+// each refused past the last joint.
+#[test]
+fn a_frame_past_the_last_joint_is_refused() {
+    let new = |joints, positions| Goal::new(JOINTS, joints, positions, Vec::new());
+    let past = Err(GoalError::Joint(JOINTS, JOINTS - 1));
+    assert_eq!(new(vec![joint(JOINTS)], vec![]), past);
+    assert_eq!(new(vec![], vec![position(link(JOINTS), 0.01)]), past);
+    let in_the_other_arm = |segment| PositionTarget {
+        reference: Reference::Arm {
+            arm: 1,
+            frame: link(segment),
+        },
+        ..position(Frame::GraspPoint, 0.01)
+    };
+    assert_eq!(new(vec![], vec![in_the_other_arm(JOINTS)]), past);
+    let orientation_in_the_other_arm = OrientationTarget {
+        reference: Reference::Arm {
+            arm: 1,
+            frame: link(JOINTS),
+        },
+        ..target(UnitQuaternion::identity(), None)
+    };
+    assert_eq!(
+        Goal::new(JOINTS, vec![], vec![], vec![orientation_in_the_other_arm]),
+        past
+    );
+    assert!(new(vec![], vec![in_the_other_arm(JOINTS - 1)]).is_ok());
+}
+
+// A goal sample of a group whose target is in a frame of an arm outside the group stops,
+// as a plan of it does.
+#[test]
+#[should_panic(
+    expected = "a target is in a frame of the arm at place 1, and the plan's group holds 1 arms"
+)]
+fn a_sample_of_a_target_in_an_arm_outside_the_group_stops() {
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let target = PositionTarget {
+        reference: Reference::Arm {
+            arm: 1,
+            frame: Frame::GraspPoint,
+        },
+        ..position(Frame::GraspPoint, 0.01)
+    };
+    let goal = Goal::new(JOINTS, Vec::new(), vec![target], Vec::new()).expect("a valid goal");
+    let arm = [ArmGoal {
+        goal: &goal,
+        sampler: &sampler,
+    }];
+    let one = NonZeroUsize::new(1).expect("nonzero");
+    sample_goals(&arm, &left_alone(), &ZERO, one, 1, &|| false, &|_, _| true);
+}
+
 /// A goal of joint 3 within 0.1 rad of 1 rad.
 fn joint_goal() -> Goal {
     Goal::new(
@@ -202,11 +264,16 @@ fn goal_sampling_keeps_its_count_until_its_end() {
         goal: &goal,
         sampler: &sampler,
     }];
-    let goals = sample_goals(&arm, &ZERO, eight, 1, &|| false, &all);
+    let goals = sample_goals(&arm, &left_alone(), &ZERO, eight, 1, &|| false, &all);
     assert_eq!(goals.len(), 8);
-    assert!(goals.iter().all(|q| goal.met(LEFT_ARM.chain(), q)));
-    assert!(sample_goals(&arm, &ZERO, eight, 1, &|| true, &all).is_empty());
-    assert!(sample_goals(&arm, &ZERO, eight, 1, &|| false, &|_, _| false).is_empty());
+    assert!(goals.iter().all(|q| placed(&goal).met(LEFT_ARM.chain(), q)));
+    assert!(sample_goals(&arm, &left_alone(), &ZERO, eight, 1, &|| true, &all).is_empty());
+    assert!(
+        sample_goals(&arm, &left_alone(), &ZERO, eight, 1, &|| false, &|_, _| {
+            false
+        })
+        .is_empty()
+    );
 }
 
 /// A goal sampler that answers its script in turn, each configuration where it is valid,
@@ -219,7 +286,7 @@ struct Scripted {
 impl GoalSampler<JOINTS> for Scripted {
     fn sample_from(
         &self,
-        _: &Goal,
+        _: &PlacedGoal,
         working: &[f64; JOINTS],
         _: usize,
         _: &mut Draws,
@@ -249,6 +316,7 @@ fn each_goal_sample_runs_from_the_last_valid_goal() {
             goal: &goal,
             sampler: &scripted,
         }],
+        &left_alone(),
         &ZERO,
         NonZeroUsize::new(2).expect("nonzero"),
         1,
@@ -280,6 +348,7 @@ fn goal_sampling_ends_once_its_failing_samples_reach_1000_less_its_goals() {
             goal: &joint_goal(),
             sampler: &scripted,
         }],
+        &left_alone(),
         &ZERO,
         NonZeroUsize::new(10).expect("nonzero"),
         1,
@@ -295,16 +364,18 @@ fn goal_sampling_ends_once_its_failing_samples_reach_1000_less_its_goals() {
 
 /// The goal of the grasp point's pose at `q`, within 5 mm and 0.01 rad.
 fn pose_goal_at(q: &[f64; JOINTS]) -> Goal {
-    let pose = LEFT_ARM.chain().world_ee_pose(q);
+    let pose = LEFT_ARM.chain().root_ee_pose(q);
     Goal::new(
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: pose.translation.vector,
             tolerance_m: positive(0.005),
         }],
         vec![OrientationTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             orientation: pose.rotation,
             tolerance_rad: positive(0.01),
@@ -331,7 +402,7 @@ fn a_goal_sample_sets_out_from_its_working_state() {
         if reached == TWO_BRANCH_POSES {
             break;
         }
-        let pose = chain.world_ee_pose(&q);
+        let pose = chain.root_ee_pose(&q);
         // The pose on the other shoulder branch, from a seed whose shoulder turns past
         // the quarter turn.
         let mut seed = q;
@@ -352,7 +423,7 @@ fn a_goal_sample_sets_out_from_its_working_state() {
         else {
             continue;
         };
-        let goal = pose_goal_at(&q);
+        let goal = placed(&pose_goal_at(&q));
         for working in [q, other] {
             let found = sampler
                 .sample_from(&goal, &working, 1, &mut Draws::new(k as u64), &|_| true)
@@ -393,16 +464,18 @@ fn a_goal_sample_on_the_grasp_point_aims_at_its_orientation_too() {
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     for (k, q) in off_the_branch_seams(11).take(10).enumerate() {
-        let here = chain.world_ee_pose(&q);
+        let here = chain.root_ee_pose(&q);
         let goal = Goal::new(
             JOINTS,
             Vec::new(),
             vec![PositionTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 position: here.translation.vector,
                 tolerance_m: positive(CONVERGED_TOLERANCE),
             }],
             vec![OrientationTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 orientation: here.rotation
                     * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), TURN_RAD),
@@ -411,6 +484,7 @@ fn a_goal_sample_on_the_grasp_point_aims_at_its_orientation_too() {
             }],
         )
         .expect("a valid goal");
+        let goal = placed(&goal);
         let near = |found: &[f64; JOINTS]| {
             (0..JOINTS)
                 .map(|i| (found[i] - q[i]).powi(2))
@@ -432,7 +506,7 @@ fn a_goal_sample_answers_only_what_its_validity_accepts() {
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     let q = off_the_branch_seams(7).next().expect("a configuration");
-    let goal = pose_goal_at(&q);
+    let goal = placed(&pose_goal_at(&q));
     assert!(
         sampler
             .sample_from(&goal, &q, 1, &mut Draws::new(1), &|_| true)
@@ -467,11 +541,13 @@ fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame,
             position: finger.pose().translation.vector,
             tolerance_m: positive(1e-9),
         }],
         vec![OrientationTarget {
+            reference: Reference::Robot,
             frame,
             orientation: finger.pose().rotation,
             tolerance_rad: positive(1e-9),
@@ -479,6 +555,7 @@ fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
         }],
     )
     .expect("a valid goal");
+    let goal = placed(&goal);
     assert!(goal.met(LEFT_ARM.chain(), &q));
     let mut turned = q;
     turned[JOINTS - 1] += 0.1;

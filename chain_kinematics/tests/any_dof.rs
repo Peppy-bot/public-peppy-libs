@@ -60,7 +60,7 @@ fn stepped_toward<const N: usize>(
 ) -> [f64; N] {
     let limits = step_limits::<N>();
     (0..ticks).fold(seed, |q, _| {
-        rate_step_toward(chain, &q, &chain.world_ee_pose(&q), target, &limits)
+        rate_step_toward(chain, &q, &chain.root_ee_pose(&q), target, &limits)
     })
 }
 
@@ -186,9 +186,9 @@ fn a_wrong_joint_count_is_refused_at_load() {
 fn repeated_steps_reach_a_pose_on_both_robots() {
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
         let goal_q: [f64; N] = std::array::from_fn(|i| seed[i] * 0.4);
-        let goal = chain.world_ee_pose(&goal_q);
+        let goal = chain.root_ee_pose(&goal_q);
         let landed = stepped_toward(chain, seed, &goal, 3000);
-        let miss = pose_miss(&chain.world_ee_pose(&landed), &goal);
+        let miss = pose_miss(&chain.root_ee_pose(&landed), &goal);
         assert!(
             miss.position_m < 1e-3 && miss.orientation_rad < 1e-2,
             "{label}: the steps end {miss:?} from the goal"
@@ -277,17 +277,17 @@ fn a_tool_reached_through_a_moving_joint_is_refused() {
 
 #[test]
 fn poses_are_reported_in_the_named_base_frame() {
-    // The OpenArm chain names a base partway down the URDF, so the world -> base
-    // transform is not the identity, and a pose taken to world and back is the
-    // one it started as.
+    // The OpenArm chain names a base partway down the URDF, so the root -> base
+    // transform is not the identity, and a pose taken to the root frame and back
+    // is the one it started as.
     let root_based = openarm();
-    assert_ne!(root_based.base_from_world(), Isometry3::identity());
+    assert_ne!(root_based.base_from_root(), Isometry3::identity());
     let q = [0.2; 7];
-    let world = root_based.world_pose(&root_based.at(&q).ee_pose());
-    let back = root_based.base_pose(&world);
+    let in_root = root_based.root_pose(&root_based.at(&q).ee_pose());
+    let back = root_based.base_pose(&in_root);
     let ee = root_based.at(&q).ee_pose();
     assert!((back.translation.vector - ee.translation.vector).norm() < 1e-12);
-    assert!(world.translation.vector != Vector3::zeros());
+    assert!(in_root.translation.vector != Vector3::zeros());
 }
 
 // A step toward any target leaves every joint inside its limits.
@@ -302,7 +302,7 @@ fn a_step_toward_any_target_stays_inside_the_limits(tc: TestCase) {
             let next = rate_step_toward(
                 &chain,
                 &q,
-                &chain.world_ee_pose(&q),
+                &chain.root_ee_pose(&q),
                 &target,
                 &step_limits::<N>(),
             );
@@ -326,10 +326,10 @@ fn a_joint_held_on_its_limit_leaves_the_task_to_the_rest(tc: TestCase) {
             let limits = chain.limits();
             let q = tc.draw(configs(limits));
             let twist: [f64; 6] = tc.draw(gs::arrays(gs::floats().min_value(-0.1).max_value(0.1)));
-            let twist_world = Vector6::from(twist);
-            let to_base = chain.base_from_world().rotation;
-            let dp = to_base * twist_world.fixed_rows::<3>(0).into_owned();
-            let dw = to_base * twist_world.fixed_rows::<3>(3).into_owned();
+            let twist_in_root = Vector6::from(twist);
+            let to_base = chain.base_from_root().rotation;
+            let dp = to_base * twist_in_root.fixed_rows::<3>(0).into_owned();
+            let dw = to_base * twist_in_root.fixed_rows::<3>(3).into_owned();
             let twist = Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z);
             let jacobian = chain.at(&q).jacobian();
             let free_step = damped_pseudo_inverse(&jacobian, DEFAULT_DLS_LAMBDA) * twist;
@@ -337,7 +337,7 @@ fn a_joint_held_on_its_limit_leaves_the_task_to_the_rest(tc: TestCase) {
             let step = rate_step(
                 &chain,
                 &q,
-                &twist_world,
+                &twist_in_root,
                 &limits,
                 &[f64::INFINITY; N],
                 0.01,
@@ -414,14 +414,14 @@ fn a_tiny_position_error_is_corrected_to_a_tenth_of_itself() {
 
     let q = [0.0];
     // The tip sits 0.25 m out, so a micron along the circle is this much joint.
-    let target = chain.world_ee_pose(&[TINY_M / 0.25]);
+    let target = chain.root_ee_pose(&[TINY_M / 0.25]);
     assert_ne!(
         stepped_toward(&chain, q, &target, 1),
         q,
         "an error of a micron must draw a step"
     );
     let landed = stepped_toward(&chain, q, &target, 2000);
-    let short_m = pose_miss(&chain.world_ee_pose(&landed), &target).position_m;
+    let short_m = pose_miss(&chain.root_ee_pose(&landed), &target).position_m;
     assert!(
         short_m < TINY_M / 10.0,
         "a move of a micron ends {short_m} m short"

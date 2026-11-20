@@ -46,13 +46,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use camera_core::encoding::DEPTH_ENCODING;
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
-use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use motion_planning_core::{
     Arm, ArmGoal, Arms, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget,
-    PositionTarget, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
+    PositionTarget, Reference, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
     term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
@@ -415,7 +415,8 @@ impl Episode {
         let depth_model = DepthModel::parse(&camera.intrinsics.depth_model)
             .unwrap_or_else(|e| panic!("{what}: the depth model: {e}"));
         let pose = |p: &PoseFile, name: &str| {
-            Pose::new(p.position, p.orientation).unwrap_or_else(|e| panic!("{what}: {name}: {e}"))
+            Transform::new(p.position, p.orientation)
+                .unwrap_or_else(|e| panic!("{what}: {name}: {e}"))
         };
         let depth = DepthCamera::new(
             &pose(&camera.color_in_robot, "color_in_robot"),
@@ -514,11 +515,13 @@ fn pose_goal(goal: &PoseGoal) -> Result<Goal, String> {
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: Vector3::from(goal.position),
             tolerance_m: tolerance("tolerance_m", goal.tolerance_m)?,
         }],
         vec![OrientationTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             orientation: UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z)),
             tolerance_rad: tolerance("tolerance_rad", goal.tolerance_rad)?,
@@ -628,6 +631,7 @@ fn scene_of(
             goal: &episode.goal,
             sampler,
         }],
+        &alone,
         &start,
         planner.goal_samples,
         u64::from(seed.get()),

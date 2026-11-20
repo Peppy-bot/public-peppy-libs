@@ -16,7 +16,7 @@
 
 mod common;
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 
 use common::clouds::{
     assert_clear_of_edges, assert_on_step, geometry_of, heights_of, insert_cloud,

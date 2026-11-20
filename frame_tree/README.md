@@ -2,8 +2,11 @@
 
 tf2's buffer in Rust. A node that reads the transforms contract takes each message of
 `transforms` and of `static_transforms` into a `FrameTree`, and asks it for the place of
-any frame in any other, at a time or at the latest time common to the chain. Pure Rust;
-no hardware or messaging dependencies.
+any frame in any other, at a time or at the latest time common to the chain. The crate
+also holds tf2's `Transform`, a rotation matrix and an origin that places a point and
+composes on tf2's bits, and `arithmetic`, the rotation arithmetic of tf2 and KDL operation
+for operation, which the libraries' geometry runs on. Pure Rust; no hardware or messaging
+dependencies.
 
 ## Quick start
 
@@ -20,15 +23,14 @@ let mut tree = FrameTree::new(Duration::from_secs(10))?;
 // Who sent a message: the core node and the instance id of its producer.
 let publisher = Publisher { core_node, instance_id };
 
-// A message of static_transforms, field for field: its publisher's whole static set.
-let refused = tree.take_static(&publisher, &StaticMessage {
-    child_frames, parent_frames, positions, orientations,
-})?;
+// The transforms of a message of static_transforms: its publisher's whole static set,
+// each a TransformRecord { frame, child_frame, position, orientation }.
+let refused = tree.take_static(&publisher, &StaticMessage { transforms })?;
 
 // A message of transforms: the transforms its publisher measured at its timestamp, and
 // when they last started over, each time a SystemTime as the message carries it.
 let refused = tree.take_moving(&publisher, &MovingMessage {
-    timestamp, child_frames, parent_frames, positions, orientations, start_timestamp,
+    timestamp, transforms, start_timestamp,
 })?;
 
 // When the consumer's clock goes back: every moving stamp goes, the static transforms stay.
@@ -43,17 +45,17 @@ let transforms = vec![FrameTransform::parse("odom", "base_footprint", position, 
 let message = MovingMessage::from_transforms(measured, &transforms, started)?;
 ```
 
-A message's arrays are index-aligned: `child_frames`, `parent_frames`, `positions` (3 per
-transform) and `orientations` (4 per transform, [x, y, z, w]). A message of `transforms`
-also carries `timestamp`, when its publisher measured all its transforms, and
-`start_timestamp`, when they last started over. A message whose arrays do not line up,
-that names a child frame twice, or whose `timestamp` or `start_timestamp` lies before the
-Unix epoch or more than `u64::MAX` nanoseconds after it, is refused whole (`MessageError`)
-and changes nothing; `from_transforms` refuses a publisher's message on the same times. A
-transform with an empty frame, its child frame for its parent, a number that is not finite,
-or a quaternion whose squared norm lies 10e-3 or more from 1 is refused alone, and so is a
-moving one whose stamp is older than its child frame's newest by more than the window;
-`take_moving` and `take_static` give each refused transform with its index and its reason
+A message holds its transforms as records, `TransformRecord`: each a parent frame
+(`frame`), a `child_frame`, a `position` and an `orientation` ([x, y, z, w]). A message of
+`transforms` also carries `timestamp`, when its publisher measured all its transforms, and
+`start_timestamp`, when they last started over. A message that names a child frame twice,
+or whose `timestamp` or `start_timestamp` lies before the Unix epoch or more than
+`u64::MAX` nanoseconds after it, is refused whole (`MessageError`) and changes nothing;
+`from_transforms` refuses a publisher's message on the same times. A transform with an
+empty frame, its child frame for its parent, a number that is not finite, or a quaternion
+whose squared norm lies 10e-3 or more from 1 is refused alone, and so is a moving one
+whose stamp is older than its child frame's newest by more than the window; `take_moving`
+and `take_static` give each refused transform with its index and its reason
 (`TransformError`), and the message's other transforms are kept, each with its quaternion
 normalized.
 
@@ -85,13 +87,15 @@ under `tf2/`.
 | Where both chains stop at a transform with no value, the error is the transform whose newest sample is newer, the source's on a tie | `src/buffer_core.cpp:426-445` |
 | Where the chains do not meet, the frames are in two trees; a missing value comes before that | `src/buffer_core.cpp:481-493`, `:1047-1058` |
 | The composition is tf2's `TransformAccum`, quaternion and vector arithmetic operation for operation | `src/buffer_core.cpp:524-596`, `include/tf2/LinearMath/Quaternion.hpp:144-151`, `:427-443`, `:502-507` |
+| A lookup of the source at one time in the target at another (`lookup_through`) checks that the tree knows its target, its source and its fixed frame, in that order, then goes through the fixed frame: the source in the fixed frame at the source's time and the fixed frame in the target at the target's time, each made a `Transform` by `setRotation`, then their `Transform` product, its rotation read back by `getRotation`; its time is the target side's | `src/buffer_core.cpp:750-781`, `:794-805`, `:880-898`, `:132-155`, `include/tf2/LinearMath/Transform.hpp:124-128`, `:169-172`, `:252-257` |
+| The root of a frame's chain at a time (`root_at`) is the frame where the walk of a lookup's source from it ends; a transform with no value at the time fails it as a lookup fails, and tf2's walk stops at that transform | `src/buffer_core.cpp:352-397` |
 | The latest time of a lookup is the earliest of the newest stamps of the moving transforms on both chains up to their nearest common ancestor; a chain of static transforms has none, and its lookup holds at every time | `src/buffer_core.cpp:1112-1261` |
 
 `tests/ros_reference_transform_lookup.rs` holds the crate to these rules against tf2
 itself, on the transform lookup scenarios of the ROS reference harness
-(`ros_reference/`): every transform taken or refused as tf2 takes it, every lookup refused
-with the kind of error tf2 throws, and every other lookup at tf2's time, within 1e-9 m and
-1e-9 rad of tf2's transform.
+(`ros_reference/`): every transform taken or refused as tf2 takes it, every lookup and every
+lookup through a fixed frame refused with the kind of error tf2 throws, and every other one
+at tf2's time, within 1e-9 m and 1e-9 rad of tf2's transform.
 
 ## Where it departs from tf2
 
@@ -154,8 +158,8 @@ with the kind of error tf2 throws, and every other lookup at tf2's time, within 
 cargo test
 ```
 
-- `src/` unit tests: the arithmetic, the time cache, the parsing of a message, a frame
-  name and a stamp.
+- `src/` unit tests: the arithmetic, `Transform`, the time cache, the parsing of a message,
+  a frame name and a stamp.
 - `tests/tree.rs`: each rule on a small tree, and each departure.
 - `tests/properties.rs`: Hegel properties on drawn trees: a lookup and its reverse undo
   each other, lookups compose along a chain, a static chain holds at every time, a moving

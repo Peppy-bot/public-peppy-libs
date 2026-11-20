@@ -54,6 +54,18 @@ sets the tolerance, and --moveit-box the rotation-vector tolerances MoveIt holds
 over the square root of 3, or `outer`, one around it, each at it, or with a free axis at pi times
 the sine of half of it; a free axis takes pi about it. These scenes run locally, with --drawn.
 
+With --hand-frame it writes HAND_FRAME_NAME, scenes of both arms among boxes, drawn as those of
+--both-arms, whose constraints name links of the arms as their frames: the right hand's goal is
+a grasp pose in the robot frame and the left hand's a grasp pose in the right hand's frame. In
+every other scene they are the grasp poses of the drawn goal configuration. In the rest the
+right arm's joints up to WRIST_JOINT turn toward it by at most HAND_FRAME_TURN_RAD, the left
+hand's goal is its pose at the start in the right hand's frame, and the path holds the left
+hand's orientation at the start in the right hand's frame and the right hand's orientation at
+the start in the frame of the right arm's link that the arm's joint at WRIST_JOINT moves, so the
+joints between that link and the hand turn it and those above it turn both, each within
+--path-tolerance and MoveIt's --moveit-box. The scenario keeps the drawn scenes at
+COMMITTED_HAND_FRAME.
+
 With --robot so101 it writes SO101_NAME, scenes of SO-101's arm among one to three collision
 objects within its reach, each start and goal configuration of the drawn scenes one that the
 example self_distances, this crate's self model of a plan of the arm, holds apart, the goal by
@@ -78,6 +90,7 @@ directory:
     uv run ros_reference/tools/draw_arm_planning.py --both-arms --objects
     uv run ros_reference/tools/draw_arm_planning.py --path-orientation free --drawn 200 \
         --planning-time 5 --moveit-box inner
+    uv run ros_reference/tools/draw_arm_planning.py --hand-frame
 
 The second keeps the first 200 drawn scenes in place of those it picks, a large set for a
 local run, which the README describes. The third writes, in place of the drawn scenes,
@@ -93,12 +106,15 @@ ends on ITERATIONS, TIME_LIMIT far beyond them, so it repeats under its seed. Th
 ends MoveIt's plans on `--planning-time` alone and ours on ITERATIONS or that time,
 whichever comes first, as the robot runs (its motion planner's launcher fragment bounds a
 plan by max_iterations); that option, `--planner rrt_star` and `--refiner chomp` go with a
-drawn set or the episodes' scenes. The fifth draws 200
+drawn set or the episodes' scenes. The sixth draws 200
 scenes among collision objects, planned as the fourth plans them at 1 s, at a clearance
-of 4 cm, and the sixth 200 scenes whose goal is a pose, planned so at 5 s; `--objects` and
-`--poses` each go with every option but `--episodes` and the other. The seventh writes the
+of 4 cm, and the seventh 200 scenes whose goal is a pose, planned so at 5 s; `--objects` and
+`--poses` each go with every option but `--episodes` and the other. The eighth writes the
 committed scenario of both arms among collision objects; `--both-arms` goes with every
-option but `--episodes`, whose scenes plan the arm their episodes record.
+option but `--episodes`, whose scenes plan the arm their episodes record. The tenth writes the
+committed scenario of both arms whose constraints name the arms' links; `--hand-frame` plans
+both arms, and goes with every option but `--episodes`, `--objects`, `--poses`,
+`--path-orientation` and `--robot so101`.
 `--min-clearance` sets the clearance of the plans, MIN_CLEARANCE by default: the
 min_clearance_m of motion_planning_core's plans, and the padding of each link of MoveIt's
 robot against the octomap and the objects, which meets itself unpadded; it goes with a
@@ -117,6 +133,7 @@ from drawing import (
     arm,
     box_mesh,
     configuration,
+    described,
     example,
     generator,
     gripper_links,
@@ -131,6 +148,7 @@ from drawing import (
     robot,
     run_example,
     shape,
+    transposed,
     turned,
     unit_quaternion,
     write,
@@ -148,6 +166,9 @@ BOTH_OBJECTS_NAME = "arm_planning_both_arms_objects_openarm_v2"
 # The scenario of both arms whose goal is a pose of each grasp point, written with
 # --both-arms --poses.
 BOTH_POSES_NAME = "arm_planning_both_arms_poses_openarm_v2"
+# The scenario of both arms whose constraints name links of the arms as their frames, written
+# with --hand-frame.
+HAND_FRAME_NAME = "arm_planning_both_arms_hand_frame_openarm_v2"
 # OpenArm v2's arms, by their SRDF names: a scene of one arm plans the left one, and a scene
 # of both arms plans OPENARM_ARMS, in the order the SRDF's group BOTH_ARMS holds them, which
 # is the order a scene holds their joints in. The boxes and the objects of a scene stand in
@@ -156,6 +177,9 @@ LEFT_ARM = arm(OPENARM_V2, "left_arm")
 RIGHT_ARM = arm(OPENARM_V2, "right_arm")
 OPENARM_ARMS = (LEFT_ARM, RIGHT_ARM)
 BOTH_ARMS = "both_arms"
+# The robot frame, the frame of a pose or an orientation that names no link of an arm: the
+# URDF's root link.
+ROBOT_FRAME = described(OPENARM_V2).root_link
 VOXEL_SIZE = 0.04
 MAP_HALF_SIDE = 1.6
 VOXEL_MAP = {"voxel_size": VOXEL_SIZE, "map_half_side": MAP_HALF_SIDE}
@@ -212,6 +236,7 @@ COMMITTED_POSES = {
 SO101_NAME = "arm_planning_objects_so101"
 SO101_ARM = arm(SO101, "arm")
 SO101_GRIPPER = gripper_links(SO101, SO101_ARM)
+SO101_FRAME = described(SO101).root_link
 # No scene of SO-101 holds a voxel: the map is empty, as on the robot, which has no depth
 # camera.
 SO101_VOXEL_MAP = {"voxel_size": 0.02, "map_half_side": 0.8}
@@ -297,6 +322,28 @@ TOP_DOWN = [1.0, 0.0, 0.0, 0.0]
 # and its tolerance: wide, for the hand moves.
 ELBOW_JOINT = 2
 ELBOW_TOLERANCE = 1.0
+# The joint of the right arm whose link holds the frame of the right hand's orientation in
+# the hand frame scenes, its sixth: of the arm's joints, the seventh alone turns the hand in
+# that frame.
+WRIST_JOINT = 5
+# How far each joint of the right arm up to WRIST_JOINT turns from the start toward the drawn
+# goal configuration in a hand frame scene that holds orientations. Of 10 drawn scenes, this
+# crate's plans reached 9 at 0.1 rad, each on a straight path, 7 at 0.2 rad, 2 of them with
+# corners, and 4 at 0.3 rad, the left hand's goal swinging with the right hand's turn.
+HAND_FRAME_TURN_RAD = 0.2
+# The drawn scenes the hand frame scenario picks from, and those it keeps, as COMMITTED names
+# them: a straight path and one with corners to goals in the right hand's frame, and a path
+# that holds the orientations. The scenes whose start and whose goal hold the robot's own
+# bodies meeting give the refusals of a start and of a goal that COMMITTED_BOTH_POSES picks
+# among boxes. Its plans that hold orientations run to their iterations, so the scenario picks
+# from the first DRAWN_HAND_FRAME drawn scenes: planning them and the scenario's four other
+# scenes took this crate 8 minutes on 2026-11-19.
+DRAWN_HAND_FRAME = 20
+COMMITTED_HAND_FRAME = {
+    "a straight path": 0,
+    "a path with corners": 12,
+    "a path holding the orientations": 7,
+}
 # How far a goal's grasp point stands from the start's in the path orientation scenes: from a
 # short move to half the arm's 0.6 m reach from its shoulder to its grasp point.
 HELD_REACH_M = (0.05, 0.3)
@@ -489,6 +536,7 @@ def grasp_pose_goal(rng, model, arm, start, goal):
             ),
         }
     return {
+        "frame": ROBOT_FRAME,
         **pose,
         "position_tolerance": POSE_TOLERANCE_M,
         "orientation_tolerance": POSE_TOLERANCE_RAD,
@@ -504,8 +552,9 @@ def pose_scene(rng, model, limits, k):
     return {**scene, "goal": [grasp_pose_goal(rng, model, LEFT_ARM, scene["start"], goal)]}
 
 
-def held_orientation(arm_index, link, orientation, tolerance, free_axis, box):
-    """An orientation of a path, with the tolerances MoveIt holds of `box`, as the module says."""
+def held_orientation(arm_index, link, frame, orientation, tolerance, free_axis, box):
+    """An orientation of a path in the frame `frame`, with the tolerances MoveIt holds of `box`,
+    as the module says."""
     if box == "inner":
         bound = tolerance / math.sqrt(3.0)
     elif free_axis == "none":
@@ -515,6 +564,7 @@ def held_orientation(arm_index, link, orientation, tolerance, free_axis, box):
     return {
         "arm": arm_index,
         "link_name": link,
+        "frame": frame,
         "orientation": orientation,
         "tolerance_rad": tolerance,
         "free_axis": free_axis,
@@ -534,6 +584,18 @@ def held_start(rng, model, limits, arm, free):
             return start
 
 
+def held_pose_goal(frame, turn, at):
+    """A pose goal of a grasp point in `frame`, turned `turn` at `at` there, within
+    POSE_TOLERANCE_M and POSE_TOLERANCE_RAD."""
+    return {
+        "frame": frame,
+        "position": at,
+        "orientation": quaternion(turn),
+        "position_tolerance": POSE_TOLERANCE_M,
+        "orientation_tolerance": POSE_TOLERANCE_RAD,
+    }
+
+
 def held_goal(rng, model, arm, start):
     """A pose goal of the grasp point of `arm`, whose joints stand at `start`: its turn there,
     at a position within HELD_REACH_M of its position there along a drawn direction."""
@@ -541,12 +603,7 @@ def held_goal(rng, model, arm, start):
     direction = [rng.gauss(0.0, 1.0) for _ in range(3)]
     norm = math.sqrt(sum(d * d for d in direction))
     reach = rng.uniform(*HELD_REACH_M)
-    return {
-        "position": [a + d / norm * reach for a, d in zip(at, direction)],
-        "orientation": quaternion(turn),
-        "position_tolerance": POSE_TOLERANCE_M,
-        "orientation_tolerance": POSE_TOLERANCE_RAD,
-    }
+    return held_pose_goal(ROBOT_FRAME, turn, [a + d / norm * reach for a, d in zip(at, direction)])
 
 
 def path_scene(rng, model, planned_arms, mode, tolerance, box):
@@ -564,12 +621,18 @@ def path_scene(rng, model, planned_arms, mode, tolerance, box):
         turn, _ = link_pose(model, posed.grasp_link, joints)
         orientation = TOP_DOWN if free else quaternion(turn)
         free_axis = "z" if free else "none"
-        held.append(held_orientation(k, posed.grasp_link, orientation, tolerance, free_axis, box))
+        held.append(
+            held_orientation(
+                k, posed.grasp_link, ROBOT_FRAME, orientation, tolerance, free_axis, box
+            )
+        )
         if mode == "two_links":
             elbow_link = moved_link(OPENARM_V2, posed.joints[ELBOW_JOINT])
             elbow, _ = link_pose(model, elbow_link, joints)
             held.append(
-                held_orientation(k, elbow_link, quaternion(elbow), ELBOW_TOLERANCE, "none", box)
+                held_orientation(
+                    k, elbow_link, ROBOT_FRAME, quaternion(elbow), ELBOW_TOLERANCE, "none", box
+                )
             )
     return {
         "boxes": [
@@ -663,7 +726,7 @@ def drawn_scenario(drawn, planning, min_clearance, name):
     }[name]
     drawn_scenes = [scene_of(k) for k in range(drawn or DRAWN)]
     scenario_header = header(group_of((LEFT_ARM,)), VOXEL_MAP, min_clearance, planning)
-    return kept(planned(scenario_header, [*drawn_scenes, *outside]), drawn, committed)
+    return kept(planned(scenario_header, [*drawn_scenes, *outside]), drawn, committed, DRAWN)
 
 
 def so101_goal(rng, model, joints, goal):
@@ -674,10 +737,11 @@ def so101_goal(rng, model, joints, goal):
         return joints
     turn, at = link_pose(model, SO101_ARM.grasp_link, dict(zip(SO101_ARM.joints, joints)))
     if goal == "position":
-        return [{"position": at, "position_tolerance": POSE_TOLERANCE_M}]
+        return [{"frame": SO101_FRAME, "position": at, "position_tolerance": POSE_TOLERANCE_M}]
     axis = [rng.gauss(0, 1) for _ in range(3)]
     return [
         {
+            "frame": SO101_FRAME,
             "position": at,
             "orientation": quaternion(product(turn, about_axis(axis, SO101_TILT_RAD))),
             "position_tolerance": POSE_TOLERANCE_M,
@@ -748,18 +812,18 @@ def so101_scenario(drawn, planning, min_clearance, goal, holding):
     ]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scenario = planned(scenario_header, [*scenes, *meeting, *outside])
-    return kept(scenario, drawn, COMMITTED_SO101)
+    return kept(scenario, drawn, COMMITTED_SO101, DRAWN)
 
 
-def kept(scenario, drawn, committed):
+def kept(scenario, drawn, committed, pool):
     """`scenario`, its drawn scenes first and every other scene after them, keeping of
     those drawn the first `drawn`, or with no `drawn` those at `committed` and the one whose
-    path has the most corners among the first DRAWN."""
+    path has the most corners among the first `pool`."""
     answered = scenario["scenes"]
-    count = drawn or DRAWN
+    count = drawn or pool
     kept_drawn = answered[:count]
     if not drawn:
-        most = max(range(DRAWN), key=lambda k: corners(kept_drawn[k]["ours"]))
+        most = max(range(pool), key=lambda k: corners(kept_drawn[k]["ours"]))
         kept_drawn = [kept_drawn[k] for k in dict.fromkeys([*committed.values(), most])]
     return {**scenario, "scenes": [*kept_drawn, *answered[count:]]}
 
@@ -848,35 +912,122 @@ def both_arms_pose_scene(rng, model, k, start, goal):
     return {**scene, "goal": poses}
 
 
-def both_arms_scenario(drawn, planning, min_clearance, name):
+def hand_poses(model, state):
+    """The grasp pose of each arm of OpenArm v2 at `state`, which holds the left arm's joints
+    then the right arm's: its rotation, as rows, and its translation, the left arm's first."""
+    joints = len(LEFT_ARM.joints)
+    return [
+        link_pose(model, arm.grasp_link, dict(zip(arm.joints, arm_state)))
+        for arm, arm_state in zip(OPENARM_ARMS, (state[:joints], state[joints:]))
+    ]
+
+
+def in_frame(frame, pose):
+    """`pose`, a rotation, as rows, and a translation in the robot frame, in the frame `frame`,
+    which stands so in the robot frame."""
+    frame_turn, frame_at = frame
+    turn, at = pose
+    inverse = transposed(frame_turn)
+    return product(inverse, turn), turned(inverse, [a - b for a, b in zip(at, frame_at)])
+
+
+def hand_frame_goals(model, left_state, right_state):
+    """The goal of each hand: the left hand's grasp pose at `left_state` in the right hand's
+    frame there, and the right hand's grasp pose at `right_state` in the robot frame."""
+    left, right = hand_poses(model, left_state)
+    _, right_goal = hand_poses(model, right_state)
+    return [
+        held_pose_goal(RIGHT_ARM.grasp_link, *in_frame(right, left)),
+        held_pose_goal(ROBOT_FRAME, *right_goal),
+    ]
+
+
+def held_in_hand_frames(model, start, tolerance, box):
+    """The orientations the hands hold along a path from `start`, as the module says, each
+    within `tolerance`, MoveIt's of `box`."""
+    left, right = hand_poses(model, start)
+    wrist_link = moved_link(OPENARM_V2, RIGHT_ARM.joints[WRIST_JOINT])
+    joints = len(LEFT_ARM.joints)
+    wrist = link_pose(model, wrist_link, dict(zip(RIGHT_ARM.joints, start[joints:])))
+    left_in_right, _ = in_frame(right, left)
+    right_in_wrist, _ = in_frame(wrist, right)
+    return [
+        held_orientation(
+            0,
+            LEFT_ARM.grasp_link,
+            RIGHT_ARM.grasp_link,
+            quaternion(left_in_right),
+            tolerance,
+            "none",
+            box,
+        ),
+        held_orientation(
+            1, RIGHT_ARM.grasp_link, wrist_link, quaternion(right_in_wrist), tolerance, "none", box
+        ),
+    ]
+
+
+def hand_frame_scene(rng, model, k, start, goal, tolerance, box):
+    """The `k`th drawn scene of both arms from `start` among one to three boxes, each in front of
+    either arm, whose constraints name links of the arms as their frames, as the module says,
+    of the drawn goal configuration `goal`: each orientation held within `tolerance`, MoveIt's
+    of `box`."""
+    scene = both_arms_scene(rng, model, k, start, goal, False)
+    if k % 2 == 0:
+        return {**scene, "goal": hand_frame_goals(model, goal, goal)}
+    joints = len(LEFT_ARM.joints)
+    turning = slice(joints, joints + WRIST_JOINT + 1)
+    reached = list(start)
+    reached[turning] = [
+        at + max(-HAND_FRAME_TURN_RAD, min(HAND_FRAME_TURN_RAD, to - at))
+        for at, to in zip(start[turning], goal[turning])
+    ]
+    return {
+        **scene,
+        "path_orientations": held_in_hand_frames(model, start, tolerance, box),
+        "goal": hand_frame_goals(model, start, reached),
+    }
+
+
+def both_arms_scenario(drawn, planning, min_clearance, name, tolerance, box):
     """The scenario `name` of the drawn scenes of both arms, among boxes of voxels
-    (BOTH_NAME), among collision objects (BOTH_OBJECTS_NAME) or among boxes to a pose of each
-    grasp point (BOTH_POSES_NAME): those it picks, or with `drawn` the first `drawn`, the
-    scenes whose start and whose goal hold the robot's own bodies meeting, and the starts
-    outside the limits, planned as `planning` says at `min_clearance`."""
+    (BOTH_NAME), among collision objects (BOTH_OBJECTS_NAME), among boxes to a pose of each
+    grasp point (BOTH_POSES_NAME) or among boxes with constraints in the arms' links
+    (HAND_FRAME_NAME), its orientations held within `tolerance`, MoveIt's of `box`: those it
+    picks, or with `drawn` the first `drawn`, the scenes whose start and whose goal hold the
+    robot's own bodies meeting, and the starts outside the limits, planned as `planning` says
+    at `min_clearance`."""
     rng = generator(name)
     model = robot(OPENARM_V2)
     limits = [joint_limits(OPENARM_V2, joint) for arm in OPENARM_ARMS for joint in arm.joints]
     scenario_header = header(group_of(OPENARM_ARMS), VOXEL_MAP, min_clearance, planning)
-    pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or DRAWN)
-    scene_of, committed = {
+    scene_of, committed, pool = {
         BOTH_NAME: (
             lambda k, start, goal: both_arms_scene(rng, model, k, start, goal, False),
             COMMITTED_BOTH,
+            DRAWN,
         ),
         BOTH_OBJECTS_NAME: (
             lambda k, start, goal: both_arms_scene(rng, model, k, start, goal, True),
             COMMITTED_BOTH_OBJECTS,
+            DRAWN,
         ),
         BOTH_POSES_NAME: (
             lambda k, start, goal: both_arms_pose_scene(rng, model, k, start, goal),
             COMMITTED_BOTH_POSES,
+            DRAWN,
+        ),
+        HAND_FRAME_NAME: (
+            lambda k, start, goal: hand_frame_scene(rng, model, k, start, goal, tolerance, box),
+            COMMITTED_HAND_FRAME,
+            DRAWN_HAND_FRAME,
         ),
     }[name]
+    pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or pool)
     drawn_scenes = [scene_of(k, start, goal) for k, (start, goal) in enumerate(pairs)]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
     scenario = planned(scenario_header, [*drawn_scenes, *meeting, *outside])
-    return kept(scenario, drawn, committed)
+    return kept(scenario, drawn, committed, pool)
 
 
 def episodes_scenario(episodes, launcher, planning, min_clearance):
@@ -937,6 +1088,12 @@ def main():
         f"{BOTH_POSES_NAME}, scenes of both arms planned as one group",
     )
     parser.add_argument(
+        "--hand-frame",
+        action="store_true",
+        help=f"write {HAND_FRAME_NAME}, scenes of both arms whose constraints name the arms' "
+        "links as their frames",
+    )
+    parser.add_argument(
         "--robot",
         choices=("openarm_v2", "so101"),
         default="openarm_v2",
@@ -976,13 +1133,14 @@ def main():
         "--path-tolerance",
         type=float,
         default=PATH_TOLERANCE,
-        help="the tolerance of the orientations a path holds, in radians, with --path-orientation",
+        help="the tolerance of the orientations a path holds, in radians, with "
+        "--path-orientation or --hand-frame",
     )
     parser.add_argument(
         "--moveit-box",
         choices=MOVEIT_BOXES,
         default="inner",
-        help="the rotation-vector tolerances MoveIt holds, with --path-orientation",
+        help="the rotation-vector tolerances MoveIt holds, with --path-orientation or --hand-frame",
     )
     args = parser.parse_args()
     if (args.episodes is None) != (args.launcher is None):
@@ -1006,10 +1164,19 @@ def main():
         or args.poses
         or args.both_arms
         or args.path_orientation is not None
+        or args.hand_frame
     ):
         parser.error(
             "--robot so101 writes its scenes among collision objects: drop --episodes, "
-            "--objects, --poses, --both-arms and --path-orientation, and name the goal with --goal"
+            "--objects, --poses, --both-arms, --path-orientation and --hand-frame, and name the "
+            "goal with --goal"
+        )
+    if args.hand_frame and (
+        args.episodes is not None or args.objects or args.poses or args.path_orientation
+    ):
+        parser.error(
+            "--hand-frame writes scenes of both arms among boxes whose goals are poses in the "
+            "arms' frames: drop --episodes, --objects, --poses and --path-orientation"
         )
     if args.planning_time is not None and not 0 < args.planning_time < math.inf:
         parser.error(f"--planning-time is {args.planning_time}; give the seconds, more than 0")
@@ -1043,11 +1210,15 @@ def main():
         or args.refiner != "none"
         or args.planning_time is not None
         or args.min_clearance != MIN_CLEARANCE
+        or args.path_tolerance != PATH_TOLERANCE
+        or args.moveit_box != "inner"
     ):
         parser.error(
             "the committed scenario plans `rrt_connect` refined by `none` on its iterations at a "
-            "clearance of 0, the plans its scenes are picked by: give --drawn 200, or --episodes "
-            "and --launcher, with --planner, --refiner, --planning-time or --min-clearance"
+            f"clearance of 0, holding orientations within {PATH_TOLERANCE} rad inside MoveIt's "
+            "inner box, the plans its scenes are picked by: give --drawn 200, or --episodes and "
+            "--launcher, with --planner, --refiner, --planning-time, --min-clearance, "
+            "--path-tolerance or --moveit-box"
         )
     if committed and (args.goal != "position" or args.holding):
         parser.error(
@@ -1061,9 +1232,27 @@ def main():
             so101_scenario(args.drawn, planning, args.min_clearance, args.goal, args.holding),
         )
         return
-    if args.both_arms:
-        name = BOTH_OBJECTS_NAME if args.objects else BOTH_POSES_NAME if args.poses else BOTH_NAME
-        write(name, both_arms_scenario(args.drawn, planning, args.min_clearance, name))
+    if args.both_arms or args.hand_frame:
+        name = (
+            HAND_FRAME_NAME
+            if args.hand_frame
+            else BOTH_OBJECTS_NAME
+            if args.objects
+            else BOTH_POSES_NAME
+            if args.poses
+            else BOTH_NAME
+        )
+        write(
+            name,
+            both_arms_scenario(
+                args.drawn,
+                planning,
+                args.min_clearance,
+                name,
+                args.path_tolerance,
+                args.moveit_box,
+            ),
+        )
         return
     if args.episodes is None:
         name = OBJECTS_NAME if args.objects else POSES_NAME if args.poses else NAME

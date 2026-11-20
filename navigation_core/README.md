@@ -60,8 +60,9 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   stop finds and after one it does not; Nav2's monitor holds a stamp after now valid until
   the clock passes the stamp plus its source timeout.
 
-Poses on the floor are `camera_core::pose::PlanarPose`s, a laser scan is
-`camera_core::laser_scan::LaserScan`, and a body velocity is `control_core::twist::Twist`.
+Poses on the floor are `control_core::planar_pose::PlanarPose`s, a laser scan is
+`camera_core::laser_scan::LaserScan`, and a body velocity is
+`control_core::twist::PlanarTwist`.
 
 ## Quick start
 
@@ -70,7 +71,7 @@ use std::num::NonZeroU32;
 
 use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::positive_finite::PositiveFinite;
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::footprint::Footprint;
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::{CostGrid, FREE, GridGeometry};

@@ -39,7 +39,7 @@ const ORACLE_SPACING_RAD: f64 = 2e-3;
 
 /// The grasp point's pose at `q`.
 fn hand(q: &[f64; JOINTS]) -> Isometry3<f64> {
-    LEFT_ARM.chain().world_ee_pose(q)
+    LEFT_ARM.chain().root_ee_pose(q)
 }
 
 /// The grasp point, as a Cartesian path follows it.
@@ -365,7 +365,7 @@ fn a_pose_at_the_same_position_turns_in_place() {
 #[test]
 fn a_link_fixed_to_the_last_joint_follows_the_lines() {
     let offset = Isometry3::translation(0.0, 0.0, 0.05);
-    let link_pose = |q: &[f64; JOINTS]| LEFT_ARM.chain().at(q).link_pose_world(JOINTS - 1) * offset;
+    let link_pose = |q: &[f64; JOINTS]| LEFT_ARM.chain().at(q).link_pose_root(JOINTS - 1) * offset;
     let target = moved(&link_pose(&START), Vector3::new(0.0, 0.0, -0.05));
     let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let path = cartesian_path(
@@ -454,7 +454,7 @@ fn a_start_in_the_spare_above_the_clearance_departs_in_one_run() {
 // A start in contact fails where collisions are checked, and walks where they are not.
 #[test]
 fn a_start_in_contact_fails_unless_collisions_go_unchecked() {
-    let last_link = LEFT_ARM.chain().at(&START).link_pose_world(JOINTS - 1);
+    let last_link = LEFT_ARM.chain().at(&START).link_pose_root(JOINTS - 1);
     let (map, field) = world(&cube(last_link.translation.vector, 0.02));
     let scene = scene(&map, &field);
     let pose = moved(&hand(&START), Vector3::new(0.0, 0.0, 0.05));
@@ -472,7 +472,7 @@ fn a_start_in_contact_fails_unless_collisions_go_unchecked() {
 // last link until the arm stands inside the clearance of it.
 #[test]
 fn a_start_inside_the_clearance_fails_unless_collisions_go_unchecked() {
-    let last_link = LEFT_ARM.chain().at(&START).link_pose_world(JOINTS - 1);
+    let last_link = LEFT_ARM.chain().at(&START).link_pose_root(JOINTS - 1);
     let below = last_link.translation.vector - Vector3::new(0.0, 0.0, 0.2);
     let arms = Arms::new(vec![plan_arm(LEFT)], None);
     let raised = |by: f64| world(&cube(below + Vector3::new(0.0, 0.0, by), 0.02));

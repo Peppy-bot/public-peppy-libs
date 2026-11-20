@@ -1,6 +1,6 @@
 """The loops' one way of waiting on the node's token, an action loop that
-decides each goal before it runs one, and what a handler that raises
-leaves in the log."""
+decides each goal before it runs one and hands its handler the goal the
+decision admitted, and what a handler that raises leaves in the log."""
 
 import asyncio
 import logging
@@ -10,7 +10,7 @@ import fake_peppygen
 import pytest
 
 from conftest import FakeDetector, FakeManipulator, FakeSource, FakeToken, make_brain, records_of
-from brain_core.brain import decider
+from brain_core.brain import Decider
 from brain_core.handlers import switch_model
 from brain_core.ports import Role
 from brain_core import serve
@@ -106,7 +106,7 @@ class ScriptedAction:
     async def handle_goal_next_request(self, decide):
         while self.requests:
             request = self.requests.pop(0)
-            decision = decide(request)
+            decision = await decide(request)
             if decision.refusal is not None:
                 self.refused.append((request.data.model, decision.refusal))
                 continue
@@ -145,10 +145,10 @@ async def test_an_action_loop_refuses_at_once_what_its_check_refuses_and_runs_th
     module = exposing(fake_peppygen.switch_model, scripted)
     token, tasks, ran = FakeToken(), set(), []
 
-    async def run(ctx) -> None:
-        ran.append(ctx.request.data.model)
+    async def run(ctx, goal) -> None:
+        ran.append((ctx.request.data.model, goal.model))
 
-    loop = asyncio.create_task(serve_action(module, None, token, tasks, decider(module, brain, switch_model.decide), run))
+    loop = asyncio.create_task(serve_action(module, None, token, tasks, Decider(module, brain, switch_model.admit), run))
     await asyncio.wait_for(scripted.drained.wait(), 1.0)
     await asyncio.gather(*tasks)
     failure = fake_peppygen.switch_model.Failure
@@ -157,25 +157,25 @@ async def test_an_action_loop_refuses_at_once_what_its_check_refuses_and_runs_th
         ("slow", failure("rejected", "'slow' is not a perception model here; see list_models")),
         ("fake", failure("precondition_failed", "grab_item is running")),
     ]
-    assert ran == ["fast"]
+    assert ran == [("fast", "fast")]
     assert source.prepared == []
     token.cancel()
     await asyncio.wait_for(loop, 1.0)
     brain.sequencer.finish(busy)
 
 
-async def test_an_action_loop_without_a_check_accepts_every_goal():
-    # Even a closed brain: item_manipulation reports refusals in its result.
+async def test_an_action_loop_without_an_admit_accepts_every_goal_and_runs_its_request_data():
+    # Even a closed brain: drop_item reports refusals in its result.
     brain = await make_brain()
     brain.sequencer.close()
     scripted = ScriptedAction([switch_request("arm", "one"), switch_request("arm", "two")])
-    module = exposing(fake_peppygen.grab_item, scripted)
+    module = exposing(fake_peppygen.drop_item, scripted)
     token, tasks, ran = FakeToken(), set(), []
 
-    async def run(ctx) -> None:
-        ran.append(ctx.request.data.model)
+    async def run(ctx, goal) -> None:
+        ran.append(goal.model)
 
-    loop = asyncio.create_task(serve_action(module, None, token, tasks, decider(module, brain, None), run))
+    loop = asyncio.create_task(serve_action(module, None, token, tasks, Decider(module, brain, None), run))
     await asyncio.wait_for(scripted.drained.wait(), 1.0)
     await asyncio.gather(*tasks)
     assert ran == ["one", "two"] and scripted.refused == []

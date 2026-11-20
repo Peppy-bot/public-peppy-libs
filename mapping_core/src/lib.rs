@@ -54,7 +54,7 @@
 //! bearing, where karto adds the first angle to the heading before the steps; and
 //! [`Localization::from_initial_pose`] searches a disc with a coarse matcher of its own
 //! (`ScanMatcher::match_scan_within`), with no response expansion. Poses of the floor are
-//! `camera_core::pose::PlanarPose`.
+//! `control_core::planar_pose::PlanarPose`.
 #![forbid(unsafe_code)]
 
 mod cholesky;

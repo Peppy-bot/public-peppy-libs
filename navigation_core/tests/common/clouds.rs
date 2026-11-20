@@ -4,9 +4,9 @@
 
 use std::num::NonZeroUsize;
 
-use camera_core::pose::Pose;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use navigation_core::PaddedFootprint;
 use navigation_core::grid::GridGeometry;
 use navigation_core::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
@@ -114,7 +114,7 @@ pub fn insert_cloud(
     base: [f64; 3],
     range_m: f64,
 ) {
-    let pose = Pose::new(sensor.position, sensor.orientation).expect("the sensor's pose");
+    let pose = Transform::new(sensor.position, sensor.orientation).expect("the sensor's pose");
     let [x, y, yaw] = base;
     live.insert_depth_frame(
         0,

@@ -5,9 +5,9 @@ build-backend = "hatchling.build"
 [project]
 name = "sim_robot_core"
 version = "0.1.0"
-description = "What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the four pairing slots and what each pair names, one entry per robot model built from the robot's description with its checks, and the camera configuration. The engine supplies its gains, its model files and its transport."
+description = "What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the four pairing slots and what each pair names, one entry per robot model built from the robot's description with its checks, the camera configuration, and world, the one frame of a simulation, with the commands given in it. The engine supplies its gains, its model files and its transport."
 requires-python = ">=3.12"
-dependencies = ["numpy>=1.26", "pyjson5>=1.6", "robot_description_py"]
+dependencies = ["control_core_py", "numpy>=1.26", "pyjson5>=1.6", "robot_description_py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sim_robot_core"]
@@ -20,6 +20,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.uv.sources]
-# The bindings beside this package in the same checkout. An engine's image
-# installs both from one commit of this repository.
+# The packages beside this one in the same checkout. An engine's image
+# installs each of them from one commit of this repository.
+control_core_py = { path = "../control_core_py" }
 robot_description_py = { path = "../robot_description_py" }

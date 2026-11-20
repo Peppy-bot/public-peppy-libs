@@ -8,6 +8,13 @@ The motion planner is optional: `has_planner` says whether the brain
 consumes it and the launcher bound its slot. Without it the brain moves by
 move_arm lines alone.
 
+Every command leaves its frame out, for the robot frame, and its timestamp,
+for the latest time: the brain holds every place in the robot frame, so its
+backbone and its planner place each one where the robot frame stands when
+they take the command. Each pose of a result, in the robot
+frame as its contract gives it, is parsed through control_core_py's
+geometry.
+
 The backbone plans and governs every move, so nothing here checks
 collisions or limits: a target the backbone cannot reach comes back as a
 failed or refused goal with its failure kind, `unreachable`, which the
@@ -18,10 +25,11 @@ keep going unwatched.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Any, Optional, Sequence
+
+from control_core_py.geometry import Pose, quaternion_of_yaw
 
 from .ports import ItemShape, Quat, Vec3
 
@@ -86,12 +94,14 @@ class Moved:
 @dataclass(frozen=True)
 class MoveResult(Moved):
     """An arm move's end, and where the grasp point stood when it ended:
-    for a completed or a cancelled move. `ended_on_contact` is true when a
-    move with a contact gap above 0 completed on contact, the grasp point
-    short of its goal, and false for every other end."""
+    for a completed or a cancelled move, with `final_timestamp`, the time of
+    that measurement on the clock of transforms. `ended_on_contact` is true
+    when a move with a contact gap above 0 completed on contact, the grasp
+    point short of its goal, and false for every other end."""
 
     final_position: Optional[Vec3] = None
     final_orientation: Optional[Quat] = None
+    final_timestamp: Optional[float] = None
     ended_on_contact: bool = False
 
 
@@ -249,13 +259,14 @@ class ObjectOperation:
     """One operation of apply_collision_objects: an add places the object
     with its shapes at its pose, in the robot frame, replacing one of the
     same id; a move reads the id and the pose alone; a remove reads the id
-    alone."""
+    alone. A field an operation does not read is none, and the request
+    leaves it out."""
 
     id: str
     operation: str
-    position: Vec3 = (0.0, 0.0, 0.0)
-    orientation: Quat = IDENTITY
-    shapes: tuple[CollisionShape, ...] = ()
+    position: Optional[Vec3] = None
+    orientation: Optional[Quat] = None
+    shapes: Optional[tuple[CollisionShape, ...]] = None
 
     @classmethod
     def add(cls, object_id: str, position: Vec3, orientation: Quat, shapes: Sequence[CollisionShape]) -> "ObjectOperation":
@@ -295,8 +306,7 @@ def item_object(item_id: str, shape: Optional[ItemShape], centre: Vec3) -> Objec
     UNMEASURED_ITEM_RADIUS_M for an item with no shape."""
     if shape is None:
         return ObjectOperation.add(brain_object_id(item_id), centre, IDENTITY, [CollisionShape("sphere", (UNMEASURED_ITEM_RADIUS_M,))])
-    half = shape.yaw_rad / 2.0
-    turn = (0.0, 0.0, math.sin(half), math.cos(half))
+    turn = quaternion_of_yaw(shape.yaw_rad)
     return ObjectOperation.add(brain_object_id(item_id), centre, turn, [CollisionShape("box", tuple(shape.sides))])
 
 
@@ -356,7 +366,7 @@ class Robot:
         `ended_on_contact` says so. A duration of 0 is the fastest the joint
         limits allow."""
         request = self._move_arm.GoalRequest(
-            **_arm_move_fields(arm, position, orientation, duration_s),
+            **self._arm_move_fields(self._move_arm.GoalRequestTarget, arm, position, orientation, duration_s),
             settle_position_tolerance_m=settle_position_tolerance_m,
             settle_orientation_tolerance_rad=settle_orientation_tolerance_rad,
             settle_timeout_s=settle_timeout_s,
@@ -365,9 +375,10 @@ class Robot:
         moved, data = await self._run(self._move_arm, request)
         if data is None:
             return MoveResult(moved.end, moved.message, moved.failure_kind)
+        final_position, final_orientation = _pose(data.final_pose)
         return MoveResult(
-            moved.end, moved.message, moved.failure_kind, _vec3(data.final_position), _quat(data.final_orientation),
-            bool(data.ended_on_contact),
+            moved.end, moved.message, moved.failure_kind, final_position, final_orientation,
+            float(data.final_pose.timestamp), bool(data.ended_on_contact),
         )
 
     async def set_gripper(
@@ -409,7 +420,7 @@ class Robot:
         gets no answer within `CHECK_TIMEOUT_S`, is reported as not
         reachable, with the reason."""
         request = self._check_arm_move.Request(
-            **_arm_move_fields(arm, position, orientation, duration_s)
+            **self._arm_move_fields(self._check_arm_move.RequestTarget, arm, position, orientation, duration_s)
         )
         try:
             answer = await self._check_arm_move.poll(
@@ -489,11 +500,14 @@ class Robot:
             arms=[module.GoalRequestArmsItem(arm_name=arm, start_joint_positions=[float(v) for v in start_joint_positions])],
             goal_joint_constraints=[],
             goal_position_constraints=[
-                module.GoalRequestGoalPositionConstraintsItem(link_name=link, position=list(position), tolerance_m=position_tolerance_m)
+                module.GoalRequestGoalPositionConstraintsItem(
+                    link_name=link, frame=None, timestamp=None, position=list(position), tolerance_m=position_tolerance_m,
+                )
             ],
             goal_orientation_constraints=[
                 module.GoalRequestGoalOrientationConstraintsItem(
-                    link_name=link, orientation=list(orientation), tolerance_rad=orientation_tolerance_rad, free_axis="none",
+                    link_name=link, frame=None, timestamp=None, orientation=list(orientation),
+                    tolerance_rad=orientation_tolerance_rad, free_axis="none",
                 )
             ],
             path_orientation_constraints=[],
@@ -534,6 +548,8 @@ class Robot:
             arm_name=arm,
             start_joint_positions=[float(v) for v in start_joint_positions],
             link_name=link,
+            frame=None,
+            timestamp=None,
             waypoints=[module.GoalRequestWaypointsItem(position=list(position), orientation=list(orientation)) for position, orientation in poses],
             avoid_collisions=avoid_collisions,
         )
@@ -572,11 +588,8 @@ class Robot:
         if reason:
             return PlanningScene(reason=reason)
         return PlanningScene(
-            objects=tuple(SceneObject(found.id, _vec3(found.position), _quat(found.orientation)) for found in data.objects),
-            attached_objects=tuple(
-                SceneObject(found.id, _vec3(found.position), _quat(found.orientation), found.link_name)
-                for found in data.attached_objects
-            ),
+            objects=tuple(SceneObject(found.id, *_pose(found)) for found in data.objects),
+            attached_objects=tuple(SceneObject(found.id, *_pose(found), found.frame) for found in data.attached_objects),
         )
 
     async def apply_collision_objects(self, operations: Sequence[ObjectOperation]) -> str:
@@ -588,9 +601,11 @@ class Robot:
             module.RequestObjectsItem(
                 id=operation.id,
                 operation=operation.operation,
-                position=list(operation.position),
-                orientation=list(operation.orientation),
-                shapes=[
+                frame=None,
+                timestamp=None,
+                position=list(operation.position) if operation.position is not None else None,
+                orientation=list(operation.orientation) if operation.orientation is not None else None,
+                shapes=None if operation.shapes is None else [
                     module.RequestObjectsItemShapesItem(
                         kind=shape.kind, dimensions=list(shape.dimensions), mesh_vertices=[], mesh_triangles=[],
                         position=[0.0, 0.0, 0.0], orientation=list(IDENTITY),
@@ -630,6 +645,13 @@ class Robot:
         cancelled outcome once the backbone has brought the limb to rest."""
         for handle in list(self._live):
             await _cancel(handle)
+
+    def _arm_move_fields(self, target_type, arm: str, position: Vec3, orientation: Quat, duration_s: float) -> dict:
+        """The fields a move_arm goal and a check_arm_move request share, the
+        target of the generated `target_type` with no frame, the robot frame,
+        and no timestamp, the latest time."""
+        target = target_type(frame=None, timestamp=None, position=list(position), orientation=list(orientation))
+        return dict(arm_name=arm, target=target, duration_s=duration_s)
 
     def _modules(self) -> PlannerModules:
         """The planner's modules; a call of a planner member by a brain that
@@ -688,28 +710,13 @@ class Robot:
         return Moved(MoveEnd.LOST, f"{name} ended as {result.status.name.lower()}"), None
 
 
-def _arm_move_fields(
-    arm: str,
-    position: Vec3,
-    orientation: Quat,
-    duration_s: float,
-) -> dict:
-    """The fields a move_arm goal and a check_arm_move request share."""
-    return dict(
-        arm_name=arm,
-        position=list(position),
-        orientation=list(orientation),
-        duration_s=duration_s,
-    )
-
-
 def _joints(values) -> tuple[float, ...]:
     return tuple(float(value) for value in values)
 
 
 def _waypoint(waypoint) -> Waypoint:
     """A waypoint of a plan or a path, as motion_planning gives it."""
-    return Waypoint(_joints(waypoint.joint_positions), _vec3(waypoint.position), _quat(waypoint.orientation))
+    return Waypoint(_joints(waypoint.joint_positions), *_pose(waypoint))
 
 
 async def _cancel(handle) -> None:
@@ -719,13 +726,9 @@ async def _cancel(handle) -> None:
         pass
 
 
-def _vec3(values) -> Optional[Vec3]:
-    if values is None or len(values) != 3:
-        return None
-    return (float(values[0]), float(values[1]), float(values[2]))
-
-
-def _quat(values) -> Optional[Quat]:
-    if values is None or len(values) != 4:
-        return None
-    return (float(values[0]), float(values[1]), float(values[2]), float(values[3]))
+def _pose(record) -> tuple[Vec3, Quat]:
+    """The position and the orientation of a pose a result reports, parsed
+    through control_core_py's geometry; a ValueError names one that is no
+    pose."""
+    pose = Pose.parse(record.position, record.orientation)
+    return pose.position.position, pose.orientation.quaternion

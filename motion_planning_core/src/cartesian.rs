@@ -661,7 +661,7 @@ fn frame_lever<const N: usize>(chain: &Chain<N>, frame: Frame) -> f64 {
         JointKind::Revolute { .. } | JointKind::Continuous { .. } | JointKind::Fixed => 0.0,
     };
     let origins: Vec<Vector3<f64>> = (0..N)
-        .map(|j| posed.origin_world(j))
+        .map(|j| posed.origin_root(j))
         .chain(std::iter::once(
             frame_pose_at(&posed, frame).translation.vector,
         ))
@@ -726,7 +726,7 @@ mod tests {
         }
 
         fn pose(&self, q: &[f64; 7]) -> Isometry3<f64> {
-            self.0.world_ee_pose(q)
+            self.0.root_ee_pose(q)
         }
     }
 
@@ -752,7 +752,7 @@ mod tests {
 
     /// The grasp point's pose at `q`, 0.1 m lower.
     fn lowered(chain: &Chain<7>, q: &[f64; 7]) -> Isometry3<f64> {
-        let pose = chain.world_ee_pose(q);
+        let pose = chain.root_ee_pose(q);
         Isometry3::from_parts(
             Translation3::from(pose.translation.vector - Vector3::z() * 0.1),
             pose.rotation,
@@ -797,7 +797,7 @@ mod tests {
     /// The grasp point's line 0.1 m down from `GRIPPER_DOWN`.
     fn line_down(chain: &Chain<7>) -> Lines {
         Lines::new(vec![Line {
-            from: chain.world_ee_pose(&GRIPPER_DOWN),
+            from: chain.root_ee_pose(&GRIPPER_DOWN),
             to: lowered(chain, &GRIPPER_DOWN),
         }])
     }
@@ -846,7 +846,7 @@ mod tests {
         let end = lowered(&chain, &GRIPPER_DOWN);
         let lines = Lines::new(vec![
             Line {
-                from: chain.world_ee_pose(&GRIPPER_DOWN),
+                from: chain.root_ee_pose(&GRIPPER_DOWN),
                 to: end,
             },
             Line { from: end, to: end },
@@ -919,7 +919,7 @@ mod tests {
         let (mut steps, mut completed) = (0_usize, 0_usize);
         for _ in 0..LINES {
             let start = draws.within(&limits);
-            let from = chain.world_ee_pose(&start);
+            let from = chain.root_ee_pose(&start);
             let moved: Vector3<f64> =
                 Vector3::from_fn(|_, _| draws.between(-LINE_REACH_M, LINE_REACH_M));
             let turned: Vector3<f64> =
@@ -1008,7 +1008,7 @@ mod tests {
     /// The end of the line from `UPPER_BRANCH` on which the shoulder reaches its limit on
     /// the start's elbow branch, while the other branch still reaches the line.
     fn past_the_shoulder_limit(geometry: &ChainGeometry<3>) -> Isometry3<f64> {
-        let from = geometry.chain().world_ee_pose(&UPPER_BRANCH);
+        let from = geometry.chain().root_ee_pose(&UPPER_BRANCH);
         Isometry3::from_parts(
             Translation3::new(from.translation.x, -from.translation.y, 0.0),
             UnitQuaternion::identity(),
@@ -1025,10 +1025,10 @@ mod tests {
     /// joints.
     fn past_a_line_that_stands_still(chain: &Chain<3>, blend: f64) -> (Vec<Reached<3>>, Lines) {
         let (near, far) = (turned(SHORT_TURN_RAD), turned(LONG_TURN_RAD));
-        let (near_pose, far_pose) = (chain.world_ee_pose(&near), chain.world_ee_pose(&far));
+        let (near_pose, far_pose) = (chain.root_ee_pose(&near), chain.root_ee_pose(&far));
         let lines = Lines::new(vec![
             Line {
-                from: chain.world_ee_pose(&UPPER_BRANCH),
+                from: chain.root_ee_pose(&UPPER_BRANCH),
                 to: near_pose,
             },
             Line {
@@ -1074,9 +1074,7 @@ mod tests {
         let geometry = elbow_arm();
         let chain = geometry.chain();
         let arms: Arms<3, 3> = Arms::new(vec![Arm::new("arm", &geometry)], None);
-        let on_the_way = chain
-            .world_ee_pose(&turned(LONG_TURN_RAD / 2.0))
-            .translation;
+        let on_the_way = chain.root_ee_pose(&turned(LONG_TURN_RAD / 2.0)).translation;
         let (map, field) = world(
             VOXEL_M,
             [-0.7, -0.7, -0.1],
@@ -1192,7 +1190,7 @@ mod tests {
         };
         let checks = PathChecks::new(&arms, &scene, OTHER_BRANCH, MIN_CLEARANCE_M);
         let follower = follower_of(geometry.chain(), Judge::Checked(Box::new(checks)), None);
-        let pose = geometry.chain().world_ee_pose(&UPPER_BRANCH);
+        let pose = geometry.chain().root_ee_pose(&UPPER_BRANCH);
         let q = follower
             .solve_from(&UPPER_BRANCH, &OTHER_BRANCH, &pose)
             .expect("the other branch keeps the clearance");

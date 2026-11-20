@@ -34,8 +34,8 @@ fn frame_of(chain: &Chain<JOINTS>, grasp_link: &str, link: &str) -> Frame {
 /// The pose of `frame`, one [`frame_of`] gives, of `chain` at `q`.
 fn frame_pose(chain: &Chain<JOINTS>, frame: Frame, q: &[f64; JOINTS]) -> Isometry3<f64> {
     match frame {
-        Frame::GraspPoint => chain.world_ee_pose(q),
-        Frame::Link { segment, offset } => chain.at(q).link_pose_world(segment) * offset,
+        Frame::GraspPoint => chain.root_ee_pose(q),
+        Frame::Link { segment, offset } => chain.at(q).link_pose_root(segment) * offset,
         Frame::Part { .. } => panic!("a Cartesian path follows no part a link carries"),
     }
 }

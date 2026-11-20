@@ -5,9 +5,9 @@ build-backend = "hatchling.build"
 [project]
 name = "so101"
 version = "0.1.0"
-description = "The driver code the SO-101 nodes share: the servos' names on the bus, wire-unit conversions, setpoint parsing shaped by the STS3215's constraints, the lerobot device boundary, the staleness limits of the family's links, and pose transforms."
+description = "The driver code the SO-101 nodes share: the servos' names on the bus, wire-unit conversions, setpoint parsing shaped by the STS3215's constraints, the lerobot device boundary, and the staleness limits of the family's links."
 requires-python = ">=3.12,<3.14"
-dependencies = ["control_core_py", "numpy>=1.26"]
+dependencies = ["control_core_py"]
 
 [tool.uv.sources]
 control_core_py = { path = "../control_core_py" }

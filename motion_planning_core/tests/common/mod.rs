@@ -14,13 +14,13 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use camera_core::pose::Pose;
 use chain_kinematics::{Draws, PRECISION_M, PRECISION_RAD, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
-use motion_planning_core::{Arm, Arms, Body};
+use frame_tree::Transform;
+use motion_planning_core::{Arm, Arms, Body, Goal, PlacedGoal};
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Scan, VoxelBox, VoxelMap};
 use robot_description::ArmId;
@@ -70,6 +70,11 @@ pub fn plan_arm(id: ArmId) -> Arm<'static, JOINTS> {
     Arm::new(&openarm_v2::arm(id).name, geometry)
 }
 
+/// OpenArm v2's left arm alone, the right arm outside the group, with no self model.
+pub fn left_alone() -> Arms<'static, JOINTS, JOINTS> {
+    Arms::new(vec![plan_arm(LEFT)], None)
+}
+
 /// OpenArm v2's left arm as `srs_model` models it, from its base to its grasp point.
 pub fn left_srs_arm() -> srs_model::Arm {
     let left = openarm_v2::arm(LEFT);
@@ -107,6 +112,13 @@ pub fn off_the_branch_seams(seed: u64) -> impl Iterator<Item = [f64; JOINTS]> {
     })
 }
 
+/// `goal`, whose targets name no frame of another arm, placed for its arm.
+pub fn placed(goal: &Goal) -> PlacedGoal {
+    goal.placed_for(0, |arm, _| {
+        panic!("the goal names a frame of the arm at place {arm}, another arm")
+    })
+}
+
 /// `value`, a tolerance of the tests above 0.
 pub fn positive(value: f64) -> PositiveFinite {
     PositiveFinite::parse(value).expect("a positive tolerance")
@@ -122,7 +134,7 @@ pub fn an_hour_from_now() -> Instant {
 }
 
 /// The frame of OpenArm v2's URDF root, which the maps stand in.
-pub fn world() -> FrameName {
+pub fn root_frame() -> FrameName {
     FrameName::parse(openarm_v2::root_link()).expect("the URDF root names a frame")
 }
 
@@ -130,7 +142,7 @@ pub fn world() -> FrameName {
 /// origin.
 pub fn map(voxel_m: f64, half_m: f64) -> VoxelMap {
     VoxelMap::new(
-        world(),
+        root_frame(),
         PositiveFinite::parse(voxel_m).expect("positive"),
         Bounds {
             min: [-half_m; 3],
@@ -149,8 +161,8 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
         .collect();
     map.insert(
         &Scan {
-            frame: &world(),
-            sensor: Pose::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            frame: &root_frame(),
+            sensor: Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
             points: &relative,
             max_range_m: PositiveFinite::parse(10.0).expect("positive"),
         },
@@ -219,7 +231,7 @@ pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()
         .flat_map(|rider| {
-            let pose = posed.link_pose_world(rider.segment) * rider.offset;
+            let pose = posed.link_pose_root(rider.segment) * rider.offset;
             let RiderBody::Part(part) = rider.body else {
                 panic!("a finger is a part of the robot");
             };

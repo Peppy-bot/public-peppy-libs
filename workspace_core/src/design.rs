@@ -18,6 +18,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use control_core::geometry::Point;
+
 use crate::camera::Camera;
 use crate::fit::{Fit, fit, largest_workable_rectangle, reach_bounds, view_bounds, workable_area};
 use crate::grid::Limits;
@@ -101,47 +103,37 @@ impl SurfaceHeight {
     }
 }
 
-/// Why the positions of a check_positions request are refused.
+/// Why the points of a check_positions request are refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PositionsError {
-    #[error("positions must hold at least one point")]
+    #[error("points must hold at least one point")]
     Empty,
 
-    #[error("positions must hold 3 values (x, y, z) per point")]
-    NotTriples,
-
-    #[error("positions must hold finite numbers only")]
-    NotFinite,
-
     #[error(
-        "positions must hold coordinates within {} m of the robot's base point",
+        "points must lie within {} m of the robot's base point on each axis, placed in the robot frame",
         MAX_COORDINATE
     )]
     TooFar,
 }
 
-/// The points of a check_positions request, parsed: at least one, each three
-/// finite coordinates in the robot frame, each within [`MAX_COORDINATE`].
+/// The points of a check_positions request in the robot frame: at least
+/// one, each coordinate within [`MAX_COORDINATE`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Positions(Vec<[f64; 3]>);
 
 impl Positions {
-    /// The points of `values`, three values (x, y, z) per point, in order.
-    pub fn from_wire(values: &[f64]) -> Result<Self, PositionsError> {
-        if values.is_empty() {
+    /// The points of a request, in the request's order, each a point of the
+    /// robot frame, the root link of the robot's URDF, where the robot's node
+    /// has placed it by its tree.
+    pub fn parse(points: Vec<Point>) -> Result<Self, PositionsError> {
+        if points.is_empty() {
             return Err(PositionsError::Empty);
         }
-        let (points, rest) = values.as_chunks::<3>();
-        if !rest.is_empty() {
-            return Err(PositionsError::NotTriples);
-        }
-        if !values.iter().all(|value| value.is_finite()) {
-            return Err(PositionsError::NotFinite);
-        }
-        if !values.iter().copied().all(within_max_coordinate) {
+        let points: Vec<[f64; 3]> = points.into_iter().map(Point::position).collect();
+        if !points.iter().flatten().copied().all(within_max_coordinate) {
             return Err(PositionsError::TooFar);
         }
-        Ok(Self(points.to_vec()))
+        Ok(Self(points))
     }
 
     /// The points, in the request's order.
@@ -494,8 +486,15 @@ mod tests {
         SurfaceHeight::from_wire(metres).expect("a finite height within MAX_COORDINATE")
     }
 
-    fn positions(values: &[f64]) -> Positions {
-        Positions::from_wire(values).expect("valid positions")
+    fn parsed(points: &[[f64; 3]]) -> Vec<Point> {
+        points
+            .iter()
+            .map(|&position| Point::parse(position).expect("a finite point"))
+            .collect()
+    }
+
+    fn positions(points: &[[f64; 3]]) -> Positions {
+        Positions::parse(parsed(points)).expect("valid points")
     }
 
     fn reached() -> Reach {
@@ -617,47 +616,41 @@ mod tests {
     }
 
     #[test]
-    fn positions_are_parsed_into_points_and_refused_when_empty_ragged_not_finite_or_too_far() {
+    fn placed_points_are_taken_in_order_and_refused_when_none_or_too_far() {
         assert_eq!(
-            positions(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).points(),
+            positions(&[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]).points(),
             [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
         );
         assert_eq!(
-            positions(&[MAX_COORDINATE, -MAX_COORDINATE, 0.0]).points(),
+            positions(&[[MAX_COORDINATE, -MAX_COORDINATE, 0.0]]).points(),
             [[1000.0, -1000.0, 0.0]],
             "the bound itself is within it"
         );
         let refusals = [
             (vec![], PositionsError::Empty),
-            (vec![0.1, 0.2, 0.3, 0.4], PositionsError::NotTriples),
-            (vec![0.1, f64::NAN, 0.3], PositionsError::NotFinite),
-            (vec![0.1, 0.2, f64::INFINITY], PositionsError::NotFinite),
-            (vec![1e200, 0.0, 0.0], PositionsError::TooFar),
-            (vec![0.0, -1000.5, 0.0], PositionsError::TooFar),
+            (vec![[1e200, 0.0, 0.0]], PositionsError::TooFar),
+            (
+                vec![[0.3, 0.0, 0.5], [0.0, -1000.5, 0.0]],
+                PositionsError::TooFar,
+            ),
         ];
-        for (values, refusal) in refusals {
-            assert_eq!(Positions::from_wire(&values), Err(refusal), "{values:?}");
+        for (points, refusal) in refusals {
+            assert_eq!(
+                Positions::parse(parsed(&points)),
+                Err(refusal),
+                "{points:?}"
+            );
         }
     }
 
     #[test]
-    fn each_refusal_of_positions_reads_as_the_contract_says() {
+    fn each_refusal_of_the_points_reads_as_the_contract_says() {
         let texts = [
-            (
-                PositionsError::Empty,
-                "positions must hold at least one point",
-            ),
-            (
-                PositionsError::NotTriples,
-                "positions must hold 3 values (x, y, z) per point",
-            ),
-            (
-                PositionsError::NotFinite,
-                "positions must hold finite numbers only",
-            ),
+            (PositionsError::Empty, "points must hold at least one point"),
             (
                 PositionsError::TooFar,
-                "positions must hold coordinates within 1000 m of the robot's base point",
+                "points must lie within 1000 m of the robot's base point on each axis, placed in \
+                 the robot frame",
             ),
         ];
         for (refusal, text) in texts {
@@ -705,7 +698,7 @@ mod tests {
             })
         );
 
-        let two = positions(&[0.3, 0.0, 0.5, 0.9, 0.0, 0.5]);
+        let two = positions(&[[0.3, 0.0, 0.5], [0.9, 0.0, 0.5]]);
         assert_eq!(
             PositionsReach::from_request_order(&two, vec![reached(), short(0.4)]),
             Ok(PositionsReach(vec![
@@ -737,7 +730,7 @@ mod tests {
         });
         assert_eq!(judged, at.grid_targets());
 
-        let three = positions(&[0.3, 0.1, 0.5, 0.2, -0.1, 0.4, 0.6, 0.0, 0.3]);
+        let three = positions(&[[0.3, 0.1, 0.5], [0.2, -0.1, 0.4], [0.6, 0.0, 0.3]]);
         let mut judged = Vec::new();
         PositionsReach::measure(&three, |point| {
             judged.push(point);
@@ -942,7 +935,12 @@ mod tests {
 
     #[test]
     fn each_checked_point_carries_its_reach_view_and_message_in_the_requests_order() {
-        let checked = positions(&[0.3, 0.0, 0.5, 0.9, 0.0, 0.5, 0.3, 0.05, 0.5, 0.3, 0.0, 0.54]);
+        let checked = positions(&[
+            [0.3, 0.0, 0.5],
+            [0.9, 0.0, 0.5],
+            [0.3, 0.05, 0.5],
+            [0.3, 0.0, 0.54],
+        ]);
         let reaches = vec![reached(), short(0.6), short(0.004), reached()];
         let answer = check_positions(
             &PositionsReach::from_request_order(&checked, reaches.clone()).expect("one each"),
@@ -984,7 +982,7 @@ mod tests {
 
     #[test]
     fn a_point_whose_view_is_not_checked_is_judged_on_reach_and_the_answer_says_why() {
-        let one = positions(&[0.3, 0.0, 0.5]);
+        let one = positions(&[[0.3, 0.0, 0.5]]);
         let reach = PositionsReach::measure(&one, |_| reached());
         let cases = [
             (

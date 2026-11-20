@@ -38,8 +38,8 @@
 //!   covers within a time, as Nav2's collision monitor slows it in its
 //!   approach mode, and a stop while a source's readings stop arriving.
 //!
-//! Poses on the floor are `camera_core::pose::PlanarPose`s, and a body velocity
-//! is a `control_core::twist::Twist`.
+//! Poses on the floor are `control_core::planar_pose::PlanarPose`s, and a body velocity
+//! is a `control_core::twist::PlanarTwist`.
 //!
 //! Each module names the Nav2 file and function it ports, and keeps its
 //! types and order of operations where the parity tests of the ROS reference

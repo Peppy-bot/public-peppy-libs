@@ -35,7 +35,7 @@ use collision_geometry::shapes::PlacedShape;
 use nalgebra::{Point3, Vector3};
 use occupancy_map::{DistanceField, Key, VoxelMap};
 
-use crate::arm::{Body, Moving};
+use crate::arm::{ArmSet, Body, Moving};
 use crate::arms::{Arms, GroupBody};
 use crate::scene::{OCCUPANCY_MAP, Objects};
 
@@ -702,15 +702,19 @@ fn own_distance<const N: usize, const D: usize>(
     })
 }
 
-/// `moving`, which names an arm of `arms` when it names one.
+/// `moving`, whose turn is one of an arm of `arms` after others of them when it names one.
 ///
 /// # Panics
 ///
-/// When `moving` names an arm past the group's last.
+/// When `moving` names an arm past the group's last, or a turn after its own arm's.
 fn of_the_group<const N: usize, const D: usize>(moving: Moving, arms: &Arms<N, D>) -> Moving {
-    if let Moving::Arm(k) = moving {
+    if let Moving::Arm { arm, before } = moving {
         let count = arms.arms().len();
-        assert!(k < count, "arm {k} of a group of {count} arms");
+        let in_the_group = ArmSet::of((0..count).filter(|k| before.contains(*k)));
+        assert!(
+            arm < count && before == in_the_group && !before.contains(arm),
+            "a turn of arm {arm} after the arms {before:?} of a group of {count} arms"
+        );
     }
     moving
 }
@@ -736,10 +740,10 @@ mod tests {
     use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
 
     use super::*;
+    use crate::arm::tests::turn;
     use crate::arm::{Arm, SelfModel};
     use crate::scene::{
-        AttachRequest, ObjectFields, ObjectRequest, PlanningScene, RobotLinks, RobotPart,
-        ShapeFields,
+        AttachRequest, ObjectRequest, PlanningScene, RobotLinks, RobotPart, ShapeFields,
     };
 
     /// An arm of one revolute joint whose link is a 10 cm box.
@@ -823,8 +827,7 @@ mod tests {
         map.insert(
             &Scan {
                 frame: &frame,
-                sensor: camera_core::pose::Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0])
-                    .expect("a pose"),
+                sensor: frame_tree::Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
                 points: &relative,
                 max_range_m: PositiveFinite::parse(10.0).expect("positive"),
             },
@@ -974,17 +977,17 @@ mod tests {
         let surroundings = Surroundings::new(&map, &field, [0.03, 0.0, 0.0]);
         let arms = both(None);
         assert!(!surroundings.clear(&arms, &q));
-        assert!(surroundings.clear_moving(&arms, &q, Moving::Arm(0)));
-        assert!(!surroundings.clear_moving(&arms, &q, Moving::Arm(1)));
+        assert!(surroundings.clear_moving(&arms, &q, turn(0, &[])));
+        assert!(!surroundings.clear_moving(&arms, &q, turn(1, &[0])));
         for (k, geometry) in [(0, &first), (1, &second)] {
             let alone = Arms::<2, 2>::new(vec![Arm::new("alone", geometry)], None);
             assert_eq!(
-                surroundings.distances(&arms, &q, Moving::Arm(k))[WORLD],
+                surroundings.distances(&arms, &q, turn(k, &[0][..k]))[WORLD],
                 surroundings.distances(&alone, &[0.0; 2], Moving::All)[WORLD],
                 "arm {k}"
             );
         }
-        let [world_pair, _, _] = surroundings.nearest_pairs(&arms, &q, Moving::Arm(1));
+        let [world_pair, _, _] = surroundings.nearest_pairs(&arms, &q, turn(1, &[0]));
         assert_eq!(
             world_pair.map(|reading| reading.pair),
             Some(Contact::Map {
@@ -996,9 +999,9 @@ mod tests {
         let apart = Surroundings::new(&empty, &empty_field, [0.0, 0.01, 0.0]);
         let modeled = both(Some(&SecondArmTouches));
         assert!(!apart.clear(&modeled, &q));
-        assert!(apart.clear_moving(&modeled, &q, Moving::Arm(0)));
-        assert!(!apart.clear_moving(&modeled, &q, Moving::Arm(1)));
-        let [_, own_pair, _] = apart.nearest_pairs(&modeled, &q, Moving::Arm(0));
+        assert!(apart.clear_moving(&modeled, &q, turn(0, &[])));
+        assert!(!apart.clear_moving(&modeled, &q, turn(1, &[0])));
+        let [_, own_pair, _] = apart.nearest_pairs(&modeled, &q, turn(0, &[]));
         assert_eq!(
             own_pair.map(|reading| reading.pair),
             Some(Contact::Own {
@@ -1193,12 +1196,14 @@ mod tests {
                 .coords
                 .into()
         };
-        // A unit quaternion `[x, y, z, w]` drawn about a drawn axis.
-        let drawn_orientation = || -> [f64; 4] {
+        // A pose at `position`, turned about a drawn axis by a drawn angle.
+        let drawn_pose = |[x, y, z]: [f64; 3]| -> nalgebra::Isometry3<f64> {
             let axis = tc.draw(unit_vectors());
             let angle: f64 = tc.draw(gs::floats().min_value(-3.0).max_value(3.0));
-            let q = nalgebra::UnitQuaternion::from_scaled_axis(axis * angle);
-            [q.i, q.j, q.k, q.w]
+            nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(x, y, z),
+                nalgebra::UnitQuaternion::from_scaled_axis(axis * angle),
+            )
         };
         // A shape of a drawn kind, a box, a sphere or a cylinder 1 cm to 8 cm across, as
         // motion_planning writes it, at its object's origin.
@@ -1224,24 +1229,16 @@ mod tests {
         };
         let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
         let mut requests: Vec<ObjectRequest> = (0..count)
-            .map(|k| ObjectRequest {
-                operation: "add".to_string(),
-                object: ObjectFields {
-                    id: format!("object_{k}"),
-                    position: near_a_body(),
-                    orientation: drawn_orientation(),
-                    shapes: vec![drawn_shape()],
-                },
+            .map(|k| ObjectRequest::Add {
+                id: format!("object_{k}"),
+                pose: drawn_pose(near_a_body()),
+                shapes: vec![drawn_shape()],
             })
             .collect();
-        requests.push(ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: "held".to_string(),
-                position: near_a_body(),
-                orientation: drawn_orientation(),
-                shapes: vec![drawn_shape()],
-            },
+        requests.push(ObjectRequest::Add {
+            id: "held".to_string(),
+            pose: drawn_pose(near_a_body()),
+            shapes: vec![drawn_shape()],
         });
         let (mut map, _) = world(0.04, &[]);
         let names = ["link_1", "link_2"].map(String::from);
@@ -1251,13 +1248,12 @@ mod tests {
             .expect("the drawn objects apply");
         scene
             .apply_attached_collision_object(
-                &AttachRequest {
+                &AttachRequest::Attach {
                     object_id: "held".to_string(),
                     link_name: "link_2".to_string(),
                     touch_links: Vec::new(),
-                    operation: "attach".to_string(),
                 },
-                |_| Some(geometry.chain().world_ee_pose(&q)),
+                |_| Some(geometry.chain().root_ee_pose(&q)),
                 &mut map,
             )
             .expect("the held object attaches to the tip");
@@ -1359,8 +1355,8 @@ mod tests {
         });
         let (q_first, q_second) = (Arms::<2, 4>::slice(&q, 0), Arms::<2, 4>::slice(&q, 1));
         let grasp = |link: &str| match link {
-            "link_2" => first.chain().world_ee_pose(&q_first),
-            _ => second.chain().world_ee_pose(&q_second),
+            "link_2" => first.chain().root_ee_pose(&q_first),
+            _ => second.chain().root_ee_pose(&q_second),
         };
         // Each object stands up to 12 cm off its arm's tip.
         let near_the_tip = |link: &str| -> [f64; 3] {
@@ -1368,12 +1364,14 @@ mod tests {
             let off: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.12));
             (tip + tc.draw(unit_vectors()) * off).into()
         };
-        // A unit quaternion `[x, y, z, w]` drawn about a drawn axis.
-        let drawn_orientation = || -> [f64; 4] {
+        // A pose at `position`, turned about a drawn axis by a drawn angle.
+        let drawn_pose = |[x, y, z]: [f64; 3]| -> nalgebra::Isometry3<f64> {
             let axis = tc.draw(unit_vectors());
             let angle: f64 = tc.draw(gs::floats().min_value(-3.0).max_value(3.0));
-            let q = nalgebra::UnitQuaternion::from_scaled_axis(axis * angle);
-            [q.i, q.j, q.k, q.w]
+            nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(x, y, z),
+                nalgebra::UnitQuaternion::from_scaled_axis(axis * angle),
+            )
         };
         // A shape of a drawn kind, a box, a sphere or a cylinder 1 cm to 8 cm across, as
         // motion_planning writes it, at its object's origin.
@@ -1397,14 +1395,10 @@ mod tests {
                 orientation: [0.0, 0.0, 0.0, 1.0],
             }
         };
-        let held = |id: &str, link: &str| ObjectRequest {
-            operation: "add".to_string(),
-            object: ObjectFields {
-                id: id.to_string(),
-                position: near_the_tip(link),
-                orientation: drawn_orientation(),
-                shapes: vec![drawn_shape()],
-            },
+        let held = |id: &str, link: &str| ObjectRequest::Add {
+            id: id.to_string(),
+            pose: drawn_pose(near_the_tip(link)),
+            shapes: vec![drawn_shape()],
         };
         let requests = [held("first", "link_2"), held("second", "b_link_2")];
         let (mut map, _) = world(0.04, &[]);
@@ -1419,11 +1413,10 @@ mod tests {
         for (id, link) in [("first", "link_2"), ("second", "b_link_2")] {
             scene
                 .apply_attached_collision_object(
-                    &AttachRequest {
+                    &AttachRequest::Attach {
                         object_id: id.to_string(),
                         link_name: link.to_string(),
                         touch_links: Vec::new(),
-                        operation: "attach".to_string(),
                     },
                     |link| Some(grasp(link)),
                     &mut map,
@@ -1495,8 +1488,8 @@ mod tests {
         let exact_held = held_of(0).min(held_of(1));
         for (moving, exact_own, exact_held) in [
             (Moving::All, exact_own, exact_held),
-            (Moving::Arm(0), f64::INFINITY, held_of(0)),
-            (Moving::Arm(1), exact_own, held_of(1)),
+            (turn(0, &[]), f64::INFINITY, held_of(0)),
+            (turn(1, &[0]), exact_own, held_of(1)),
         ] {
             let measured = surroundings.distances(&arms, &q, moving);
             for (term, exact, clearance) in [

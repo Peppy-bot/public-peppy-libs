@@ -362,7 +362,7 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
 /// resolving redundancy per `arm_angle`. `seed` selects the discrete branch (and
 /// the arm angle when `FromSeed`). The target is the same [`Isometry3`] type the
 /// forward kinematics emit, so an FK pose feeds straight back in; convert a
-/// world-frame target first with [`ArmModel::base_pose`].
+/// root-frame target first with [`ArmModel::base_pose`].
 ///
 /// In `FromSeed` mode the seed's arm angle is used when it is feasible
 /// (continuity); otherwise the closest feasible arm angle is taken from the

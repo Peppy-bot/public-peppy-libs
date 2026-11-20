@@ -16,19 +16,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use collision_geometry::chain::{ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::Placed;
 use collision_geometry::shapes::{PlacedShape, Shape, ShapeKind};
+use control_core::geometry::pose_arrays;
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::VoxelMap;
 
 use crate::arm::grasp_frame;
-use crate::pose::{pose_from_parts, pose_parts};
+use crate::pose::pose_from_parts;
 
 /// The name a pair gives the voxel map.
 pub const OCCUPANCY_MAP: &str = "occupancy_map";
-
-/// The operations of apply_collision_objects and of apply_attached_collision_object, as
-/// a refusal lists them.
-const OBJECT_OPERATIONS: &str = "\"add\", \"move\" or \"remove\"";
-const ATTACH_OPERATIONS: &str = "\"attach\" or \"detach\"";
 
 /// A shape as motion_planning writes it: its kind, "box", "sphere", "cylinder" or
 /// "mesh"; a primitive's dimensions, a box's sides, a sphere's radius, a cylinder's
@@ -127,7 +123,7 @@ impl TryFrom<&ShapeFields> for ObjectShape {
 
 impl From<&ObjectShape> for ShapeFields {
     fn from(shape: &ObjectShape) -> Self {
-        let (position, orientation) = pose_parts(&shape.pose);
+        let (position, orientation) = pose_arrays(&shape.pose);
         let (kind, dimensions, mesh_vertices, mesh_triangles) = match shape.shape.kind() {
             ShapeKind::Box { size } => ("box", size.to_vec(), Vec::new(), Vec::new()),
             ShapeKind::Sphere { radius } => ("sphere", vec![radius], Vec::new(), Vec::new()),
@@ -167,7 +163,7 @@ pub struct ObjectFields {
 
 impl ObjectFields {
     fn of(id: &str, pose: &Isometry3<f64>, shapes: &[ObjectShape]) -> Self {
-        let (position, orientation) = pose_parts(pose);
+        let (position, orientation) = pose_arrays(pose);
         ObjectFields {
             id: id.to_string(),
             position,
@@ -177,22 +173,44 @@ impl ObjectFields {
     }
 }
 
-/// One entry of apply_collision_objects: its operation, "add", "move" or "remove", and
-/// its object.
+/// One entry of apply_collision_objects, each operation with the fields it reads, a pose in
+/// the robot frame.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ObjectRequest {
-    pub operation: String,
-    pub object: ObjectFields,
+pub enum ObjectRequest {
+    /// Places the object `id` at `pose` with its shapes, each posed relative to `pose`, in
+    /// place of an object of the same id, whose allowed pairs it keeps.
+    Add {
+        id: String,
+        pose: Isometry3<f64>,
+        shapes: Vec<ShapeFields>,
+    },
+    /// Places the object `id` at `pose`.
+    Move { id: String, pose: Isometry3<f64> },
+    /// Removes the object `id`, and drops every pair that names it.
+    Remove { id: String },
 }
 
-/// apply_attached_collision_object's request.
+impl ObjectRequest {
+    /// The id of the object the entry names.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Add { id, .. } | Self::Move { id, .. } | Self::Remove { id } => id,
+        }
+    }
+}
+
+/// apply_attached_collision_object's request, each operation with the fields it reads.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AttachRequest {
-    pub object_id: String,
-    pub link_name: String,
-    pub touch_links: Vec<String>,
-    /// "attach" or "detach".
-    pub operation: String,
+pub enum AttachRequest {
+    /// Puts the object `object_id` on the grasp link `link_name`, where it stands; it may touch
+    /// that link and `touch_links`.
+    Attach {
+        object_id: String,
+        link_name: String,
+        touch_links: Vec<String>,
+    },
+    /// Leaves the object `object_id` in the scene where it stands.
+    Detach { object_id: String },
 }
 
 /// An attached object as get_planning_scene reports it: the link that carries it, the
@@ -258,17 +276,10 @@ pub enum SceneError {
     NoName(String),
     #[error("{0:?} is paired with itself; other_names names links and objects other than it")]
     SelfPair(String),
-    #[error("operation is {given:?}; it is {expected}")]
-    Operation {
-        given: String,
-        expected: &'static str,
-    },
     #[error("an object has at least one shape")]
     NoShape,
     #[error("shapes[{index}]: {error}")]
     Shape { index: usize, error: String },
-    #[error("{0}")]
-    Pose(String),
     #[error("the pose of {0} is not known yet")]
     Unplaced(String),
 }
@@ -368,51 +379,17 @@ struct Attachment {
     shapes: Vec<ObjectShape>,
 }
 
-/// One operation of apply_collision_objects, parsed: it holds only the fields its
-/// operation reads.
-enum ObjectOperation {
-    Add {
-        pose: Isometry3<f64>,
-        shapes: Vec<ObjectShape>,
-    },
-    Move {
-        pose: Isometry3<f64>,
-    },
-    Remove,
-}
-
-impl ObjectOperation {
-    fn parse(request: &ObjectRequest) -> Result<Self, SceneError> {
-        let object = &request.object;
-        let pose =
-            || pose_from_parts(object.position, object.orientation).map_err(SceneError::Pose);
-        match request.operation.as_str() {
-            "add" => {
-                if object.shapes.is_empty() {
-                    return Err(SceneError::NoShape);
-                }
-                let shapes = object
-                    .shapes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, fields)| {
-                        ObjectShape::try_from(fields)
-                            .map_err(|error| SceneError::Shape { index, error })
-                    })
-                    .collect::<Result<_, _>>()?;
-                Ok(Self::Add {
-                    pose: pose()?,
-                    shapes,
-                })
-            }
-            "move" => Ok(Self::Move { pose: pose()? }),
-            "remove" => Ok(Self::Remove),
-            given => Err(SceneError::Operation {
-                given: given.to_string(),
-                expected: OBJECT_OPERATIONS,
-            }),
-        }
+/// The shapes of an object an add places, built from `fields`; refused for none, and for one
+/// that cannot be built.
+fn object_shapes(fields: &[ShapeFields]) -> Result<Vec<ObjectShape>, SceneError> {
+    if fields.is_empty() {
+        return Err(SceneError::NoShape);
     }
+    (fields.iter().enumerate())
+        .map(|(index, fields)| {
+            ObjectShape::try_from(fields).map_err(|error| SceneError::Shape { index, error })
+        })
+        .collect()
 }
 
 /// The collision objects, the attached objects and the allowed pairs of a robot's
@@ -436,15 +413,12 @@ impl PlanningScene {
         }
     }
 
-    /// Applies `requests` in order, all or none: "add" places an object with its shapes,
-    /// in place of an object of the same id, whose allowed pairs it keeps; "move" places
-    /// an object at a new pose; "remove" removes it and drops every pair that names it.
-    /// An operation reads only its own fields. Once every request applies, each object
-    /// an add or a move places clears from `map` every voxel it intersects where the
-    /// batch leaves it; an object a later request of the batch removes clears nothing.
-    /// Refused: an empty id, an id that names a link or the voxel map, an unknown id for
-    /// "move" or "remove", an attached object, and a shape that cannot be built, an open
-    /// mesh among them.
+    /// Applies `requests` in order, all or none, each as its [`ObjectRequest`] says. Once
+    /// every request applies, each object an add or a move places clears from `map` every
+    /// voxel it intersects where the batch leaves it; an object a later request of the batch
+    /// removes clears nothing. Refused: an empty id, an id that names a link or the voxel
+    /// map, an unknown id for a move or a remove, an attached object, an add of no shape,
+    /// and a shape that cannot be built, an open mesh among them.
     pub fn apply_collision_objects(
         &mut self,
         requests: &[ObjectRequest],
@@ -453,10 +427,9 @@ impl PlanningScene {
         let mut next = self.clone();
         let mut placed: BTreeSet<&str> = BTreeSet::new();
         for (index, request) in requests.iter().enumerate() {
-            let id = &request.object.id;
             let at = next.apply(request).map_err(|error| SceneError::Batch {
                 index,
-                id: id.clone(),
+                id: request.id().to_string(),
                 error: Box::new(error),
             })?;
             placed.extend(at);
@@ -471,28 +444,34 @@ impl PlanningScene {
     /// Applies one entry of apply_collision_objects; the id of the object it places, an
     /// add's or a move's.
     fn apply<'r>(&mut self, request: &'r ObjectRequest) -> Result<Option<&'r str>, SceneError> {
-        let id = request.object.id.as_str();
+        let id = request.id();
         if id.is_empty() {
             return Err(SceneError::EmptyId);
         }
         self.refuse_attached(id)?;
-        match ObjectOperation::parse(request)? {
-            ObjectOperation::Add { pose, shapes } => {
+        match request {
+            ObjectRequest::Add { pose, shapes, .. } => {
+                let shapes = object_shapes(shapes)?;
                 if self.robot.links.contains(id) {
                     return Err(SceneError::LinkId(id.to_string()));
                 }
                 if id == OCCUPANCY_MAP {
                     return Err(SceneError::MapId);
                 }
-                self.objects
-                    .insert(id.to_string(), WorldObject { pose, shapes });
+                self.objects.insert(
+                    id.to_string(),
+                    WorldObject {
+                        pose: *pose,
+                        shapes,
+                    },
+                );
                 Ok(Some(id))
             }
-            ObjectOperation::Move { pose } => {
-                self.object_mut(id)?.pose = pose;
+            ObjectRequest::Move { pose, .. } => {
+                self.object_mut(id)?.pose = *pose;
                 Ok(Some(id))
             }
-            ObjectOperation::Remove => {
+            ObjectRequest::Remove { .. } => {
                 self.objects
                     .remove(id)
                     .ok_or_else(|| SceneError::NoObject(id.to_string()))?;
@@ -505,9 +484,9 @@ impl PlanningScene {
     /// Applies apply_attached_collision_object's `request`. An attach puts an object of
     /// the scene that no link carries on an arm's grasp link, where it stands, the link
     /// at the pose `link_pose` gives it in the robot frame; it may touch that link and
-    /// `touch_links`, and every voxel of `map` it intersects is cleared. A detach, which
-    /// reads only the object's id, leaves the object in the scene where it stands, its
-    /// link at the pose `link_pose` gives. Its allowed pairs stay through both.
+    /// `touch_links`, and every voxel of `map` it intersects is cleared. A detach leaves the
+    /// object in the scene where it stands, its link at the pose `link_pose` gives. Its
+    /// allowed pairs stay through both.
     /// Refused: an attach of an attached object, of an unknown one, to a link that is no
     /// grasp link, or with a touch link the robot does not have; a detach of an object
     /// no link carries; and, with `Unplaced`, a request whose link `link_pose` does not
@@ -518,20 +497,23 @@ impl PlanningScene {
         link_pose: impl FnOnce(&str) -> Option<Isometry3<f64>>,
         map: &mut VoxelMap,
     ) -> Result<(), SceneError> {
-        let id = request.object_id.as_str();
-        match request.operation.as_str() {
-            "attach" => {
+        match request {
+            AttachRequest::Attach {
+                object_id,
+                link_name,
+                touch_links,
+            } => {
+                let id = object_id.as_str();
                 self.refuse_attached(id)?;
                 let pose = self.object(id)?.pose;
-                let link = request.link_name.as_str();
+                let link = link_name.as_str();
                 if !self.robot.grasp_links.contains(link) {
                     return Err(SceneError::NotGraspLink {
                         link: link.to_string(),
                         grasp_links: self.robot.grasp_links.iter().cloned().collect(),
                     });
                 }
-                if let Some(unknown) = request
-                    .touch_links
+                if let Some(unknown) = touch_links
                     .iter()
                     .find(|name| !self.robot.links.contains(*name))
                 {
@@ -547,14 +529,15 @@ impl PlanningScene {
                     id.to_string(),
                     Attachment {
                         link: link.to_string(),
-                        touch_links: request.touch_links.iter().cloned().collect(),
+                        touch_links: touch_links.iter().cloned().collect(),
                         pose: at.inverse() * pose,
                         shapes: object.shapes,
                     },
                 );
                 Ok(())
             }
-            "detach" => {
+            AttachRequest::Detach { object_id } => {
+                let id = object_id.as_str();
                 let link = match self.attached.get(id) {
                     Some(attachment) => attachment.link.clone(),
                     None if self.objects.contains_key(id) => {
@@ -576,10 +559,6 @@ impl PlanningScene {
                 );
                 Ok(())
             }
-            given => Err(SceneError::Operation {
-                given: given.to_string(),
-                expected: ATTACH_OPERATIONS,
-            }),
         }
     }
 
@@ -606,6 +585,15 @@ impl PlanningScene {
             self.allowed.set(name, other, allowed);
         }
         Ok(())
+    }
+
+    /// Moves each object no link carries to the pose `moved` gives it from its id and the pose
+    /// where it stands, its shapes and its allowed pairs as they stand: the objects of a node
+    /// that holds them in a frame other than the robot frame, placed in the robot frame again.
+    pub fn move_objects(&mut self, moved: impl Fn(&str, &Isometry3<f64>) -> Isometry3<f64>) {
+        for (id, object) in &mut self.objects {
+            object.pose = moved(id, &object.pose);
+        }
     }
 
     /// Everything the scene holds, as get_planning_scene reports it, with the clearance
@@ -687,6 +675,12 @@ impl PlanningScene {
             .filter(|(_, attachment)| attachment.link == grasp_link)
             .flat_map(|(id, attachment)| riders_of(id, attachment, geometry))
             .collect()
+    }
+
+    /// The pose in the robot frame of the object `id` that no link carries; none for an id
+    /// that names an attached object or no object of the scene.
+    pub fn standing_pose(&self, id: &str) -> Option<Isometry3<f64>> {
+        self.objects.get(id).map(|object| object.pose)
     }
 
     /// Each shape of each object no link carries, where it stands in the robot frame.

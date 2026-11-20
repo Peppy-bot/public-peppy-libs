@@ -241,7 +241,7 @@ impl<const N: usize> ChainGeometry<N> {
         let poses = self
             .links
             .iter()
-            .map(|link| posed.link_pose_world(link.segment) * link.offset)
+            .map(|link| posed.link_pose_root(link.segment) * link.offset)
             .collect();
         PlacedChain {
             links: &self.links,
@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!((rider.name, rider.segment), ("finger", 0));
         assert_eq!(rider.offset, Isometry3::translation(0.1, 0.05, 0.0));
         let q = [0.7, -0.3];
-        let placed = geometry.chain().at(&q).link_pose_world(rider.segment) * rider.offset;
+        let placed = geometry.chain().at(&q).link_pose_root(rider.segment) * rider.offset;
         let turned =
             Isometry3::rotation(Vector3::z() * 0.7) * Isometry3::translation(0.1, 0.05, 0.0);
         assert!(

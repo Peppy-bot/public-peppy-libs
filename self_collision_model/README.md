@@ -72,7 +72,7 @@ let d_stop = 0.01;
 let p = model.min_distance(&[q_arm])?;
 if p.distance <= d_stop {
     // Hold. p.link_a and p.link_b name the offending pair; p.on_a and p.on_b are
-    // the closest points in the world frame.
+    // the closest points in the root frame.
 }
 
 // Command vetting: the clearance a step would land at, and the gradient of the
@@ -133,14 +133,14 @@ URDF collision elements
   (`FingerError`), naming the part.
 - Every collision-bearing link is accounted for. The moving-link names come from
   walking each chain, fixed children fold into their parents, and every
-  remaining collision link must be world-fixed or construction fails loudly.
+  remaining collision link must be fixed to the root or construction fails loudly.
 
 ## Checked pairs
 
 The description decides which pairs are checked: every pair of bodies but the pairs
 whose collisions the SRDF disables (`disable_collisions`), whatever its reason
 (`Adjacent`, `Never`, `Default`, `Always` or `User`). A chain's base link is a fixed
-body, as is every link fixed to the world. The model trusts the SRDF: disabling a pair
+body, as is every link fixed to the root. The model trusts the SRDF: disabling a pair
 that can in fact collide silently removes that protection, so a robot's list is a
 small, deliberate, reviewed set. `checked_pairs` lists the pairs the model checks.
 
@@ -292,8 +292,8 @@ The tests read the descriptions `robot_description` bundles and the collision me
 of its models directory. `tests/models.rs` runs its checks on every bundled model, at
 the shape of its self model, so a model added to `robot_description` is tested as it
 lands. The visualization example writes a model's meshes with
-`robot_description`'s `meshes` feature. The model places world-fixed bodies once, in
-the world frame, so it models robots whose mount does not move.
+`robot_description`'s `meshes` feature. The model places the bodies fixed to the root
+once, in the root frame, so it models robots whose mount does not move.
 
 ## Testing
 

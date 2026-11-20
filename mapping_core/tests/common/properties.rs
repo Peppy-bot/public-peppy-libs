@@ -3,8 +3,8 @@
 //! odometry, from a test case or a fixed [`Stream`]; and the scans a laser reads in them.
 
 use camera_core::laser_scan::{LaserScan, NO_RETURN_MARK_M, Sweep};
-use camera_core::pose::PlanarPose;
 use chain_kinematics::Draws;
+use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
 use hegel::generators as gs;
 use mapping_core::LaserProjectionParameters;
@@ -323,13 +323,13 @@ pub fn heading_error(pose: PlanarPose, truth: PlanarPose) -> f64 {
     turn.sin().atan2(turn.cos()).abs()
 }
 
-/// The pose `b` in the frame of `a`, as camera_core's `PlanarPose::seen_from` gives it.
+/// The pose `b` in the frame of `a`, as control_core's `PlanarPose::seen_from` gives it.
 pub fn relative(a: PlanarPose, b: PlanarPose) -> PlanarPose {
     b.seen_from(a).expect("a pose near the frame")
 }
 
 /// The pose `b` of the frame of `a`, in the frame `a` lies in: its position placed by
-/// camera_core's `PlanarPose::apply`, and the headings added.
+/// control_core's `PlanarPose::apply`, and the headings added.
 pub fn compose(a: PlanarPose, b: PlanarPose) -> PlanarPose {
     let [x, y] = a.apply([b.x(), b.y()]);
     planar(x, y, a.yaw() + b.yaw())
@@ -343,8 +343,8 @@ pub fn largest_point_displacement(
     truth: PlanarPose,
 ) -> f64 {
     let still = Sweep {
-        first_ray: PlanarPose::IDENTITY.to_pose(),
-        last_ray: PlanarPose::IDENTITY.to_pose(),
+        first_ray: PlanarPose::IDENTITY.to_transform(),
+        last_ray: PlanarPose::IDENTITY.to_transform(),
     };
     scan.placed_hits(&still)
         .into_iter()

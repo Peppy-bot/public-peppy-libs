@@ -43,9 +43,9 @@
 //! `CostmapTopicCollisionChecker::isCollisionFree`,
 //! src/costmap_topic_collision_checker.cpp:66), so on an unknown cell too.
 
-use camera_core::pose::PlanarPose;
 use control_core::footprint::{Footprint, FootprintError};
 use control_core::non_negative_finite::NonNegativeFinite;
+use control_core::planar_pose::PlanarPose;
 
 use crate::grid::{Cell, CostGrid, LETHAL};
 use crate::pose::point_distance;

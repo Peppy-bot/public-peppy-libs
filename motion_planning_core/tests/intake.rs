@@ -13,18 +13,18 @@ use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
-use camera_core::pose::Pose;
 use collision_geometry::chain::{BodyMask, Padding, PlacedMask, Rider, RiderBody};
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::Transform;
 use motion_planning_core::{
-    Arms, AttachRequest, DepthCamera, JointHistory, ObjectFields, ObjectRequest, PlanningScene,
-    RobotLinks, RobotMask, ShapeFields, insert_cut_out,
+    Arms, AttachRequest, DepthCamera, JointHistory, ObjectRequest, PlanningScene, RobotLinks,
+    RobotMask, ShapeFields, insert_cut_out,
 };
 use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, Scan, VoxelMap};
 use robot_description::{ArmId, PerArm, states};
 
-use common::{MESHES, world};
+use common::{MESHES, root_frame};
 use openarm_v2::{ARMS, DESCRIPTION, JOINTS, LEFT, Robot, posture};
 
 /// The joints of both arms.
@@ -97,9 +97,10 @@ fn camera_pose() -> Isometry3<f64> {
     Isometry3::from_parts(Translation3::from(eye), rotation)
 }
 
-fn pose_of(isometry: &Isometry3<f64>) -> Pose {
+fn pose_of(isometry: &Isometry3<f64>) -> Transform {
     let q = isometry.rotation.quaternion();
-    Pose::new(isometry.translation.vector.into(), [q.i, q.j, q.k, q.w]).expect("a unit quaternion")
+    Transform::new(isometry.translation.vector.into(), [q.i, q.j, q.k, q.w])
+        .expect("a unit quaternion")
 }
 
 /// The camera: its color optical frame at `camera_pose`, its depth frame there too.
@@ -115,7 +116,7 @@ fn depth_camera() -> DepthCamera {
         distortion: &[],
     })
     .expect("a pinhole model");
-    let identity = Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity");
+    let identity = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity");
     DepthCamera::new(
         &pose_of(&camera_pose()),
         &identity,
@@ -136,7 +137,7 @@ fn frame_of(joints: &Joints) -> Vec<u8> {
         PerArm::<(), ARMS>::ids().flat_map(|id| {
             let posed = OPENARM_V2.arms[id].chain().at(&arm(joints, id));
             riders[id].iter().map(move |finger| {
-                let hand = posed.link_pose_world(finger.segment);
+                let hand = posed.link_pose_root(finger.segment);
                 let RiderBody::Part(part) = finger.body else {
                     panic!("a finger is a part of the robot");
                 };
@@ -204,7 +205,7 @@ enum CutAt {
 /// An empty map of 2.5 cm voxels about the robot and the camera.
 fn empty_map() -> VoxelMap {
     VoxelMap::new(
-        world(),
+        root_frame(),
         PositiveFinite::parse(0.025).expect("a positive voxel size"),
         Bounds {
             min: [-0.4, -1.0, 0.0],
@@ -217,7 +218,7 @@ fn empty_map() -> VoxelMap {
 /// The map the recording builds, each frame inserted with the robot cut out as `cut_at`
 /// says.
 fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
-    let world = world();
+    let root = root_frame();
     let mut map = empty_map();
     let camera = depth_camera();
     let riders = fingers();
@@ -233,7 +234,7 @@ fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
                 };
                 let points = camera.points(frame).expect("a frame of the lens's size");
                 let scan = Scan {
-                    frame: &world,
+                    frame: &root,
                     sensor: camera.sensor,
                     points: &points,
                     max_range_m: PositiveFinite::parse(2.0).expect("a positive range"),
@@ -287,22 +288,18 @@ fn a_replayed_frame_cut_out_at_its_stamp_marks_nothing() {
 }
 
 /// A box of `size` at `position`, as apply_collision_objects adds it.
-fn add_box(id: &str, position: [f64; 3], size: [f64; 3]) -> ObjectRequest {
-    ObjectRequest {
-        operation: "add".to_string(),
-        object: ObjectFields {
-            id: id.to_string(),
-            position,
+fn add_box(id: &str, [x, y, z]: [f64; 3], size: [f64; 3]) -> ObjectRequest {
+    ObjectRequest::Add {
+        id: id.to_string(),
+        pose: Isometry3::translation(x, y, z),
+        shapes: vec![ShapeFields {
+            kind: "box".to_string(),
+            dimensions: size.to_vec(),
+            mesh_vertices: Vec::new(),
+            mesh_triangles: Vec::new(),
+            position: [0.0; 3],
             orientation: [0.0, 0.0, 0.0, 1.0],
-            shapes: vec![ShapeFields {
-                kind: "box".to_string(),
-                dimensions: size.to_vec(),
-                mesh_vertices: Vec::new(),
-                mesh_triangles: Vec::new(),
-                position: [0.0; 3],
-                orientation: [0.0, 0.0, 0.0, 1.0],
-            }],
-        },
+        }],
     }
 }
 
@@ -329,7 +326,7 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
     let mut map = empty_map();
     let (now, then) = (bent(0.0), bent(0.5));
     let left = &OPENARM_V2.arms[LEFT];
-    let hand_at = |joints: &Joints| left.chain().world_ee_pose(&arm(joints, LEFT));
+    let hand_at = |joints: &Joints| left.chain().root_ee_pose(&arm(joints, LEFT));
     let held_at = |joints: &Joints| -> [f64; 3] {
         (hand_at(joints) * Point3::new(0.0, 0.0, 0.08))
             .coords
@@ -347,11 +344,10 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .expect("the objects apply");
     scene
         .apply_attached_collision_object(
-            &AttachRequest {
+            &AttachRequest::Attach {
                 object_id: "block".to_string(),
                 link_name: left_grasp.to_string(),
                 touch_links: Vec::new(),
-                operation: "attach".to_string(),
             },
             |link| (link == left_grasp).then(|| hand_at(&now)),
             &mut map,
@@ -373,14 +369,14 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .mask(&joints, &riders, padding)
         .with_objects(scene.standing_shapes());
     let robot_alone = OPENARM_V2.mask(&joints, &fingers, padding);
-    let sensor = Pose::new([0.4, 0.0, 1.5], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([0.4, 0.0, 1.5], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let relative: Vec<[f32; 3]> = points
         .iter()
         .map(|p| std::array::from_fn(|i| (p[i] - sensor.origin()[i]) as f32))
         .collect();
-    let world = world();
+    let root = root_frame();
     let scan = Scan {
-        frame: &world,
+        frame: &root,
         sensor,
         points: &relative,
         max_range_m: PositiveFinite::parse(3.0).expect("a positive range"),

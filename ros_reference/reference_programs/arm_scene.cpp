@@ -102,9 +102,11 @@ Eigen::VectorXd vector_of(const std::vector<double>& values) {
                                            static_cast<Eigen::Index>(values.size()));
 }
 
-// The share of its tolerance that `target` reaches at `state`.
+// The share of its tolerance that `target` reaches at `state`: of the turn of its link in its
+// frame, where `state` puts both.
 double share_of_tolerance(const HeldTarget& target, const moveit::core::RobotState& state) {
-  const Eigen::Quaterniond actual(state.getGlobalLinkTransform(target.link).linear());
+  const Eigen::Quaterniond actual(state.getGlobalLinkTransform(target.frame).linear().transpose() *
+                                  state.getGlobalLinkTransform(target.link).linear());
   if (!target.free_axis) {
     return target.orientation.angularDistance(actual) / target.tolerance;
   }
@@ -453,6 +455,19 @@ std::size_t steps_of(double length, double spacing) {
 
 namespace {
 
+// Sets in `probed` whether the probing's goal holds with the arm at `last`, a path's last
+// waypoint, where the probing gives a goal, `state` the scene's state that holds the arm.
+void judge_goal(const Probing& probing, moveit::core::RobotState& state,
+                const moveit::core::JointModelGroup& arm, const Eigen::VectorXd& last,
+                Probed& probed) {
+  if (!probing.goal) {
+    return;
+  }
+  state.setJointGroupPositions(&arm, last);
+  state.update();
+  probed.goal_met = probing.goal->decide(state).satisfied;
+}
+
 // The path through `points`, straight between them, probed as `probing` asks.
 Probed probe_polyline(const planning_scene::PlanningScene& scene,
                       moveit::core::RobotState& state, const moveit::core::JointModelGroup& arm,
@@ -466,6 +481,7 @@ Probed probe_polyline(const planning_scene::PlanningScene& scene,
       probe(scene, state, arm, points[i - 1] + (points[i] - points[i - 1]) * t, probed);
     }
   }
+  judge_goal(probing, state, arm, points.back(), probed);
   return probed;
 }
 
@@ -513,6 +529,8 @@ nlohmann::json measured(const Probed& probed, double length,
           {"share_of_tolerance", probed.held_targets.empty()
                                      ? nlohmann::json(nullptr)
                                      : nlohmann::json(probed.share_of_tolerance)},
+          {"goal_met",
+           probed.goal_met ? nlohmann::json(*probed.goal_met) : nlohmann::json(nullptr)},
           {"length", length},
           {"turning", turning},
           {"bending", bending},
@@ -534,7 +552,8 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
                            const moveit::core::RobotModelPtr& model,
                            const nlohmann::json& waypoints, const Probing& probing) {
   const auto& arm = *model->getJointModelGroup(probing.group);
-  const auto path = rounded_path(points_of(waypoints), probing.corner_tolerance);
+  const auto points = points_of(waypoints);
+  const auto path = rounded_path(points, probing.corner_tolerance);
   moveit::core::RobotState state(scene.getCurrentState());
   Probed probed = probe_of(scene, probing);
   const double length = path.getLength();
@@ -543,6 +562,7 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
     const double at = length * static_cast<double>(k) / static_cast<double>(steps);
     probe(scene, state, arm, path.getConfig(at), probed);
   }
+  judge_goal(probing, state, arm, points.back(), probed);
   return measured(probed, length, path, probing);
 }
 

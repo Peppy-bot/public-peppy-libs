@@ -128,17 +128,20 @@ async def test_a_place_records_its_line_down_settled_at_the_pose_before_its_rele
     outcome = await place(manipulator)
     assert names(outcome)[-2:] == ["descend", "release"]
     assert record_of(outcome, "descend") == StepRecord(
-        "descend", PLACE_DESCEND_INPUTS, Landed(PLACE_POINT, on_contact=False), measured={"short_of_end_m": 0.0}
+        "descend", PLACE_DESCEND_INPUTS, Landed(PLACE_POINT, None, on_contact=False), measured={"short_of_end_m": 0.0}
     )
 
 
 async def test_a_place_whose_line_down_ends_on_contact_records_where_and_how_far_short_of_the_pose():
     manipulator, robot, _ = await started()
-    robot.moves.extend([arrived(), touched((0.6, 0.0, 0.832), PLACE_Q)])
+    robot.moves.extend([arrived(), touched((0.6, 0.0, 0.832), PLACE_Q, timestamp=7.5)])
     outcome = await place(manipulator)
     descend = record_of(outcome, "descend")
-    assert descend.result == Landed((0.6, 0.0, 0.832), on_contact=True)
+    assert descend.result == Landed((0.6, 0.0, 0.832), 7.5, on_contact=True)
     assert descend.measured == {"short_of_end_m": pytest.approx(0.082)}
+    # The place reports where the line down left the grasp point, at the time
+    # the backbone measured it.
+    assert (outcome.final_position, outcome.final_timestamp) == ((0.6, 0.0, 0.832), 7.5)
 
 
 async def test_a_line_down_whose_result_gives_no_position_measures_nothing():
@@ -146,7 +149,7 @@ async def test_a_line_down_whose_result_gives_no_position_measures_nothing():
     robot.moves.extend([arrived(), arrived()])
     outcome = await place(manipulator)
     descend = record_of(outcome, "descend")
-    assert descend.result == Landed(None, on_contact=False) and descend.measured == {}
+    assert descend.result == Landed(None, None, on_contact=False) and descend.measured == {}
 
 
 @pytest.mark.parametrize("descent, failure", [
@@ -170,7 +173,7 @@ async def test_a_grab_records_its_line_down_and_closes_where_it_ended():
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == HELD
     assert outcome.steps[-1] == StepRecord(
-        "descend", GRAB_DESCEND_INPUTS, Landed((GRASP[0], GRASP[1], GRASP[2] + 0.012), on_contact=True),
+        "descend", GRAB_DESCEND_INPUTS, Landed((GRASP[0], GRASP[1], GRASP[2] + 0.012), None, on_contact=True),
         measured={"short_of_end_m": pytest.approx(0.012)},
     )
 

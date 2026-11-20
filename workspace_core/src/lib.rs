@@ -39,17 +39,20 @@
 //!
 //! Frames and values:
 //!
-//! - The robot frame is fixed to the robot's base: its origin is the point
-//!   the base stands on, +X points the way the robot faces, +Y to its left
-//!   and +Z up. Grid points, rectangles and grasp orientations are in it.
+//! - The robot frame is the root link of the robot's URDF, fixed to the
+//!   robot's base: its origin is where the URDF puts that link, +X points the
+//!   way the robot faces, +Y to its left and +Z up. Grid points, rectangles
+//!   and grasp orientations are in it.
 //! - A rotation is a row-major 3x3 matrix whose columns are the axes of the
 //!   rotated frame.
 //! - Lengths are in metres, angles in radians.
 //!
-//! The crate takes and gives plain values (`[f64; 3]`, `[f64; 9]`) and sees a
-//! camera through `camera_core`'s pinhole model: it knows no math library, no
-//! robot description and no world, so a consumer on nalgebra and one on glam
-//! read it alike. Its `description` feature adds [`surface_block`]: the bodies
+//! The crate takes and gives plain values (`[f64; 3]`, `[f64; 9]`), takes
+//! the points of a check_positions request as `control_core`'s geometry
+//! points its node has placed in the robot frame, and sees a camera
+//! through `camera_core`'s pinhole model: it knows no math library, no robot
+//! description and no world, so a consumer on nalgebra and one on glam read it
+//! alike. Its `description` feature adds [`surface_block`]: the bodies
 //! of a robot's arms, from its description, held clear of the surface that a
 //! robot's own answer is asked about.
 

@@ -27,9 +27,10 @@ Region = tuple[float, float, float, float]
 
 class FailureKind(StrEnum):
     """Why a goal is refused or fails, as the brain says it: the kinds of
-    peppy, and `not_found`, the kind of item_perception that identify_item
-    lists. The generated module of each member checks that the member
-    gives the kind it is given."""
+    peppy, `not_found`, the kind of item_perception that identify_item
+    lists, and the kinds of a lookup in the robot's tree. The generated
+    module of each member checks that the member gives the kind it is
+    given."""
 
     # The attempt gave no result.
     ATTEMPT_FAILED = "attempt_failed"
@@ -45,6 +46,18 @@ class FailureKind(StrEnum):
     REJECTED = "rejected"
     # identify_item found no item that matches the description.
     NOT_FOUND = "not_found"
+    # The robot's tree cannot place a frame of a goal, each kind as
+    # transform_lookup names the failures of a lookup: the kinds of
+    # item_manipulation that grab_item and place_item list.
+    UNKNOWN_FRAME = "unknown_frame"
+    NO_CHAIN = "no_chain"
+    EXTRAPOLATION = "extrapolation"
+    BROKEN_TREE = "broken_tree"
+
+
+# The failure kinds of a lookup in the robot's tree, as transform_lookup
+# names them.
+LOOKUP_KINDS = (FailureKind.UNKNOWN_FRAME, FailureKind.NO_CHAIN, FailureKind.EXTRAPOLATION, FailureKind.BROKEN_TREE)
 
 
 class GoalFailure(Exception):
@@ -166,9 +179,8 @@ class CancelToken:
 
 @dataclass(frozen=True)
 class Pose:
-    """A grasp-point pose in the world frame limb_motion uses: meters, and
-    a unit quaternion [x, y, z, w] or none when the caller left the choice
-    to the brain."""
+    """A grasp-point pose in the robot frame: meters, and a unit quaternion
+    [x, y, z, w] or none when the caller left the choice to the brain."""
 
     position: Vec3
     orientation: Optional[Quat] = None
@@ -345,8 +357,10 @@ class Gripper:
 @dataclass(frozen=True)
 class Outcome:
     """What a manipulation backend reports when a sequence ends. The
-    measured grasp-point position when the jaws opened, for place_item, and
-    when the jaws closed on the item, for a grab_item that held it. `steps`
+    measured grasp-point position when the jaws opened, for place_item, with
+    `final_timestamp`, the time of that measurement on the clock of
+    transforms, and when the jaws closed on the item, for a grab_item that
+    held it. `steps`
     are the records of the steps the sequence ran, in order, for a backend
     that keeps them (the scripted manipulator's `StepRecord`): what
     happened on the way, so two outcomes that report the same compare equal
@@ -355,6 +369,7 @@ class Outcome:
     success: bool
     message: str = ""
     final_position: Optional[Vec3] = None
+    final_timestamp: Optional[float] = None
     closed_at: Optional[Vec3] = None
     steps: tuple[object, ...] = field(default=(), compare=False)
 
@@ -366,9 +381,9 @@ class Senses:
     cancels the move in flight), the `LimbStateStore` of the robot's
     measured limbs, the chest `Perceiver` (its frames and its camera
     model), the `WristFrames` of the cameras the arms carry, and
-    `camera_pose`, an async callable that asks the robot where the camera
-    of a given name stood at a given time, the time a picture of it was
-    taken, giving its `CameraPose` in the robot frame or a Refusal. The
+    `camera_pose`, an async callable that, given a picture's header, asks
+    the robot where the frame the header names stood at the picture's
+    capture time, giving its `Placement` in the robot frame or a Refusal. The
     next sense adds a field here, not an argument to
     `Manipulator.start`."""
 

@@ -1,0 +1,17 @@
+# The refusals of control_core::geometry and control_core_py.geometry, which both suites hold
+# byte for byte: on each line a call, its arguments and the message of its refusal, separated by
+# tabs. An argument is a frame or numbers separated by spaces; an empty orientation or timestamp is
+# left out.
+Point.parse	NaN -0 inf	a position must be finite: got x NaN, y -0, z inf; give a finite number of meters on each axis
+UnitQuaternion.parse	0 0 -inf 1	an orientation must be finite: got x 0, y 0, z -inf, w 1; give a unit quaternion [x, y, z, w] of finite numbers, such as [0, 0, 0, 1]
+UnitQuaternion.parse	0 0 0 2	the orientation [0, 0, 0, 2] has a squared norm of 4, 0.01 or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]
+UnitQuaternion.parse	0 0 0 0	the orientation [0, 0, 0, 0] has a squared norm of 0, 0.01 or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]
+UnitQuaternion.parse	-0.51 0.15 0.05 0.75	the orientation [-0.51, 0.15, 0.05, 0.75] has a squared norm of 0.8475999999999999, 0.01 or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]
+PoseTarget.parse	inf 0 0		a position must be finite: got x inf, y 0, z 0; give a finite number of meters on each axis
+PoseTarget.pose	1 2 0		the target gives no orientation: send a unit quaternion [x, y, z, w]
+Stamped.parse		5	the frame is empty: name a frame of the robot's tree, such as the robot frame that sensor_mounts' describe_sensors names
+Stamped.parse			the frame is empty: name a frame of the robot's tree, such as the robot frame that sensor_mounts' describe_sensors names
+Stamped.parse	odom	-1.5	the timestamp -1.5 s from 1970-01-01T00:00:00Z lies outside the times a stamp holds: send one from 0 s to 18446744073.709551615 s after it
+Stamped.parse	odom	18446744073.709553	the timestamp 18446744073.709553 s from 1970-01-01T00:00:00Z lies outside the times a stamp holds: send one from 0 s to 18446744073.709551615 s after it
+lookup_time	-1.5	the timestamp -1.5 s from 1970-01-01T00:00:00Z lies outside the times a stamp holds: send one from 0 s to 18446744073.709551615 s after it
+lookup_time	18446744073.709553	the timestamp 18446744073.709553 s from 1970-01-01T00:00:00Z lies outside the times a stamp holds: send one from 0 s to 18446744073.709551615 s after it

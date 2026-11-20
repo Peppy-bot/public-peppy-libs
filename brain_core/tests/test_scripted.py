@@ -71,10 +71,12 @@ def arrived(position=None, orientation=None) -> MoveResult:
     return MoveResult(MoveEnd.COMPLETED, final_position=position, final_orientation=orientation)
 
 
-def touched(position, orientation=None) -> MoveResult:
+def touched(position, orientation=None, timestamp=None) -> MoveResult:
     """An arm move that completed on contact, its grasp point stopped at
-    `position`."""
-    return MoveResult(MoveEnd.COMPLETED, final_position=position, final_orientation=orientation, ended_on_contact=True)
+    `position`, measured at `timestamp`."""
+    return MoveResult(
+        MoveEnd.COMPLETED, final_position=position, final_orientation=orientation, final_timestamp=timestamp, ended_on_contact=True
+    )
 
 
 def move_failed(message: str, kind: str = "attempt_failed") -> MoveResult:
@@ -798,7 +800,11 @@ async def test_a_place_without_an_orientation_tries_the_down_rolls():
     assert [call[2] for call in robot.calls] == list(DOWN) + list(DOWN)
     assert {round(call[1][2], 6) for call in robot.calls} == {0.9, 0.825}
     zero = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75), (0.0, 0.0, 0.0, 0.0)), CancelToken())
-    assert zero == Outcome(False, "the orientation [0.0, 0.0, 0.0, 0.0] is not a rotation")
+    assert zero == Outcome(
+        False,
+        "the orientation [0, 0, 0, 0] has a squared norm of 0, 0.01 or more from 1: send a unit quaternion "
+        "[x, y, z, w], such as [0, 0, 0, 1]",
+    )
 
 
 # Properties over any pattern of backbone answers: every check, move and

@@ -11,7 +11,8 @@ use collision_geometry::chain::ChainGeometry;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     Arm, Arms, Axis, CartesianRequest, Collisions, FollowedFrame, Frame, Goal, GoalSampler,
-    IkGoalSampler, MIN_DEPARTURE_STEP_M, OrientationTarget, PositionTarget, cartesian_path,
+    IkGoalSampler, MIN_DEPARTURE_STEP_M, OrientationTarget, PositionTarget, Reference,
+    cartesian_path,
 };
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use robot_description::{Model, RobotDescription, states};
@@ -110,7 +111,8 @@ fn goals_met(goal_of: impl Fn(&Isometry3<f64>, &mut Draws) -> Goal) -> usize {
     let mut draws = Draws::new(SEED);
     (0..GOALS)
         .filter(|_| {
-            let goal = goal_of(&chain.world_ee_pose(&draws.within(&limits)), &mut draws);
+            let goal = goal_of(&chain.root_ee_pose(&draws.within(&limits)), &mut draws)
+                .placed_for(0, |_, _| unreachable!("a goal in the robot frame"));
             let working = draws.within(&limits);
             (0..GOAL_SAMPLES).any(|_| {
                 sampler
@@ -127,6 +129,7 @@ fn at_the_position(pose: &Isometry3<f64>, orientation: Option<OrientationTarget>
         JOINTS,
         Vec::new(),
         vec![PositionTarget {
+            reference: Reference::Robot,
             frame: Frame::GraspPoint,
             position: pose.translation.vector,
             tolerance_m: positive(TOLERANCE_M),
@@ -144,6 +147,7 @@ fn tilted(
     draws: &mut Draws,
 ) -> OrientationTarget {
     OrientationTarget {
+        reference: Reference::Robot,
         frame: Frame::GraspPoint,
         orientation: orientation * UnitQuaternion::from_axis_angle(&drawn_axis(draws), tilt_rad),
         tolerance_rad: positive(tolerance_rad),
@@ -187,6 +191,7 @@ fn an_axis_held_frees_a_turn_about_it_the_tolerance_alone_misses() {
         at_the_position(
             pose,
             Some(OrientationTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 orientation: pose.rotation
                     * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), AXIS_TURN_RAD),
@@ -220,7 +225,7 @@ fn a_goal_of_an_orientation_alone_is_met() {
 
 /// The fraction of the Cartesian path from `IN_ITS_PLANE` along `by`, the orientation kept.
 fn fraction_along(by: Vector3<f64>) -> f64 {
-    let start = ARM.chain().world_ee_pose(&IN_ITS_PLANE);
+    let start = ARM.chain().root_ee_pose(&IN_ITS_PLANE);
     let arms = Arms::<JOINTS, JOINTS>::new(vec![Arm::new(&description_arm().name, &ARM)], None);
     let waypoints = [Isometry3::from_parts(
         Translation3::from(start.translation.vector + by),

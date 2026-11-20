@@ -4,7 +4,10 @@
 <!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
 <!-- =================================================================================== -->
 <!-- Enactic's OpenArm v1.0 URDF (enactic/openarm_ros2), its joint limits as Enactic
-     gives them, with four changes:
+     gives them, with five changes:
+     - the root link base_link, the robot frame, where Enactic's root link is world, and
+       its mount joint openarm_body_base_link_joint, where Enactic's is
+       openarm_body_world_joint;
      - each gripper seated as Enactic's openarm_mujoco and its first description
        seat it: the hand's collision mesh on each *_hand link, and each finger 115.1 mm
        out along link7, 12 mm from the other, so the pads meet closed and stand 88 mm
@@ -16,9 +19,9 @@
        openarm_body_link0 naming one slice of Enactic's torso mesh, which
        collision_geometry's example openarm_torso_pieces writes. -->
 <robot name="openarm">
-  <link name="world"/>
-  <joint name="openarm_body_world_joint" type="fixed">
-    <parent link="world"/>
+  <link name="base_link"/>
+  <joint name="openarm_body_base_link_joint" type="fixed">
+    <parent link="base_link"/>
     <child link="openarm_body_link0"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
   </joint>

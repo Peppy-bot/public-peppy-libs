@@ -13,8 +13,8 @@ use robot_description::{Finger, FingerSpan};
 
 use crate::BuildError;
 
-/// Convex-hull pieces for every collision body: world-fixed bodies (in root
-/// frame), chain links (in link frame, with any *fixed* collision-bearing child
+/// Convex-hull pieces for every collision body: bodies fixed to the root (in
+/// the root frame), chain links (in link frame, with any *fixed* collision-bearing child
 /// baked in), and the fingers, each fit as its own body in its finger-link frame
 /// and placed live from its chain's opening. A body has one piece per collision
 /// element of its links.
@@ -38,7 +38,7 @@ pub(crate) struct FittedFinger {
 }
 
 /// Fit all collision bodies. `chains` are the moving-link names per chain (from
-/// FK); every other collision-bearing link must be world-fixed or an attached
+/// FK); every other collision-bearing link must be fixed to the root or an attached
 /// child of a chain link, anything else is an error rather than a silently
 /// unmodeled body. A child on a movable joint is a finger, which `fingers` must name
 /// with its closed and open positions.
@@ -61,7 +61,7 @@ pub(crate) fn fit_bodies(
         // link's pieces cover only the link and its fixed children. Only direct
         // children are handled; a deeper collision-bearing descendant (a multi-link
         // end-effector) falls through to the fixed-body pass below, which errors if
-        // it is not actually world-fixed, so such a URDF fails construction. A mimic
+        // it is not actually fixed to the root, so such a URDF fails construction. A mimic
         // finger joint's own declared limits are its travel; the mimic
         // multiplier/offset are not resolved, sound while those limits cover the true
         // travel.
@@ -119,7 +119,7 @@ pub(crate) fn fit_bodies(
         let hulls = fit_fixed_link(urdf, &name, meshes_dir)
             .map_err(|error| match error {
                 GeometryError::NotFixedToTheRoot { .. } => BuildError::Geometry(format!(
-                    "collision link '{name}' is neither a chain link, an attached child, nor world-fixed: {error}"
+                    "collision link '{name}' is neither a chain link, an attached child, nor fixed to the root: {error}"
                 )),
                 fit => BuildError::Fit(fit),
             })?;

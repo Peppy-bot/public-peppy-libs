@@ -58,10 +58,11 @@
 //! The pose arithmetic of AMCL: `pf_vector_sub` and `pf_vector_coord_add` of nav2_amcl
 //! src/pf/pf_vector.c, `normalize` and `angle_diff` of include/nav2_amcl/angleutils.hpp,
 //! and the heading that AMCL reads of the odometry (src/amcl_node.cpp `getOdomPose`), which
-//! passes through tf2's rotation matrix, as `camera_core::pose::Pose` holds it.
+//! passes through tf2's rotation matrix, as `frame_tree::Transform` holds it.
 
 use crate::geometry::Pose2;
-use camera_core::pose::{Pose, quaternion_of_yaw, yaw_of_quaternion};
+use frame_tree::Transform;
+use frame_tree::arithmetic::{quaternion_of_yaw, yaw_of_quaternion};
 use std::f64::consts::PI;
 
 /// `pf_vector_sub(a, b)`.
@@ -98,8 +99,8 @@ pub(crate) fn angle_diff(a: f64, b: f64) -> f64 {
 /// of a `tf2::Transform` when tf2 transforms the base's pose into the odometry frame, and
 /// the pose's quaternion is that basis's, whose `getYaw` AMCL reads.
 pub(crate) fn odometry_yaw(yaw: f64) -> f64 {
-    let basis = Pose::new([0.0; 3], quaternion_of_yaw(yaw))
-        .expect("the quaternion of a finite heading makes a pose");
+    let basis = Transform::new([0.0; 3], quaternion_of_yaw(yaw))
+        .expect("the quaternion of a finite heading makes a transform");
     yaw_of_quaternion(basis.orientation())
 }
 

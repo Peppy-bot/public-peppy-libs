@@ -27,10 +27,9 @@ nearest occupied voxel, with its gradient. No hardware or messaging dependencies
 
 ```rust
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
-use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
-use frame_tree::FrameName;
+use frame_tree::{FrameName, Transform};
 use occupancy_map::{Bounds, DistanceField, RobotCutout, Scan, VoxelMap, depth_points};
 
 let world = FrameName::parse("world")?;
@@ -55,10 +54,11 @@ let depth_model = DepthModel::parse(&intrinsics.depth_model)?;
 let points = depth_points(&frame, &depth, depth_unit, depth_model)?;
 
 // The depth stream stands where the color camera's pose in the map's frame, composed
-// with get_depth_to_color_extrinsics, the depth frame's pose in the color frame, puts it.
-let depth_to_color = Pose::new(
-    extrinsics.depth_to_color_position,
-    extrinsics.depth_to_color_orientation,
+// with depth_to_color of get_depth_to_color_extrinsics, the depth optical frame's pose in
+// the color optical frame, puts it.
+let depth_to_color = Transform::new(
+    extrinsics.depth_to_color.position,
+    extrinsics.depth_to_color.orientation,
 )?;
 let sensor = color_in_world.compose(&depth_to_color);
 

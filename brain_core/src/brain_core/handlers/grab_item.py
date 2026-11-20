@@ -1,28 +1,51 @@
-"""grab_item: close a gripper on an item named by id or by pose."""
+"""grab_item: close a gripper on an item named by id or by pose. A goal that
+names no item_id takes its target, which its decision parses and places in
+the robot frame (`Brain.place_target`); a goal that names one sends a target
+that is not read. A target the decision could not place for want of the
+robot frame or of the lookup's answer is refused in the result."""
 
 from __future__ import annotations
 
-from ..brain import RESULT_ENDS
+from dataclasses import dataclass
+from typing import Optional
+
+from ..brain import RESULT_ENDS, GoalTarget, placed_target
 from ..ports import ExpectedFailure, FailureKind, Role
 
 ZERO = dict(gripper_name="", item_id="")
 
 
-async def run(brain, ctx) -> None:
-    goal = ctx.request().data
+@dataclass(frozen=True)
+class Goal:
+    """A grab_item goal as its decision admitted it: the item by its id, or,
+    with `item_id` empty, its target as the decision found it."""
 
+    gripper_name: str
+    item_id: str
+    target: Optional[GoalTarget]
+    max_effort: float
+
+
+async def admit(brain, goal) -> Goal:
+    """The goal, its target placed when it names no item_id; a target that
+    `Brain.place_target` refuses refuses the goal."""
+    target = None if goal.item_id else await brain.place_target(goal.target)
+    return Goal(goal.gripper_name, goal.item_id, target, goal.max_effort)
+
+
+async def run(brain, ctx, goal: Goal) -> None:
     async def body(job) -> dict:
         manipulator = brain.models.current(Role.MANIPULATION)
         state = brain.state
         # The item first: its position decides which free gripper suits it.
         known = state.item_to_grab(goal.item_id) if goal.item_id else None
-        near = known.position if known is not None else tuple(goal.position)
+        target = placed_target(goal.target) if known is None else None
+        near = known.position if known is not None else target.position
         gripper = state.gripper_for_grab(goal.gripper_name, near)
         brain.manipulator_or_refuse(manipulator)
         item = known
         if item is None:
-            orientation = tuple(goal.orientation) if goal.orientation is not None else None
-            item = state.mint_from_pose(tuple(goal.position), orientation, brain.now())
+            item = state.mint_from_pose(target.position, target.orientation, brain.now())
         # The scene equal to the held flags before the manipulator plans: a
         # brain or a planner that restarted, a failed scene call or a forget
         # left it otherwise.

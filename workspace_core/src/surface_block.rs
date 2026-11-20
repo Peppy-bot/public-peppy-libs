@@ -119,7 +119,7 @@ impl<const N: usize, const K: usize> ArmPieces for Pieces<N, K> {
         // The pieces of the reaching arm's bodies stand where its own joints alone put them.
         let mut q = [[0.0; N]; K];
         q[arm] = joints;
-        let Ok(bodies) = self.model.world_pieces_of_chain(arm, &q) else {
+        let Ok(bodies) = self.model.pieces_of_chain_in_root(arm, &q) else {
             return false;
         };
         bodies
@@ -142,7 +142,7 @@ impl OnShape for Build<'_> {
             SelfCollisionModel::<N, K>::from_description(self.description, self.meshes_dir)?;
         model.set_gripper_openings(&[REACHING_OPENING; K]);
         let front = model
-            .fixed_world_pieces()
+            .fixed_pieces_in_root()
             .iter()
             .flat_map(|(_, pieces)| pieces.iter().flat_map(|piece| piece.vertices()))
             .map(|vertex| vertex.x)

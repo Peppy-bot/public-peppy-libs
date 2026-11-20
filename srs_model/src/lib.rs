@@ -12,15 +12,15 @@
 //! - [`Arm::solve_ik`] is closed-form arm-angle (Shimizu) inverse kinematics
 //!   ([`ArmAnglePolicy`], [`Solution`]); [`Arm::arm_angle`] reports a config's arm angle.
 //! - [`Arm::limits`] are the URDF joint limits; [`Arm::base_pose`] /
-//!   [`Arm::world_pose`] convert between world and arm base frames.
+//!   [`Arm::root_pose`] convert between the root and arm base frames.
 //! - [`plan_line`] plans a move of the end effector to a pose: a straight line
 //!   walked by `chain_kinematics`' KDL search, whose configurations a caller times
 //!   and plays as a joint path.
 //!
 //! Frames: FK and IK work in the **arm base frame** (the arm's own mounting link).
-//! Gravity / Coriolis compute in the **world frame**, because gravity is a world
-//! quantity (acts along world -Z). The fixed world <-> base mount transform
-//! relating the two is captured at load (see [`Arm::base_from_world`]).
+//! Gravity / Coriolis compute in the **root frame**, the frame of the URDF's root
+//! link, with gravity along its -Z. The fixed root <-> base mount transform
+//! relating the two is captured at load (see [`Arm::base_from_root`]).
 //!
 //! Robot-agnostic: geometry, joint limits and inertials are all derived from
 //! whatever URDF the caller passes, and a non-SRS chain is rejected with `Err`.
@@ -30,8 +30,8 @@
 //! tools) is carried as the distal payload in gravity / Coriolis. Left vs right is
 //! a different chain in the same URDF, selected by the base link (the mirror is
 //! re-derived from the URDF geometry, never sign-flipped). For gravity to point
-//! the right way, the URDF must contain the kinematic tree from the world/body
-//! root down to `base_link` (the mount), not just the bare arm chain.
+//! the right way, the URDF must contain the kinematic tree from its root link
+//! down to `base_link` (the mount), not just the bare arm chain.
 //!
 //! Hardware-free: it defines its own [`ARM_DOF`] rather than depending on any
 //! hardware crate, so the full IK<->FK round-trip runs under a plain `cargo test`

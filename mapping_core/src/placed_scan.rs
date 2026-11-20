@@ -23,7 +23,9 @@
 
 use crate::geometry::{Pose2, Vector2};
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::{PlanarPose, PoseError, yaw_of_quaternion};
+use control_core::planar_pose::PlanarPose;
+use frame_tree::NotATransform;
+use frame_tree::arithmetic::yaw_of_quaternion;
 
 /// One ray of a placed scan: its reading (m, +inf for a mark), and where the sensor stood at
 /// its time and the heading of the ray, in the base's frame at the scan's timestamp.
@@ -80,11 +82,11 @@ impl PlacedScan {
         scan: &LaserScan,
         sensor: &Sweep<PlanarPose>,
         base: PlanarPose,
-    ) -> Result<Self, PoseError> {
-        let from_base = base.to_pose().inverse();
+    ) -> Result<Self, NotATransform> {
+        let from_base = base.to_transform().inverse();
         let in_base = Sweep {
-            first_ray: from_base.compose(&sensor.first_ray.to_pose()),
-            last_ray: from_base.compose(&sensor.last_ray.to_pose()),
+            first_ray: from_base.compose(&sensor.first_ray.to_transform()),
+            last_ray: from_base.compose(&sensor.last_ray.to_transform()),
         };
         let beams = scan
             .placed_rays(&in_base)?

@@ -64,10 +64,11 @@ pub fn compose(
 mod tests {
     use std::num::NonZeroUsize;
 
-    use camera_core::pose::{PlanarPose, Pose};
     use control_core::non_negative_finite::NonNegativeFinite;
+    use control_core::planar_pose::PlanarPose;
     use control_core::positive_finite::PositiveFinite;
     use frame_tree::FrameName;
+    use frame_tree::Transform;
     use occupancy_map::Bounds;
 
     use super::*;
@@ -121,7 +122,7 @@ mod tests {
         )
         .unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let sensor_on_base = Pose::new([5.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let sensor_on_base = Transform::new([5.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
         live.insert_depth_frame(
             0,
             &[[0.2, 0.0, -0.7]],

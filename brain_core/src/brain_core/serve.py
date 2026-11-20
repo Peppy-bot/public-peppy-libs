@@ -28,17 +28,18 @@ SERVICE_RETRY_S = 1.0
 
 
 async def serve_action(
-    action_module, node_runner, token, tasks: set, decide: Callable[[object], object], run: Callable[[object], Awaitable[None]]
+    action_module, node_runner, token, tasks: set, decider, run: Callable[[object, object], Awaitable[None]]
 ) -> None:
-    """Serves one exposed action: `decide` gives the generated decision of
-    each goal at once, as `brain.decider` makes it, and `run` carries out
-    each accepted goal in a task of its own."""
+    """Serves one exposed action: `decider`, a `brain.Decider`, gives the
+    generated decision of each goal at once and then the goal it accepted,
+    and `run` carries out each accepted goal, given its context and that
+    goal, in a task of its own."""
     action = await action_module.ActionHandle.expose(node_runner)
     while not token.is_cancelled():
-        ctx = await unless_cancelled(token, action.handle_goal_next_request(decide))
+        ctx = await unless_cancelled(token, action.handle_goal_next_request(decider.decide))
         if ctx is None:
             return
-        task = asyncio.create_task(run(ctx))
+        task = asyncio.create_task(run(ctx, decider.take()))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         task.add_done_callback(report_failure)

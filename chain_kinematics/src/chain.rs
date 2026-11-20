@@ -25,7 +25,7 @@ pub enum JointSelection<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct ChainSpec<'a> {
     /// The frame poses are reported in. `None` means the URDF root, and
-    /// [`Chain::base_from_world`] is then the identity.
+    /// [`Chain::base_from_root`] is then the identity.
     pub base_link: Option<&'a str>,
     /// The frame poses are commanded and reported at.
     pub tip_link: &'a str,
@@ -56,7 +56,7 @@ pub struct Chain<const N: usize> {
     /// sits, counting from 0 at the base.
     rank_of: [usize; N],
     tip_link: usize,
-    base_from_world: Isometry3<f64>,
+    base_from_root: Isometry3<f64>,
     axes_local: [Vector3<f64>; N],
     /// How each actuated joint moves, so the Jacobian gives a prismatic joint
     /// its own column rather than assuming everything rotates.
@@ -155,7 +155,7 @@ impl<const N: usize> Chain<N> {
             proximal_order,
             rank_of,
             tip_link,
-            base_from_world: Isometry3::identity(),
+            base_from_root: Isometry3::identity(),
             axes_local,
             kinds,
             masses,
@@ -165,13 +165,13 @@ impl<const N: usize> Chain<N> {
             tool: Isometry3::identity(),
         };
         // Every joint above the base is fixed by the `starts_with` check, so the
-        // base's world transform at home is its world transform always.
-        chain.base_from_world = chain.world_at_home(base_link).inverse();
+        // base's root-frame pose at home is its root-frame pose always.
+        chain.base_from_root = chain.root_pose_at_home(base_link).inverse();
         Ok(chain)
     }
 
-    /// World transform of a link on the path, at the home configuration.
-    fn world_at_home(&self, link: usize) -> Isometry3<f64> {
+    /// Root-frame pose of a link on the path, at the home configuration.
+    fn root_pose_at_home(&self, link: usize) -> Isometry3<f64> {
         let mut here = Isometry3::identity();
         for &j in &self.path {
             let joint = self.tree.joint(j);
@@ -221,25 +221,25 @@ impl<const N: usize> Chain<N> {
         self.tool
     }
 
-    /// The fixed `world -> base` transform resolved from the URDF. Identity when
+    /// The fixed `root -> base` transform resolved from the URDF. Identity when
     /// the base is the URDF root.
-    pub fn base_from_world(&self) -> Isometry3<f64> {
-        self.base_from_world
+    pub fn base_from_root(&self) -> Isometry3<f64> {
+        self.base_from_root
     }
 
-    /// Convert a world-frame pose into the base frame this chain reports in.
-    pub fn base_pose(&self, world: &Isometry3<f64>) -> Isometry3<f64> {
-        self.base_from_world * world
+    /// Convert a root-frame pose into the base frame this chain reports in.
+    pub fn base_pose(&self, in_root: &Isometry3<f64>) -> Isometry3<f64> {
+        self.base_from_root * in_root
     }
 
-    /// Convert a base-frame pose back into the world frame.
-    pub fn world_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
-        self.base_from_world.inverse() * base
+    /// Convert a base-frame pose back into the root frame.
+    pub fn root_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
+        self.base_from_root.inverse() * base
     }
 
-    /// The end-effector pose at `q`, world frame.
-    pub fn world_ee_pose(&self, q: &[f64; N]) -> Isometry3<f64> {
-        self.world_pose(&self.at(q).ee_pose())
+    /// The end-effector pose at `q`, root frame.
+    pub fn root_ee_pose(&self, q: &[f64; N]) -> Isometry3<f64> {
+        self.root_pose(&self.at(q).ee_pose())
     }
 
     /// The underlying URDF tree, for a caller that needs geometry this type does
@@ -251,7 +251,7 @@ impl<const N: usize> Chain<N> {
     /// Pose the chain at `q`. Allocation-free: only the actuated joints' frames
     /// and the tip's are retained, which is every frame the readers below need.
     pub fn at(&self, q: &[f64; N]) -> Posed<'_, N> {
-        let mut joint_world = [Isometry3::identity(); N];
+        let mut joint_in_root = [Isometry3::identity(); N];
         let mut here = Isometry3::identity();
         for (slot, &j) in self.path.iter().enumerate() {
             let joint = self.tree.joint(j);
@@ -261,13 +261,13 @@ impl<const N: usize> Chain<N> {
             let value = driven.map_or(0.0, |i| q[i]);
             here *= joint.pose_at(value);
             if let Some(i) = driven {
-                joint_world[i] = here;
+                joint_in_root[i] = here;
             }
         }
         Posed {
             chain: self,
-            joint_world,
-            tip_world: here,
+            joint_in_root,
+            tip_in_root: here,
         }
     }
 }
@@ -277,8 +277,8 @@ impl<const N: usize> Chain<N> {
 #[derive(Debug)]
 pub struct Posed<'a, const N: usize> {
     chain: &'a Chain<N>,
-    joint_world: [Isometry3<f64>; N],
-    tip_world: Isometry3<f64>,
+    joint_in_root: [Isometry3<f64>; N],
+    tip_in_root: Isometry3<f64>,
 }
 
 impl<const N: usize> Posed<'_, N> {
@@ -290,14 +290,14 @@ impl<const N: usize> Posed<'_, N> {
 
     /// Tip pose in the base frame, before any mounted tool.
     pub fn tip_pose(&self) -> Isometry3<f64> {
-        self.to_base(self.tip_world)
+        self.to_base(self.tip_in_root)
     }
 
-    /// World-frame (URDF root) pose of segment `i`'s link: the link moved by
+    /// Root-frame pose of segment `i`'s link: the link moved by
     /// joint `i`. Two chains of one robot share this frame, so their poses
     /// compose directly.
-    pub fn link_pose_world(&self, i: usize) -> Isometry3<f64> {
-        self.joint_world[i]
+    pub fn link_pose_root(&self, i: usize) -> Isometry3<f64> {
+        self.joint_in_root[i]
     }
 
     /// URDF name of segment `i`'s link. Keys per-link data such as collision
@@ -311,29 +311,29 @@ impl<const N: usize> Posed<'_, N> {
     }
 
     /// Joint `i`'s axis in the base frame. A joint's axis is invariant under its
-    /// own value, so rotating the local axis by the joint's world rotation is
+    /// own value, so rotating the local axis by the joint's root-frame rotation is
     /// exact.
     pub fn axis_base(&self, i: usize) -> Vector3<f64> {
-        self.to_base(self.joint_world[i])
+        self.to_base(self.joint_in_root[i])
             .rotation
             .transform_vector(&self.chain.axes_local[i])
     }
 
     /// A point on joint `i`'s axis, in the base frame.
     pub fn origin_base(&self, i: usize) -> Vector3<f64> {
-        self.to_base(self.joint_world[i]).translation.vector
+        self.to_base(self.joint_in_root[i]).translation.vector
     }
 
-    /// Joint `i`'s axis in the world frame.
-    pub fn axis_world(&self, i: usize) -> Vector3<f64> {
-        self.joint_world[i]
+    /// Joint `i`'s axis in the root frame.
+    pub fn axis_root(&self, i: usize) -> Vector3<f64> {
+        self.joint_in_root[i]
             .rotation
             .transform_vector(&self.chain.axes_local[i])
     }
 
-    /// A point on joint `i`'s axis, in the world frame.
-    pub fn origin_world(&self, i: usize) -> Vector3<f64> {
-        self.joint_world[i].translation.vector
+    /// A point on joint `i`'s axis, in the root frame.
+    pub fn origin_root(&self, i: usize) -> Vector3<f64> {
+        self.joint_in_root[i].translation.vector
     }
 
     /// How joint `i` moves. What a dynamics layer dispatches on: a revolute
@@ -348,16 +348,16 @@ impl<const N: usize> Posed<'_, N> {
         self.chain.masses[i]
     }
 
-    /// World-frame centre of mass of segment `i`.
-    pub fn com_world(&self, i: usize) -> Vector3<f64> {
-        self.joint_world[i]
+    /// Root-frame centre of mass of segment `i`.
+    pub fn com_root(&self, i: usize) -> Vector3<f64> {
+        self.joint_in_root[i]
             .transform_point(&Point3::from(self.chain.coms_local[i]))
             .coords
     }
 
-    /// World-frame inertia tensor of segment `i` about its centre of mass.
-    pub fn inertia_world(&self, i: usize) -> Matrix3<f64> {
-        let r = *self.joint_world[i].rotation.to_rotation_matrix().matrix();
+    /// Root-frame inertia tensor of segment `i` about its centre of mass.
+    pub fn inertia_root(&self, i: usize) -> Matrix3<f64> {
+        let r = *self.joint_in_root[i].rotation.to_rotation_matrix().matrix();
         r * self.chain.inertias_local[i] * r.transpose()
     }
 
@@ -396,15 +396,15 @@ impl<const N: usize> Posed<'_, N> {
     }
 
     /// Linear-velocity Jacobian of a point rigidly attached to `segment`, as
-    /// per-joint world-frame contributions: entry `j` is the point's world linear
+    /// per-joint root-frame contributions: entry `j` is the point's root-frame linear
     /// velocity per unit rate of joint `j`, and is zero for joints distal to the
-    /// segment, which do not move it. `point` is in the world frame that
-    /// [`link_pose_world`](Self::link_pose_world) returns; a `segment` past the
+    /// segment, which do not move it. `point` is in the root frame that
+    /// [`link_pose_root`](Self::link_pose_root) returns; a `segment` past the
     /// last joint clamps to the whole chain.
     ///
     /// This is [`jacobian`](Self::jacobian)'s linear rows generalised to an
     /// arbitrary witness point, which is what a collision-distance gradient needs.
-    pub fn point_world_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; N] {
+    pub fn point_root_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; N] {
         let rank_of = &self.chain.rank_of;
         let last_rank = rank_of
             .get(segment)
@@ -414,10 +414,10 @@ impl<const N: usize> Posed<'_, N> {
             if rank_of[j] > last_rank {
                 return Vector3::zeros();
             }
-            let z = self.axis_world(j);
+            let z = self.axis_root(j);
             match self.chain.kinds[j] {
                 JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
-                    z.cross(&(point.coords - self.origin_world(j)))
+                    z.cross(&(point.coords - self.origin_root(j)))
                 }
                 JointKind::Prismatic { .. } => z,
                 JointKind::Fixed => Vector3::zeros(),
@@ -425,14 +425,14 @@ impl<const N: usize> Posed<'_, N> {
         })
     }
 
-    /// The chain's constant `world -> base` transform, so a caller holding a
+    /// The chain's constant `root -> base` transform, so a caller holding a
     /// posed view does not have to keep the chain to hand as well.
-    pub fn base_from_world(&self) -> Isometry3<f64> {
-        self.chain.base_from_world
+    pub fn base_from_root(&self) -> Isometry3<f64> {
+        self.chain.base_from_root
     }
 
-    fn to_base(&self, world: Isometry3<f64>) -> Isometry3<f64> {
-        self.chain.base_pose(&world)
+    fn to_base(&self, in_root: Isometry3<f64>) -> Isometry3<f64> {
+        self.chain.base_pose(&in_root)
     }
 }
 

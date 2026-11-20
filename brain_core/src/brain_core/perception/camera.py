@@ -1,15 +1,16 @@
 """The camera model: what turns a pixel and its depth into a position in
-the robot frame. The camera contracts carry image size and encoding only:
-the intrinsics come from the camera through camera_geometry, once it has
-answered, and the camera's pose at the time of each picture from the
-robot's tree of frames through transform_lookup.
+the robot frame. The camera contracts carry image size and encoding, and
+the frame each picture names: the intrinsics come from the camera through
+camera_geometry, once it has answered, and the place of the frame a picture
+names at its capture time from the robot's tree of frames through
+transform_lookup.
 
 Conventions, camera_geometry's and transforms': the optical frame has +X
 to the right of the image, +Y down it and +Z along the view; a depth
 sample is the distance along the optical axis; the pose is the optical
-frame in the robot frame limb_motion uses, position in metres and a unit
+frame's `Placement` in the robot frame, position in metres and a unit
 quaternion [x, y, z, w], so a point p of the optical frame is R(q) p + t
-of the robot frame.
+of the robot frame, R(q) the turn of control_core_py's `rotate`.
 
 A pixel becomes a ray through `pixel_to_ray`, in camera_geometry:v1's
 terms: the pixel through fx, fy, cx, cy to a normalised point, then the
@@ -20,7 +21,8 @@ the distorted one, so undistorting inverts it by iteration; and
 the undistorted one, applied once. Any other name is refused.
 
 The arithmetic of a pixel's way to the robot frame (`pixel_to_ray`,
-`undistort`, `rotate`) takes numbers and numpy arrays alike, so
+`undistort`, and control_core_py's `rotate`) takes numbers and numpy arrays
+alike, so
 `CameraModel.deproject_points` takes a whole grid of pixels through it in
 one pass, as `CameraModel.deproject` takes one pixel.
 """
@@ -32,8 +34,9 @@ from dataclasses import dataclass
 from typing import Sequence, Optional
 
 import numpy as np
+from control_core_py.geometry import Placement, rotate
 
-from ..ports import Quat, Vec3
+from ..ports import Vec3
 
 # The models camera_geometry:v1 names, and how a pixel is undistorted
 # under each.
@@ -79,45 +82,17 @@ class Intrinsics:
         return Intrinsics(width, height, self.fx * sx, self.fy * sy, (self.cx + 0.5) * sx - 0.5, (self.cy + 0.5) * sy - 0.5, self.distortion_model, self.distortion)
 
 
-# The least norm of a quaternion that is turned into a unit one.
-_LEAST_QUATERNION_NORM = 1e-9
-
-
-@dataclass(frozen=True)
-class CameraPose:
-    """The optical frame in the robot frame: metres, and a unit quaternion
-    [x, y, z, w]."""
-
-    position: Vec3
-    orientation: Quat
-
-    @classmethod
-    def parse(cls, position: Sequence[float], orientation: Sequence[float]) -> "CameraPose":
-        """The pose of three finite metres and a quaternion [x, y, z, w],
-        normalised here; a ValueError when they are no pose."""
-        if len(position) != 3 or len(orientation) != 4:
-            raise ValueError("a camera pose is three coordinates and a quaternion of four")
-        values = [float(value) for value in (*position, *orientation)]
-        if any(not math.isfinite(value) for value in values):
-            raise ValueError("a camera pose must be finite")
-        x, y, z, qx, qy, qz, qw = values
-        norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-        if norm < _LEAST_QUATERNION_NORM:
-            raise ValueError("a camera pose's quaternion must not be zero")
-        return cls((x, y, z), (qx / norm, qy / norm, qz / norm, qw / norm))
-
-
 @dataclass(frozen=True)
 class CameraModel:
     """The camera the brain looks through: its intrinsics, from the camera
-    itself once it has answered, and the pose of its optical frame in the
+    itself once it has answered, and the place of its optical frame in the
     robot frame when one picture was taken. It places a pixel once it holds
     both."""
 
-    pose: Optional[CameraPose] = None
+    pose: Optional[Placement] = None
     intrinsics: Optional[Intrinsics] = None
 
-    def with_pose(self, pose: CameraPose) -> "CameraModel":
+    def with_pose(self, pose: Placement) -> "CameraModel":
         return CameraModel(pose, self.intrinsics)
 
     def with_intrinsics(self, intrinsics: Intrinsics) -> "CameraModel":
@@ -148,11 +123,11 @@ class CameraModel:
         k = self.intrinsics.scaled_to(width, height)
         x, y = pixel_to_ray(u, v, k.fx, k.fy, k.cx, k.cy, k.distortion_model, k.distortion)
         camera = (x * depth_m, y * depth_m, depth_m)
-        rotated = rotate(self.pose.orientation, camera)
+        turned = rotate(self.pose.orientation, camera)
         return (
-            self.pose.position[0] + rotated[0],
-            self.pose.position[1] + rotated[1],
-            self.pose.position[2] + rotated[2],
+            self.pose.position[0] + turned[0],
+            self.pose.position[1] + turned[1],
+            self.pose.position[2] + turned[2],
         )
 
     def forward(self) -> Vec3:
@@ -220,18 +195,3 @@ def _terms(coefficients: Sequence[float], x: float, y: float) -> tuple[float, fl
     dx = 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
     dy = p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
     return radial, dx, dy
-
-
-def rotate(q: Quat, v: Vec3) -> Vec3:
-    """`v` rotated by the unit quaternion `q` = [x, y, z, w]."""
-    qx, qy, qz, qw = q
-    vx, vy, vz = v
-    # t = 2 * cross(q.xyz, v); v' = v + w * t + cross(q.xyz, t)
-    tx = 2.0 * (qy * vz - qz * vy)
-    ty = 2.0 * (qz * vx - qx * vz)
-    tz = 2.0 * (qx * vy - qy * vx)
-    return (
-        vx + qw * tx + (qy * tz - qz * ty),
-        vy + qw * ty + (qz * tx - qx * tz),
-        vz + qw * tz + (qx * ty - qy * tx),
-    )

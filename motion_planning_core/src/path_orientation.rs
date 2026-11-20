@@ -4,18 +4,32 @@
 //! one orientation path constraint (moveit2 2.15.2 ompl_constraints.cpp), here for each of
 //! them, one row per orientation, so their order carries no meaning.
 //!
-//! An orientation's error is its contract's measure ([`OrientationTarget::error`]). So:
+//! An orientation's error is its contract's measure ([`OrientationTarget::error`]). An
+//! orientation in a frame of an arm of the group ([`crate::Reference`]) is held against that
+//! frame where each state puts it, as MoveIt judges a constraint in a link of the robot at each
+//! state (moveit2 2.15.2 kinematic_constraint.cpp:720-740): its error is a measure of the
+//! rotation between the two frames alone, the same when a joint turns both. A frame that holds
+//! an orientation is a frame of an arm of the group, or a frame no state moves, such as a link
+//! of an arm outside the group where the plan's start stands it ([`Holder::Standing`]), as
+//! MoveIt judges a constraint on a link outside its planning group with the group's joints
+//! from each state and every other joint at the start state's (moveit_planners/ompl
+//! state_validity_checker.cpp:58, :102-107). The joints that turn the orientation are those
+//! that turn exactly one of the frame and its reference: the robot frame, which no joint
+//! turns, or the frame of the reference. So:
 //!
 //! - The function is an orientation's error above the angle the plan allows it, 0 inside
 //!   it: `HELD_SHARE` of its tolerance, or the start's error where that is more. A
 //!   corrected state stands within the allowed angle to the projection's tolerance.
-//! - A joint turning by an angle turns a frame it moves by at most that angle, so a frame
-//!   turns along a motion at most the sum of the changes of its joints, and a step that
-//!   turns it no farther than its spare keeps every state of the step within its
-//!   tolerance. [`PathOrientations::walk`] walks a run or an arc so, and a state nearer its
-//!   tolerance than `FLOOR_SHARE` of it ends the walk.
+//! - A joint turning by an angle turns a frame it moves by at most that angle, so the
+//!   rotation between a frame and its reference turns along a motion at most the sum of the
+//!   changes of the joints that turn the orientation, and a step that turns it no farther
+//!   than its spare keeps every state of the step within its tolerance.
+//!   [`PathOrientations::walk`] walks a run or an arc so, and a state nearer its tolerance
+//!   than `FLOOR_SHARE` of it ends the walk.
 //! - A straight joint motion `a` turns a frame away from the shortest rotation between its
-//!   ends by at most `|a|_1^2 / 16`: the frame's angular velocity changes along it at most
+//!   ends by at most `|a|_1^2 / 16`, `a` over the joints that turn the orientation: the
+//!   rotation between the frame and its reference is a chain of those joints' rotations, the
+//!   reference's taken inverse, whose angular velocity changes along it at most
 //!   `|a|_1^2 / 2`. A free axis takes as much again: along the shortest rotation it follows
 //!   a small circle, at most `phi^2 / 16` off the great circle between its ends, `phi` the
 //!   rotation's angle, at most `|a|_1`. The plan's spacing keeps the first under half of what
@@ -25,13 +39,14 @@
 
 use std::num::NonZeroU32;
 
-use chain_kinematics::{Chain, ChainFrame};
+use chain_kinematics::{Chain, ChainFrame, Posed};
 use control_core::positive_finite::PositiveFinite;
+use nalgebra::UnitQuaternion;
 use ompl_bridge::{CONSTRAINED_SPACING, CheckError, Constraint, Projection};
 
 use crate::arm::Moving;
 use crate::arms::Arms;
-use crate::goal::{Frame, Goal, OrientationTarget, frame_pose_at};
+use crate::goal::{Frame, Goal, OrientationTarget, Reference, frame_pose_at};
 use crate::plan::PlanFailure;
 
 /// The share of an orientation's tolerance a plan's corrected states stand within, so the
@@ -64,31 +79,175 @@ const PROJECTION_TOLERANCE: f64 = 1e-4;
 /// The Newton steps of one projection at most: OMPL's default (`Constraint.h:59`).
 const PROJECTION_ITERATIONS: NonZeroU32 = NonZeroU32::new(50).expect("50 is above 0");
 
-/// An orientation that a frame of an arm of a plan holds at every state of the path.
+/// An orientation that a frame holds at every state of a plan's path.
 #[derive(Debug, Clone, Copy)]
 pub struct PathOrientation<'a> {
-    /// The arm's place in the plan's group.
-    pub arm: usize,
+    /// The frame that holds it.
+    pub holder: Holder,
     /// The name of the frame's link, as a plan's messages name it.
     pub link_name: &'a str,
+    /// The orientation; its `frame` is the holding frame in its own arm.
     pub target: OrientationTarget,
+}
+
+/// The frame that holds a path orientation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Holder {
+    /// The target's frame of the arm at this place in the plan's group, which each state moves.
+    Arm(usize),
+    /// A frame that no state of the plan moves, turned `rotation` in the robot frame: a link of
+    /// an arm outside the plan's group where the plan's start stands that arm, as MoveIt holds
+    /// every joint outside its planning group at the start state's
+    /// (state_validity_checker.cpp:58, :102-107).
+    Standing(UnitQuaternion<f64>),
+}
+
+/// A frame of an arm of a plan's group: the arm's chain, its place in the group, the frame,
+/// and the arm's joints that turn it.
+#[derive(Clone, Copy)]
+struct ArmFrame<'a, const N: usize> {
+    chain: &'a Chain<N>,
+    arm: usize,
+    frame: Frame,
+    turning: [bool; N],
+}
+
+impl<'a, const N: usize> ArmFrame<'a, N> {
+    fn new(chain: &'a Chain<N>, arm: usize, frame: Frame) -> Self {
+        Self {
+            chain,
+            arm,
+            frame,
+            turning: turning_joints(chain, frame),
+        }
+    }
+
+    /// The arm posed at its joints of `q`.
+    fn posed<const D: usize>(&self, q: &[f64; D]) -> Posed<'a, N> {
+        self.chain.at(&Arms::<N, D>::slice(q, self.arm))
+    }
+
+    /// Adds to `row` the rate at which each joint turning the frame turns it about `axis`,
+    /// times `sign`, the arm posed at `posed`.
+    fn add_rates(
+        &self,
+        posed: &Posed<N>,
+        axis: &nalgebra::Vector3<f64>,
+        sign: f64,
+        row: &mut [f64],
+    ) {
+        for j in (0..N).filter(|&j| self.turning[j]) {
+            row[self.arm * N + j] += sign * axis.dot(&posed.axis_root(j));
+        }
+    }
+}
+
+/// The frame that holds an orientation of a plan: a frame of an arm of the group, or one no
+/// state moves, at its rotation in the robot frame.
+#[derive(Clone, Copy)]
+enum HeldFrame<'a, const N: usize> {
+    Arm(ArmFrame<'a, N>),
+    Standing(UnitQuaternion<f64>),
+}
+
+impl<const N: usize> HeldFrame<'_, N> {
+    /// The place in the group of the frame's arm; none for a frame no state moves.
+    fn arm(&self) -> Option<usize> {
+        match self {
+            Self::Arm(frame) => Some(frame.arm),
+            Self::Standing(_) => None,
+        }
+    }
+
+    /// The frame's rotation in the robot frame at `q`.
+    fn rotation<const D: usize>(&self, q: &[f64; D]) -> UnitQuaternion<f64> {
+        match self {
+            Self::Arm(frame) => frame_pose_at(&frame.posed(q), frame.frame).rotation,
+            Self::Standing(rotation) => *rotation,
+        }
+    }
 }
 
 /// An orientation of a plan with what the plan keeps of it.
 struct Held<'a, const N: usize> {
-    chain: &'a Chain<N>,
-    arm: usize,
+    /// The frame the orientation holds.
+    held: HeldFrame<'a, N>,
+    /// The frame of an arm of the group the target is in, none for the robot frame.
+    reference: Option<ArmFrame<'a, N>>,
     link_name: &'a str,
     target: OrientationTarget,
-    /// The joints of the arm that turn the frame.
-    turning: [bool; N],
+    /// The places in the state of the joints that turn the orientation: those that turn
+    /// exactly one of the frame and its reference.
+    turning: Vec<usize>,
     /// The error of a state the plan corrects, at most.
     allowed: f64,
 }
 
-impl<const N: usize> Held<'_, N> {
+impl<'a, const N: usize> Held<'a, N> {
+    /// The orientation `target` of the frame `held`, named `link_name`, in the frame
+    /// `reference` of an arm, or in the robot frame for none, its error allowed up to
+    /// `allowed`.
+    fn new(
+        held: HeldFrame<'a, N>,
+        reference: Option<ArmFrame<'a, N>>,
+        link_name: &'a str,
+        target: OrientationTarget,
+        allowed: f64,
+    ) -> Self {
+        let places = |side: &ArmFrame<'a, N>| -> Vec<usize> {
+            (0..N)
+                .filter(|&j| side.turning[j])
+                .map(|j| side.arm * N + j)
+                .collect()
+        };
+        let of_held = match &held {
+            HeldFrame::Arm(frame) => places(frame),
+            HeldFrame::Standing(_) => Vec::new(),
+        };
+        let of_reference = reference.as_ref().map_or_else(Vec::new, places);
+        let turning = of_held
+            .iter()
+            .filter(|place| !of_reference.contains(place))
+            .chain(of_reference.iter().filter(|place| !of_held.contains(place)))
+            .copied()
+            .collect();
+        Self {
+            held,
+            reference,
+            link_name,
+            target,
+            turning,
+            allowed,
+        }
+    }
+
     fn tolerance(&self) -> f64 {
         self.target.tolerance_rad.get()
+    }
+
+    /// Whether a check of the pairs `moving` names judges the orientation: as a pair of the
+    /// arms of the frame and of its reference, either arm twice where the other side is a
+    /// frame no state moves, and at every check where neither side moves.
+    fn judged_by(&self, moving: Moving) -> bool {
+        match (
+            self.held.arm(),
+            self.reference.map(|reference| reference.arm),
+        ) {
+            (Some(arm), Some(other)) => moving.judges(arm, other),
+            (Some(arm), None) | (None, Some(arm)) => moving.judges(arm, arm),
+            (None, None) => true,
+        }
+    }
+
+    /// The target in the robot frame at `q`: its reference placed where `q` puts it.
+    fn target_at<const D: usize>(&self, q: &[f64; D]) -> OrientationTarget {
+        match &self.reference {
+            None => self.target,
+            Some(reference) => {
+                let rotation = frame_pose_at(&reference.posed(q), reference.frame).rotation;
+                self.target.placed_by(&rotation)
+            }
+        }
     }
 
     /// The target with its allowed angle as its tolerance: what a goal of the frame meets.
@@ -106,21 +265,19 @@ impl<const N: usize> Held<'_, N> {
     }
 
     fn error<const D: usize>(&self, q: &[f64; D]) -> f64 {
-        self.target
-            .error_at(self.chain, &Arms::<N, D>::slice(q, self.arm))
+        self.target_at(q).error(&self.held.rotation(q))
     }
 
-    /// The farthest the frame turns per unit of a position along a motion on which each
-    /// joint of the state changes at most its `motion` per unit.
+    /// The farthest the orientation turns per unit of a position along a motion on which
+    /// each joint of the state changes at most its `motion` per unit.
     fn turn_rate<const D: usize>(&self, motion: &[f64; D]) -> f64 {
-        let joints = Arms::<N, D>::slice(motion, self.arm);
-        (0..N).filter(|&j| self.turning[j]).map(|j| joints[j]).sum()
+        self.turning.iter().map(|&i| motion[i]).sum()
     }
 
     /// The spacing of a plan's states that keeps its runs within the tolerance, as the
-    /// module says. Unbounded for a frame no joint turns.
+    /// module says. Unbounded for an orientation no joint turns.
     fn spacing(&self) -> f64 {
-        let joints = self.turning.iter().filter(|turning| **turning).count();
+        let joints = self.turning.len();
         if joints == 0 {
             return f64::INFINITY;
         }
@@ -128,18 +285,23 @@ impl<const N: usize> Held<'_, N> {
     }
 
     /// Writes the row of the function's Jacobian at `q` into `row`, which holds 0: the
-    /// frame's error axis against each joint's axis, outside the allowed angle.
+    /// frame's error axis against the axis of each joint turning the frame, outside the
+    /// allowed angle, less it against the axis of each joint turning the reference, since
+    /// turning both alike leaves the error as it is.
     fn write_row<const D: usize>(&self, q: &[f64; D], row: &mut [f64]) {
-        let posed = self.chain.at(&Arms::<N, D>::slice(q, self.arm));
-        let actual = frame_pose_at(&posed, self.target.frame).rotation;
-        if self.target.error(&actual) <= self.allowed {
+        let actual = self.held.rotation(q);
+        let target = self.target_at(q);
+        if target.error(&actual) <= self.allowed {
             return;
         }
-        let Some(axis) = self.target.error_axis(&actual) else {
+        let Some(axis) = target.error_axis(&actual) else {
             return;
         };
-        for j in (0..N).filter(|&j| self.turning[j]) {
-            row[self.arm * N + j] = axis.dot(&posed.axis_world(j));
+        if let HeldFrame::Arm(held) = &self.held {
+            held.add_rates(&held.posed(q), &axis, 1.0, row);
+        }
+        if let Some(reference) = &self.reference {
+            reference.add_rates(&reference.posed(q), &axis, -1.0, row);
         }
     }
 }
@@ -196,13 +358,24 @@ impl<'a, const N: usize, const D: usize> PathOrientations<'a, N, D> {
         start: &[f64; D],
     ) -> Result<Held<'a, N>, PlanFailure> {
         let PathOrientation {
-            arm,
+            holder,
             link_name,
             target,
         } = *orientation;
-        let chain = arms.arms()[arm].geometry().chain();
-        let error = target.error_at(chain, &Arms::<N, D>::slice(start, arm));
+        let frame_of = |arm: usize, frame: Frame| {
+            ArmFrame::new(arms.arms()[arm].geometry().chain(), arm, frame)
+        };
+        let reference = match target.reference {
+            Reference::Robot => None,
+            Reference::Arm { arm, frame } => Some(frame_of(arm, frame)),
+        };
         let tolerance = target.tolerance_rad.get();
+        let held = match holder {
+            Holder::Arm(arm) => HeldFrame::Arm(frame_of(arm, target.frame)),
+            Holder::Standing(rotation) => HeldFrame::Standing(rotation),
+        };
+        let unchecked = Held::new(held, reference, link_name, target, tolerance);
+        let error = unchecked.error(start);
         let largest = largest_of(tolerance);
         if error > largest {
             return Err(PlanFailure::NoPath(format!(
@@ -212,12 +385,8 @@ impl<'a, const N: usize, const D: usize> PathOrientations<'a, N, D> {
             )));
         }
         Ok(Held {
-            chain,
-            arm,
-            link_name,
-            target,
-            turning: turning_joints(chain, target.frame),
             allowed: (tolerance * HELD_SHARE).max(error),
+            ..unchecked
         })
     }
 
@@ -231,7 +400,7 @@ impl<'a, const N: usize, const D: usize> PathOrientations<'a, N, D> {
         self.held
             .iter()
             .enumerate()
-            .filter(|(_, held)| moving.judges(held.arm, held.arm))
+            .filter(|(_, held)| held.judged_by(moving))
             .find_map(|(orientation, held)| {
                 let error = held.error(q);
                 (error > held.allowed).then_some(Turned { orientation, error })
@@ -243,7 +412,7 @@ impl<'a, const N: usize, const D: usize> PathOrientations<'a, N, D> {
     pub(crate) fn targets_of(&self, arm: usize) -> Vec<OrientationTarget> {
         self.held
             .iter()
-            .filter(|held| held.arm == arm)
+            .filter(|held| held.held.arm() == Some(arm))
             .map(Held::at_allowed)
             .collect()
     }
@@ -251,7 +420,9 @@ impl<'a, const N: usize, const D: usize> PathOrientations<'a, N, D> {
     /// Why the goal `goal` of the arm at `arm` shares no state with an orientation of its frame,
     /// as a message says it; none where it may.
     pub(crate) fn goal_apart(&self, arm: usize, goal: &Goal) -> Option<String> {
-        self.held.iter().filter(|held| held.arm == arm).find_map(|held| {
+        (self.held.iter())
+            .filter(|held| held.held.arm() == Some(arm))
+            .find_map(|held| {
             let angle = goal.orientation_apart_from(&held.at_allowed())?;
             Some(format!(
                 "the goal's orientation of {} stands {angle:.4} rad from its path orientation, past \
@@ -387,6 +558,7 @@ mod tests {
     use nalgebra::{UnitQuaternion, Vector3};
 
     use super::*;
+    use crate::arm::tests::turn;
     use crate::goal::Axis;
     use crate::goal::tests::left_arm;
 
@@ -427,6 +599,7 @@ mod tests {
     ) -> OrientationTarget {
         OrientationTarget {
             frame,
+            reference: Reference::Robot,
             orientation,
             tolerance_rad: PositiveFinite::parse(tolerance).expect("a tolerance above 0"),
             free_axis,
@@ -434,14 +607,57 @@ mod tests {
     }
 
     fn held_of(chain: &Chain<JOINTS>, target: OrientationTarget, allowed: f64) -> Held<'_, JOINTS> {
-        Held {
-            chain,
-            arm: 0,
-            link_name: "link",
+        Held::new(
+            HeldFrame::Arm(ArmFrame::new(chain, 0, target.frame)),
+            None,
+            "link",
             target,
-            turning: turning_joints(chain, target.frame),
             allowed,
+        )
+    }
+
+    /// The link of the left arm's joint `segment`.
+    fn link(segment: usize) -> Frame {
+        Frame::Link {
+            segment,
+            offset: nalgebra::Isometry3::identity(),
         }
+    }
+
+    /// A frame of the arm drawn from its grasp point and its links.
+    fn drawn_frame(tc: &TestCase) -> Frame {
+        match tc.draw(gs::integers::<usize>().min_value(0).max_value(JOINTS)) {
+            JOINTS => Frame::GraspPoint,
+            segment => link(segment),
+        }
+    }
+
+    /// The orientation of a frame of the arm at place `arm` of two copies of `chain` held at
+    /// `target`, in a frame of the arm at place `reference_arm`.
+    fn held_in<'c>(
+        chain: &'c Chain<JOINTS>,
+        (arm, reference_arm, reference_frame): (usize, usize, Frame),
+        target: OrientationTarget,
+        allowed: f64,
+    ) -> Held<'c, JOINTS> {
+        Held::new(
+            HeldFrame::Arm(ArmFrame::new(chain, arm, target.frame)),
+            Some(ArmFrame::new(chain, reference_arm, reference_frame)),
+            "link",
+            OrientationTarget {
+                reference: Reference::Arm {
+                    arm: reference_arm,
+                    frame: reference_frame,
+                },
+                ..target
+            },
+            allowed,
+        )
+    }
+
+    /// The joints of two copies of the left arm, drawn inside its limits.
+    fn drawn_pair(tc: &TestCase, chain: &Chain<JOINTS>) -> [f64; 2 * JOINTS] {
+        Arms::<JOINTS, { 2 * JOINTS }>::join(&[drawn_joints(tc, chain), drawn_joints(tc, chain)])
     }
 
     // The row of the function's Jacobian is the error's rate of change in each joint: the
@@ -479,6 +695,199 @@ mod tests {
                 row[j]
             );
         }
+    }
+
+    // With a reference in a frame of an arm of the group, its own or the other, the row is the
+    // error's rate of change in each joint of both arms: the central differences of the error,
+    // on drawn configurations, frames and targets. A joint that turns both frames alike leaves
+    // the error as it is, and the row holds 0 for it.
+    #[hegel::test(test_cases = 200)]
+    fn a_row_with_a_reference_is_the_rate_of_the_error_in_each_joint(tc: TestCase) {
+        const BOTH: usize = 2 * JOINTS;
+        let chain = left_arm();
+        let q = drawn_pair(&tc, &chain);
+        let arm = tc.draw(gs::integers::<usize>().min_value(0).max_value(1));
+        let reference_arm = tc.draw(gs::integers::<usize>().min_value(0).max_value(1));
+        let target = target_of(
+            drawn_frame(&tc),
+            drawn_rotation(&tc),
+            1e-3,
+            drawn_free_axis(&tc),
+        );
+        let held = held_in(&chain, (arm, reference_arm, drawn_frame(&tc)), target, 0.0);
+        let error = held.error(&q);
+        tc.assume(error > 0.01 && error < std::f64::consts::PI - 0.01);
+        let mut row = [0.0; BOTH];
+        held.write_row(&q, &mut row);
+        for j in 0..BOTH {
+            let at = |by: f64| {
+                let mut moved = q;
+                moved[j] += by;
+                held.error(&moved)
+            };
+            let difference =
+                (at(DIFFERENCE_STEP_RAD) - at(-DIFFERENCE_STEP_RAD)) / (2.0 * DIFFERENCE_STEP_RAD);
+            assert!(
+                (row[j] - difference).abs() <= DIFFERENCE_BOUND,
+                "joint {j}: the row holds {}, and the error changes at {difference}",
+                row[j]
+            );
+            if !held.turning.contains(&j) {
+                assert_eq!(row[j], 0.0, "joint {j} turns neither frame alone");
+            }
+        }
+    }
+
+    /// The orientation `target` of a frame no state moves, turned `rotation`, in the frame
+    /// `reference_frame` of the arm at place `reference_arm` of two copies of `chain`.
+    fn standing_in<'c>(
+        chain: &'c Chain<JOINTS>,
+        rotation: UnitQuaternion<f64>,
+        (reference_arm, reference_frame): (usize, Frame),
+        target: OrientationTarget,
+        allowed: f64,
+    ) -> Held<'c, JOINTS> {
+        Held::new(
+            HeldFrame::Standing(rotation),
+            Some(ArmFrame::new(chain, reference_arm, reference_frame)),
+            "link",
+            OrientationTarget {
+                reference: Reference::Arm {
+                    arm: reference_arm,
+                    frame: reference_frame,
+                },
+                ..target
+            },
+            allowed,
+        )
+    }
+
+    // A frame no state moves, held in a frame of an arm of the group, is held against that
+    // frame where each state puts it, as MoveIt judges a constraint on a link outside its
+    // planning group: the row is the error's rate of change in each joint, the central
+    // differences of the error on drawn configurations, frames, rotations and targets, and
+    // only the joints that turn the reference turn it.
+    #[hegel::test(test_cases = 200)]
+    fn a_row_of_a_standing_frame_is_the_rate_of_the_error_in_each_joint(tc: TestCase) {
+        const BOTH: usize = 2 * JOINTS;
+        let chain = left_arm();
+        let q = drawn_pair(&tc, &chain);
+        let reference_arm = tc.draw(gs::integers::<usize>().min_value(0).max_value(1));
+        let target = target_of(
+            drawn_frame(&tc),
+            drawn_rotation(&tc),
+            1e-3,
+            drawn_free_axis(&tc),
+        );
+        let reference = (reference_arm, drawn_frame(&tc));
+        let held = standing_in(&chain, drawn_rotation(&tc), reference, target, 0.0);
+        let error = held.error(&q);
+        tc.assume(error > 0.01 && error < std::f64::consts::PI - 0.01);
+        let mut row = [0.0; BOTH];
+        held.write_row(&q, &mut row);
+        for j in 0..BOTH {
+            let at = |by: f64| {
+                let mut moved = q;
+                moved[j] += by;
+                held.error(&moved)
+            };
+            let difference =
+                (at(DIFFERENCE_STEP_RAD) - at(-DIFFERENCE_STEP_RAD)) / (2.0 * DIFFERENCE_STEP_RAD);
+            assert!(
+                (row[j] - difference).abs() <= DIFFERENCE_BOUND,
+                "joint {j}: the row holds {}, and the error changes at {difference}",
+                row[j]
+            );
+            if !held.turning.contains(&j) {
+                assert_eq!(row[j], 0.0, "joint {j} turns no frame of the orientation");
+            }
+        }
+        assert!(
+            held.turning.iter().all(|&j| j / JOINTS == reference_arm),
+            "the joints of the reference's arm alone turn {:?}",
+            held.turning
+        );
+    }
+
+    // A frame no state moves, held in the robot frame, holds an error no joint changes, and
+    // every check judges it; held in a frame of an arm, the turns of that arm judge it.
+    #[test]
+    fn a_standing_frame_is_judged_with_the_arm_of_its_reference() {
+        let chain = left_arm();
+        let target = target_of(Frame::GraspPoint, UnitQuaternion::identity(), 0.05, None);
+        let still = Held::new(
+            HeldFrame::<JOINTS>::Standing(UnitQuaternion::identity()),
+            None,
+            "link",
+            target,
+            0.045,
+        );
+        assert!(still.turning.is_empty());
+        assert_eq!(still.spacing(), f64::INFINITY);
+        assert!(still.judged_by(turn(0, &[])) && still.judged_by(turn(1, &[0])));
+        let in_the_hand = standing_in(
+            &chain,
+            UnitQuaternion::identity(),
+            (1, Frame::GraspPoint),
+            target,
+            0.045,
+        );
+        assert!(in_the_hand.judged_by(turn(1, &[0])) && !in_the_hand.judged_by(turn(0, &[])));
+        assert!(in_the_hand.judged_by(turn(1, &[])) && !in_the_hand.judged_by(turn(0, &[1])));
+        assert_eq!(
+            in_the_hand.turning,
+            (JOINTS..2 * JOINTS).collect::<Vec<_>>()
+        );
+    }
+
+    // On drawn straight motions of both arms, an orientation in a frame of an arm changes no
+    // faster than the sum of the changes of the joints that turn exactly one of the two frames.
+    #[hegel::test(test_cases = 200)]
+    fn a_frame_turns_from_its_reference_at_most_by_the_joints_turning_one(tc: TestCase) {
+        const BOTH: usize = 2 * JOINTS;
+        let chain = left_arm();
+        let (from, end) = (drawn_pair(&tc, &chain), drawn_pair(&tc, &chain));
+        let share: f64 = tc.draw(gs::floats().min_value(0.0).max_value(1.0));
+        let to: [f64; BOTH] = std::array::from_fn(|i| from[i] + (end[i] - from[i]) * share);
+        let arm = tc.draw(gs::integers::<usize>().min_value(0).max_value(1));
+        let reference_arm = tc.draw(gs::integers::<usize>().min_value(0).max_value(1));
+        let target = target_of(
+            drawn_frame(&tc),
+            drawn_rotation(&tc),
+            0.5,
+            drawn_free_axis(&tc),
+        );
+        let held = held_in(&chain, (arm, reference_arm, drawn_frame(&tc)), target, 0.45);
+        let motion: [f64; BOTH] = std::array::from_fn(|i| (to[i] - from[i]).abs());
+        assert!(
+            (held.error(&to) - held.error(&from)).abs() <= held.turn_rate(&motion) + ROUNDING,
+            "the error moves from {} to {}, past the bound {}",
+            held.error(&from),
+            held.error(&to),
+            held.turn_rate(&motion)
+        );
+    }
+
+    // The joints that turn an orientation in a frame of an arm are those that turn exactly one
+    // of the two frames: on one arm, the grasp point against its link 3 counts the joints after
+    // joint 3; on two arms, every joint that turns either.
+    #[test]
+    fn the_joints_that_turn_one_of_the_two_frames_turn_the_orientation() {
+        let chain = left_arm();
+        let target = target_of(Frame::GraspPoint, UnitQuaternion::identity(), 0.05, None);
+        let same_arm = held_in(&chain, (1, 1, link(3)), target, 0.045);
+        assert_eq!(same_arm.turning, [JOINTS + 4, JOINTS + 5, JOINTS + 6]);
+        assert!((same_arm.spacing() - (8.0_f64 * 0.005 / 3.0).sqrt()).abs() <= ROUNDING);
+        let other_arm = held_in(&chain, (1, 0, link(3)), target, 0.045);
+        let mut turning = other_arm.turning.clone();
+        turning.sort_unstable();
+        assert_eq!(turning, [0, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13]);
+        assert!(other_arm.judged_by(turn(1, &[0])) && !other_arm.judged_by(turn(0, &[])));
+        assert!(other_arm.judged_by(turn(0, &[1])) && !other_arm.judged_by(turn(1, &[])));
+        let mut frozen = [0.0; 2 * JOINTS];
+        frozen[..4].fill(0.3);
+        assert_eq!(same_arm.turn_rate(&frozen), 0.0);
+        assert!((other_arm.turn_rate(&frozen) - 1.2).abs() <= ROUNDING);
     }
 
     // On drawn straight motions, the error changes no faster than the sum of the changes of
@@ -725,7 +1134,7 @@ mod tests {
         let held = held_of(&chain, target, 0.045);
         assert!((held.spacing() - (8.0_f64 * 0.005 / 7.0).sqrt()).abs() <= ROUNDING);
         let none = Held {
-            turning: [false; JOINTS],
+            turning: Vec::new(),
             ..held_of(&chain, target, 0.045)
         };
         assert_eq!(none.spacing(), f64::INFINITY);

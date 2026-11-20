@@ -62,10 +62,11 @@ robot_description holds the URDF of every description to the same tree rules
 | | |
 |---|---|
 | `Chain::at(q)` | pose the chain; pure, so `Chain` is `Send + Sync` |
-| `Posed::{ee_pose, tip_pose, link_pose_world}` | frames, in the base frame the spec named |
+| `Posed::{ee_pose, tip_pose}` | frames, in the base frame the spec named |
+| `Posed::link_pose_root` | each segment's link, in the root frame |
 | `Posed::jacobian` | the 6xN geometric Jacobian, revolute and prismatic columns |
-| `Posed::point_world_jacobian` | the same, for an arbitrary witness point - what a collision-distance gradient needs |
-| `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
+| `Posed::point_root_jacobian` | the same, for an arbitrary witness point - what a collision-distance gradient needs |
+| `Posed::{mass, com_root, inertia_root}` | per-segment rigid-body data |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
 | `IkSolver::search` | the inverse kinematics of a `ChainFrame`, as MoveIt's KDL plugin searches: descents from a seed, then from drawn configurations, until the caller accepts an end or the budget is spent |
@@ -91,7 +92,7 @@ let solver = IkSolver::new(&chain, ChainFrame::EndEffector, Aims::Both, Ends::Co
 let found = solver.search(seed, &target, &mut draws, &|q| valid(q), SEARCH_ITERATIONS);
 ```
 
-A search descends from the seed toward the target, a world-frame `Isometry3`, then from
+A search descends from the seed toward the target, a root-frame `Isometry3`, then from
 a configuration drawn inside the limits after each descent, and answers the first end its
 caller's callback accepts. A descent converges where the frame's position and orientation
 both lie within 1e-5 m and rad of the target; a step that does not lower its error is cut,

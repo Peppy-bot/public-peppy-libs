@@ -1,9 +1,10 @@
 import math
 import pickle
+import re
 
 import pytest
 
-from workspace_core_py import ABOVE_SURFACE, Positions, SurfaceHeight
+from workspace_core_py import ABOVE_SURFACE, NO_POINTS, Positions, SurfaceHeight
 
 ROWS, LANES = 51, 13
 
@@ -68,39 +69,63 @@ def test_the_grid_targets_stand_above_the_grid_row_by_row_from_the_nearest():
     assert targets[-1][:2] == (1.0, 0.3)
 
 
-def test_positions_are_parsed_into_points_in_order():
-    positions = Positions.from_wire([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+def test_placed_points_are_taken_in_order():
+    positions = Positions.parse([(0.1, 0.2, 0.3), [0.4, 0.5, 0.6]])
     assert positions.points == [(0.1, 0.2, 0.3), (0.4, 0.5, 0.6)]
     assert len(positions) == 2
-    assert Positions.from_wire(iter((1000.0, -1000.0, 0))).points == [
+    assert Positions.parse(iter([iter((1000.0, -1000.0, 0))])).points == [
         (1000.0, -1000.0, 0.0)
     ]
 
 
+def test_the_refusal_of_no_points_reads_as_the_contract_says():
+    assert NO_POINTS == "points must hold at least one point"
+
+
+TOO_FAR = (
+    "points must lie within 1000 m of the robot's base point on each axis, placed in the robot "
+    "frame"
+)
+
+
 @pytest.mark.parametrize(
-    ("values", "refusal"),
+    ("points", "refusal"),
     [
-        ([], "positions must hold at least one point"),
-        ([0.1, 0.2, 0.3, 0.4], r"positions must hold 3 values \(x, y, z\) per point"),
-        ([0.1, math.nan, 0.3], "positions must hold finite numbers only"),
-        ([0.1, 0.2, math.inf], "positions must hold finite numbers only"),
-        (
-            [1e200, 0.0, 0.0],
-            "positions must hold coordinates within 1000 m of the robot's base point",
-        ),
-        (
-            [0.0, -1000.5, 0.0],
-            "positions must hold coordinates within 1000 m of the robot's base point",
-        ),
+        ([], NO_POINTS),
+        ([(1e200, 0.0, 0.0)], TOO_FAR),
+        ([(0.3, 0.0, 0.5), (0.0, -1000.5, 0.0)], TOO_FAR),
     ],
 )
-def test_positions_that_are_not_points_of_a_request_are_refused(values, refusal):
-    with pytest.raises(ValueError, match=f"^{refusal}$"):
-        Positions.from_wire(values)
+def test_points_that_are_not_points_of_a_request_are_refused(points, refusal):
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        Positions.parse(points)
 
 
-def test_positions_of_values_that_are_not_numbers_are_refused():
+@pytest.mark.parametrize(
+    ("position", "refusal"),
+    [
+        (
+            (0.1, math.nan, 0.3),
+            "a position must be finite: got x 0.1, y NaN, z 0.3; give a finite number of meters "
+            "on each axis",
+        ),
+        (
+            (0.1, 0.2, -math.inf),
+            "a position must be finite: got x 0.1, y 0.2, z -inf; give a finite number of meters "
+            "on each axis",
+        ),
+        ((0.1, 0.2, 0.3, 0.4), "a point holds 3 numbers, not 4"),
+    ],
+)
+def test_a_point_that_is_not_finite_numbers_is_refused_saying_what_to_give(position, refusal):
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        Positions.parse([(0.0, 0.0, 0.0), position])
+
+
+def test_points_of_values_that_are_not_numbers_are_refused():
     with pytest.raises(TypeError):
-        Positions.from_wire(["0.1", "0.2", "0.3"])  # type: ignore[list-item]
+        Positions.parse([("0.1", "0.2", "0.3")])  # type: ignore[list-item]
     with pytest.raises(TypeError):
-        Positions.from_wire(0.1)  # type: ignore[arg-type]
+        Positions.parse(0.1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        Positions.parse([0.1])  # type: ignore[list-item]

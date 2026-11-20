@@ -1,6 +1,7 @@
 //! Shared control-loop and runtime primitives: pacing, filtering, rate
 //! limiting, the timing of a motion, the health of a motor, a mobile base's
-//! footprint, its body velocity, its limiter and its wheel odometry, the
+//! footprint, its body velocity, its limiter and its wheel odometry, where a
+//! frame sits on the floor plane, the geometry types of the contracts, the
 //! setpoint stream, the service, receive and ask loops, the fault that ends a
 //! node, the model a component is configured for, latched failure logging, a
 //! node's wall or simulation clock, a robot's tree of frames with the lookups
@@ -28,11 +29,21 @@
 //!   clock fed the ticks the node receives, the time now, a wait until a
 //!   deadline on it, and whether it went back between two looks.
 //! - [`robot_tree`]: a robot's tree of frames as a node holds it, its followers
-//!   that fill it from the messages of transforms, and the lookups in it that
-//!   wait on the node's clock until the tree answers them.
+//!   that fill it from the messages of transforms, the lookups in it that wait
+//!   on the node's clock until the tree answers them
+//!   ([`lookup_within`](robot_tree::RobotTree::lookup_within),
+//!   [`lookup_within_through`](robot_tree::RobotTree::lookup_within_through)),
+//!   and a value of the geometry types placed in a frame
+//!   ([`place`](robot_tree::RobotTree::place)) or in the root of its frame's
+//!   chain ([`place_in_root`](robot_tree::RobotTree::place_in_root)), refused
+//!   with a [`PlaceError`](robot_tree::PlaceError).
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
-//! - [`twist`]: a body velocity in the robot frame, finite by construction.
+//! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
+//!   as Nav2's controller reads it, in frame_tree's arithmetic.
+//! - [`twist`]: a body velocity on the floor plane in the robot frame, finite by construction.
+//! - [`geometry`]: the geometry types of the contracts, each parsed from a generated record's
+//!   fields, and behind the `nalgebra` feature their nalgebra forms.
 //! - [`limiter`]: the limiter of a base's body velocity, as Nav2 1.5.2's
 //!   velocity smoother limits a stream of setpoints in open loop: each axis
 //!   clamped to its velocity range, ramped at its acceleration and
@@ -81,6 +92,7 @@ pub mod component_model;
 pub mod fault;
 pub mod filters;
 pub mod footprint;
+pub mod geometry;
 pub mod latched_log;
 pub mod limiter;
 pub mod minimum_jerk;
@@ -91,6 +103,7 @@ pub mod not_finite;
 pub mod odometry;
 pub mod pacer;
 pub mod path_timing;
+pub mod planar_pose;
 pub mod positive_finite;
 pub mod receiving;
 pub mod report_once;

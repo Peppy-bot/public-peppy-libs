@@ -122,7 +122,7 @@ fn record(side: &str) -> Parity {
     let limits = arm.limits();
     let mut g = Parity::default();
 
-    g.push_pose("base_from_world", &arm.base_from_world());
+    g.push_pose("base_from_root", &arm.base_from_root());
     g.push_pose("tool", &arm.tool());
     g.push(
         "limits",
@@ -141,7 +141,7 @@ fn record(side: &str) -> Parity {
         let cor = posed.coriolis_torques(&qdot);
         let links: Vec<f64> = (0..ARM_DOF)
             .flat_map(|i| {
-                let p = posed.link_pose_world(i);
+                let p = posed.link_pose_root(i);
                 let t = p.translation.vector;
                 let r = p.rotation.coords;
                 [t.x, t.y, t.z, r.x, r.y, r.z, r.w]
@@ -152,7 +152,7 @@ fn record(side: &str) -> Parity {
         let pwj: Vec<f64> = (0..ARM_DOF)
             .flat_map(|seg| {
                 posed
-                    .point_world_jacobian(&witness, seg)
+                    .point_root_jacobian(&witness, seg)
                     .into_iter()
                     .flat_map(|v| [v.x, v.y, v.z])
                     .collect::<Vec<_>>()
@@ -168,8 +168,8 @@ fn record(side: &str) -> Parity {
         g.push(format!("links[{k}]"), links);
         g.push(format!("pwj[{k}]"), pwj);
 
-        // World-frame round trip, and the arm angle.
-        g.push_pose(format!("world_ee[{k}]"), &arm.world_pose(&ee));
+        // Root-frame round trip, and the arm angle.
+        g.push_pose(format!("root_ee[{k}]"), &arm.root_pose(&ee));
         g.push(
             format!("arm_angle[{k}]"),
             [arm.arm_angle(q).unwrap_or(f64::NAN)],

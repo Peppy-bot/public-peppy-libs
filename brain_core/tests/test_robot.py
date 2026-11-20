@@ -25,8 +25,10 @@ from fake_peppygen import (
     PlanCartesianPathRequest,
     PlanCartesianPathWaypoint,
     PlanJointPathRequest,
+    ROBOT_FRAME,
     ResultStatus,
     SetAllowedCollisionRequest,
+    Target,
     fake_bindings,
     fake_planner,
     planner_bindings,
@@ -74,10 +76,11 @@ def backbone(**kwargs):
 
 
 def backbone_with_check(**kwargs):
-    """A Robot on scripted limb_motion clients, and the three clients."""
-    move_arm = FakeConsumedAction("move_arm", MoveArmRequest)
+    """A Robot on scripted limb_motion clients, its commands with no frame,
+    the robot frame, and the three clients."""
+    move_arm = FakeConsumedAction("move_arm", MoveArmRequest, GoalRequestTarget=Target)
     move_gripper = FakeConsumedAction("move_gripper", MoveGripperRequest)
-    check_arm_move = FakeConsumedService("check_arm_move", CheckArmMoveRequest)
+    check_arm_move = FakeConsumedService("check_arm_move", CheckArmMoveRequest, RequestTarget=Target)
     robot = Robot("runner", move_arm, move_gripper, check_arm_move, **kwargs)
     return robot, move_arm, move_gripper, check_arm_move
 
@@ -87,10 +90,13 @@ async def in_flight(robot: Robot) -> None:
         await asyncio.sleep(0)
 
 
+# The time of the measurement of each move's final pose.
+MEASURED_AT = 3.5
+
+
 def arm_result(ended_on_contact: bool = False):
-    return SimpleNamespace(
-        final_position=[0.51, 0.1, 0.69], final_orientation=[0.0, 0.0, 0.0, 1.0], ended_on_contact=ended_on_contact, action_time=0.4,
-    )
+    final_pose = SimpleNamespace(frame=ROBOT_FRAME, timestamp=MEASURED_AT, position=[0.51, 0.1, 0.69], orientation=[0.0, 0.0, 0.0, 1.0])
+    return SimpleNamespace(final_pose=final_pose, ended_on_contact=ended_on_contact, action_time=0.4)
 
 
 async def test_a_completed_move_returns_where_the_limb_stands():
@@ -98,13 +104,14 @@ async def test_a_completed_move_returns_where_the_limb_stands():
     move = asyncio.create_task(robot.move_arm("left_arm", POSITION, ORIENTATION, duration_s=1.5, **BARS))
     goal = await asyncio.wait_for(move_arm.next_goal(), WAIT)
     assert goal.request.arm_name == "left_arm"
-    assert goal.request.position == [0.5, 0.1, 0.7] and goal.request.duration_s == 1.5
+    # The target gives no frame, the robot frame, and no timestamp, the latest time.
+    assert goal.request.target == Target(None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]) and goal.request.duration_s == 1.5
     assert {name: getattr(goal.request, name) for name in BARS} == BARS
     # The client keeps every feedback message, up to peppylib's own bound.
     assert goal.feedback_bound is None
     goal.complete(arm_result())
     moved = await asyncio.wait_for(move, WAIT)
-    assert moved == MoveResult(MoveEnd.COMPLETED, "", "", (0.51, 0.1, 0.69), (0.0, 0.0, 0.0, 1.0))
+    assert moved == MoveResult(MoveEnd.COMPLETED, "", "", (0.51, 0.1, 0.69), (0.0, 0.0, 0.0, 1.0), MEASURED_AT)
     assert moved.completed
 
     grip = asyncio.create_task(robot.set_gripper("left_gripper", 0.2, max_effort=5.0, settle_timeout_s=0.8))
@@ -124,7 +131,7 @@ async def test_a_move_that_ends_on_contact_says_so_and_where_the_limb_stopped():
     assert goal.request.contact_gap_m == 0.02
     goal.complete(arm_result(ended_on_contact=True))
     moved = await asyncio.wait_for(move, WAIT)
-    assert moved == MoveResult(MoveEnd.COMPLETED, "", "", (0.51, 0.1, 0.69), (0.0, 0.0, 0.0, 1.0), True)
+    assert moved == MoveResult(MoveEnd.COMPLETED, "", "", (0.51, 0.1, 0.69), (0.0, 0.0, 0.0, 1.0), MEASURED_AT, True)
     assert moved.completed and moved.ended_on_contact
 
 
@@ -229,7 +236,7 @@ async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
     assert planned == MoveCheck(True, "", 1.25)
     [request] = check.polled
     assert request == CheckArmMoveRequest(
-        arm_name="left_arm", position=[0.5, 0.1, 0.7], orientation=[0.0, 0.0, 0.0, 1.0], duration_s=1.5,
+        arm_name="left_arm", target=Target(None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]), duration_s=1.5,
     )
     # A check moves nothing: no goal is in flight for a stop to cancel.
     assert robot.moves_in_flight == 0
@@ -312,9 +319,13 @@ async def test_a_plan_asks_for_the_link_at_the_pose_and_reads_its_start_and_wayp
     assert goal.request == PlanJointPathRequest(
         arms=[PlanJointPathArm(arm_name="left_arm", start_joint_positions=[])],
         goal_joint_constraints=[],
-        goal_position_constraints=[PlanJointPathPositionConstraint(link_name=LINK, position=[0.5, 0.1, 0.7], tolerance_m=0.001)],
+        goal_position_constraints=[
+            PlanJointPathPositionConstraint(link_name=LINK, frame=None, timestamp=None, position=[0.5, 0.1, 0.7], tolerance_m=0.001)
+        ],
         goal_orientation_constraints=[
-            PlanJointPathOrientationConstraint(link_name=LINK, orientation=[0.0, 0.0, 0.0, 1.0], tolerance_rad=0.01, free_axis="none")
+            PlanJointPathOrientationConstraint(
+                link_name=LINK, frame=None, timestamp=None, orientation=[0.0, 0.0, 0.0, 1.0], tolerance_rad=0.01, free_axis="none",
+            )
         ],
         path_orientation_constraints=[],
         planner="rrt_connect",
@@ -416,6 +427,8 @@ async def test_a_cartesian_path_asks_for_the_lines_through_the_poses_and_reads_h
         arm_name="left_arm",
         start_joint_positions=PLANNED,
         link_name=LINK,
+        frame=None,
+        timestamp=None,
         waypoints=[
             PlanCartesianPathWaypoint(position=[0.5, 0.1, 0.625], orientation=[0.0, 0.0, 0.0, 1.0]),
             PlanCartesianPathWaypoint(position=[0.5, 0.1, 0.775], orientation=[0.0, 0.0, 0.0, 1.0]),
@@ -580,19 +593,22 @@ async def test_a_service_of_the_planner_that_fails_or_does_not_answer_says_why()
 
 
 def scene_object(object_id, position=(0.3, -0.2, 0.41), link_name=None):
+    """An object of the planning scene, in the scene's frame, or attached to
+    `link_name` in its frame, the link that carries it."""
     found = SimpleNamespace(
         id=object_id, position=list(position), orientation=[0.0, 0.0, 0.0, 1.0],
         shapes=[SimpleNamespace(kind="box", dimensions=[0.08, 0.08, 0.07], mesh_vertices=[], mesh_triangles=[],
                                 position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0, 1.0])],
     )
     if link_name is not None:
-        found.link_name, found.touch_links = link_name, LEFT_GRIPPER_LINKS
+        found.frame, found.touch_links = link_name, LEFT_GRIPPER_LINKS
     return found
 
 
 async def test_the_planning_scene_gives_its_free_and_attached_objects():
     robot, planner = planned()
     planner.get_planning_scene.enqueue(SimpleNamespace(
+        frame=ROBOT_FRAME, timestamp=2.0,
         objects=[scene_object("brain/lime_1-t0"), scene_object("table")],
         attached_objects=[scene_object("brain/apple_1-t0", (0.0, 0.0, -0.01), "openarm_left_tcp")],
         allowed_pairs=[SimpleNamespace(name_a="brain/lime_1-t0", name_b="openarm_left_ee_link1")],
@@ -624,10 +640,11 @@ async def test_an_add_a_move_and_a_remove_are_sent_in_order_with_their_shapes():
     box = CollisionShapeRequest("box", [0.086, 0.084, 0.071], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     sphere = CollisionShapeRequest("sphere", [0.05], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     assert planner.apply_collision_objects.polled == [ApplyCollisionObjectsRequest(objects=[
-        CollisionObject(LIME, "add", [0.3, -0.2, 0.405], [0.0, 0.0, 0.38, 0.92], [box]),
-        CollisionObject(LIME, "move", [0.3, -0.2, 0.48], [0.0, 0.0, 0.38, 0.92], []),
-        CollisionObject("brain/apple_1-t0", "remove", [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], []),
-        CollisionObject("brain/item_1-t0", "add", [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0], [sphere]),
+        CollisionObject(LIME, "add", None, None, [0.3, -0.2, 0.405], [0.0, 0.0, 0.38, 0.92], [box]),
+        # A move and a remove leave out what they do not read.
+        CollisionObject(LIME, "move", None, None, [0.3, -0.2, 0.48], [0.0, 0.0, 0.38, 0.92], None),
+        CollisionObject("brain/apple_1-t0", "remove", None, None, None, None, None),
+        CollisionObject("brain/item_1-t0", "add", None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0], [sphere]),
     ])]
 
 

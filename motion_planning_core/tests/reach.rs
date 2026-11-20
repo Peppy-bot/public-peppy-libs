@@ -118,7 +118,7 @@ fn no_point_of_openarm_moves_farther_than_its_reach(tc: TestCase) {
     let zero = [0.0; JOINTS];
     let chain = LEFT_ARM.chain();
     let grasp_point =
-        chain.at(&zero).link_pose_world(JOINTS - 1).inverse() * chain.world_ee_pose(&zero);
+        chain.at(&zero).link_pose_root(JOINTS - 1).inverse() * chain.root_ee_pose(&zero);
     let held = Rider {
         name: "object",
         segment: JOINTS - 1,

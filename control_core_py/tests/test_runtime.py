@@ -161,6 +161,37 @@ async def test_consume_gated_drops_stale_future_and_unstampable():
     assert handled == ["fresh"]
 
 
+async def test_consume_gated_passes_a_message_with_no_timestamp():
+    handled = []
+    await run_gated(
+        [Message(None, "latest"), Message(time.time() - 60.0, "stale")],
+        lambda m: handled.append(m.value),
+    )
+    assert handled == ["latest"]
+
+
+async def test_consume_gated_awaits_an_awaitable_handler_in_order():
+    handled = []
+
+    async def handle(m):
+        await asyncio.sleep(0)
+        if m.value == "bad":
+            raise SetpointError("bad value")
+        handled.append(m.value)
+
+    rejected = []
+
+    async def on_reject(reason):
+        rejected.append(reason)
+
+    await run_gated(
+        [Message(time.time(), "first"), Message(time.time(), "bad"), Message(time.time(), "second")],
+        handle,
+        on_reject=on_reject,
+    )
+    assert (handled, rejected) == (["first", "second"], ["bad value"])
+
+
 async def test_consume_gated_reject_and_conform_lifecycle():
     events = []
 
@@ -280,6 +311,20 @@ async def test_ask_waits_out_each_failure_and_logs_the_first_of_a_run(monkeypatc
     assert pauses == [1.0, 1.0]
     out = capsys.readouterr().out
     assert out.count("robot_identity failing: RuntimeError('no reply'); suppressing repeats") == 1
+
+
+async def test_ask_asks_nothing_once_cancelled_before_it_starts():
+    token = FakeToken()
+    token.cancel()
+    asks = 0
+
+    async def ask_once():
+        nonlocal asks
+        asks += 1
+        return "so101"
+
+    assert await runtime.ask("get_identity", token, ask_once) is None
+    assert asks == 0
 
 
 async def test_ask_ends_with_none_once_cancelled_while_it_asks():

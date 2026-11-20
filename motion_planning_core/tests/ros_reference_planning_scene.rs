@@ -159,7 +159,7 @@ fn arm_of<'r>(robot: &'r Robot, link: &str) -> &'r ChainGeometry<JOINTS> {
 /// The pose of the grasp link `link` in the frame of the URDF root, the arms at `state`.
 fn grasp_pose(robot: &Robot, link: &str, state: &BTreeMap<String, f64>) -> Isometry3<f64> {
     let arm = arm_of(robot, link);
-    arm.chain().world_ee_pose(&positions_of(arm, state))
+    arm.chain().root_ee_pose(&positions_of(arm, state))
 }
 
 /// How a scene takes the calls of a scenario: each attach with the touch links
@@ -293,13 +293,19 @@ fn scene_after(
                 positions,
             } => {
                 set(&mut state, positions);
-                scene.apply_attached_collision_object(
-                    &AttachRequest {
+                let request = match operation.as_str() {
+                    "attach" => AttachRequest::Attach {
                         object_id: object_id.clone(),
                         link_name: link_name.clone(),
                         touch_links: (taking.touch_links)(own),
-                        operation: operation.clone(),
                     },
+                    "detach" => AttachRequest::Detach {
+                        object_id: object_id.clone(),
+                    },
+                    other => panic!("a reference attach is an attach or a detach: {other:?}"),
+                };
+                scene.apply_attached_collision_object(
+                    &request,
                     |link| Some(grasp_pose(robot, link, &state)),
                     &mut voxels,
                 )
@@ -487,7 +493,7 @@ fn with_the_left_arm<R>(
     let moving = moving_links(robot, &fingers);
     let mut placed = robot.self_model.clone();
     let parts: Vec<RobotPart> = placed
-        .world_pieces(&[left, right])
+        .pieces_in_root(&[left, right])
         .expect("finite joint positions")
         .into_iter()
         .filter(|(link, _)| !moving.contains(*link))

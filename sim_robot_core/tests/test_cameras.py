@@ -1,25 +1,38 @@
 """Tests for the camera plumbing: a robot's cameras from its description's
-optical frames and a model entry's renders, z16 conversion, and pacing."""
+optical frames and a model entry's renders, the pinhole model and the
+depth-to-colour pose of a rendered camera, z16 conversion, the capture index,
+and pacing."""
 
 import math
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 
 import numpy as np
 import pytest
+from control_core_py.geometry import (
+    Pose,
+    product,
+    quaternion_of_yaw,
+    rotate,
+    xyzw_of_wxyz,
+)
 from robot_description_py import model
 
 from sim_robot_core.cameras import (
+    DEPTH_MODEL,
+    DEPTH_TO_COLOR,
+    DISTORTION_MODEL,
     CameraRender,
+    CaptureIndexCounter,
     DepthSpec,
     DepthStream,
-    FrameIdCounter,
     FramePacer,
     camera_configs,
     camera_pose,
     depth_to_z16,
     parse_renders,
+    pinhole,
 )
 from sim_robot_core.errors import ModelEntryError
 from sim_robot_core.models import shipped_entry
@@ -40,9 +53,41 @@ class Frame:
 
     name: str = "cam"
     parent_link: str = "link"
-    xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
     depth_range: Depths | None = None
+
+    @property
+    def frame(self) -> str:
+        return f"{self.name}_optical_frame"
+
+
+@dataclass(frozen=True)
+class Transform:
+    """A fixed transform as robot_description_py's LinkTransform gives one."""
+
+    parent: str
+    child: str
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    orientation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+
+
+@dataclass(frozen=True)
+class Description:
+    """A description as robot_description_py's RobotDescription gives its
+    cameras and its fixed transforms: each camera's optical frame held to its
+    link at `placements`' pose for it, the identity by default."""
+
+    cameras: tuple[Frame, ...] = ()
+    placements: dict[str, Transform] = field(default_factory=dict)
+
+    def fixed_transforms(self) -> tuple[Transform, ...]:
+        return tuple(
+            self.placements.get(frame.name, Transform(frame.parent_link, frame.frame))
+            for frame in self.cameras
+        )
+
+
+def described(*frames: Frame, **placements: Transform) -> Description:
+    return Description(cameras=frames, placements=placements)
 
 
 def render(**overrides) -> dict:
@@ -55,51 +100,54 @@ def one_camera(depth_range: Depths | None = None, **overrides):
     """The config of one camera whose description gives it `depth_range`,
     rendered as `render(**overrides)`."""
     frame = Frame(depth_range=depth_range)
-    (config,) = camera_configs("entry", [frame], parse_renders("entry", {"cam": render(**overrides)}))
+    (config,) = camera_configs(
+        "entry", described(frame), parse_renders("entry", {"cam": render(**overrides)})
+    )
     return config
 
 
-def cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+def turned(quat_wxyz, vector):
+    """`vector` turned by `quat_wxyz`, a quaternion in the engines' order."""
+    return rotate(xyzw_of_wxyz(quat_wxyz), vector)
 
 
-def rotate(quat_wxyz, vector):
-    """`vector` turned by the unit quaternion `quat_wxyz`."""
-    w, x, y, z = quat_wxyz
-    axis = (x, y, z)
-    twice = tuple(2.0 * c for c in cross(axis, vector))
-    turned = cross(axis, twice)
-    return tuple(v + w * t + u for v, t, u in zip(vector, twice, turned, strict=True))
+# Optical frames turned every way: about each axis and about all three.
+_TILTED = (0.0, -math.sin(0.35), 0.0, math.cos(0.35))
+_ROLLED = (math.sin(1.2857962934), 0.0, 0.0, math.cos(1.2857962934))
+_OPTICAL_ORIENTATIONS = (
+    quaternion_of_yaw(1.1),
+    _ROLLED,
+    product(product(quaternion_of_yaw(-2.9), _TILTED), _ROLLED),
+)
 
 
 class TestCameraPose:
     def test_an_unturned_optical_frame_is_the_camera_frame_turned_half_about_x(self):
-        pos, quat = camera_pose((0.1, 0.2, 0.3), (0.0, 0.0, 0.0))
+        pos, quat = camera_pose((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 1.0))
         assert pos == (0.1, 0.2, 0.3)
         assert quat == pytest.approx((0.0, 1.0, 0.0, 0.0))
 
-    @pytest.mark.parametrize(
-        "rpy", [(0.3, -0.2, 1.1), (2.5715925867, 0.0, 0.0), (-1.0, 0.7, -2.9)]
-    )
+    @pytest.mark.parametrize("optical", _OPTICAL_ORIENTATIONS)
     def test_the_camera_looks_along_the_optical_frames_view_with_its_up_against_the_optical_down(
-        self, rpy
+        self, optical
     ):
-        _, quat = camera_pose((0.0, 0.0, 0.0), rpy)
-        roll, pitch, yaw = rpy
-        # The optical frame's +z and +y in the parent frame, built from the
-        # URDF's fixed-axis angles: Rz(yaw) Ry(pitch) Rx(roll).
-        cr, sr, cp, sp, cy, sy = (math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch), math.cos(yaw), math.sin(yaw))
-        view = (cy * sp * cr + sy * sr, sy * sp * cr - cy * sr, cp * cr)
-        down = (cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, cp * sr)
-        assert rotate(quat, (0.0, 0.0, -1.0)) == pytest.approx(view)
-        assert rotate(quat, (0.0, 1.0, 0.0)) == pytest.approx(tuple(-v for v in down))
-        assert quat[0] >= 0.0 and math.isclose(sum(v * v for v in quat), 1.0)
+        _, quat = camera_pose((0.0, 0.0, 0.0), optical)
+        view = rotate(optical, (0.0, 0.0, 1.0))
+        down = rotate(optical, (0.0, 1.0, 0.0))
+        assert turned(quat, (0.0, 0.0, -1.0)) == pytest.approx(view)
+        assert turned(quat, (0.0, 1.0, 0.0)) == pytest.approx(tuple(-v for v in down))
+        assert math.isclose(sum(v * v for v in quat), 1.0)
 
 
 class TestCameras:
     def test_the_openarm_v2_rig_parses(self):
         configs = shipped_entry("openarm_v2", model("openarm_v2").description()).cameras
         assert [c.name for c in configs] == ["wrist_left", "wrist_right", "chest"]
+        # Each camera's frame is the optical frame the description names for
+        # it, as sensor_mounts gives it.
+        assert [c.frame for c in configs] == [
+            frame.frame for frame in model("openarm_v2").description().cameras
+        ]
         by_name = {c.name: c for c in configs}
         for wrist in ("wrist_left", "wrist_right"):
             assert (by_name[wrist].width, by_name[wrist].height) == (960, 600)
@@ -110,7 +158,7 @@ class TestCameras:
         assert chest.parent_link == "openarm_body_link0"
         # The chest camera looks at the robot's front, 62 degrees below the
         # horizon, as Waldo's head camera derivation reads it off the CAD.
-        view = rotate(chest.quat_wxyz, (0.0, 0.0, -1.0))
+        view = turned(chest.quat_wxyz, (0.0, 0.0, -1.0))
         assert view[1] == pytest.approx(0.0, abs=1e-6) and view[0] > 0.0
         assert math.degrees(math.atan2(-view[2], view[0])) == pytest.approx(62.0, abs=0.05)
         assert chest.depth is not None
@@ -123,11 +171,12 @@ class TestCameras:
         )
         assert (chest.depth.min_depth_m, chest.depth.max_range_m) == (described.near, described.far)
 
-    def test_a_camera_takes_its_pose_from_its_frame(self):
-        frame = Frame(xyz=(0.0, 0.055, -0.045), rpy=(2.5715925867, 0.0, 0.0))
-        (config,) = camera_configs("entry", [frame], parse_renders("entry", {"cam": render()}))
-        assert (config.pos, config.quat_wxyz) == camera_pose(frame.xyz, frame.rpy)
-        assert config.parent_link == "link"
+    def test_a_camera_takes_its_pose_from_the_fixed_transform_of_its_optical_frame(self):
+        placed = Transform("link", "cam_optical_frame", (0.0, 0.055, -0.045), _ROLLED)
+        description = described(Frame(), cam=placed)
+        (config,) = camera_configs("entry", description, parse_renders("entry", {"cam": render()}))
+        assert (config.pos, config.quat_wxyz) == camera_pose(placed.position, placed.orientation)
+        assert (config.frame, config.parent_link) == ("cam_optical_frame", "link")
 
     def test_a_render_reads_once_into_typed_values(self):
         assert parse_renders("entry", {"cam": render(depth={"width": 4, "height": 2})}) == {
@@ -168,14 +217,18 @@ class TestCameras:
             match="the cameras of the description are \\['cam'\\], and the entry renders \\[\\]: "
             "give the entry one render per camera of the description",
         ):
-            camera_configs("entry", [Frame()], {})
+            camera_configs("entry", described(Frame()), {})
 
     def test_an_entry_of_no_camera_of_the_description_is_rejected(self):
         with pytest.raises(ModelEntryError, match="the entry renders \\['cam', 'other'\\]"):
-            camera_configs("entry", [Frame()], parse_renders("entry", {"cam": render(), "other": render()}))
+            camera_configs(
+                "entry",
+                described(Frame()),
+                parse_renders("entry", {"cam": render(), "other": render()}),
+            )
 
     def test_a_model_with_no_camera_lists_none(self):
-        assert camera_configs("entry", [], {}) == ()
+        assert camera_configs("entry", described(), {}) == ()
 
     def test_a_camera_of_the_description_with_no_file_says_to_create_it(self):
         with pytest.raises(
@@ -183,10 +236,10 @@ class TestCameras:
             match="the cameras of the description are \\['cam'\\], and no entry renders them: "
             "create models/aloha.json5 with one render per camera of the description",
         ):
-            camera_configs("models/aloha.json5", [Frame()], None)
+            camera_configs("models/aloha.json5", described(Frame()), None)
 
     def test_a_model_with_no_camera_needs_no_file(self):
-        assert camera_configs("models/aloha.json5", [], None) == ()
+        assert camera_configs("models/aloha.json5", described(), None) == ()
 
     def test_cameras_that_are_not_a_map_are_rejected(self):
         with pytest.raises(ModelEntryError, match="'cameras' must map camera names"):
@@ -232,6 +285,39 @@ class TestCameras:
         width, height = dims
         with pytest.raises(ModelEntryError, match="subsample"):
             one_camera(depth={"width": width, "height": height})
+
+
+class TestPinhole:
+    def test_the_chest_cameras_pinhole_follows_its_field_of_view(self):
+        # The OpenArm v2 chest camera: 52 degrees of vertical field of view.
+        color = pinhole(52.0, 1280, 720)
+        assert color.fx == pytest.approx(738.1, abs=0.05)
+        assert color.fy == color.fx
+        # Pixel centres sit on whole numbers, so the middle of 1280 is 639.5.
+        assert (color.cx, color.cy) == (639.5, 359.5)
+        # The same camera rendered at the depth stream's own size.
+        depth = pinhole(52.0, 640, 360)
+        assert depth.fx == pytest.approx(369.06, abs=0.05)
+        assert (depth.cx, depth.cy) == (319.5, 179.5)
+
+    def test_a_wrist_cameras_pinhole_follows_its_field_of_view(self):
+        # The OpenArm v2 wrist cameras: 66 degrees at 960x600.
+        wrist = pinhole(66.0, 960, 600)
+        assert wrist.fx == pytest.approx(461.96, abs=0.05)
+        assert (wrist.cx, wrist.cy) == (479.5, 299.5)
+        assert (wrist.width, wrist.height) == (960, 600)
+
+    def test_a_rendered_camera_is_an_ideal_pinhole_aligned_with_its_depth(self):
+        assert DISTORTION_MODEL == "none"
+        assert DEPTH_MODEL == "z"
+
+        # The identity, a pose alone: the arrays an engine sends in
+        # depth_to_color, in the camera's frame with no timestamp, are the
+        # identity's and parse back to it.
+        position = list(DEPTH_TO_COLOR.position.position)
+        orientation = list(DEPTH_TO_COLOR.orientation.quaternion)
+        assert (position, orientation) == ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+        assert Pose.parse(position, orientation) == DEPTH_TO_COLOR
 
 
 class TestDepthSpec:
@@ -280,9 +366,9 @@ class TestDepthToZ16:
             depth_to_z16(np.zeros((2, 3), dtype=np.float32), self._SPEC)
 
 
-class TestFrameIdCounter:
+class TestCaptureIndexCounter:
     def test_wraps_at_u32(self):
-        counter = FrameIdCounter()
+        counter = CaptureIndexCounter()
         counter._next = 0xFFFFFFFF
         assert counter.next() == 0xFFFFFFFF
         assert counter.next() == 0

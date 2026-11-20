@@ -93,7 +93,7 @@ impl Arm {
 
     /// Solve inverse kinematics for a `target` EE pose in the **arm base frame**,
     /// resolving the redundant arm angle per `arm_angle` and selecting the branch
-    /// nearest `seed`. Convert a world-frame target with [`base_pose`](Self::base_pose)
+    /// nearest `seed`. Convert a root-frame target with [`base_pose`](Self::base_pose)
     /// first. `None` if the target is unreachable or admits no in-limit solution.
     /// In-limit means [`limits`](Self::limits).
     ///
@@ -237,31 +237,31 @@ impl Arm {
         self.fk.tool()
     }
 
-    /// Convert a world/body-frame pose into the arm base frame the solver uses.
-    pub fn base_pose(&self, world: &Isometry3<f64>) -> Isometry3<f64> {
-        self.model.base_pose(world)
+    /// Convert a root-frame pose into the arm base frame the solver uses.
+    pub fn base_pose(&self, in_root: &Isometry3<f64>) -> Isometry3<f64> {
+        self.model.base_pose(in_root)
     }
 
-    /// Convert an arm-base-frame pose (e.g. FK output) back into the world frame.
-    pub fn world_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
-        self.model.world_pose(base)
+    /// Convert an arm-base-frame pose (e.g. FK output) back into the root frame.
+    pub fn root_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
+        self.model.root_pose(base)
     }
 
-    /// The end effector's pose at `q` in the world frame.
-    pub fn world_ee_pose(&self, q: &JointVec) -> Isometry3<f64> {
-        self.world_pose(&self.at(q).ee_pose())
+    /// The end effector's pose at `q` in the root frame.
+    pub fn root_ee_pose(&self, q: &JointVec) -> Isometry3<f64> {
+        self.root_pose(&self.at(q).ee_pose())
     }
 
-    /// The fixed `world -> base` mount transform resolved from the URDF. It is
+    /// The fixed `root -> base` mount transform resolved from the URDF. It is
     /// identity when `base_link` is the URDF root (no mount tree above it); since
     /// gravity/Coriolis are evaluated in that frame, a caller can log/verify which
     /// frame is in play rather than assume one.
-    pub fn base_from_world(&self) -> Isometry3<f64> {
-        self.fk.base_from_world()
+    pub fn base_from_root(&self) -> Isometry3<f64> {
+        self.fk.base_from_root()
     }
 
-    /// One damped resolved-rate joint step at `q` toward a world-frame task
-    /// increment: `dp_world` metres of end-effector translation and `dw_world`
+    /// One damped resolved-rate joint step at `q` toward a root-frame task
+    /// increment: `dp_in_root` metres of end-effector translation and `dw_in_root`
     /// axis-angle radians of rotation, either of which may be zero to softly
     /// hold that component. The caller caps the increments to its speed budgets;
     /// this rotates them into the arm base frame, solves
@@ -274,8 +274,8 @@ impl Arm {
     pub fn rate_step(
         &self,
         q: &JointVec,
-        dp_world: Vector3<f64>,
-        dw_world: Vector3<f64>,
+        dp_in_root: Vector3<f64>,
+        dw_in_root: Vector3<f64>,
         max_joint_velocity_rad_s: &JointVec,
         dt_s: f64,
         lambda: f64,
@@ -285,7 +285,12 @@ impl Arm {
             chain,
             q,
             &Vector6::new(
-                dp_world.x, dp_world.y, dp_world.z, dw_world.x, dw_world.y, dw_world.z,
+                dp_in_root.x,
+                dp_in_root.y,
+                dp_in_root.z,
+                dw_in_root.x,
+                dw_in_root.y,
+                dw_in_root.z,
             ),
             &chain.limits(),
             max_joint_velocity_rad_s,
@@ -340,20 +345,20 @@ mod tests {
         Arm::from_urdf_file(&urdf_path(), base("left")).expect("load fixture")
     }
 
-    fn ee_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
+    fn ee_in_root(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).ee_pose();
-        arm.world_pose(&base)
+        arm.root_pose(&base)
     }
 
-    fn tip_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
+    fn tip_in_root(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).tip_pose();
-        arm.world_pose(&base)
+        arm.root_pose(&base)
     }
 
     #[test]
     fn rate_step_moves_the_ee_along_the_commanded_direction() {
         let arm = rate_arm();
-        let before = ee_world(&arm, &RATE_Q);
+        let before = ee_in_root(&arm, &RATE_Q);
         let dp = Vector3::new(3e-3, 0.0, 0.0);
         let q = arm.rate_step(
             &RATE_Q,
@@ -363,7 +368,7 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let after = ee_world(&arm, &q);
+        let after = ee_in_root(&arm, &q);
         let moved = after.translation.vector - before.translation.vector;
         assert!(
             moved.dot(&dp) / dp.norm_squared() > 0.5,
@@ -486,8 +491,8 @@ mod tests {
         // task holds the point it is taken at and swings everything else. Left at
         // the tip, this would drag the tool point through a tool-length arc.
         let arm = tooled_arm();
-        let tip_before = tip_world(arm, &RATE_Q);
-        let ee_before = ee_world(arm, &RATE_Q);
+        let tip_before = tip_in_root(arm, &RATE_Q);
+        let ee_before = ee_in_root(arm, &RATE_Q);
         let dw = Vector3::new(0.0, 0.0, 1e-2);
         let q = arm.rate_step(
             &RATE_Q,
@@ -497,8 +502,8 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let tip_after = tip_world(arm, &q);
-        let ee_after = ee_world(arm, &q);
+        let tip_after = tip_in_root(arm, &q);
+        let ee_after = ee_in_root(arm, &q);
 
         let turned = ee_after.rotation.angle_to(&ee_before.rotation);
         assert!(

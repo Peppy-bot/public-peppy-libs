@@ -256,6 +256,11 @@ def turned(turn, point):
     return [sum(turn[row][k] * point[k] for k in range(3)) for row in range(3)]
 
 
+def transposed(turn):
+    """The inverse of the rotation `turn`, as rows: its transpose."""
+    return [list(column) for column in zip(*turn)]
+
+
 def about_axis(axis, angle):
     """The rotation by `angle` about `axis`, as rows (Rodrigues)."""
     norm = math.sqrt(sum(a * a for a in axis))

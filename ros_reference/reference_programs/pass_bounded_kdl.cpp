@@ -5,13 +5,18 @@
 // (:369-409). This plugin runs each descent as KDL's search of one attempt, the search of a
 // timeout of 0 (:265-266), draws each later start as KDL draws it (:70-74), from a robot
 // state of its own, and starts no descent once the search's descents have run the passes of
-// its group's kinematics parameter ik_search_passes, so a search gives the same answer on
-// every machine. KDL reports the passes of a descent only in its debug line "Result <code>
-// after <i> iterations" (:493-494), so the plugin turns the KDL logger's debug lines on,
-// reads that line, and drops every line of that logger below a warning: KDL logs one at the
-// info level on each search of a position alone (:346), which the plugin runs once per
+// its group's kinematics parameter ik_search_passes for each default timeout its timeout
+// holds, so a search gives the same answer on every machine: a search of the default timeout
+// runs those passes, one of a timeout of 0 runs one descent, as KDL's search of one attempt
+// does, and the search of twice the default timeout that MoveIt's PoseModelStateSpace runs
+// where one attempt finds no configuration (moveit2 2.15.2 pose_model_state_space.cpp:241-245)
+// runs twice those passes. KDL reports the passes of a descent only in its debug line "Result
+// <code> after <i> iterations" (:493-494), so the plugin turns the KDL logger's debug lines
+// on, reads that line, and drops every line of that logger below a warning: KDL logs one at
+// the info level on each search of a position alone (:346), which the plugin runs once per
 // descent.
 
+#include <cmath>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -35,7 +40,7 @@ namespace {
 
 // The timeout, in seconds, that a search's passes stand for: moveit_ros_planning's
 // kinematics_solver_timeout default (kinematics_parameters.yaml), which load_kdl sets on each
-// arm and every search of the references carries.
+// arm and the searches of the constraint samplers carry.
 constexpr double kdl_timeout = 0.05;
 // KDL's result of a descent that ran all of its max_solver_iterations passes (:493).
 constexpr int ran_every_pass = -3;
@@ -134,11 +139,14 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
                         std::vector<double>& solution, const IKCallbackFn& solution_callback,
                         moveit_msgs::msg::MoveItErrorCodes& error_code,
                         const kinematics::KinematicsQueryOptions& options) const override {
-    if (timeout != kdl_timeout) {
+    const double default_timeouts = timeout / kdl_timeout;
+    if (!(default_timeouts >= 0.0) || default_timeouts != std::floor(default_timeouts)) {
       throw std::runtime_error("a search of " + getGroupName() + " carries the timeout " +
                                std::to_string(timeout) + " s, and the plugin bounds a search of " +
-                               std::to_string(kdl_timeout) + " s alone");
+                               "a whole number of times " + std::to_string(kdl_timeout) +
+                               " s alone");
     }
+    const std::size_t search_passes = static_cast<std::size_t>(default_timeouts) * search_passes_;
     if (!consistency_limits.empty()) {
       throw std::runtime_error("a search of " + getGroupName() +
                                " carries consistency limits, which the plugin does not bound");
@@ -160,7 +168,7 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
                                  std::to_string(reported_descents.size()) + " descents");
       }
       passes += reported_descents.front();
-      if (found || passes >= search_passes_) {
+      if (found || passes >= search_passes) {
         return found;
       }
       start = drawn_start();
@@ -177,8 +185,8 @@ class PassBoundedKdl : public kdl_kinematics_plugin::KDLKinematicsPlugin {
     return start;
   }
 
-  // The passes of KDL's descent loop (CartToJnt, :435-491) after which a search starts no
-  // descent.
+  // The passes of KDL's descent loop (CartToJnt, :435-491), for each default timeout a
+  // search's timeout holds, after which the search starts no descent.
   std::size_t search_passes_ = 0;
   moveit::core::RobotStatePtr starts_;
 };

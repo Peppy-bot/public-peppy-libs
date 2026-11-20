@@ -28,10 +28,10 @@ use crate::{BuildError, CollisionError, FingerError};
 /// arms.
 pub type Joints<const N: usize, const K: usize> = [[f64; N]; K];
 
-/// How a body's hulls reach the world frame.
+/// How a body's hulls reach the root frame.
 #[derive(Clone, Copy)]
 enum Placement {
-    /// Already in world frame (a torso, a base, a mount); identity for the whole run.
+    /// Already in the root frame (a torso, a base, a mount); identity for the whole run.
     Fixed,
     /// Link `segment` of chain `chain`; placed by FK every query.
     Chain { chain: usize, segment: usize },
@@ -68,7 +68,7 @@ impl BoundingSphere {
 #[derive(Clone)]
 struct Body {
     name: String,
-    /// Convex-hull pieces, in the body's local frame (world for `Fixed`).
+    /// Convex-hull pieces, in the body's local frame (the root frame for `Fixed`).
     local: Vec<Hull>,
     placement: Placement,
     bound: BoundingSphere,
@@ -79,13 +79,13 @@ struct Body {
 }
 
 impl Body {
-    /// World pose of this body given its host chain link's world pose and its
+    /// Root-frame pose of this body given its host chain link's root-frame pose and its
     /// chain's opening: the link pose directly for an ordinary body, or composed
     /// with the finger offset at `opening` for a finger.
-    fn place_on(&self, link_world: Isometry3<f64>, opening: f64) -> Isometry3<f64> {
+    fn place_on(&self, link_pose: Isometry3<f64>, opening: f64) -> Isometry3<f64> {
         match &self.finger {
-            Some(f) => link_world * f.offset(opening),
-            None => link_world,
+            Some(f) => link_pose * f.offset(opening),
+            None => link_pose,
         }
     }
 }
@@ -159,23 +159,23 @@ impl FingerJoint {
         placement.pose_at(self.span.position_at(fraction.clamp(0.0, 1.0)))
     }
 
-    /// World velocity of a point riding this finger per unit opening fraction,
-    /// given the host link's world pose. The joint frame's world rotation and
+    /// Root-frame velocity of a point riding this finger per unit opening fraction,
+    /// given the host link's root-frame pose. The joint frame's root-frame rotation and
     /// origin are invariant under the finger's own motion (a joint moves about
     /// its own axis), so the field needs no current fraction: a slide moves every
-    /// point along the world axis; a rotation swings the point about the joint
+    /// point along the root-frame axis; a rotation swings the point about the joint
     /// origin. Both scale by the joint travel per unit fraction.
     fn point_velocity_per_fraction(
         &self,
-        link_world: &Isometry3<f64>,
+        link_pose: &Isometry3<f64>,
         point: &Point3<f64>,
     ) -> Vector3<f64> {
-        let joint_world = link_world * self.origin;
+        let joint_pose = link_pose * self.origin;
         let travel = self.span.travel();
         match self.motion {
-            FingerMotion::Turn { axis } => (joint_world.rotation * axis.into_inner() * travel)
-                .cross(&(point.coords - joint_world.translation.vector)),
-            FingerMotion::Slide { axis } => joint_world.rotation * axis.into_inner() * travel,
+            FingerMotion::Turn { axis } => (joint_pose.rotation * axis.into_inner() * travel)
+                .cross(&(point.coords - joint_pose.translation.vector)),
+            FingerMotion::Slide { axis } => joint_pose.rotation * axis.into_inner() * travel,
         }
     }
 }
@@ -231,7 +231,7 @@ struct Closest {
 /// The closest approach over all checked pairs at one configuration. `distance`
 /// is the signed surface distance of the winning pair (negative is penetration,
 /// from EPA). The witnesses are the closest points on the two hull surfaces in
-/// world frame.
+/// the root frame.
 #[derive(Debug, Clone)]
 pub struct Proximity<'a> {
     pub distance: f64,
@@ -261,9 +261,9 @@ pub struct SelfCollisionModel<const N: usize, const K: usize> {
     chains: [Chain<N>; K],
     bodies: Vec<Body>,
     pairs: Vec<Pair>,
-    /// Per-body world pose, refreshed by [`place`](Self::place). Fixed bodies
-    /// keep the identity (their hulls are already in world frame).
-    world_iso: Vec<Isometry3<f64>>,
+    /// Per-body root-frame pose, refreshed by [`place`](Self::place). Fixed bodies
+    /// keep the identity (their hulls are already in the root frame).
+    poses_in_root: Vec<Isometry3<f64>>,
     /// Opening per chain as a fraction in `[0, 1]` (0 = shut, 1 = fully open), set
     /// by [`set_gripper_openings`](Self::set_gripper_openings). Finger bodies are
     /// placed at this opening every query. Defaults to fully open, the widest
@@ -474,12 +474,12 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             )?;
         }
 
-        let world_iso = vec![Isometry3::identity(); bodies.len()];
+        let poses_in_root = vec![Isometry3::identity(); bodies.len()];
         Ok(Self {
             chains,
             bodies,
             pairs: Vec::new(),
-            world_iso,
+            poses_in_root,
             openings: [1.0; K],
             levers: [[0.0; N]; K],
             opening_levers: [0.0; K],
@@ -642,7 +642,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         let centers: Vec<Point3<f64>> = self
             .bodies
             .iter()
-            .zip(&self.world_iso)
+            .zip(&self.poses_in_root)
             .map(|(b, iso)| iso * b.bound.center)
             .collect();
         let mut order: Vec<(f64, usize)> = self
@@ -682,7 +682,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
                 break;
             }
             let pair = &self.pairs[i];
-            let (iso_a, iso_b) = (self.world_iso[pair.a], self.world_iso[pair.b]);
+            let (iso_a, iso_b) = (self.poses_in_root[pair.a], self.poses_in_root[pair.b]);
             // The transformed piece centers of body b are constant across body
             // a's pieces; place them once per pair, not once per (ha, hb).
             let centers_b: Vec<Point3<f64>> = self.bodies[pair.b]
@@ -868,7 +868,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
     /// direction `normal` projected through the witness `point`'s velocity
     /// Jacobian, plus, for a finger body, through the point's velocity per unit
     /// opening fraction. `sign` is +1 for body a and -1 for body b (`normal`
-    /// increases the distance for a, decreases it for b). A world-fixed body
+    /// increases the distance for a, decreases it for b). A body fixed to the root
     /// contributes nothing.
     fn gradient_contribution(
         &self,
@@ -883,32 +883,32 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         let mut openings = [0.0; K];
         if let Placement::Chain { chain, segment } = placement {
             let posed = self.chains[chain].at(&q[chain]);
-            let cols = posed.point_world_jacobian(point, segment);
+            let cols = posed.point_root_jacobian(point, segment);
             joints[chain] = std::array::from_fn(|j| sign * normal.dot(&cols[j]));
             openings[chain] = finger.map_or(0.0, |f| {
-                let v = f.point_velocity_per_fraction(&posed.link_pose_world(segment), point);
+                let v = f.point_velocity_per_fraction(&posed.link_pose_root(segment), point);
                 sign * normal.dot(&v)
             });
         }
         (joints, openings)
     }
 
-    /// World-frame hull pieces of every body at configuration `q`, paired with the
+    /// Root-frame hull pieces of every body at configuration `q`, paired with the
     /// body name: each piece gives its placed vertices, and its hull the face
     /// triangles and the rounding radius, the exact collision surface. A planner
     /// measures the objects a chain carries against the bodies the plan does not move
     /// by these pieces; [`min_distance`](Self::min_distance) measures the checked
     /// pairs between the bodies.
-    pub fn world_pieces(
+    pub fn pieces_in_root(
         &mut self,
         q: &Joints<N, K>,
     ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
         self.placed_pieces(q, |_| true)
     }
 
-    /// [`world_pieces`](Self::world_pieces) of the bodies that ride chain `chain`, its fingers
+    /// [`pieces_in_root`](Self::pieces_in_root) of the bodies that ride chain `chain`, its fingers
     /// included: what a motion of that chain moves. Panics on a chain past the model's `K`.
-    pub fn world_pieces_of_chain(
+    pub fn pieces_of_chain_in_root(
         &mut self,
         chain: usize,
         q: &Joints<N, K>,
@@ -917,15 +917,15 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         self.placed_pieces(q, |body| body.placement.chain() == Some(chain))
     }
 
-    /// [`world_pieces`](Self::world_pieces) of the bodies no chain moves: a torso, a base, a
+    /// [`pieces_in_root`](Self::pieces_in_root) of the bodies no chain moves: a torso, a base, a
     /// mount.
-    pub fn fixed_world_pieces(&mut self) -> Vec<(&str, Vec<Placed<'_>>)> {
+    pub fn fixed_pieces_in_root(&mut self) -> Vec<(&str, Vec<Placed<'_>>)> {
         let still = [[0.0; N]; K];
         self.placed_pieces(&still, |body| body.placement.chain().is_none())
             .expect("a configuration of zeros is finite")
     }
 
-    /// The world-frame hull pieces at `q` of each body `keeps` keeps, paired with its name.
+    /// The root-frame hull pieces at `q` of each body `keeps` keeps, paired with its name.
     fn placed_pieces(
         &mut self,
         q: &Joints<N, K>,
@@ -936,7 +936,7 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         Ok(self
             .bodies
             .iter()
-            .zip(&self.world_iso)
+            .zip(&self.poses_in_root)
             .filter(|(b, _)| keeps(b))
             .map(|(b, iso)| {
                 let pieces = b.local.iter().map(|h| Placed::new(h, *iso)).collect();
@@ -1056,13 +1056,13 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
         }
     }
 
-    /// Refresh the world pose of the moving bodies from FK. Finger bodies are
+    /// Refresh the root-frame pose of the moving bodies from FK. Finger bodies are
     /// additionally offset by their host link pose at the chain's current opening.
     fn place(&mut self, q: &Joints<N, K>) {
         let poses: [[Isometry3<f64>; N]; K] =
             std::array::from_fn(|chain| link_poses(&self.chains[chain], &q[chain]));
         let openings = self.openings;
-        for (body, iso) in self.bodies.iter().zip(self.world_iso.iter_mut()) {
+        for (body, iso) in self.bodies.iter().zip(self.poses_in_root.iter_mut()) {
             if let Placement::Chain { chain, segment } = body.placement {
                 *iso = body.place_on(poses[chain][segment], openings[chain]);
             }
@@ -1083,7 +1083,7 @@ fn chain_segment(names: &[Vec<String>], parent: &str) -> Option<Placement> {
 
 fn link_poses<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> [Isometry3<f64>; N] {
     let posed = chain.at(q);
-    std::array::from_fn(|i| posed.link_pose_world(i))
+    std::array::from_fn(|i| posed.link_pose_root(i))
 }
 
 /// Per-body, per-joint surface-speed bounds (m/rad). A point rigidly attached
@@ -1472,10 +1472,10 @@ mod tests {
                 .map(|(name, _)| name.to_string())
                 .collect()
         };
-        let fixed = named(m.fixed_world_pieces());
-        let every = named(m.world_pieces(&q).expect("finite"));
+        let fixed = named(m.fixed_pieces_in_root());
+        let every = named(m.pieces_in_root(&q).expect("finite"));
         for (chain, side) in [(0, "openarm_left_"), (1, "openarm_right_")] {
-            let ridden = named(m.world_pieces_of_chain(chain, &q).expect("finite"));
+            let ridden = named(m.pieces_of_chain_in_root(chain, &q).expect("finite"));
             let of_the_side: Vec<String> = every
                 .iter()
                 .filter(|name| name.starts_with(side) && !fixed.contains(name))
@@ -1490,7 +1490,7 @@ mod tests {
     fn the_fixed_pieces_are_those_of_the_bodies_no_chain_moves() {
         let mut m = model();
         let mut fixed: Vec<String> = m
-            .fixed_world_pieces()
+            .fixed_pieces_in_root()
             .into_iter()
             .map(|(name, _)| name.to_string())
             .collect();
@@ -1598,7 +1598,7 @@ mod tests {
                 &e,
                 CollisionError::Build(BuildError::Geometry(reason))
                     if reason.starts_with(
-                        "collision link 'flap' is neither a chain link, an attached child, nor world-fixed: "
+                        "collision link 'flap' is neither a chain link, an attached child, nor fixed to the root: "
                     )
             ),
             "{e}"
@@ -1606,7 +1606,7 @@ mod tests {
     }
 
     #[test]
-    fn a_world_fixed_link_whose_fit_fails_answers_the_fit() {
+    fn a_link_fixed_to_the_root_whose_fit_fails_answers_the_fit() {
         let plate = r#"<link name="plate">
               <collision><geometry><mesh filename="package://none/no_such_mesh.stl"/></geometry></collision>
             </link>
@@ -1622,7 +1622,7 @@ mod tests {
         .expect("the plate describes the robot");
         let e = built(&with_a_plate)
             .err()
-            .expect("a world-fixed link with no mesh to read must fail");
+            .expect("a link fixed to the root with no mesh to read must fail");
         assert!(
             matches!(
                 &e,
@@ -1752,7 +1752,7 @@ mod tests {
         for q in poses {
             let fast = m.min_distance(&q).expect("query").distance;
             let placed: HashMap<&str, Vec<Placed>> =
-                m.world_pieces(&q).expect("pieces").into_iter().collect();
+                m.pieces_in_root(&q).expect("pieces").into_iter().collect();
             let slow = pairs.iter().fold(f64::INFINITY, |best, (a, b)| {
                 placed[a.as_str()]
                     .iter()
@@ -1815,7 +1815,7 @@ mod tests {
         let mut bad = [[0.0; ARM_DOF]; 2];
         bad[0][0] = f64::NAN;
         assert!(m.min_distance(&bad).is_err());
-        assert!(m.world_pieces(&bad).is_err());
+        assert!(m.pieces_in_root(&bad).is_err());
     }
 
     #[test]

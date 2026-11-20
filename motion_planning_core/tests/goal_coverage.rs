@@ -11,13 +11,13 @@ use std::num::NonZeroUsize;
 
 use chain_kinematics::Draws;
 use motion_planning_core::{
-    ArmGoal, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget,
+    ArmGoal, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget, Reference,
     sample_goals,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use srs_model::ArmAnglePolicy;
 
-use common::{LEFT_ARM, branch, left_srs_arm, positive};
+use common::{LEFT_ARM, branch, left_alone, left_srs_arm, placed, positive};
 use openarm_v2::JOINTS;
 
 /// The poses drawn.
@@ -52,7 +52,7 @@ fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_inval
     for pose_index in 0..POSES {
         let q: [f64; JOINTS] =
             std::array::from_fn(|i| limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit());
-        let pose = chain.world_ee_pose(&q);
+        let pose = chain.root_ee_pose(&q);
         // A seed in each branch: the drawn configuration with its limbs' middle joints
         // turned to each side of a quarter turn where their limits allow.
         let sides = |joint: usize| -> Vec<f64> {
@@ -85,11 +85,13 @@ fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_inval
             JOINTS,
             Vec::new(),
             vec![PositionTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 position: pose.translation.vector,
                 tolerance_m: positive(POSITION_TOLERANCE_M),
             }],
             vec![OrientationTarget {
+                reference: Reference::Robot,
                 frame: Frame::GraspPoint,
                 orientation: pose.rotation,
                 tolerance_rad: positive(ORIENTATION_TOLERANCE_RAD),
@@ -97,6 +99,7 @@ fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_inval
             }],
         )
         .expect("a valid goal");
+        let goal = placed(&goal);
         let reached: BTreeSet<(bool, bool)> = found
             .iter()
             .copied()
@@ -166,16 +169,18 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
             let (Frame::Link { segment, offset } | Frame::Part { segment, offset }) = frame else {
                 unreachable!("each frame drawn is a link's or a part's")
             };
-            let pose = chain.at(&q).link_pose_world(segment) * offset;
+            let pose = chain.at(&q).link_pose_root(segment) * offset;
             let goal = Goal::new(
                 JOINTS,
                 Vec::new(),
                 vec![PositionTarget {
+                    reference: Reference::Robot,
                     frame,
                     position: pose.translation.vector,
                     tolerance_m: positive(POSITION_TOLERANCE_M),
                 }],
                 vec![OrientationTarget {
+                    reference: Reference::Robot,
                     frame,
                     orientation: pose.rotation,
                     tolerance_rad: positive(ORIENTATION_TOLERANCE_RAD),
@@ -188,6 +193,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
                     goal: &goal,
                     sampler: &sampler,
                 }],
+                &left_alone(),
                 &START,
                 NonZeroUsize::new(LINK_GOALS).expect("nonzero"),
                 pose_index as u64,
@@ -198,7 +204,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
                 !reached.is_empty(),
                 "no configuration brings {frame:?} to its pose at {q:?}"
             );
-            assert!(reached.iter().all(|q| goal.met(chain, q)));
+            assert!(reached.iter().all(|q| placed(&goal).met(chain, q)));
         }
     }
 }

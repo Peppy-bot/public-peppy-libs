@@ -97,7 +97,7 @@ use std::collections::BTreeMap;
 
 use control_core::positive_finite::PositiveFinite;
 use control_core::time::{elapsed_ns, nanoseconds, seconds};
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 
 use crate::footprint::is_point_inside_polygon;
 use crate::obstacles::LiveObstacles;
@@ -157,14 +157,14 @@ pub enum StopDecision {
     /// The commanded velocity stands: no step of the projection before
     /// `time_before_collision_s` holds a point inside the footprint, or the
     /// scaled velocity is no slower, as for a base at rest.
-    Continue { velocity: Twist },
+    Continue { velocity: PlanarTwist },
     /// The first step of the projection that holds a point inside the
     /// footprint lies at `collision_time_s`, as `getCollisionTime` times it,
     /// 0 where the base stands: the velocity scaled by `collision_time_s /
     /// time_before_collision_s`, to rest for a contact where the base stands
     /// (the monitor's approach).
     Slow {
-        velocity: Twist,
+        velocity: PlanarTwist,
         collision_time_s: f64,
     },
     /// The base must come to rest: a source's readings stopped arriving (the
@@ -187,10 +187,10 @@ pub enum StopCause {
 
 impl StopDecision {
     /// The velocity the base may execute.
-    pub fn velocity(&self) -> Twist {
+    pub fn velocity(&self) -> PlanarTwist {
         match self {
             StopDecision::Continue { velocity } | StopDecision::Slow { velocity, .. } => *velocity,
-            StopDecision::Stop(_) => Twist::ZERO,
+            StopDecision::Stop(_) => PlanarTwist::ZERO,
         }
     }
 }
@@ -259,7 +259,7 @@ impl Stop {
     pub fn decide(
         &mut self,
         live: &LiveObstacles,
-        velocity: Twist,
+        velocity: PlanarTwist,
         occupied: &[[f64; 2]],
         now_ns: i64,
     ) -> StopDecision {
@@ -324,7 +324,7 @@ impl Stop {
     }
 
     /// The poses at which the footprint is checked for `velocity`.
-    fn projection(&self, velocity: Twist) -> Projection {
+    fn projection(&self, velocity: PlanarTwist) -> Projection {
         Projection {
             pose: ProjectedPose::default(),
             velocity: velocity.axes(),
@@ -418,7 +418,7 @@ fn least_advancing_step(horizon_s: f64) -> f64 {
 
 /// The squared magnitude by which the collision monitor orders velocities
 /// (`Velocity::operator<`), a turn rate counting as a speed.
-fn squared_magnitude(velocity: Twist) -> f64 {
+fn squared_magnitude(velocity: PlanarTwist) -> f64 {
     let [x, y, tw] = velocity.axes();
     x * x + y * y + tw * tw
 }

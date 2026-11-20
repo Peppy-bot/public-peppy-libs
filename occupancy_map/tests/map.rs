@@ -13,12 +13,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
-use camera_core::pose::Pose;
 use collision_geometry::chain::{BodyGeometry, Padding};
 use collision_geometry::gjk::Vertex;
 use collision_geometry::shapes::{PlacedShape, Shape};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use hegel::TestCase;
 use hegel::generators as gs;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
@@ -92,12 +92,12 @@ fn one_hit() -> f32 {
 }
 
 /// The pose that places nothing anywhere else.
-fn identity() -> Pose {
-    Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
+fn identity() -> Transform {
+    Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
 }
 
 /// A sensor somewhere in the middle of the map, turned any way.
-fn sensor(tc: &TestCase) -> Pose {
+fn sensor(tc: &TestCase) -> Transform {
     let origin: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-0.5).max_value(0.5)));
     let q: [f64; 4] = tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0)));
     let norm = q.iter().map(|c| c * c).sum::<f64>().sqrt();
@@ -106,7 +106,7 @@ fn sensor(tc: &TestCase) -> Pose {
     } else {
         [0.0, 0.0, 0.0, 1.0]
     };
-    Pose::new(origin, q).expect("a unit quaternion")
+    Transform::new(origin, q).expect("a unit quaternion")
 }
 
 /// A unit vector, any way.
@@ -127,7 +127,7 @@ fn point(tc: &TestCase, near: f64, far: f64) -> [f32; 3] {
 }
 
 /// The key `map` gives a sensor point that it holds.
-fn key_of(map: &VoxelMap, sensor: &Pose, p: [f32; 3]) -> Key {
+fn key_of(map: &VoxelMap, sensor: &Transform, p: [f32; 3]) -> Key {
     map.key(sensor.apply(p.map(f64::from))).expect("in the map")
 }
 
@@ -139,7 +139,7 @@ fn log_odds(map: &VoxelMap, key: Key) -> Option<f32> {
 }
 
 /// Inserts the points a sensor at `sensor` reads, cutting out `cutouts`.
-fn insert(map: &mut VoxelMap, sensor: Pose, points: &[[f32; 3]], cutouts: &[&dyn Cutout]) {
+fn insert(map: &mut VoxelMap, sensor: Transform, points: &[[f32; 3]], cutouts: &[&dyn Cutout]) {
     let frame = frame();
     map.insert(
         &Scan {
@@ -203,7 +203,7 @@ fn a_ray_clears_what_it_crosses_and_marks_its_hit(tc: TestCase) {
 #[test]
 fn a_point_that_is_not_a_finite_number_changes_nothing() {
     let mut map = map();
-    let sensor = Pose::new([0.12, -0.07, 0.31], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([0.12, -0.07, 0.31], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let points = [
         [f32::NAN, 0.0, 1.0],
         [0.0, f32::NAN, 1.0],
@@ -384,7 +384,7 @@ fn a_scan_reads_each_point_as_a_return_or_no_return_at_the_range(tc: TestCase) {
 /// The scan of `points` a sensor at `sensor` reads out to `max_range_m`.
 fn scan_of<'a>(
     frame: &'a FrameName,
-    sensor: Pose,
+    sensor: Transform,
     points: &'a [[f32; 3]],
     max_range_m: f64,
 ) -> Scan<'a> {
@@ -457,7 +457,7 @@ fn points_that_clear_free_their_rays_and_mark_nothing(tc: TestCase) {
 // changes nothing.
 #[test]
 fn a_point_that_clears_frees_its_ray_up_to_its_voxel_and_marks_nothing() {
-    let sensor = Pose::new([0.012; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([0.012; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let (hit, clearing) = ([0.5_f32, 0.0, 0.0], [1.0_f32, 0.0, 0.0]);
     let frame = frame();
     let mut map = map();
@@ -575,7 +575,7 @@ fn each_voxel_takes_the_strongest_update_of_a_scan_once(tc: TestCase) {
     )
     .expect("a valid map");
     let sensor_key = Key(tc.draw(gs::arrays(gs::integers().min_value(-4).max_value(4))));
-    let sensor = Pose::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     // A whole number of voxels, so a point at the range lies far from a face of its
     // voxel.
     let max_range_m =
@@ -910,7 +910,7 @@ fn a_still_scene_settles_and_a_stray_reading_does_not_undo_it() {
     let mut map = map();
     // Off the voxels' faces, so no ray starts on one.
     let origin = [0.012, -0.013, 0.007];
-    let sensor = Pose::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     let points = wall(1.0, 0.3, 0.02);
     for _ in 0..10 {
         insert(&mut map, sensor, &points, &[]);

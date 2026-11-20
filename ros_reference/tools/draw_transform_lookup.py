@@ -14,13 +14,14 @@ orientation before it; some ticks send a sample older than the newest; one tick 
 another parent. The stamps of each child frame are distinct: frame_tree replaces a held
 stamp sent again, where tf2 keeps both. After each tick, lookups between drawn frames: at
 the latest time, at a drawn time around the samples held, some of them past the window,
-and at a stamp sent.
+and at a stamp sent. Last, lookups through a fixed frame, tf2's advanced lookup, between
+three drawn frames, each time the latest or a stamp sent.
 
 transform_lookup_rules sends a few steps for each rule of tf2's buffer: a frame in itself,
 an unknown frame, an empty frame name, two trees, a cycle, a transform with one sample,
 a transform's oldest and newest samples, a sample older than the window, a transform sent
-static then moving and static again, a change of parent between two samples, and invalid
-transforms.
+static then moving and static again, a change of parent between two samples, invalid
+transforms, and lookups through a fixed frame.
 
 Run it from any directory:
 
@@ -39,6 +40,7 @@ START_NS = 1_000_000_000
 TICK_NS = 100_000_000
 WINDOW_NS = 500_000_000
 LOOKUPS_PER_TICK = 3
+LOOKUPS_THROUGH = 8
 
 
 def frame(index):
@@ -52,6 +54,11 @@ def transform(step, parent, child, position, orientation, **stamp):
 
 def lookup(target, source, time):
     return {"step": "lookup", "target": target, "source": source, "time": time}
+
+
+def lookup_through(target, target_time, source, source_time, fixed):
+    return {"step": "lookup_through", "target": target, "target_time": target_time,
+            "source": source, "source_time": source_time, "fixed": fixed}
 
 
 def position(rng):
@@ -105,6 +112,11 @@ def drawn_tree(rng, ticks):
                 rng.choice(sent) if sent else None,
             ])
             steps.append(lookup(frame(target), frame(source), time))
+    for _ in range(LOOKUPS_THROUGH):
+        target, source, fixed = rng.sample(range(FRAMES), 3)
+        target_time, source_time = (rng.choice([None, rng.choice(sent)]) for _ in range(2))
+        steps.append(lookup_through(frame(target), target_time, frame(source), source_time,
+                                    frame(fixed)))
     return {"kind": "transform_lookup", "cache_window_ns": WINDOW_NS, "steps": steps}
 
 
@@ -177,6 +189,24 @@ def rules(rng):
         transform("moving", "", "x", t(), q(), stamp=at(2)),
         transform("moving", "root", "x", t(), [0.0, 0.0, 0.0, 1.01], stamp=at(2)),
         lookup("root", "x", at(2)),
+        # A lookup through a fixed frame: the source at its time in the fixed frame, then the
+        # fixed frame in the target at the target's time, the answer at the target's time.
+        transform("static", "ground", "odom", t(), q()),
+        transform("moving", "odom", "base", t(), q(), stamp=at(11)),
+        transform("moving", "odom", "base", t(), q(), stamp=at(13)),
+        transform("static", "base", "camera", t(), q()),
+        lookup_through("base", None, "base", at(12), "odom"),
+        lookup_through("camera", at(13), "camera", at(11), "odom"),
+        lookup_through("odom", None, "camera", at(12), "odom"),
+        lookup_through("camera", at(12), "base", at(12), "ground"),
+        # Each half fails as its lookup fails: a source time before the oldest sample, a
+        # target time past the newest, a fixed frame unknown or unnamed, a target in another
+        # tree.
+        lookup_through("base", None, "base", at(10), "odom"),
+        lookup_through("base", at(14), "base", at(12), "odom"),
+        lookup_through("base", None, "camera", at(12), "nowhere"),
+        lookup_through("base", None, "base", at(12), ""),
+        lookup_through("c", None, "base", at(12), "odom"),
     ]
     return {"kind": "transform_lookup", "cache_window_ns": WINDOW_NS, "steps": steps}
 

@@ -4,7 +4,8 @@
 <!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
 <!-- =================================================================================== -->
 <!-- Enactic's OpenArm v2.0 URDF (enactic/openarm_description), its joint limits as
-     Enactic gives them, with five additions:
+     Enactic gives them, with six changes:
+     - the root link base_link, the robot frame, where Enactic's root link is world;
      - the grasp point of each arm, the link openarm_*_tcp;
      - the head camera, the link openarm_head_camera with its collision hull;
      - the optical frame of each camera the robot carries;
@@ -13,7 +14,7 @@
        openarm_body_link0 naming one slice of Enactic's torso mesh, which
        collision_geometry's example openarm_torso_pieces writes. -->
 <robot name="openarm_v20">
-  <link name="world"/>
+  <link name="base_link"/>
   <link name="openarm_body_link0">
     <visual name="openarm_body_link0_visual">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
@@ -80,7 +81,7 @@
   </link>
   <joint name="openarm_body_link0_mount_joint" type="fixed">
     <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
-    <parent link="world"/>
+    <parent link="base_link"/>
     <child link="openarm_body_link0"/>
   </joint>
   <link name="openarm_left_base_link">
@@ -933,7 +934,7 @@
     <parent link="openarm_right_ee_base_link"/>
     <child link="openarm_right_tcp"/>
   </joint>
-  <!-- The head camera: the ZED Mini on its bracket under the head cover, as Enactic's OpenArm_2.0_w_Head_Camera assembly seats it on the pedestal. Its collision mesh is the convex hull of those three parts and this joint's origin is the assembly's mount origin, both read off that CAD by Waldo's derivation and taken byte-identical from its pack, sources/openarm_v2_head_camera/78054986a1cb6f0725bb2b8fd23e3d3078fc52f06ef4c01fe12c67c1a53dd71b in the waldo-assets store, the pack the simulated robots draw. Its own world-fixed link, so the hull carries its own body in the collision model and the arms reaching over the head are checked against it. Local addition, not emitted by the xacro. -->
+  <!-- The head camera: the ZED Mini on its bracket under the head cover, as Enactic's OpenArm_2.0_w_Head_Camera assembly seats it on the pedestal. Its collision mesh is the convex hull of those three parts and this joint's origin is the assembly's mount origin, both read off that CAD by Waldo's derivation and taken byte-identical from its pack, sources/openarm_v2_head_camera/78054986a1cb6f0725bb2b8fd23e3d3078fc52f06ef4c01fe12c67c1a53dd71b in the waldo-assets store, the pack the simulated robots draw. Its own link, fixed to openarm_body_link0, so the hull carries its own body in the collision model and the arms reaching over the head are checked against it. Local addition, not emitted by the xacro. -->
   <link name="openarm_head_camera">
     <collision name="openarm_head_camera_collision">
       <origin rpy="0 0 0" xyz="0 0 0"/>

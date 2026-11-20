@@ -4,6 +4,7 @@ until they come, duplicate boxes, the ways a scan is refused, and the
 words a look leaves in the log."""
 
 import asyncio
+import logging
 import math
 import threading
 from dataclasses import replace
@@ -14,6 +15,7 @@ import pytest
 
 from conftest import (
     CAMERA_16X12,
+    CAMERA_FRAME,
     LOOKUP_TIMEOUT_S,
     NEVER,
     ORIGIN,
@@ -22,19 +24,20 @@ from conftest import (
     FixedPlacer,
     depth_frame,
     lookup_answer,
+    records_of,
     rgb_frame,
     sensors_described,
 )
 from fake_peppygen import FakeConsumedService, LookupTransformRequest, VacantSlot, consumed_service
+from control_core_py.geometry import Placement, PoseTarget, Stamped, product, rotate
+
 from brain_core.perception.camera import (
     INVERSE_PLUMB_BOB,
     NONE,
     PLUMB_BOB,
     CameraModel,
-    CameraPose,
     Intrinsics,
     pixel_to_ray,
-    rotate,
     undistort,
 )
 from brain_core.perception import frames as frames_module
@@ -67,27 +70,11 @@ def perceiver_of(frames: FrameStore, camera: CameraModel) -> Perceiver:
     intrinsics of `camera`, whose placer stands the camera at the pose of
     `camera` at every time, or has not heard from the robot when `camera`
     has no pose."""
-    return Perceiver(frames, CameraModel(intrinsics=camera.intrinsics), FixedPlacer(camera.pose), "chest")
-
-
-def test_a_camera_pose_is_parsed_from_three_metres_and_a_quaternion_and_normalised():
-    with pytest.raises(ValueError, match="three coordinates"):
-        CameraPose.parse((0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-    with pytest.raises(ValueError, match="three coordinates"):
-        CameraPose.parse((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
-    with pytest.raises(ValueError, match="finite"):
-        CameraPose.parse((math.nan, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-    with pytest.raises(ValueError, match="finite"):
-        CameraPose.parse((0.0, 0.0, 0.0), (0.0, math.inf, 0.0, 1.0))
-    with pytest.raises(ValueError, match="zero"):
-        CameraPose.parse((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0))
-    pose = CameraPose.parse((1, 2, 3), (0, 0, 0, 2))
-    assert pose.position == (1.0, 2.0, 3.0)
-    assert close(pose.orientation, (0.0, 0.0, 0.0, 1.0))
+    return Perceiver(frames, CameraModel(intrinsics=camera.intrinsics), FixedPlacer(camera.pose))
 
 
 def test_a_camera_model_places_a_pixel_once_it_holds_its_intrinsics_and_a_pose():
-    placed = CameraModel().with_pose(CameraPose.parse((1, 2, 3), (0, 0, 0, 1)))
+    placed = CameraModel().with_pose(Placement((1, 2, 3), (0, 0, 0, 1)))
     with pytest.raises(ValueError, match="intrinsics are not known yet"):
         placed.deproject(1.0, 1.0, 1.0, 16, 12)
     unplaced = CameraModel().with_intrinsics(CAMERA_16X12)
@@ -212,23 +199,11 @@ def test_any_other_distortion_model_is_refused_by_name():
         undistort(INVERSE_PLUMB_BOB, (math.nan, 0.0, 0.0, 0.0, 0.0), 0.1, 0.1)
 
 
-def quaternion_product(a, b):
-    """`a` then `b` as one rotation, both [x, y, z, w]: the rotation `a * b`."""
-    ax, ay, az, aw = a
-    bx, by, bz, bw = b
-    return (
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    )
-
-
 # The OpenArm v2 chest camera as the robot's tree places it: the design's mount
 # (looking along its own -Z with +Y up) turned half a turn about X into the
 # optical frame.
 CHEST_POSITION = (0.0792, 0.0315, 0.7941)
-CHEST_ORIENTATION = quaternion_product((0.1710647, -0.1710647, -0.6861027, 0.6861027), (1.0, 0.0, 0.0, 0.0))
+CHEST_ORIENTATION = product((0.1710647, -0.1710647, -0.6861027, 0.6861027), (1.0, 0.0, 0.0, 0.0))
 
 
 def test_the_chest_pose_of_the_robots_tree_looks_ahead_and_down():
@@ -236,7 +211,7 @@ def test_the_chest_pose_of_the_robots_tree_looks_ahead_and_down():
     # horizon, and the image's +Y (down the picture) leans forward and down.
     # Its colour intrinsics: a 52 degree vertical field of view over 720
     # rows is a focal length of 360 / tan(26 degrees), and no lens.
-    chest = CameraModel().with_pose(CameraPose.parse(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(Intrinsics(1280, 720, 738.1, 738.1, 640.0, 360.0))
+    chest = CameraModel().with_pose(Placement(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(Intrinsics(1280, 720, 738.1, 738.1, 640.0, 360.0))
     forward = chest.forward()
     assert close(forward, (math.cos(math.radians(62)), 0.0, -math.sin(math.radians(62))), 1e-3)
     assert close(rotate(chest.pose.orientation, (0.0, 1.0, 0.0)), (-math.sin(math.radians(62)), 0.0, -math.cos(math.radians(62))), 1e-3)
@@ -266,8 +241,8 @@ def test_frames_decode_and_depth_reads_the_median_under_a_box():
     assert raised.value.kind is FailureKind.ATTEMPT_FAILED
 
 
-def replace_frame(message, frame: bytes):
-    message.frame = frame
+def replace_frame(message, data: bytes):
+    message.data = data
     return message
 
 
@@ -283,22 +258,22 @@ def store_with(colors=(), depths=(), depth_unit=0.001) -> FrameStore:
 
 def test_the_frame_store_pairs_colour_and_depth_by_capture():
     # Colour runs a frame ahead of depth: the newest pair is capture 2.
-    store = store_with([rgb_frame(frame_id=1), rgb_frame(frame_id=2), rgb_frame(frame_id=3)], [depth_frame(1.0, frame_id=1), depth_frame(2.0, frame_id=2)])
+    store = store_with([rgb_frame(capture_index=1), rgb_frame(capture_index=2), rgb_frame(capture_index=3)], [depth_frame(1.0, capture_index=1), depth_frame(2.0, capture_index=2)])
     frame = store.latest()
-    assert frame.color.header.frame_id == 2 and frame.depth.header.frame_id == 2
+    assert frame.color.header.capture_index == 2 and frame.depth.header.capture_index == 2
     assert store.why_unavailable() == "" and store.frames_seen == 3
     # Only the last FRAME_BUFFER frames of a stream are kept.
-    for frame_id in range(10, 10 + FRAME_BUFFER + 2):
-        store.add_color(rgb_frame(frame_id=frame_id))
-    assert [m.header.frame_id for m in store.colors] == list(range(12, 12 + FRAME_BUFFER))
+    for capture_index in range(10, 10 + FRAME_BUFFER + 2):
+        store.add_color(rgb_frame(capture_index=capture_index))
+    assert [m.header.capture_index for m in store.colors] == list(range(12, 12 + FRAME_BUFFER))
 
 
 def test_the_frame_store_says_what_is_missing():
     assert FrameStore().why_unavailable() == "no camera frame received"
     assert store_with([rgb_frame()]).why_unavailable() == "no depth frame received"
     assert store_with([rgb_frame()], [depth_frame(1.0)], depth_unit=None).why_unavailable() == "the camera has not answered depth_stream_info yet"
-    disjoint = store_with([rgb_frame(frame_id=1), rgb_frame(frame_id=2)], [depth_frame(1.0, frame_id=3)])
-    assert disjoint.why_unavailable() == "no colour and depth frame of one capture received (latest colour frame_id 2, depth 3)"
+    disjoint = store_with([rgb_frame(capture_index=1), rgb_frame(capture_index=2)], [depth_frame(1.0, capture_index=3)])
+    assert disjoint.why_unavailable() == "no colour and depth frame of one capture received (latest colour capture_index 2, depth 3)"
     with pytest.raises(Refusal, match="no colour and depth frame of one capture") as raised:
         disjoint.latest()
     assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
@@ -309,7 +284,7 @@ def test_the_frame_store_starts_until_a_pair_comes_and_not_for_a_vacant_slot_or_
     assert FrameStore().starting() == "no camera frame received"
     assert store_with([rgb_frame()]).starting() == "no depth frame received"
     assert store_with([rgb_frame()], [depth_frame(1.0)], depth_unit=None).starting() == "the camera has not answered depth_stream_info yet"
-    disjoint = store_with([rgb_frame(frame_id=1)], [depth_frame(1.0, frame_id=3)])
+    disjoint = store_with([rgb_frame(capture_index=1)], [depth_frame(1.0, capture_index=3)])
     assert disjoint.starting() == disjoint.why_unavailable() != ""
     assert store_with([rgb_frame()], [depth_frame(1.0)]).starting() == ""
     # The next frames of a camera whose streams are not aligned are not
@@ -326,6 +301,11 @@ def test_frames_that_are_not_aligned_to_each_other_are_refused():
     assert unaligned.why_unavailable() == "the camera's depth is not aligned to its colour (align_mode 'none'); the brain reads depth at colour pixels"
     mixed = store_with([rgb_frame(align_mode="depth_to_color")], [depth_frame(1.0, align_mode="none")])
     assert mixed.why_unavailable() == "the colour and depth frames name different alignments ('depth_to_color' and 'none')"
+    # The depth is read at the colour pixels, so both name the camera's frame.
+    elsewhere = store_with([rgb_frame()], [depth_frame(1.0, frame="chest_depth_optical_frame")])
+    assert elsewhere.why_unavailable() == (
+        "the colour and depth frames name different frames ('chest_color_optical_frame' and 'chest_depth_optical_frame')"
+    )
     for mode in ("depth_to_color", "color_to_depth"):
         assert store_with([rgb_frame(align_mode=mode)], [depth_frame(1.0, align_mode=mode)]).why_unavailable() == ""
     unknown = store_with([rgb_frame(align_mode="rectified")], [depth_frame(1.0, align_mode="rectified")])
@@ -359,8 +339,8 @@ async def test_the_frame_store_asks_the_depth_unit_until_answered_then_follows_b
             raise answer
         return answer
 
-    colours = Feed([rgb_frame(frame_id=1), rgb_frame(frame_id=2)])
-    depths = Feed([depth_frame(1.0, frame_id=2)])
+    colours = Feed([rgb_frame(capture_index=1), rgb_frame(capture_index=2)])
+    depths = Feed([depth_frame(1.0, capture_index=2)])
 
     async def subscribe_colour(node_runner):
         return colours
@@ -379,7 +359,7 @@ async def test_the_frame_store_asks_the_depth_unit_until_answered_then_follows_b
     await asyncio.wait_for(depths.delivered.wait(), 1.0)
     assert answers == [] and store.depth_unit == 0.001 and store.frames_seen == 2
     frame = store.latest()
-    assert frame.color.header.frame_id == 2 and frame.depth.header.frame_id == 2
+    assert frame.color.header.capture_index == 2 and frame.depth.header.capture_index == 2
     token.cancel()
     await asyncio.wait_for(running, 1.0)
 
@@ -392,7 +372,7 @@ async def test_a_vacant_camera_slot_leaves_the_store_empty():
 
 # 1 m over the table top, looking straight down: the optical +Z is the
 # robot's -Z, so a reading of depth d stands 1 - d above the top.
-LOOKING_DOWN = CameraModel().with_pose(CameraPose.parse((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0))).with_intrinsics(CAMERA_16X12)
+LOOKING_DOWN = CameraModel().with_pose(Placement((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0))).with_intrinsics(CAMERA_16X12)
 
 
 def open_item_depths(width: int = 64, height: int = 48, *, rim_m: float = 0.08, bottom_m: float = 0.005):
@@ -423,7 +403,7 @@ def test_the_top_of_an_open_item_is_its_rim_and_its_seen_point_its_inside_bottom
 # larger than the one its intrinsics were given for.
 LENS_CAMERA = (
     CameraModel()
-    .with_pose(CameraPose.parse((0.1, -0.2, 0.9), (0.9, 0.1, -0.05, 0.4)))
+    .with_pose(Placement((0.1, -0.2, 0.9), (0.9, 0.1, -0.05, 0.4)))
     .with_intrinsics(Intrinsics(64, 48, 40.0, 41.0, 31.5, 23.5, PLUMB_BOB, LENS))
 )
 
@@ -471,13 +451,13 @@ def test_the_top_of_an_item_is_the_quantile_of_the_heights_each_reading_of_the_m
 async def test_a_scan_gives_each_item_its_top():
     depths = open_item_depths()
     message = SimpleNamespace(
-        header=SimpleNamespace(timestamp=1.0, frame_id=3, align_mode="depth_to_color"),
+        header=SimpleNamespace(timestamp=1.0, frame=CAMERA_FRAME, capture_index=3, align_mode="depth_to_color"),
         encoding="z16",
         width=64,
         height=48,
-        frame=np.round(depths / 0.001).astype("<u2").tobytes(),
+        data=np.round(depths / 0.001).astype("<u2").tobytes(),
     )
-    frames = store_with([rgb_frame(64, 48, frame_id=3)], [message])
+    frames = store_with([rgb_frame(64, 48, capture_index=3)], [message])
     perceiver = perceiver_of(frames, LOOKING_DOWN)
     look = await perceiver.scan(FakeDetector([Box("mug", 0.9, 16, 12, 48, 36)]), ["mug"], CancelToken(), timeout_s=0.0)
     [mug] = look.detections
@@ -496,7 +476,7 @@ def test_duplicate_boxes_of_one_label_keep_the_most_confident():
 
 
 async def test_a_scan_turns_boxes_into_world_detections():
-    frames = store_with([rgb_frame(16, 12, frame_id=7)], [depth_frame(2.0, 16, 12, frame_id=7)])
+    frames = store_with([rgb_frame(16, 12, capture_index=7)], [depth_frame(2.0, 16, 12, capture_index=7)])
     duplicate = Box("cup", 0.85, 6.5, 4.5, 10.5, 8.5)
     # Its centre is off the picture, where the depth frame has no reading.
     off_the_picture = Box("bowl", 0.5, 30, 30, 40, 40)
@@ -512,7 +492,9 @@ async def test_a_scan_turns_boxes_into_world_detections():
     assert detections[0].region == (6, 4, 10, 8)
     # Its width: the box is 4 px wide, 2 m deep, through a 6 px focal length.
     assert detections[0].width_m == pytest.approx(4 * 2.0 / 6.0)
-    assert (look.image_width, look.image_height, look.frame_timestamp, look.frame_id) == (16, 12, 1.0, 7)
+    assert (look.frame, look.image_width, look.image_height, look.timestamp, look.capture_index) == ("base_link", 16, 12, 1.0, 7)
+    # The look places the frame the picture names, at its capture time.
+    assert perceiver.placer.asked[-1] == (CAMERA_FRAME, 1.0)
     # The detector's other boxes stay in the look for the log.
     assert look.duplicates == [duplicate]
     assert look.unplaced == [off_the_picture]
@@ -538,10 +520,11 @@ async def test_a_detector_past_its_deadline_fails_the_scan_with_timeout():
 def test_a_look_names_its_frame_its_age_and_every_box_for_the_log():
     look = Look(
         detections=[Detection("cup", (0.0, 0.0, 2.0), 0.9)],
+        frame="base_link",
         image_width=16,
         image_height=12,
-        frame_timestamp=10.0,
-        frame_id=7,
+        timestamp=10.0,
+        capture_index=7,
         duplicates=[Box("cup", 0.85, 6.5, 4.5, 10.5, 8.5)],
         unplaced=[Box("bowl", 0.5, 30, 30, 40, 40)],
     )
@@ -763,147 +746,188 @@ def lookup_service(*answers, producer="robot"):
     return service
 
 
-def placer_of(describe_sensors=VacantSlot, lookup_transform=VacantSlot) -> geometry.CameraPlacer:
-    return geometry.CameraPlacer(None, describe_sensors, lookup_transform, LOOKUP_TIMEOUT_S)
+def placer_of(describe_sensors=VacantSlot, lookup_transform=VacantSlot) -> geometry.Placer:
+    return geometry.Placer(None, describe_sensors, lookup_transform, LOOKUP_TIMEOUT_S)
 
 
-async def learned_placer(lookup_transform, names=("wrist_left", "chest")) -> geometry.CameraPlacer:
-    """A placer that has learned the robot's sensors `names` from its first
-    answer, and asks `lookup_transform` for their poses."""
-    placer = placer_of(scripted_service("describe_sensors", [sensors_described(names)]), lookup_transform)
-    await asyncio.wait_for(placer.learn(FakeToken(), "chest"), 5.0)
+async def learned_placer(lookup_transform) -> geometry.Placer:
+    """A placer that has learned the robot frame from its first answer, and
+    asks `lookup_transform` for its lookups."""
+    placer = placer_of(scripted_service("describe_sensors", [sensors_described(("wrist_left", "chest"))]), lookup_transform)
+    await asyncio.wait_for(placer.learn(FakeToken()), 5.0)
     return placer
 
 
-async def test_the_robot_is_asked_again_until_it_names_the_camera(monkeypatch):
+def header(frame=CAMERA_FRAME, timestamp=12.5, capture_index=9) -> SimpleNamespace:
+    """The header of a picture that names `frame`."""
+    return SimpleNamespace(frame=frame, timestamp=timestamp, capture_index=capture_index)
+
+
+async def test_the_robot_is_asked_again_until_it_names_its_robot_frame(monkeypatch):
     # The reasons a search is refused with, one per round, until the robot
-    # gives its response and names the camera: not answered, an error
-    # reply, an answer it cannot use, a robot without that camera, one whose
-    # sensor of that name is not a camera, then the answer.
+    # gives its response and names its robot frame: not answered, an error
+    # reply, an answer it cannot use, then the answer, whatever cameras it
+    # names.
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
     answers = [
         TimeoutError("no answer"),
         ("rejected", "no model yet"),
         sensors_described(robot_frame=""),
         sensors_described(names=("wrist_left", "wrist_right")),
-        sensors_described(names=("chest",), kinds=("lidar_2d",)),
-        sensors_described(names=("wrist_left", "chest")),
     ]
     reasons: list[tuple[str, bool]] = []
     describe_sensors = scripted_service(
         "describe_sensors", answers, lambda: reasons.append((placer.reason.reason, placer.reason.starting))
     )
     placer = placer_of(describe_sensors, lookup_service())
-    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer, "chest")
+    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer)
     with pytest.raises(Refusal, match="sensors have not been described yet"):
         await perceiver.scan(FakeDetector(), [], CancelToken(), 1.0)
+    with pytest.raises(Refusal, match=f"^{geometry.NOT_DESCRIBED}$") as raised:
+        placer.robot_frame
+    assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
 
     monkeypatch.setattr(geometry, "RETRY_S", 0.0)
-    await asyncio.wait_for(placer.learn(FakeToken(), "chest"), 5.0)
+    await asyncio.wait_for(placer.learn(FakeToken()), 5.0)
 
     assert reasons == [
         (geometry.NOT_DESCRIBED, True),
         ("the robot's sensor mounts are not answered yet (TimeoutError('no answer'))", True),
         ("the robot cannot describe its sensors: no model yet", False),
         ("the robot's sensor mounts are unusable: it names no robot frame", False),
-        ("the robot carries no camera named 'chest' (its cameras: wrist_left, wrist_right)", False),
-        ("the robot's sensor 'chest' streams on lidar_2d, not as a camera (its cameras: none)", False),
     ]
     assert answers == []
     assert placer.reason.reason == "" and perceiver.why_unavailable() == ""
-    assert placer.frames.robot_frame == "base_link"
-    assert placer.frames.camera_frame("chest") == "chest_color_optical_frame"
+    assert placer.robot_frame == "base_link"
 
 
 async def test_a_vacant_sensor_mounts_or_transform_lookup_slot_is_the_reason_at_once():
     without_mounts = placer_of(VacantSlot, lookup_service())
-    await asyncio.wait_for(without_mounts.learn(FakeToken(), "chest"), 1.0)
+    await asyncio.wait_for(without_mounts.learn(FakeToken()), 1.0)
     assert (without_mounts.reason.reason, without_mounts.reason.starting) == (geometry.MOUNTS_VACANT, False)
     without_lookup = placer_of(scripted_service("describe_sensors", [sensors_described()]), VacantSlot)
-    await asyncio.wait_for(without_lookup.learn(FakeToken(), "chest"), 1.0)
+    await asyncio.wait_for(without_lookup.learn(FakeToken()), 1.0)
     assert (without_lookup.reason.reason, without_lookup.reason.starting) == (geometry.LOOKUP_VACANT, False)
-    assert without_lookup.frames is None
+    with pytest.raises(Refusal, match=f"^{geometry.LOOKUP_VACANT}$"):
+        without_lookup.robot_frame
 
 
-def test_the_robots_sensors_are_refused_when_the_arrays_do_not_run_beside_their_names():
-    ragged = sensors_described(names=("chest", "wrist_left"))
-    ragged.sensor_frames.pop()
-    with pytest.raises(ValueError, match="names 2 sensors and gives 2 kinds, 1 frames and 2 carriers"):
-        geometry.SensorFrames.parse(ragged)
-    with pytest.raises(ValueError, match="not distinct"):
-        geometry.SensorFrames.parse(sensors_described(names=("chest", "chest")))
-    with pytest.raises(ValueError, match="not distinct"):
-        geometry.SensorFrames.parse(sensors_described(names=("",)))
-    frameless = sensors_described()
-    frameless.sensor_frames[0] = ""
-    with pytest.raises(ValueError, match="has no frame"):
-        geometry.SensorFrames.parse(frameless)
-    rgb = geometry.SensorFrames.parse(sensors_described(names=("wrist_left",), kinds=("rgb_camera",)))
-    assert rgb.camera_frame("wrist_left") == "wrist_left_color_optical_frame"
-
-
-async def test_a_camera_is_placed_by_a_lookup_of_its_frame_in_the_robot_frame_at_the_pictures_time():
-    lookup = lookup_service(lookup_answer((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 2.0)))
+async def test_a_picture_is_placed_by_a_lookup_of_the_frame_it_names_in_the_robot_frame_at_its_time():
+    lookup = lookup_service(lookup_answer((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 1.0004), child_frame="wrist_left_color_optical_frame"))
     placer = await learned_placer(lookup)
 
-    pose = await placer.pose_at("wrist_left", 12.5)
+    pose = await placer.place_picture(header("wrist_left_color_optical_frame"))
 
     assert lookup.polled == [
         LookupTransformRequest(
-            target_frame="base_link", source_frame="wrist_left_color_optical_frame", time=12.5, timeout_s=LOOKUP_TIMEOUT_S
+            target_frame="base_link", source_frame="wrist_left_color_optical_frame", source_timestamp=12.5,
+            target_timestamp=12.5, timeout_s=LOOKUP_TIMEOUT_S,
         )
     ]
-    assert pose == CameraPose((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 1.0))
+    assert pose == Placement((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 1.0))
 
 
-async def test_a_camera_that_cannot_be_placed_is_refused_with_the_reason():
+async def test_a_picture_whose_frame_the_tree_does_not_place_is_dropped_and_logged_with_the_lookups_kind(caplog):
     lookup = lookup_service()
+    lookup.enqueue(lookup.Failure("unknown_frame", "no transform names head_color_optical_frame; it holds base_link"))
     lookup.enqueue(lookup.Failure("extrapolation", "the transform to wrist_link at 12.500 s: held 11.000 s to 12.000 s"))
     lookup.enqueue(TimeoutError("no answer"))
     lookup.enqueue(lookup_answer(orientation=(0.0, 0.0, 0.0, 0.0)))
     placer = await learned_placer(lookup)
     refusals = []
-    for name in ("chest", "chest", "chest", "head"):
-        with pytest.raises(Refusal) as raised:
-            await placer.pose_at(name, 12.5)
-        refusals.append((raised.value.kind, raised.value.message))
+    with records_of(caplog, "brain_core.perception.geometry") as log:
+        for frame in ("head_color_optical_frame", CAMERA_FRAME, CAMERA_FRAME, CAMERA_FRAME):
+            with pytest.raises(Refusal) as raised:
+                await placer.place_picture(header(frame))
+            refusals.append((raised.value.kind, raised.value.message))
 
     unavailable = FailureKind.RESOURCE_UNAVAILABLE
+    at = f"the frame '{CAMERA_FRAME}' at 12.500 s"
     assert refusals == [
-        (unavailable, "the robot cannot place camera 'chest' at 12.500 s: the transform to wrist_link at 12.500 s: held 11.000 s to 12.000 s"),
-        (unavailable, "the robot's transform lookup is not answered (TimeoutError('no answer'))"),
-        (unavailable, "the robot's pose of camera 'chest' is unusable: a camera pose's quaternion must not be zero"),
-        (unavailable, "the robot carries no camera named 'head' (its cameras: wrist_left, chest)"),
+        (
+            unavailable,
+            "picture 9 dropped: unknown_frame: the frame 'head_color_optical_frame' at 12.500 s: "
+            "no transform names head_color_optical_frame; it holds base_link",
+        ),
+        (unavailable, f"picture 9 dropped: extrapolation: {at}: the transform to wrist_link at 12.500 s: held 11.000 s to 12.000 s"),
+        (unavailable, f"{at}: the robot's transform lookup is not answered (TimeoutError('no answer'))"),
+        (unavailable, f"{at}: the robot's transform lookup gave no pose: the orientation [0, 0, 0, 0] has a squared norm of 0, 0.01 or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]"),
     ]
-    assert len(lookup.polled) == 3
+    # Each dropped picture leaves its warning; a lookup that gave no answer
+    # drops no picture.
+    assert [record.getMessage() for record in log.records if record.levelno == logging.WARNING] == [refusals[0][1], refusals[1][1]]
+    assert len(lookup.polled) == 4
     with pytest.raises(Refusal, match=f"^{geometry.NOT_DESCRIBED}$"):
-        await placer_of(lookup_transform=lookup).pose_at("chest", 1.0)
+        await placer_of(lookup_transform=lookup).place_picture(header())
 
 
-async def test_a_scan_places_the_camera_where_it_stood_when_the_frame_was_taken():
-    frames = store_with([rgb_frame(16, 12, frame_id=4)], [depth_frame(1.0, 16, 12, frame_id=4)])
+async def test_a_target_is_placed_where_its_frame_stood_at_its_timestamp_or_the_latest_time_in_the_robot_frame_at_the_latest_time():
+    # The target's frame stands 1 m ahead of the robot frame, turned a
+    # quarter turn about +Z.
+    turn = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    lookup = lookup_service(*[lookup_answer((1.0, 0.0, 0.0), turn, child_frame="odom")] * 2)
+    placer = await learned_placer(lookup)
+
+    pose = await placer.place_target(Stamped.parse("odom", 4.5, PoseTarget.parse((0.2, 0.0, 0.1), (0.0, 0.0, 0.0, 1.0))))
+    point = await placer.place_target(Stamped.parse("odom", None, PoseTarget.parse((0.2, 0.0, 0.1), None)))
+
+    assert lookup.polled == [
+        LookupTransformRequest("base_link", "odom", 4.5, None, LOOKUP_TIMEOUT_S),
+        LookupTransformRequest("base_link", "odom", None, None, LOOKUP_TIMEOUT_S),
+    ]
+    assert close(pose.position, (1.0, 0.2, 0.1), 1e-12) and close(pose.orientation, turn, 1e-12)
+    assert close(point.position, (1.0, 0.2, 0.1), 1e-12) and point.orientation is None
+
+
+async def test_a_target_the_tree_cannot_place_is_refused_with_the_lookups_kind():
+    lookup = lookup_service()
+    for kind in ("unknown_frame", "no_chain", "extrapolation", "broken_tree"):
+        lookup.enqueue(lookup.Failure(kind, f"the cause of {kind}"))
+    placer = await learned_placer(lookup)
+    target = Stamped.parse("map", None, PoseTarget.parse((0.2, 0.0, 0.1), None))
+    for kind in ("unknown_frame", "no_chain", "extrapolation", "broken_tree"):
+        with pytest.raises(geometry.LookupFailure) as raised:
+            await placer.place_target(target)
+        assert (raised.value.kind, raised.value.message) == (FailureKind(kind), f"the target: the cause of {kind}")
+    # A lookup that fails with a kind of peppy is no failure of the lookup:
+    # the lookup gave no answer.
+    lookup.enqueue(lookup.Failure("resource_unavailable", "the tree is not received yet"))
+    with pytest.raises(Refusal) as raised:
+        await placer.place_target(target)
+    assert not isinstance(raised.value, geometry.LookupFailure)
+    assert (raised.value.kind, raised.value.message) == (
+        FailureKind.RESOURCE_UNAVAILABLE,
+        "the target: the robot's transform lookup failed with resource_unavailable: the tree is not received yet",
+    )
+
+
+async def test_a_scan_places_the_frame_its_picture_names_where_it_stood_when_the_picture_was_taken():
+    frames = store_with([rgb_frame(16, 12, capture_index=4)], [depth_frame(1.0, 16, 12, capture_index=4)])
     # 1 m over the robot frame's origin, looking straight down, as the robot
     # answers for the frame's time, 1.0 s.
     lookup = lookup_service(lookup_answer((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0)))
     placer = await learned_placer(lookup)
-    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer, "chest")
+    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer)
 
     look = await perceiver.scan(FakeDetector([Box("mug", 0.9, 6, 4, 10, 8)]), [], CancelToken(), 1.0)
 
     [mug] = look.detections
     assert close(mug.position, (0.0, 0.0, 0.0))
-    assert [request.time for request in lookup.polled] == [1.0]
+    assert [(request.source_frame, request.source_timestamp, request.target_timestamp) for request in lookup.polled] == [
+        (CAMERA_FRAME, 1.0, 1.0)
+    ]
+    assert (look.frame, look.timestamp, look.capture_index) == ("base_link", 1.0, 4)
 
 
-async def test_a_scan_whose_camera_cannot_be_placed_is_refused_before_the_detector_runs():
+async def test_a_scan_whose_picture_names_a_frame_the_tree_does_not_hold_is_refused_before_the_detector_runs():
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
     lookup = lookup_service()
     lookup.enqueue(lookup.Failure("unknown_frame", "no transform names chest_color_optical_frame"))
     placer = await learned_placer(lookup)
-    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer, "chest")
+    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12), placer)
     detector = FakeDetector([Box("mug", 0.9, 6, 4, 10, 8)])
 
-    with pytest.raises(Refusal, match="^the robot cannot place camera 'chest' at 1.000 s: no transform names") as raised:
+    with pytest.raises(Refusal, match="^picture 1 dropped: unknown_frame: the frame 'chest_color_optical_frame' at 1.000 s: no transform names") as raised:
         await perceiver.scan(detector, [], CancelToken(), 1.0)
     assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
     assert detector.phrases == []

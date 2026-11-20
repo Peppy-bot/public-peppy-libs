@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -16,6 +17,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <moveit/kinematic_constraints/kinematic_constraint.hpp>
 #include <moveit/planning_scene/planning_scene.hpp>
 #include <moveit/robot_model/robot_model.hpp>
 #include <moveit/robot_state/robot_state.hpp>
@@ -103,9 +105,11 @@ ChompRefined chomp_refined(const planning_scene::PlanningScene& scene,
 
 // An orientation a path holds, as plan_joint_path states it: the angle of the rotation from
 // `orientation`, or with a free axis the angle of that axis from its direction there, at most
-// `tolerance`.
+// `tolerance`, `orientation` in the frame of the link `frame`, the model's root link for the
+// robot frame, where a state puts that link.
 struct HeldTarget {
   const moveit::core::LinkModel* link;
+  const moveit::core::LinkModel* frame;
   Eigen::Quaterniond orientation;
   std::optional<Eigen::Vector3d> free_axis;
   double tolerance;
@@ -113,15 +117,17 @@ struct HeldTarget {
 
 // What the probes of a scenario's paths measure, `spacing` apart in the joints' L2 norm,
 // besides the scene: the objects the chains' tip links `tip_links` hold, with `self` the
-// robot's own bodies, and the orientations `held` the scene holds; and how a path is rounded
-// and timed for its measures: its corners at `corner_tolerance`, each joint at its
-// `max_velocity` and `max_acceleration`.
+// robot's own bodies, the orientations `held` the scene holds, and whether MoveIt's
+// constraints `goal` hold at a path's last waypoint, where a reference gives them; and how a
+// path is rounded and timed for its measures: its corners at `corner_tolerance`, each joint at
+// its `max_velocity` and `max_acceleration`.
 struct Probing {
   std::string group;
   std::vector<std::string> tip_links;
   bool self = false;
   double spacing = 0.0;
   std::vector<HeldTarget> held;
+  std::shared_ptr<const kinematic_constraints::KinematicConstraintSet> goal;
   double corner_tolerance = 0.0;
   Eigen::VectorXd max_velocity;
   Eigen::VectorXd max_acceleration;
@@ -129,8 +135,8 @@ struct Probing {
 
 // The probing of the scenario's paths by the group of `chains` of `model`: of the objects the
 // chains' tip links hold, at the scenario's `probe_spacing`, rounded at its
-// `corner_tolerance` and timed at the bounds of the group's joints; no self distance and no
-// held orientation, which a reference adds.
+// `corner_tolerance` and timed at the bounds of the group's joints; no self distance, no
+// held orientation and no goal, which a reference adds.
 Probing probing_of(const nlohmann::json& scenario, const ArmGroup& group,
                    const moveit::core::RobotModel& model);
 
@@ -152,6 +158,8 @@ struct Probed {
   // reaches.
   std::vector<HeldTarget> held_targets;
   double share_of_tolerance = 0.0;
+  // Whether the probing's goal holds at the path's last waypoint, where the probing gives one.
+  std::optional<bool> goal_met;
 };
 
 // The probe of a path in `scene` as `probing` asks, before its first state: of each tip
@@ -171,9 +179,10 @@ trajectory_processing::Path rounded_path(const std::vector<Eigen::VectorXd>& poi
                                          double corner_tolerance);
 
 // `probed` as the references write it: its collisions; its clearances to the scene, from what
-// the grasp links hold, null where they hold nothing, and between the robot's own bodies,
-// null without `self`; the largest share of a held orientation's tolerance, null where the
-// path holds none; the path's `length`; and of `rounded`, the path rounded at the probing's
+// the grasp links hold, null where they hold nothing, and between the robot's own bodies, null
+// without `self`; the largest share of a held orientation's tolerance, null where the path
+// holds none; whether the probing's goal holds at the path's last waypoint, null where the
+// probing gives none; the path's `length`; and of `rounded`, the path rounded at the probing's
 // corner tolerance, its `turning`, the integral of the norm of its curvature over its length,
 // and its `bending`, the integral of the squared norm, each summed at the midpoints of equal
 // steps at most the probing's spacing long, and its `duration`, the time MoveIt's time-optimal

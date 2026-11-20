@@ -297,7 +297,7 @@ impl UrdfCollisions {
         entries.iter().map(|c| c.surface(meshes_dir)).collect()
     }
 
-    /// The collision surfaces of a world-fixed `link`, mapped into the URDF root frame
+    /// The collision surfaces of a `link` fixed to the root, mapped into the URDF root frame
     /// through its fixed mount chain. A link a movable joint carries is refused
     /// ([`GeometryError::NotFixedToTheRoot`]).
     pub fn fixed_surfaces_in_root(
@@ -360,7 +360,7 @@ mod tests {
 
     const URDF: &str = r#"<?xml version="1.0"?>
     <robot name="t">
-      <link name="world"/>
+      <link name="base_link"/>
       <link name="body">
         <collision><origin rpy="0 0 0" xyz="0 0 0"/>
           <geometry><mesh filename="package://d/meshes/body.stl" scale="0.001 0.001 0.001"/></geometry>
@@ -374,7 +374,7 @@ mod tests {
       </link>
       <link name="finger"/>
       <joint name="wb" type="fixed">
-        <parent link="world"/><child link="body"/><origin rpy="0 0 0" xyz="0 0 0"/>
+        <parent link="base_link"/><child link="body"/><origin rpy="0 0 0" xyz="0 0 0"/>
       </joint>
       <joint name="bm" type="fixed">
         <parent link="body"/><child link="mount"/><origin rpy="1.5707963267948966 0 0" xyz="0 0.1 0.5"/>
@@ -428,9 +428,9 @@ mod tests {
     #[test]
     fn parent_of_gives_each_links_joint_and_parent() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        assert!(u.parent_of("world").is_none());
+        assert!(u.parent_of("base_link").is_none());
         let (body, parent) = u.parent_of("body").expect("body has a parent joint");
-        assert!(matches!(body.placement.kind, JointKind::Fixed) && parent == "world");
+        assert!(matches!(body.placement.kind, JointKind::Fixed) && parent == "base_link");
         let (arm, parent) = u.parent_of("arm1").expect("arm1 has a parent joint");
         assert!(parent == "mount");
         assert!(
@@ -659,10 +659,13 @@ mod tests {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
         let m = u.fixed_pose_in_root("mount").expect("mount is fixed");
         assert!((m.translation.vector - Vector3::new(0.0, 0.1, 0.5)).norm() < 1e-12);
-        // The +90 degree X rotation maps local z to world -y.
+        // The +90 degree X rotation maps local z to the root's -y.
         let z = m.rotation * Vector3::z();
         assert!((z + Vector3::y()).norm() < 1e-9);
-        assert_eq!(u.fixed_pose_in_root("world"), Some(Isometry3::identity()));
+        assert_eq!(
+            u.fixed_pose_in_root("base_link"),
+            Some(Isometry3::identity())
+        );
         assert_eq!(u.fixed_pose_in_root("arm1"), None);
         assert_eq!(u.fixed_pose_in_root("finger"), None);
     }

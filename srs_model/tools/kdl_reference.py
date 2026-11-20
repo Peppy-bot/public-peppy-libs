@@ -70,13 +70,13 @@ class Robot:
         for joint in urdf.joints:
             self.children.setdefault(joint.parent, []).append(joint)
 
-    def world(self, link):
+    def pose_in_root(self, link):
         """The pose of `link` in the frame of the URDF root, over fixed joints."""
         joint = self.parent_joint.get(link)
         if joint is None:
             return kdl.Frame.Identity()
         assert joint.type == "fixed", f"{joint.name} carries {link} and moves"
-        return self.world(joint.parent) * frame(joint.origin)
+        return self.pose_in_root(joint.parent) * frame(joint.origin)
 
     def folded(self, link):
         """The inertia of `link` with every link below it, at the zero of every joint
@@ -181,7 +181,7 @@ def main():
             if joint.type != "fixed"
         )
         chain = arm_chain(robot, ends.base_link, tip, dof)
-        gravity = robot.world(ends.base_link).M.Inverse() * downward
+        gravity = robot.pose_in_root(ends.base_link).M.Inverse() * downward
         side = group.name.removesuffix("_arm")
         print(f"gravity_{side}_matches_kdl")
         for posture in gravity_postures:

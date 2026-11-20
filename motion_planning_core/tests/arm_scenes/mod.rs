@@ -15,16 +15,17 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
+use control_core::geometry::UnitQuaternion;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
-    ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
-    PlanningScene, PositionTarget, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
-    StartFault, iteration_bound, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
+    Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, Holder, IkGoalSampler, JointTarget, Moving,
+    ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest, PlanningScene,
+    PositionTarget, Reference, Refiner, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
+    StartFault, iteration_bound, plan_path, pose_from_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Scan, VoxelMap};
@@ -47,7 +48,7 @@ const LAUNCH_GOAL_SAMPLES: usize = 10;
 /// The share of a voxel a link point moves at most between two probes of a path.
 const PROBE_SHARE_OF_VOXEL: f64 = 0.1;
 /// The name of the frame of a scene's map, in which its boxes stand.
-const ROOT_FRAME: &str = "world";
+const ROOT_FRAME: &str = "base_link";
 /// The range of the scan that fills a scene's map, from the root: beyond every voxel of
 /// the map.
 const MAX_RANGE_M: f64 = 10.0;
@@ -165,6 +166,8 @@ pub struct Standing<const N: usize, const K: usize> {
     /// The place among `arms` of each arm of the scenario, in its order.
     planned: Vec<usize>,
     own_body: Option<OwnBody<N, K>>,
+    /// The robot frame, by the name of the URDF's root link.
+    robot_frame: String,
     urdf: String,
     meshes: String,
 }
@@ -193,6 +196,7 @@ impl<const N: usize, const K: usize> Standing<N, K> {
             arms,
             planned,
             own_body,
+            robot_frame: description.root_link().to_string(),
             urdf: description.urdf().to_string(),
             meshes: meshes.to_string(),
         }
@@ -246,7 +250,7 @@ impl<const N: usize, const K: usize> Standing<N, K> {
         )
         .expect("the chain to the grasp link")
         .chain()
-        .world_ee_pose(&[0.0; N])
+        .root_ee_pose(&[0.0; N])
     }
 
     /// What a plan of `arms` from `start`, which holds their joints in their order, meets
@@ -265,7 +269,7 @@ impl<const N: usize, const K: usize> Standing<N, K> {
         let at = placed::<N, K>(&self.planned, start);
         let parts = self
             .model
-            .world_pieces(&at)
+            .pieces_in_root(&at)
             .expect("finite joint positions")
             .into_iter()
             .filter(|(link, _)| !moving.contains(link))
@@ -326,8 +330,8 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
     }
 
     /// Runs `read` on the nearest checked pair that `moving` judges, the arms of the plan
-    /// at the state `q`: the arm the plan holds last reads its pairs with every chain, and
-    /// the first of two its pairs without the other.
+    /// at the state `q`: an arm's turn after every other arm reads its pairs with every chain,
+    /// and its turn before them its pairs without the others.
     fn nearest<T>(
         &self,
         q: &[f64],
@@ -335,15 +339,18 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
         read: impl FnOnce(Result<Proximity<'_>, CollisionError>) -> T,
     ) -> T {
         let at = placed::<N, K>(&self.planned, q);
-        let last = self.planned.len() - 1;
+        let others = self.planned.len() - 1;
         let mut model = self.model.lock().expect("the self model");
         read(match moving {
             Moving::All => model.min_distance(&at),
-            Moving::Arm(k) if k == last => model.min_distance_of_chain(self.planned[k], &at),
-            Moving::Arm(0) if last == 1 => model.min_distance_of_chain_alone(self.planned[0], &at),
-            Moving::Arm(k) => panic!(
-                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
-                last + 1
+            Moving::Arm { arm, before } if before.len() == others => {
+                model.min_distance_of_chain(self.planned[arm], &at)
+            }
+            Moving::Arm { arm, before } if before.is_empty() => {
+                model.min_distance_of_chain_alone(self.planned[arm], &at)
+            }
+            Moving::Arm { arm, before } => panic!(
+                "the self model reads the pairs of an arm's turn after every other arm of a plan, or before them, and not of arm {arm} after {before:?}"
             ),
         })
     }
@@ -353,19 +360,18 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
     /// `nearest` reads for it: a state the model cannot measure reads as a collision.
     fn clearance(&self, q: &[f64], moving: Moving, within: f64) -> f64 {
         let at = placed::<N, K>(&self.planned, q);
-        let last = self.planned.len() - 1;
+        let others = self.planned.len() - 1;
         let mut model = self.model.lock().expect("the self model");
         match moving {
             Moving::All => model.min_distance_within(&at, within),
-            Moving::Arm(k) if k == last => {
-                model.min_distance_of_chain_within(self.planned[k], &at, within)
+            Moving::Arm { arm, before } if before.len() == others => {
+                model.min_distance_of_chain_within(self.planned[arm], &at, within)
             }
-            Moving::Arm(0) if last == 1 => {
-                model.min_distance_of_chain_alone_within(self.planned[0], &at, within)
+            Moving::Arm { arm, before } if before.is_empty() => {
+                model.min_distance_of_chain_alone_within(self.planned[arm], &at, within)
             }
-            Moving::Arm(k) => panic!(
-                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
-                last + 1
+            Moving::Arm { arm, before } => panic!(
+                "the self model reads the pairs of an arm's turn after every other arm of a plan, or before them, and not of arm {arm} after {before:?}"
             ),
         }
         .unwrap_or(f64::NEG_INFINITY)
@@ -427,29 +433,40 @@ fn shape_fields(shape: &Shape) -> ShapeFields {
     }
 }
 
-/// The entry of apply_collision_objects that a harness object writes.
+/// The entry of apply_collision_objects that a harness object writes, its pose read by
+/// control_core's parse.
 pub fn object_request(object: &Object) -> ObjectRequest {
-    ObjectRequest {
-        operation: object.operation.clone(),
-        object: ObjectFields {
-            id: object.id.clone(),
-            position: object.position,
-            orientation: object.orientation,
+    let id = object.id.clone();
+    let pose =
+        || pose_from_parts(object.position, object.orientation).expect("a harness object's pose");
+    match object.operation.as_str() {
+        "add" => ObjectRequest::Add {
+            id,
+            pose: pose(),
             shapes: object.shapes.iter().map(shape_fields).collect(),
         },
+        "move" => ObjectRequest::Move { id, pose: pose() },
+        "remove" => ObjectRequest::Remove { id },
+        operation => panic!("a harness object's operation is add, move or remove: {operation:?}"),
     }
 }
 
 /// The entry of apply_collision_objects that adds `held`, whose pose is in the frame of
 /// a link at `link_pose`, where that link holds it.
 fn held_request(held: &Object, link_pose: &Isometry3<f64>) -> ObjectRequest {
-    let mut request = object_request(held);
-    let in_the_link = pose_from_parts(request.object.position, request.object.orientation)
-        .expect("the held object's pose in its link's frame");
-    let (position, orientation) = pose_parts(&(link_pose * in_the_link));
-    request.object.position = position;
-    request.object.orientation = orientation;
-    request
+    let ObjectRequest::Add {
+        id,
+        pose: in_the_link,
+        shapes,
+    } = object_request(held)
+    else {
+        panic!("a held object is added");
+    };
+    ObjectRequest::Add {
+        id,
+        pose: link_pose * in_the_link,
+        shapes,
+    }
 }
 
 /// What a scene of a scenario of any kind stands in: the voxel size and the half side of the
@@ -505,11 +522,10 @@ fn planning_scene_of<const N: usize>(
     for (held, pose) in scene.attached.iter().zip(&poses) {
         planning
             .apply_attached_collision_object(
-                &AttachRequest {
+                &AttachRequest::Attach {
                     object_id: held.object.id.clone(),
                     link_name: held.link.clone(),
                     touch_links: held.touch_links.clone(),
-                    operation: "attach".to_string(),
                 },
                 |_| Some(*pose),
                 map,
@@ -550,7 +566,7 @@ pub fn map_of(size: f64, half: f64, boxes: &[VoxelBox]) -> VoxelMap {
     map.insert(
         &Scan {
             frame: &frame,
-            sensor: Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            sensor: Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
             points: &points,
             max_range_m: PositiveFinite::parse(MAX_RANGE_M).expect("a positive range"),
         },
@@ -612,10 +628,62 @@ pub fn joint_goal(goal: &SceneGoal) -> Option<&[f64]> {
     }
 }
 
+/// The frames a scene's targets name, as this crate's references read them: the robot frame,
+/// by the name of the URDF's root link, and each link of the chains of `arms`, the arms of the
+/// scenario's group in its order, whose grasp links are `grasp_links`.
+struct Frames<'a, const N: usize> {
+    robot: &'a str,
+    grasp_links: &'a [String],
+    arms: &'a [Arm<'a, N>],
+}
+
+impl<const N: usize> Frames<'_, N> {
+    /// The frame of `link` in the chain of the arm at place `arm`: its grasp point for the
+    /// arm's grasp link, the link of a joint for any other; none for a link off the chain.
+    fn in_arm(&self, link: &str, arm: usize) -> Option<motion_planning_core::Frame> {
+        if link == self.grasp_links[arm] {
+            return Some(motion_planning_core::Frame::GraspPoint);
+        }
+        let posed = self.arms[arm].geometry().chain().at(&[0.0; N]);
+        (0..N)
+            .find(|&segment| posed.link_name(segment) == link)
+            .map(|segment| motion_planning_core::Frame::Link {
+                segment,
+                offset: Isometry3::identity(),
+            })
+    }
+
+    /// The reference of a target whose values are in the frame `frame`: the robot frame, or
+    /// the frame of a link of an arm of the group, which each state places where that arm's
+    /// joints put it.
+    fn reference(&self, frame: &str) -> Reference {
+        if frame == self.robot {
+            return Reference::Robot;
+        }
+        (0..self.arms.len())
+            .find_map(|arm| {
+                self.in_arm(frame, arm)
+                    .map(|frame| Reference::Arm { arm, frame })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "a target's frame is the robot frame {} or a link of an arm of the \
+                     scenario's group, and it is {frame}",
+                    self.robot
+                )
+            })
+    }
+}
+
 /// Each arm's goal of `goal`, for the arms of a group of D joints in their order: each
 /// joint within the scenes' goal tolerance of the arm's configuration in it, or its grasp
-/// point within the tolerances of its pose or its position of them.
-fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
+/// point within the tolerances of its pose or its position of them, each in the frame it
+/// names of `frames`.
+fn goals_of<const N: usize, const D: usize>(
+    scenes: &Scenes,
+    goal: &SceneGoal,
+    frames: &Frames<'_, N>,
+) -> Vec<Goal> {
     match goal {
         SceneGoal::Joints(q) => {
             let goal_state: [f64; D] = state(q);
@@ -648,16 +716,19 @@ fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -
                 .map(|pose| {
                     let placed = pose_from_parts(pose.position, pose.orientation)
                         .expect("a pose goal's pose");
+                    let reference = frames.reference(&pose.frame);
                     Goal::new(
                         N,
                         Vec::new(),
                         vec![PositionTarget {
+                            reference,
                             frame: motion_planning_core::Frame::GraspPoint,
                             position: placed.translation.vector,
                             tolerance_m: PositiveFinite::parse(pose.position_tolerance)
                                 .expect("a pose goal's position tolerance"),
                         }],
                         vec![OrientationTarget {
+                            reference,
                             frame: motion_planning_core::Frame::GraspPoint,
                             orientation: placed.rotation,
                             tolerance_rad: PositiveFinite::parse(pose.orientation_tolerance)
@@ -682,6 +753,7 @@ fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -
                         N,
                         Vec::new(),
                         vec![PositionTarget {
+                            reference: frames.reference(&goal.frame),
                             frame: motion_planning_core::Frame::GraspPoint,
                             position: goal.position.into(),
                             tolerance_m: PositiveFinite::parse(goal.position_tolerance)
@@ -696,32 +768,24 @@ fn goals_of<const N: usize, const D: usize>(scenes: &Scenes, goal: &SceneGoal) -
     }
 }
 
-/// What a plan holds of `held`, an orientation of a link of `arms`, whose grasp links are
-/// `grasp_links`: of the grasp point for an arm's grasp link, and of the link of a joint for
-/// any other.
+/// What a plan holds of `held`, an orientation of a link of an arm of `frames`, in the frame it
+/// names of `frames`.
 fn path_orientation<'a, const N: usize>(
     held: &'a HeldOrientation,
-    grasp_links: &[String],
-    arms: &[Arm<N>],
+    frames: &Frames<'_, N>,
 ) -> PathOrientation<'a> {
-    let frame = if held.link_name == grasp_links[held.arm] {
-        motion_planning_core::Frame::GraspPoint
-    } else {
-        let posed = arms[held.arm].geometry().chain().at(&[0.0; N]);
-        let segment = (0..N)
-            .find(|&segment| posed.link_name(segment) == held.link_name)
-            .unwrap_or_else(|| panic!("{} is a link of its chain", held.link_name));
-        motion_planning_core::Frame::Link {
-            segment,
-            offset: Isometry3::identity(),
-        }
-    };
+    let frame = frames
+        .in_arm(&held.link_name, held.arm)
+        .unwrap_or_else(|| panic!("{} is a link of its chain", held.link_name));
     PathOrientation {
-        arm: held.arm,
+        holder: Holder::Arm(held.arm),
         link_name: &held.link_name,
         target: OrientationTarget {
+            reference: frames.reference(&held.frame),
             frame,
-            orientation: orientation_from_parts(held.orientation).expect("a unit quaternion"),
+            orientation: UnitQuaternion::parse(held.orientation)
+                .expect("a unit quaternion")
+                .into(),
             tolerance_rad: PositiveFinite::parse(held.tolerance_rad)
                 .expect("a path orientation's tolerance"),
             free_axis: Axis::free_named(&held.free_axis).expect("a free axis's name"),
@@ -799,7 +863,7 @@ pub fn in_the_scene<const N: usize, const D: usize, const K: usize, R>(
         Some(k) => arms[k]
             .geometry()
             .chain()
-            .world_ee_pose(&Arms::<N, D>::slice(start, k)),
+            .root_ee_pose(&Arms::<N, D>::slice(start, k)),
         None => standing.idle_grasp_pose(link),
     };
     let planning = planning_scene_of(arms, &tips, scene, &grasp_pose, &mut map);
@@ -865,12 +929,18 @@ fn plan_group<const N: usize, const D: usize, const K: usize, O>(
         allowed: &scene.allowed,
     };
     let grasp_links = standing.grasp_links();
+    let robot_frame = standing.robot_frame.clone();
     in_the_scene(arms, standing, &world, &start, |group, met| {
-        let goals = goals_of::<N, D>(scenes, &scene.goal);
+        let frames = Frames {
+            robot: &robot_frame,
+            grasp_links: &grasp_links,
+            arms,
+        };
+        let goals = goals_of::<N, D>(scenes, &scene.goal, &frames);
         let orientations: Vec<PathOrientation> = scene
             .path_orientations
             .iter()
-            .map(|held| path_orientation(held, &grasp_links, arms))
+            .map(|held| path_orientation(held, &frames))
             .collect();
         let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
         let answer = plan_path(

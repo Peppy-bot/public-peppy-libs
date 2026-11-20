@@ -17,7 +17,7 @@
 //! localization by, and the limits within which they hold the base localized.
 
 use crate::geometry::Matrix3;
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 
 /// The standard deviations of a pose estimate: of its position along its least certain

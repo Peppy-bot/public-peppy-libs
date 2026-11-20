@@ -2,10 +2,19 @@
 node's model source, the one way every goal is decided, and the one way
 every action runs a sequence and ends its goal.
 
-`decider` is where a goal is refused before it is accepted. A member whose
-contract reports by failure kinds checks at once what it can, and a
-Refusal there refuses the goal with its kind; item_manipulation accepts
-every goal and reports in its result.
+A `Decider` is where a goal is refused before it is accepted, and where
+the goal its handler runs is made from its request (`Admit`). A member
+whose contract reports by failure kinds checks at once what it can, and a
+Refusal there refuses the goal with its kind. item_manipulation reports in
+its result, and refuses a goal of grab_item or place_item before it is
+accepted for its target alone: the target is parsed through
+control_core_py's geometry, `rejected` naming a value no contract takes,
+and placed in the robot frame by the robot's tree (`place_target`), the
+failure kind of the lookup naming a target the tree cannot place. A target
+the brain cannot place for want of the robot frame or of the lookup's
+answer is admitted, and the goal's result reports why. A goal that names
+its item by id, or its target item by id, sends a target that is not read,
+so its target is neither parsed nor placed.
 
 `run_guarded` is where the contracts' result rules are applied for every
 goal that runs a sequence, through the `Ends` of the member's contract:
@@ -14,9 +23,11 @@ item_manipulation in its result (`RESULT_ENDS`). A check that passed at
 the decision is made again when the goal starts, and a goal that fails it
 then fails with the same kind. The fields the contract says are zero or
 empty for a goal with no result of its own are the `zero` dict each
-handler passes; and `action_time` is the time from the goal's start to its
-end, whatever the outcome. It is also where each goal leaves its one line
-in the log, so a search that found nothing says there what it looked at.
+handler passes, with the robot frame and the time the goal ended for a
+scan, whose empty result names its frame and its time; and `action_time` is
+the time from the goal's start to its end, whatever the outcome. It is also
+where each goal leaves its one line in the log, so a search that found
+nothing says there what it looked at.
 
 The planning scene of the motion planner follows the held flags of
 `State`. One method of `Brain` stands for each change of a flag (`hold`,
@@ -35,18 +46,20 @@ import asyncio
 import logging
 from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
+from control_core_py.geometry import GeometryError, PoseTarget, Stamped, lookup_time
+
 from .bindings import Bindings
 from .limb_state import LimbStateStore
 from .limbs import parse_limbs
 from .manipulators import Manipulator
 from .perception.camera import CameraModel
 from .perception.frames import FrameStore
-from .perception.geometry import CameraPlacer, learn_intrinsics, parse_lookup_timeout
+from .perception.geometry import LookupFailure, Placer, learn_intrinsics, parse_lookup_timeout
 from .perception.none import NoneDetector
 from .perception.perceiver import Look, Perceiver
 from .perception.wrist import WristFrames, parse_wrist_cameras
 from .models import Models
-from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Quat, Refusal, Role, Senses, Vec3
+from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Pose, Quat, Refusal, Role, Senses, Vec3
 from .robot import ObjectOperation, PlannerModules, Robot, brain_object_id, item_object, item_of_object
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
 from .state import State, new_run_token
@@ -54,9 +67,10 @@ from .state import State, new_run_token
 logger = logging.getLogger(__name__)
 
 Body = Callable[[Job], Awaitable[dict]]
-# A check of a goal before it is accepted: the brain and the goal's request
-# data in, the Refusal that refuses the goal raised.
-Check = Callable[["Brain", object], None]
+# The decision of a goal before it is accepted: the brain and the goal's
+# request data in, the goal its handler runs out, or the Refusal that
+# refuses the goal raised.
+Admit = Callable[["Brain", object], Awaitable[object]]
 
 ABORTED_BY_SHUTDOWN = "aborted: the node is shutting down"
 
@@ -112,29 +126,57 @@ STATUS_ENDS = EndsByStatus()
 RESULT_ENDS = EndsInResult()
 
 
-def decider(action_module, brain: "Brain", check: Optional[Check]):
-    """The decider the generated module `action_module` takes: it accepts a
-    goal `check` passes, and refuses a goal `check` raises a Refusal for,
-    with its kind. Without a `check` it accepts every goal. A check that
-    breaks refuses the goal with `attempt_failed`, and its log line carries
-    the traceback."""
-    name = action_module.ACTION_NAME
+# A goal's target as its decision found it: placed in the robot frame, or,
+# when the brain could not place it then for want of the robot frame or of the
+# lookup's answer, the Refusal the goal's result reports.
+type GoalTarget = Pose | Refusal
 
-    def decide(request):
-        if check is None:
-            return action_module.GoalDecision.accept()
+
+def placed_target(target: GoalTarget) -> Pose:
+    """The placed target; the Refusal of a target the brain could not
+    place."""
+    if isinstance(target, Refusal):
+        raise target
+    return target
+
+
+class Decider:
+    """Decides the goals of the generated action module `action_module`, as
+    its `handle_goal_next_request` takes a decision (`decide`): it accepts a
+    goal `admit` gives a goal for, and refuses a goal `admit` raises a
+    Refusal for, with its kind. Without an `admit` it accepts every goal, its
+    request data the goal its handler runs. An `admit` that breaks refuses
+    the goal with `attempt_failed`, and its log line carries the traceback.
+    `take` gives, once, the goal of the decision that accepted last, which
+    the loop of the action hands to the handler of that goal."""
+
+    def __init__(self, action_module, brain: "Brain", admit: Optional[Admit]) -> None:
+        self._action_module = action_module
+        self._brain = brain
+        self._admit = admit
+        self._admitted: object = None
+
+    async def decide(self, request):
+        module = self._action_module
+        self._admitted = None
+        if self._admit is None:
+            self._admitted = request.data
+            return module.GoalDecision.accept()
         try:
-            check(brain, request.data)
+            admitted = await self._admit(self._brain, request.data)
         except Refusal as refusal:
-            logger.info("%s refused: %s", name, refusal.message)
-            return action_module.GoalDecision.refuse(refusal.kind.value, refusal.message)
+            logger.info("%s refused: %s", module.ACTION_NAME, refusal.message)
+            return module.GoalDecision.refuse(refusal.kind.value, refusal.message)
         except Exception as error:
-            message = f"{name} could not be decided: {error!r}"
+            message = f"{module.ACTION_NAME} could not be decided: {error!r}"
             logger.error("%s", message, exc_info=error)
-            return action_module.GoalDecision.refuse(FailureKind.ATTEMPT_FAILED.value, message)
-        return action_module.GoalDecision.accept()
+            return module.GoalDecision.refuse(FailureKind.ATTEMPT_FAILED.value, message)
+        self._admitted = admitted
+        return module.GoalDecision.accept()
 
-    return decide
+    def take(self) -> object:
+        admitted, self._admitted = self._admitted, None
+        return admitted
 
 
 class Brain:
@@ -153,23 +195,24 @@ class Brain:
         self.bindings = bindings
         limbs = parse_limbs(params.limbs)
         self.state = State(limbs, new_run_token() if run_token is None else run_token)
+        # The robot frame, and where the robot's tree places the frame of
+        # each picture and each goal's target in it.
+        self.placer = Placer(
+            node_runner, bindings.describe_sensors, bindings.lookup_transform, parse_lookup_timeout(params.lookup_timeout_s)
+        )
         self.robot = Robot(
             node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move,
             planner=PlannerModules.from_bindings(bindings),
         )
         # The robot's measured limbs, which a manipulator reads.
         self.limb_states = LimbStateStore()
-        # Where the robot's cameras stand at the time of each picture.
-        self.placer = CameraPlacer(
-            node_runner, bindings.describe_sensors, bindings.lookup_transform, parse_lookup_timeout(params.lookup_timeout_s)
-        )
         # The perceiver alone holds the frames and the camera model: the
         # intrinsics learner gives it the camera's intrinsics.
-        self.perceiver = Perceiver(FrameStore(), CameraModel(), self.placer, params.camera_name)
+        self.perceiver = Perceiver(FrameStore(), CameraModel(), self.placer)
         # The wrist cameras, by arm: a brain whose parameters name none has
         # no wrist pictures.
         self.wrists = WristFrames(parse_wrist_cameras(getattr(params, "wrist_cameras", ""), [limb.arm for limb in limbs]))
-        self.senses = Senses(self.robot, self.limb_states, self.perceiver, self.wrists, self.placer.pose_at)
+        self.senses = Senses(self.robot, self.limb_states, self.perceiver, self.wrists, self.placer.place_picture)
         self.sequencer = Sequencer(stopper=self._stop_lane)
         self.models = Models(source, self.sequencer, self.senses)
         self._now = now or bindings.clock.now_ns
@@ -192,8 +235,8 @@ class Brain:
     def background(self, token) -> list[asyncio.Task]:
         """The loops that run beside the action loops: the camera follower,
         the one asking the camera where its pixels point, the one asking
-        the robot for the frames of its sensors, the follower of the
-        robot's measured limbs, and the follower of the wrist cameras."""
+        the robot for its robot frame, the follower of the robot's measured
+        limbs, and the follower of the wrist cameras."""
         b = self.bindings
         return [
             asyncio.create_task(
@@ -202,7 +245,7 @@ class Brain:
             asyncio.create_task(
                 learn_intrinsics(self.node_runner, token, self.perceiver, b.get_color_intrinsics, b.get_depth_intrinsics)
             ),
-            asyncio.create_task(self.placer.learn(token, self.params.camera_name)),
+            asyncio.create_task(self.placer.learn(token)),
             asyncio.create_task(self.limb_states.run(self.node_runner, token, b.limb_states)),
             asyncio.create_task(self.wrists.run(self.node_runner, token, b.wrist_video_stream)),
         ]
@@ -273,6 +316,31 @@ class Brain:
         seen = await self.perceiver.scan(detector, phrases, job.cancel, timeout_s)
         job.notes.append(seen.describe(job.started_ns))
         return seen
+
+    async def place_target(self, target) -> GoalTarget:
+        """A goal's `target` record parsed through control_core_py's geometry
+        and placed in the robot frame by the robot's tree
+        (`Placer.place_target`); a target with no frame lies in the robot
+        frame. The refusals of the target refuse the goal: `rejected` names a
+        value no contract takes, with what to send, whatever the frame and
+        also before the robot names its frame, and a LookupFailure the
+        failure of the lookup. A target the brain cannot place for want of
+        the robot frame or of the lookup's answer is admitted unplaced, and
+        the goal's result reports why."""
+        try:
+            value = PoseTarget.parse(target.position, target.orientation)
+            timestamp = lookup_time(target.timestamp)
+            frame = self.placer.robot_frame if target.frame is None else target.frame
+            stamped = Stamped.parse(frame, timestamp, value)
+            return await self.placer.place_target(stamped)
+        except GeometryError as error:
+            raise Refusal(FailureKind.REJECTED, f"the target: {error}") from None
+        except LookupFailure:
+            raise
+        except Refusal as refusal:
+            if refusal.kind is FailureKind.REJECTED:
+                raise
+            return refusal
 
     def manipulator_or_refuse(self, manipulator: Manipulator) -> Manipulator:
         """`manipulator`, or the refusal, `precondition_failed`, it gives
@@ -406,21 +474,38 @@ class Brain:
             await self.robot.stop()
 
     async def run_guarded(
-        self, ctx, lane: Optional[Role], action: str, body: Body, zero: dict, *, ends: Ends, asked: str = ""
+        self,
+        ctx,
+        lane: Optional[Role],
+        action: str,
+        body: Body,
+        zero: dict,
+        *,
+        ends: Ends,
+        asked: str = "",
+        stamped: bool = False,
     ) -> None:
         """Admits the goal into its lane, or as a lane-less job when `lane`
         is none, runs `body` under a cancel watcher, and ends the goal the
-        way its contract wants, through `ends`. Before it ends, the goal
-        leaves its line in the log: the action and `asked`, what the goal
-        asked for in a few words, how the goal ended and after how long,
-        then the notes the body put on its job."""
+        way its contract wants, through `ends`. A goal with no result of its
+        own ends with the `zero` fields, and, when `stamped`, with the robot
+        frame as its `frame` and the time it ended as its `timestamp`. Before
+        it ends, the goal leaves its line in the log: the action and
+        `asked`, what the goal asked for in a few words, how the goal ended
+        and after how long, then the notes the body put on its job."""
         started = self.now()
         goal = f"{action} {asked}" if asked else action
+
+        def zero_after(elapsed: float) -> dict:
+            """The `zero` fields of the goal that ends `elapsed` s after its start."""
+            stamp = dict(frame=self.placer.robot_frame, timestamp=started / 1e9 + elapsed) if stamped else {}
+            return {**zero, **stamp, "action_time": elapsed}
+
         try:
             job = self.sequencer.start(lane, action, started)
         except Refusal as refusal:
             elapsed = self._log_end(goal, started, "refused", refusal.message)
-            await ends.fail(ctx, refusal, {**zero, "action_time": elapsed})
+            await ends.fail(ctx, refusal, zero_after(elapsed))
             return
         watcher = asyncio.create_task(self._watch_cancel(ctx, job))
         try:
@@ -428,17 +513,17 @@ class Brain:
             job.cancel.check()
         except Refusal as refusal:
             elapsed = self._log_end(goal, started, "refused", refusal.message, job.notes)
-            await ends.fail(ctx, refusal, {**zero, "action_time": elapsed})
+            await ends.fail(ctx, refusal, zero_after(elapsed))
         except ExpectedFailure as failure:
             elapsed = self._log_end(goal, started, "failed", failure.message, job.notes, level=logging.WARNING)
-            await ends.fail(ctx, failure, {**zero, "action_time": elapsed})
+            await ends.fail(ctx, failure, zero_after(elapsed))
         except Cancelled as cancelled:
             elapsed = self._log_end(goal, started, "stopped", cancelled.reason, job.notes)
-            await ends.cancel(ctx, cancelled, {**zero, "action_time": elapsed})
+            await ends.cancel(ctx, cancelled, zero_after(elapsed))
         except Exception as error:
             fault = GoalFailure(FailureKind.ATTEMPT_FAILED, f"{action} failed: {error!r}")
             elapsed = self._log_end(goal, started, "failed", repr(error), job.notes, error=error)
-            await ends.fail(ctx, fault, {**zero, "action_time": elapsed})
+            await ends.fail(ctx, fault, zero_after(elapsed))
         else:
             elapsed = self._log_end(goal, started, "succeeded", "", job.notes)
             await ends.complete(ctx, {**fields, "action_time": elapsed})

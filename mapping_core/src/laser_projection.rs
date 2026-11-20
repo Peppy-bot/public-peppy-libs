@@ -358,7 +358,7 @@ mod tests {
     fn a_projected_scan_reads_as_the_laser_scan_of_its_fields() {
         let projection = LaserProjection::new(parameters()).expect("valid parameters");
         let projected = projection.project(&[[1.0, 0.0, 0.5]]);
-        let identity = camera_core::pose::PlanarPose::IDENTITY.to_pose();
+        let identity = control_core::planar_pose::PlanarPose::IDENTITY.to_transform();
         let still = camera_core::laser_scan::Sweep {
             first_ray: identity,
             last_ray: identity,

@@ -6,8 +6,11 @@ build-backend = "hatchling.build"
 name = "brain_core"
 version = "0.1.0"
 description = "The code every brain node shares: the item_perception and item_manipulation rules, the limb_motion robot proxy, the camera frames and geometry, and the goal loops. The node passes in its generated peppygen modules and its backends; no peppygen here."
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.12,<3.14"
 dependencies = [
+    # The geometry types of the contracts, their one parse and the rotation
+    # arithmetic under them.
+    "control_core_py",
     # Frames as arrays for the detector and the depth lookup; Pillow decodes
     # the mjpeg colour encoding the camera contracts allow.
     "numpy>=1.26",
@@ -19,6 +22,11 @@ packages = ["src/brain_core"]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.25", "hypothesis>=6.100"]
+
+[tool.uv.sources]
+# The package beside this one in the same checkout. A node installs it from
+# the commit of this repository it pins brain_core at.
+control_core_py = { path = "../control_core_py" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

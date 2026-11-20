@@ -319,8 +319,8 @@ mod tests {
 
     const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null,
                              "self_clearance": null, "share_of_tolerance": null,
-                             "length": 1.0, "turning": 0.0, "bending": 0.0,
-                             "duration": null}"#;
+                             "goal_met": null, "length": 1.0, "turning": 0.0,
+                             "bending": 0.0, "duration": null}"#;
 
     /// CHOMP's waypoints from 0 to `end`, CHOMP_WAYPOINTS of them.
     fn chomp_path(end: f64) -> String {

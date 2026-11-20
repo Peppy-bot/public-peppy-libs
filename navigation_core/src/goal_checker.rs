@@ -28,8 +28,8 @@
 //! and [`GlobalPlan::goal_checker`](crate::path_handler::GlobalPlan::goal_checker)
 //! gives it.
 
-use camera_core::pose::PlanarPose;
 use control_core::non_negative_finite::NonNegativeFinite;
+use control_core::planar_pose::PlanarPose;
 
 use crate::path_handler::PrunedPlan;
 use crate::pose::{path_length, shortest_angular_distance};

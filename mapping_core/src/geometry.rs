@@ -198,13 +198,13 @@ impl Pose2 {
     }
 }
 
-impl From<camera_core::pose::PlanarPose> for Pose2 {
-    fn from(pose: camera_core::pose::PlanarPose) -> Self {
+impl From<control_core::planar_pose::PlanarPose> for Pose2 {
+    fn from(pose: control_core::planar_pose::PlanarPose) -> Self {
         Self::new(pose.x(), pose.y(), pose.yaw())
     }
 }
 
-impl From<Pose2> for camera_core::pose::PlanarPose {
+impl From<Pose2> for control_core::planar_pose::PlanarPose {
     /// A pose the crate computed from finite poses, which the type of every pose a caller
     /// gives holds finite.
     fn from(pose: Pose2) -> Self {

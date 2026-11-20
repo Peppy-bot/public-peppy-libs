@@ -275,7 +275,7 @@ fn render<const N: usize, const K: usize>(
     let (link_a, link_b) = (proximity.link_a.to_string(), proximity.link_b.to_string());
 
     let bodies: Vec<serde_json::Value> = model
-        .world_pieces(&q)?
+        .pieces_in_root(&q)?
         .into_iter()
         .flat_map(|(name, pieces)| {
             let arm = arm_of(name);
@@ -314,7 +314,7 @@ fn render<const N: usize, const K: usize>(
     Ok(())
 }
 
-/// Decimated source-mesh triangles per body in world frame, from the same URDF
+/// Decimated source-mesh triangles per body in the root frame, from the same URDF
 /// and STL pipeline the fit used. Each finger is drawn at its arm's opening, between
 /// where its gripper's closed and open states put it, matching its live hull.
 fn mesh_wireframes<const N: usize, const K: usize>(
@@ -348,7 +348,7 @@ fn mesh_wireframes<const N: usize, const K: usize>(
         let posed = chain.at(q);
         for i in 0..N {
             let name = posed.link_name(i);
-            let pose = posed.link_pose_world(i);
+            let pose = posed.link_pose_root(i);
             let mut verts: Vec<Point3<f64>> = urdf
                 .link_surfaces(name, meshes)?
                 .concat()

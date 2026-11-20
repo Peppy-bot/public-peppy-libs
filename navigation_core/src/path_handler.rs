@@ -17,8 +17,8 @@
 //! so the next prune searches from there. Each plan holds its goal checker,
 //! made with the plan ([`crate::goal_checker`]).
 
-use camera_core::pose::PlanarPose;
 use control_core::non_negative_finite::NonNegativeFinite;
+use control_core::planar_pose::PlanarPose;
 
 use crate::goal_checker::{GoalChecker, GoalCheckerParams};
 use crate::grid::GridGeometry;

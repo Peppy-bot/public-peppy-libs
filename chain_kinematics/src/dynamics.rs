@@ -2,19 +2,19 @@
 //! the Coriolis/centripetal vector `C(q, q̇)·q̇`, read off [`Posed`] like every
 //! other pose-dependent quantity.
 //!
-//! Both work in the world frame, because gravity is a world quantity (it acts
-//! along world -Z), and both dispatch on [`JointKind`]: a revolute joint takes
-//! moments about its axis, a prismatic joint takes forces along it. Any distal
-//! payload past the tip is already lumped into the last segment at load, so it
-//! is carried here without special cases.
+//! Both work in the root frame, with gravity along its -Z, and both dispatch on
+//! [`JointKind`]: a revolute joint takes moments about its axis, a prismatic
+//! joint takes forces along it. Any distal payload past the tip is already
+//! lumped into the last segment at load, so it is carried here without special
+//! cases.
 
 use nalgebra::Vector3;
 
 use crate::Posed;
 use crate::tree::JointKind;
 
-/// Standard gravity (m/s^2), along world -Z. URDF poses its trees Z-up, so the
-/// convention is the description format's, not a robot's.
+/// Standard gravity (m/s^2), along the root's -Z. URDF poses its trees Z-up, so
+/// the convention is the description format's, not a robot's.
 const STANDARD_GRAVITY: f64 = 9.81;
 
 impl<const N: usize> Posed<'_, N> {
@@ -29,14 +29,14 @@ impl<const N: usize> Posed<'_, N> {
         // a z component, and a prismatic joint feels the force along its axis,
         // m·g·axis.z.
         std::array::from_fn(|j| {
-            let origin_j = self.origin_world(j);
-            let axis_j = self.axis_world(j);
+            let origin_j = self.origin_root(j);
+            let axis_j = self.axis_root(j);
             self.distal_from(j)
                 .map(|i| {
                     let weight = self.mass(i) * STANDARD_GRAVITY;
                     match self.kind(j) {
                         JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
-                            let r = self.com_world(i) - origin_j;
+                            let r = self.com_root(i) - origin_j;
                             weight * axis_j.cross(&r).z
                         }
                         JointKind::Prismatic { .. } => weight * axis_j.z,
@@ -50,7 +50,7 @@ impl<const N: usize> Posed<'_, N> {
     /// Coriolis + centripetal torques at velocity `q̇`: the `C(q, q̇)·q̇` vector
     /// of the manipulator equation `M(q)q̈ + C(q, q̇)q̇ + g(q) = τ`.
     ///
-    /// A world-frame recursive Newton-Euler pass with `q̈ = 0` and gravity off,
+    /// A root-frame recursive Newton-Euler pass with `q̈ = 0` and gravity off,
     /// so only the velocity coupling remains; no mass matrix is materialized.
     pub fn coriolis_torques(&self, qdot: &[f64; N]) -> [f64; N] {
         // Both passes walk the chain proximal to distal, which is not `0..N`:
@@ -75,8 +75,8 @@ impl<const N: usize> Posed<'_, N> {
         let mut slide_parent = Vector3::<f64>::zeros();
         let mut prev_origin = Vector3::<f64>::zeros();
         for &i in order.iter() {
-            let origin = self.origin_world(i);
-            let axis = self.axis_world(i);
+            let origin = self.origin_root(i);
+            let axis = self.axis_root(i);
 
             // Joint i's origin is rigidly set on the segment above it (plus that
             // segment's slide, if a prismatic joint drives it, whose rate rides
@@ -105,7 +105,7 @@ impl<const N: usize> Posed<'_, N> {
 
             // COM acceleration adds this link's own angular contribution and
             // the Coriolis of its own slide.
-            let c = self.com_world(i) - origin;
+            let c = self.com_root(i) - origin;
             a_com[i] = a_joint
                 + alpha[i].cross(&c)
                 + omega[i].cross(&omega[i].cross(&c))
@@ -127,17 +127,17 @@ impl<const N: usize> Posed<'_, N> {
         let mut tau = [0.0_f64; N];
 
         for (rank, &i) in order.iter().enumerate().rev() {
-            let origin = self.origin_world(i);
-            let inertia = self.inertia_world(i);
+            let origin = self.origin_root(i);
+            let inertia = self.inertia_root(i);
 
             let force_com = self.mass(i) * a_com[i];
             let moment_com = inertia * alpha[i] + omega[i].cross(&(inertia * omega[i]));
 
             let force_joint = force_com + f_child;
 
-            let r_com = self.com_world(i) - origin;
+            let r_com = self.com_root(i) - origin;
             let r_child = match order.get(rank + 1) {
-                Some(&child) => self.origin_world(child) - origin,
+                Some(&child) => self.origin_root(child) - origin,
                 // Tip link has no child: f_child and n_child are zero.
                 None => Vector3::zeros(),
             };
@@ -146,9 +146,9 @@ impl<const N: usize> Posed<'_, N> {
 
             tau[i] = match self.kind(i) {
                 JointKind::Revolute { .. } | JointKind::Continuous { .. } => {
-                    self.axis_world(i).dot(&moment_joint)
+                    self.axis_root(i).dot(&moment_joint)
                 }
-                JointKind::Prismatic { .. } => self.axis_world(i).dot(&force_joint),
+                JointKind::Prismatic { .. } => self.axis_root(i).dot(&force_joint),
                 JointKind::Fixed => 0.0,
             };
 

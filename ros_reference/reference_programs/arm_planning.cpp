@@ -247,6 +247,18 @@ bool is_poses(const nlohmann::json& goal) {
   return !goal.empty() && goal.front().is_object();
 }
 
+// The frame that the constraint `constraint` names: the robot frame, by the name of the
+// model's root link, or a link of `model`, which MoveIt places by the state it judges.
+std::string frame_of(const nlohmann::json& constraint, const moveit::core::RobotModel& model) {
+  const auto frame = constraint.at("frame").get<std::string>();
+  if (!model.hasLinkModel(frame)) {
+    throw std::runtime_error("a constraint's frame is the robot frame, " +
+                             model.getRootLinkName() + ", or a link of the robot, and it is " +
+                             frame);
+  }
+  return frame;
+}
+
 // The orientations the scene `s` holds of the links of `model`.
 std::vector<HeldTarget> held_targets_of(const nlohmann::json& s,
                                         const moveit::core::RobotModel& model) {
@@ -265,6 +277,7 @@ std::vector<HeldTarget> held_targets_of(const nlohmann::json& s,
       throw std::runtime_error("free_axis is none, x, y or z, and it is " + free_axis);
     }
     targets.push_back({model.getLinkModel(held.at("link_name").get<std::string>()),
+                       model.getLinkModel(frame_of(held, model)),
                        Eigen::Quaterniond(orientation.at(3), orientation.at(0), orientation.at(1),
                                           orientation.at(2)),
                        axis, held.at("tolerance_rad").get<double>()});
@@ -272,9 +285,9 @@ std::vector<HeldTarget> held_targets_of(const nlohmann::json& s,
   return targets;
 }
 
-// MoveIt's constraints of a pose `goal` of the link `tip_link` in the frame of `model`:
-// its position within the radius `position_tolerance` and each component of the rotation
-// vector from its target orientation within `orientation_tolerance`
+// MoveIt's constraints of a pose `goal` of the link `tip_link` in the goal's frame, a frame
+// of `model`: its position within the radius `position_tolerance` and each component of the
+// rotation vector from its target orientation within `orientation_tolerance`
 // (constructGoalConstraints, ROTATION_VECTOR, moveit2 2.15.2 utils.cpp:220-226); a goal
 // that names no orientation, its position alone.
 moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
@@ -283,7 +296,7 @@ moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
   const auto position = numbers(goal.at("position"));
   if (!goal.contains("orientation")) {
     geometry_msgs::msg::PointStamped point;
-    point.header.frame_id = model.getModelFrame();
+    point.header.frame_id = frame_of(goal, model);
     point.point.x = position.at(0);
     point.point.y = position.at(1);
     point.point.z = position.at(2);
@@ -291,7 +304,7 @@ moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
         tip_link, point, goal.at("position_tolerance").get<double>());
   }
   geometry_msgs::msg::PoseStamped pose;
-  pose.header.frame_id = model.getModelFrame();
+  pose.header.frame_id = frame_of(goal, model);
   const auto orientation = numbers(goal.at("orientation"));
   pose.pose.position.x = position.at(0);
   pose.pose.position.y = position.at(1);
@@ -305,21 +318,23 @@ moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
       goal.at("orientation_tolerance").get<double>());
 }
 
-// MoveIt's constraints of the goal `goal`. A configuration is the goal state itself,
-// each joint within 0 of it: every goal state that MoveIt's goal-sampling thread adds is
-// that one state, however many it has added when the planner takes one. Poses, one of
-// each chain's tip link of `tip_links` in their order, each as `pose_constraints` holds
-// it, MoveIt samples by KDL's inverse kinematics, each goal sample's first attempt seeded
-// from its working state, the start for the first sample.
+// MoveIt's constraints of the goal `goal`. A configuration is the goal state with each
+// joint within `joint_tolerance` of it: at 0, every goal state that MoveIt's goal-sampling
+// thread adds is that one state, however many it has added when the planner takes one.
+// Poses, one of each chain's tip link of `tip_links` in their order, each as
+// `pose_constraints` holds it, MoveIt samples by KDL's inverse kinematics, each goal sample's
+// first attempt seeded from its working state, the start for the first sample.
 moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
                                                const moveit::core::RobotState& start,
                                                const moveit::core::JointModelGroup& arm,
-                                               const std::vector<std::string>& tip_links) {
+                                               const std::vector<std::string>& tip_links,
+                                               double joint_tolerance) {
   if (!is_poses(goal)) {
     moveit::core::RobotState state(start);
     state.setJointGroupPositions(&arm, numbers(goal));
     state.update();
-    return kinematic_constraints::constructGoalConstraints(state, &arm, 0.0, 0.0);
+    return kinematic_constraints::constructGoalConstraints(state, &arm, joint_tolerance,
+                                                           joint_tolerance);
   }
   if (goal.size() != tip_links.size()) {
     throw std::runtime_error("a goal of poses holds a pose of each chain's tip link");
@@ -333,14 +348,14 @@ moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
   return constraints;
 }
 
-// MoveIt's path constraint of `held`, an orientation of a link in the model's frame with
-// the rotation-vector tolerances the scenario names.
+// MoveIt's path constraint of `held`, an orientation of a link in its frame, a frame of
+// `model`, with the rotation-vector tolerances the scenario names.
 moveit_msgs::msg::OrientationConstraint path_orientation(const nlohmann::json& held,
                                                          const moveit::core::RobotModel& model) {
   const auto orientation = numbers(held.at("orientation"));
   const auto tolerances = numbers(held.at("moveit_tolerances"));
   moveit_msgs::msg::OrientationConstraint constraint;
-  constraint.header.frame_id = model.getModelFrame();
+  constraint.header.frame_id = frame_of(held, model);
   constraint.link_name = held.at("link_name").get<std::string>();
   constraint.orientation.x = orientation.at(0);
   constraint.orientation.y = orientation.at(1);
@@ -352,6 +367,25 @@ moveit_msgs::msg::OrientationConstraint path_orientation(const nlohmann::json& h
   constraint.parameterization = moveit_msgs::msg::OrientationConstraint::ROTATION_VECTOR;
   constraint.weight = 1.0;
   return constraint;
+}
+
+// MoveIt's constraints of the goal of the scene `s`, a goal of the group `arm` whose chains'
+// tip links are `tip_links`, that a probe judges in `scene` at a path's last waypoint: those
+// of MoveIt's request for a goal of poses or of positions, and for a goal of joints each joint
+// within `goal_tolerance` of the goal state, the tolerance of motion_planning_core's goal,
+// within which MoveIt's goal state lies.
+std::shared_ptr<const kinematic_constraints::KinematicConstraintSet> judged_goal(
+    const planning_scene::PlanningScene& scene, const nlohmann::json& s,
+    const moveit::core::JointModelGroup& arm, const std::vector<std::string>& tip_links,
+    double goal_tolerance) {
+  auto judged =
+      std::make_shared<kinematic_constraints::KinematicConstraintSet>(scene.getRobotModel());
+  if (!judged->add(
+          goal_constraints(s.at("goal"), scene.getCurrentState(), arm, tip_links, goal_tolerance),
+          scene.getTransforms())) {
+    throw std::runtime_error("MoveIt's kinematic constraints refuse the scene's goal");
+  }
+  return judged;
 }
 
 // MoveIt's answer to a scene, planned within `time_limit` seconds by the planner
@@ -375,7 +409,7 @@ nlohmann::json moveit_answer(const Pipeline& pipeline, const std::string& planne
   request.max_acceleration_scaling_factor = 1.0;
   moveit::core::robotStateToRobotStateMsg(start, request.start_state);
   request.goal_constraints.push_back(
-      goal_constraints(s.at("goal"), start, arm, probing.tip_links));
+      goal_constraints(s.at("goal"), start, arm, probing.tip_links, 0.0));
   for (const auto& held : s.at("path_orientations")) {
     request.path_constraints.orientation_constraints.push_back(path_orientation(held, *model));
   }
@@ -403,6 +437,7 @@ nlohmann::json moveit_answer(const Pipeline& pipeline, const std::string& planne
                             {"held_clearance", nullptr},
                             {"self_clearance", nullptr},
                             {"share_of_tolerance", nullptr},
+                            {"goal_met", nullptr},
                             {"length", nullptr},
                             {"turning", nullptr},
                             {"bending", nullptr},
@@ -442,6 +477,7 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
   // MoveIt keeps the plans' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
   const double time_limit = scenario.at("time_limit").get<double>();
+  const double goal_tolerance = scenario.at("goal_tolerance").get<double>();
   const auto ik_search_passes = scenario.at("ik_search_passes").get<std::uint64_t>();
 
   auto answers = nlohmann::json::array();
@@ -457,6 +493,8 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     const auto& ours = s.at("ours");
     Probing of_the_scene = probing;
     of_the_scene.held = held_targets_of(s, *model);
+    of_the_scene.goal = judged_goal(*scene, s, *model->getJointModelGroup(group.name),
+                                    probing.tip_links, goal_tolerance);
     answers.push_back({
         {"moveit",
          moveit_answer(pipeline, config.name, chomp, scene, model, s, time_limit,

@@ -15,6 +15,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+control_core = { path = "../control_core" }
 # The stable ABI of Python 3.12: one build loads on every Python from 3.12.
 pyo3 = { version = "0.30", features = ["abi3-py312"] }
 robot_description = { path = "../robot_description" }

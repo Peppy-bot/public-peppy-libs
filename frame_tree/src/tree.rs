@@ -168,9 +168,9 @@ impl FrameTree {
             let child = transform.child().as_str();
             refused.push(TransformError {
                 index: message
-                    .child_frames
+                    .transforms
                     .iter()
-                    .position(|named| named == child)
+                    .position(|record| record.child_frame == child)
                     .expect("a parsed transform names a child frame of its message"),
                 child: child.to_owned(),
                 reason,
@@ -346,14 +346,7 @@ impl FrameTree {
                 time,
             });
         }
-        for frame in [target, source] {
-            if !self.known.contains(frame) {
-                return Err(LookupError::UnknownFrame {
-                    frame: frame.clone(),
-                    held: self.held_frames(),
-                });
-            }
-        }
+        self.validated([target, source])?;
         let at = match time {
             LookupTime::At(stamp) => LookupTime::At(stamp),
             LookupTime::Latest => self
@@ -368,6 +361,84 @@ impl FrameTree {
                 LookupTime::Latest => None,
             },
         })
+    }
+
+    /// The place of `source` at `source_time` in `target` at `target_time`, through `fixed`, a
+    /// frame that holds still between the two times, as tf2's advanced `lookupTransform`
+    /// gives it (buffer_core.cpp:750-781, 880-898): `source` in `fixed` at `source_time`, then
+    /// `fixed` in `target` at `target_time`, each made tf2's transform, their product taken as
+    /// tf2's `Transform` product and its orientation read back by `getRotation`. Its time is the
+    /// target's place's, as tf2 stamps the output of its advanced lookup with the target side's
+    /// time: the time a value placed by it holds at. Each of the three frames is known, the
+    /// target's checked first, then the source's, then the fixed frame's, before either half
+    /// looks (buffer_core.cpp:888-890).
+    pub fn lookup_through(
+        &self,
+        target: &FrameName,
+        target_time: LookupTime,
+        source: &FrameName,
+        source_time: LookupTime,
+        fixed: &FrameName,
+    ) -> Result<Found, LookupError> {
+        self.validated([target, source, fixed])?;
+        let in_fixed = self.lookup(fixed, source, source_time)?;
+        let fixed_in_target = self.lookup(target, fixed, target_time)?;
+        let composed = fixed_in_target
+            .placement
+            .transform()
+            .compose(&in_fixed.placement.transform());
+        Ok(Found {
+            placement: Placement::of_transform(&composed),
+            time: fixed_in_target.time,
+        })
+    }
+
+    /// The root of `frame`'s chain of parents at `time`: the frame at which its walk up
+    /// ends, as `walkToTopParent` ends the walk of a lookup's source (buffer_core.cpp:352-397);
+    /// `frame` itself where it has no parent. At the latest time the walk follows each frame's
+    /// newest parent, as tf2 finds the parents of a lookup at the latest time. A frame the tree
+    /// does not name, a moving transform with no value at the time, a broken tree and a cycle
+    /// fail as a lookup fails on them.
+    pub fn root_at(&self, frame: &FrameName, time: LookupTime) -> Result<FrameName, LookupError> {
+        self.validated([frame])?;
+        let mut visited = Vec::new();
+        let mut frame = frame;
+        loop {
+            let parent = match time {
+                LookupTime::At(_) => match self.transform_at(frame, time) {
+                    None => return Ok(frame.clone()),
+                    Some(Err(failure)) => return Err(failure.into_error()),
+                    Some(Ok((parent, _))) => parent,
+                },
+                LookupTime::Latest => match self.latest_of(frame) {
+                    None => return Ok(frame.clone()),
+                    Some(Err(broken)) => return Err(broken.into()),
+                    Some(Ok(newest)) => newest.parent,
+                },
+            };
+            frame = step_up(&mut visited, frame, parent)?;
+        }
+    }
+
+    /// Whether a transform the tree took names `frame`, as tf2's `_frameExists` tells
+    /// (buffer_core.cpp:1429-1433).
+    pub fn knows(&self, frame: &FrameName) -> bool {
+        self.known.contains(frame)
+    }
+
+    /// Nothing when the tree knows each of `frames`; else the error of the first it does not
+    /// know, as tf2's `validateFrameId` refuses it (buffer_core.cpp:132-155).
+    fn validated<'a>(
+        &self,
+        frames: impl IntoIterator<Item = &'a FrameName>,
+    ) -> Result<(), LookupError> {
+        match frames.into_iter().find(|frame| !self.knows(frame)) {
+            None => Ok(()),
+            Some(frame) => Err(LookupError::UnknownFrame {
+                frame: frame.clone(),
+                held: self.held_frames(),
+            }),
+        }
     }
 
     /// Every frame the tree's transforms name, sorted by name.

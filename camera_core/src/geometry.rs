@@ -1,10 +1,6 @@
 //! The checks a camera geometry passes before a consumer computes with it,
 //! and the words of camera_geometry:v1 the cameras share.
 
-/// How far from 1 the length of a pose's quaternion may be. A quaternion
-/// that is not of unit length scales every point it turns.
-const UNIT_QUATERNION_TOLERANCE: f64 = 1e-6;
-
 /// The `depth_model` of a depth sample that is the distance along the
 /// optical axis.
 pub const Z_DEPTH_MODEL: &str = "z";
@@ -43,13 +39,6 @@ pub fn depth_range_is_valid(min_depth_m: f64, max_depth_m: f64) -> bool {
 /// A depth unit a consumer can scale samples by: a positive number.
 pub fn depth_unit_is_valid(depth_unit: f32) -> bool {
     depth_unit.is_finite() && depth_unit > 0.0
-}
-
-/// A pose a consumer can apply: a position made of numbers and a quaternion
-/// of unit length.
-pub fn pose_is_valid(position: &[f64; 3], orientation: &[f64; 4]) -> bool {
-    let length = orientation.iter().map(|c| c * c).sum::<f64>().sqrt();
-    position.iter().all(|c| c.is_finite()) && (length - 1.0).abs() <= UNIT_QUATERNION_TOLERANCE
 }
 
 #[cfg(test)]
@@ -116,21 +105,5 @@ mod tests {
         assert!(!depth_unit_is_valid(f32::NAN));
         assert!(!depth_unit_is_valid(f32::INFINITY));
         assert!(!depth_unit_is_valid(f32::NEG_INFINITY));
-    }
-
-    #[test]
-    fn pose_guard_wants_a_unit_quaternion() {
-        // Ten degrees about the optical axis, as a unit quaternion.
-        let half_angle = 5f64.to_radians();
-        assert!(pose_is_valid(&[0.0; 3], &[0.0, 0.0, 0.0, 1.0]));
-        assert!(pose_is_valid(
-            &[-0.015, 0.0, 0.0],
-            &[0.0, 0.0, half_angle.sin(), half_angle.cos()]
-        ));
-        // All zeros is what an unset field reads, and it turns nothing.
-        assert!(!pose_is_valid(&[0.0; 3], &[0.0; 4]));
-        assert!(!pose_is_valid(&[0.0; 3], &[0.0, 0.0, 0.0, 2.0]));
-        assert!(!pose_is_valid(&[0.0; 3], &[f64::NAN, 0.0, 0.0, 1.0]));
-        assert!(!pose_is_valid(&[f64::NAN, 0.0, 0.0], &[0.0, 0.0, 0.0, 1.0]));
     }
 }

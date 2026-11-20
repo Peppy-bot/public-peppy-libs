@@ -94,7 +94,7 @@ use crate::mapping::{MappingError, MappingParameters, ParameterError, ScanGate, 
 use crate::placed_scan::PlacedScan;
 use crate::saved_map::RoomMap;
 use crate::scan_matcher::MatcherError;
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::{NotPositiveFinite, PositiveFinite};
 use std::f64::consts::PI;
 use thiserror::Error;

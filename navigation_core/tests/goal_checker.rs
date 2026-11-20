@@ -10,9 +10,9 @@ mod common;
 
 use std::f64::consts::PI;
 
-use camera_core::pose::PlanarPose;
 use common::finite::{non_negative, positive};
 use common::poses::planar;
+use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::goal_checker::GoalCheckerParams;

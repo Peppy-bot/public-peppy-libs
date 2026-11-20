@@ -72,8 +72,8 @@ pub fn rate_step_toward<const N: usize>(
     )
 }
 
-/// One damped resolved-rate joint step at `q` toward a world-frame task
-/// increment `twist_world`: meters of end-effector translation in its first
+/// One damped resolved-rate joint step at `q` toward a root-frame task
+/// increment `twist_in_root`: meters of end-effector translation in its first
 /// three rows and axis-angle radians of rotation in its last three, the
 /// Jacobian's own layout, either of which may be zero to softly hold that
 /// component.
@@ -90,15 +90,15 @@ pub fn rate_step_toward<const N: usize>(
 pub fn rate_step<const N: usize>(
     chain: &Chain<N>,
     q: &[f64; N],
-    twist_world: &Vector6<f64>,
+    twist_in_root: &Vector6<f64>,
     limits: &[Limit; N],
     max_joint_velocity: &[f64; N],
     dt_s: f64,
     lambda: f64,
 ) -> [f64; N] {
-    let to_base = chain.base_from_world().rotation;
-    let dp = to_base * twist_world.fixed_rows::<3>(0).into_owned();
-    let dw = to_base * twist_world.fixed_rows::<3>(3).into_owned();
+    let to_base = chain.base_from_root().rotation;
+    let dp = to_base * twist_in_root.fixed_rows::<3>(0).into_owned();
+    let dw = to_base * twist_in_root.fixed_rows::<3>(3).into_owned();
     let twist = Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z);
     let jacobian = chain.at(q).jacobian();
     let mut held: [Option<f64>; N] = [None; N];
@@ -177,7 +177,7 @@ pub fn pose_miss(a: &Isometry3<f64>, b: &Isometry3<f64>) -> PoseMiss {
     }
 }
 
-/// A pose difference as a world-frame twist: the translation, and the rotation
+/// A pose difference as a root-frame twist: the translation, and the rotation
 /// as an axis-angle vector. Shared by the callers that build a task error. A
 /// rotation whose quaternion vector part is within rounding of zero is none, so
 /// equal orientations draw exactly no correction; any other is read off the

@@ -10,7 +10,8 @@ the robot frame's +Y; `ROLLS` rolls, 45 degrees apart, turn them about the
 approach. These are the orientations workspace_core's reach test proves
 reachability with, `DOWN` before `FORWARD`.
 
-Every orientation is a unit quaternion [x, y, z, w].
+Every orientation is a unit quaternion [x, y, z, w], and every rotation
+runs on control_core_py's geometry.
 
 `Grasp` is where and how a gripper closes on an item, the point and the
 orientations to try there; a `GraspProposer` gives the grasp of an item.
@@ -22,6 +23,8 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Protocol
+
+from control_core_py.geometry import UnitQuaternion, normalized, product, quaternion_of, quaternion_of_yaw, rotate
 
 from ...ports import Item, Quat, Vec3
 
@@ -48,7 +51,7 @@ def orientation(direction: GraspDirection, roll_rad: float) -> Quat:
     sin, cos = math.sin(roll_rad), math.cos(roll_rad)
     rolled_x = tuple(cos * x[i] + sin * y[i] for i in range(3))
     rolled_y = tuple(cos * y[i] - sin * x[i] for i in range(3))
-    return _quaternion(rolled_x, rolled_y, z)
+    return quaternion_of(tuple((rolled_x[row], rolled_y[row], z[row]) for row in range(3)))
 
 
 def candidates(direction: GraspDirection) -> tuple[Quat, ...]:
@@ -59,32 +62,21 @@ def candidates(direction: GraspDirection) -> tuple[Quat, ...]:
 def orientations_for(chosen: Optional[Quat]) -> tuple[Quat, ...]:
     """The orientations to try at a grasp point: `chosen` alone when the
     caller chose one, else the `DOWN` candidates. A ValueError names a
-    chosen quaternion that is not a rotation."""
+    chosen quaternion that control_core_py's parse refuses."""
     if chosen is None:
         return candidates(GraspDirection.DOWN)
-    return (unit(chosen),)
-
-
-def unit(q: Quat) -> Quat:
-    """`q` scaled to length 1, or a ValueError when it names no rotation:
-    zero, or not finite."""
-    norm = math.sqrt(sum(value * value for value in q))
-    if not math.isfinite(norm) or norm < 1e-9:
-        raise ValueError(f"the orientation {list(q)} is not a rotation")
-    return (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm)
+    return (UnitQuaternion.parse(chosen).quaternion,)
 
 
 def approach(q: Quat) -> Vec3:
     """The approach of the grasp frame `q`, its +Z, in the robot frame."""
-    x, y, z, w = unit(q)
-    return (2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y))
+    return rotate(normalized(q), (0.0, 0.0, 1.0))
 
 
 def jaw_axis(q: Quat) -> Vec3:
     """The axis the jaws close on in the grasp frame `q`, its +Y, in the
     robot frame."""
-    x, y, z, w = unit(q)
-    return (2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x))
+    return rotate(normalized(q), (0.0, 1.0, 0.0))
 
 
 def jaw_line_deg(q: Quat) -> float:
@@ -99,8 +91,7 @@ def turned_about_z(q: Quat, angle_rad: float) -> Quat:
     """The grasp frame `q` turned `angle_rad` about the robot's +Z,
     counter-clockwise seen from above: the turn an alignment step asks for
     with its roll_deg. The approach stays as it was."""
-    half = angle_rad / 2.0
-    return _multiply((0.0, 0.0, math.sin(half), math.cos(half)), unit(q))
+    return product(quaternion_of_yaw(angle_rad), normalized(q))
 
 
 def pre_grasp(point: Vec3, q: Quat, clearance_m: float) -> Vec3:
@@ -121,40 +112,8 @@ def lowered(point: Vec3, depth_m: float) -> Vec3:
     return (point[0], point[1], point[2] - depth_m)
 
 
-def _multiply(a: Quat, b: Quat) -> Quat:
-    """The rotation `b` then `a`, as quaternions [x, y, z, w]."""
-    ax, ay, az, aw = a
-    bx, by, bz, bw = b
-    return (
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    )
-
-
 def _cross(a: Vec3, b: Vec3) -> Vec3:
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def _quaternion(x: Vec3, y: Vec3, z: Vec3) -> Quat:
-    """The unit quaternion of the rotation whose columns are the axes `x`,
-    `y` and `z`, by the branch that divides by the largest term."""
-    m00, m01, m02 = x[0], y[0], z[0]
-    m10, m11, m12 = x[1], y[1], z[1]
-    m20, m21, m22 = x[2], y[2], z[2]
-    trace = m00 + m11 + m22
-    if trace > 0.0:
-        s = 2.0 * math.sqrt(trace + 1.0)
-        return ((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s)
-    if m00 > m11 and m00 > m22:
-        s = 2.0 * math.sqrt(1.0 + m00 - m11 - m22)
-        return (0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s)
-    if m11 > m22:
-        s = 2.0 * math.sqrt(1.0 + m11 - m00 - m22)
-        return ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
-    s = 2.0 * math.sqrt(1.0 + m22 - m00 - m11)
-    return ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
 
 
 @dataclass(frozen=True)

@@ -11,11 +11,11 @@
 
 mod common;
 
-use camera_core::pose::PlanarPose;
 use common::finite::{non_negative, positive};
 use common::footprints::padded;
 use common::poses::planar;
-use control_core::twist::Twist;
+use control_core::planar_pose::PlanarPose;
+use control_core::twist::PlanarTwist;
 use navigation_core::PaddedFootprint;
 use navigation_core::controller::{
     ControlError, Lookahead, PurePursuit, PurePursuitParams, VelocityScaledLookahead,
@@ -210,7 +210,7 @@ fn each_step_is_the_controller_servers() {
                 "{what}: the progress checker"
             );
             let [vx, vy, wz] = step.speed;
-            let speed = Twist::new(vx, vy, wz).expect("finite");
+            let speed = PlanarTwist::new(vx, vy, wz).expect("finite");
             let ours = controller.compute(base, speed, plan.goal_checker(), &pruned, &grid);
             match (ours, step.outcome, step.twist) {
                 (Ok(command), Outcome::Command, Some(theirs)) => {

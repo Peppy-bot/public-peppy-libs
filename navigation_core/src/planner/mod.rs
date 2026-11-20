@@ -40,7 +40,7 @@ mod smoother;
 
 use std::num::NonZeroU32;
 
-use camera_core::pose::{PlanarPose, PlanarPoseError};
+use control_core::planar_pose::{PlanarPose, PlanarPoseError};
 
 use crate::footprint::PaddedFootprint;
 use crate::grid::{Cell, CostGrid, GridPoint};

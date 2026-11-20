@@ -12,7 +12,7 @@ mod common;
 
 use common::finite::{non_negative, positive};
 use control_core::limiter::{AxisLimits, AxisLimitsParams, Limiter, LimiterParams};
-use control_core::twist::Twist;
+use control_core::twist::PlanarTwist;
 use ros_reference::velocity_smoother::{Cases, Event, SmootherParameters};
 
 /// The port of a scenario's parameters: each axis's range, its acceleration, its
@@ -68,11 +68,11 @@ fn each_limited_velocity_is_nav2s() {
             match *event {
                 Event::Setpoint { at_ns, twist } => {
                     let [x, y, z] = twist;
-                    limiter.take_setpoint(Twist::new(x, y, z).expect("finite"), at_ns);
+                    limiter.take_setpoint(PlanarTwist::new(x, y, z).expect("finite"), at_ns);
                 }
                 Event::Tick { at_ns } => {
                     let expected = cycles.next().expect("a cycle a tick");
-                    let ours = limiter.tick(at_ns).map(Twist::axes);
+                    let ours = limiter.tick(at_ns).map(PlanarTwist::axes);
                     assert_eq!(
                         bits(ours),
                         bits(expected.published),

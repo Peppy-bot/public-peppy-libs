@@ -54,6 +54,19 @@
     {"step":"moving","stamp":1200000000,"parent":"root","child":"","position":[-0.37435525840684725,-0.40168519593179486,-0.1955354413678716],"orientation":[0.18881105636920376,0.7635776306891285,0.35317770975783225,0.5065225485939738]},
     {"step":"moving","stamp":1200000000,"parent":"","child":"x","position":[-0.9119609194204152,0.32239629016645055,-0.225576018052287],"orientation":[-0.8701976594989684,-0.0454596585640991,0.40641865458474774,0.27479688872197267]},
     {"step":"moving","stamp":1200000000,"parent":"root","child":"x","position":[0.6940596796669645,0.001151391133290991,0.640868319572856],"orientation":[0.0,0.0,0.0,1.01]},
-    {"step":"lookup","target":"root","source":"x","time":1200000000}
+    {"step":"lookup","target":"root","source":"x","time":1200000000},
+    {"step":"static","parent":"ground","child":"odom","position":[-0.634506183294339,-0.7989486780341641,0.9702308761788443],"orientation":[0.8365259179823481,-0.3414406081846559,-0.11752641910436792,-0.41210464743652997]},
+    {"step":"moving","stamp":2100000000,"parent":"odom","child":"base","position":[0.7810080389862304,0.8867524204171735,0.8160352522163161],"orientation":[-0.05238456593873339,0.12187086222132322,0.9909028161512118,-0.022692711086149456]},
+    {"step":"moving","stamp":2300000000,"parent":"odom","child":"base","position":[-0.7152912039251906,-0.8182770687214982,-0.3806287420409191],"orientation":[-0.09080677499115368,-0.7554224421939588,-0.6460400503710803,-0.06101898689713874]},
+    {"step":"static","parent":"base","child":"camera","position":[-0.5718917612278329,0.5237724461298885,-0.7262389773034363],"orientation":[-0.567637842679001,0.6844615549200168,-0.2682170211240577,0.3706201410805129]},
+    {"step":"lookup_through","target":"base","target_time":null,"source":"base","source_time":2200000000,"fixed":"odom"},
+    {"step":"lookup_through","target":"camera","target_time":2300000000,"source":"camera","source_time":2100000000,"fixed":"odom"},
+    {"step":"lookup_through","target":"odom","target_time":null,"source":"camera","source_time":2200000000,"fixed":"odom"},
+    {"step":"lookup_through","target":"camera","target_time":2200000000,"source":"base","source_time":2200000000,"fixed":"ground"},
+    {"step":"lookup_through","target":"base","target_time":null,"source":"base","source_time":2000000000,"fixed":"odom"},
+    {"step":"lookup_through","target":"base","target_time":2400000000,"source":"base","source_time":2200000000,"fixed":"odom"},
+    {"step":"lookup_through","target":"base","target_time":null,"source":"camera","source_time":2200000000,"fixed":"nowhere"},
+    {"step":"lookup_through","target":"base","target_time":null,"source":"base","source_time":2200000000,"fixed":""},
+    {"step":"lookup_through","target":"c","target_time":null,"source":"base","source_time":2200000000,"fixed":"odom"}
   ]
 }

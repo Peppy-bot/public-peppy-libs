@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import synthetic_depth as sd
-from conftest import FakeDetector, FixedPlacer, rgb_frame
+from conftest import CAMERA_FRAME, FakeDetector, FixedPlacer, rgb_frame
 
 from brain_core.limbs import parse_limbs
 from brain_core.perception.camera import CameraModel
@@ -206,22 +206,22 @@ def test_the_box_of_a_single_point_has_the_least_side():
 # The shape on the detections of a scan, on the items, and in the log.
 
 
-def z16(depth_m: np.ndarray, frame_id: int = 3):
+def z16(depth_m: np.ndarray, capture_index: int = 3):
     """The depth_stream message of `depth_m`, in millimetres."""
     return SimpleNamespace(
-        header=SimpleNamespace(timestamp=1.0, frame_id=frame_id, align_mode="depth_to_color"),
+        header=SimpleNamespace(timestamp=1.0, frame=CAMERA_FRAME, capture_index=capture_index, align_mode="depth_to_color"),
         encoding="z16", width=depth_m.shape[1], height=depth_m.shape[0],
-        frame=np.round(depth_m / 0.001).astype("<u2").tobytes(),
+        data=np.round(depth_m / 0.001).astype("<u2").tobytes(),
     )
 
 
 async def test_a_scan_gives_each_detection_the_box_around_its_depth_points():
     scene = sd.render([LIME])
     frames = FrameStore()
-    frames.add_color(rgb_frame(sd.WIDTH, sd.HEIGHT, frame_id=3))
+    frames.add_color(rgb_frame(sd.WIDTH, sd.HEIGHT, capture_index=3))
     frames.add_depth(z16(scene.depth_m))
     frames.depth_unit = 0.001
-    perceiver = Perceiver(frames, CameraModel(intrinsics=sd.CHEST.intrinsics), FixedPlacer(sd.CHEST.pose), "chest")
+    perceiver = Perceiver(frames, CameraModel(intrinsics=sd.CHEST.intrinsics), FixedPlacer(sd.CHEST.pose))
     box = scene.box(0, label="lime")
     look = await perceiver.scan(FakeDetector([box]), ["lime"], CancelToken(), timeout_s=0.0)
     [lime] = look.detections
@@ -233,7 +233,7 @@ async def test_a_scan_gives_each_detection_the_box_around_its_depth_points():
 
 def test_the_log_of_a_look_names_the_shape_of_each_item_that_has_one():
     shape = ItemShape((0.3, -0.2, 0.413), (0.082, 0.071, 0.086), math.radians(67.0))
-    look = Look([Detection("lime", (0.3, -0.2, 0.45), 0.9, shape=shape), Detection("bowl", (0.27, 0.07, 0.4), 0.8)], 320, 180, 1.0, 3, [], [])
+    look = Look([Detection("lime", (0.3, -0.2, 0.45), 0.9, shape=shape), Detection("bowl", (0.27, 0.07, 0.4), 0.8)], "base_link", 320, 180, 1.0, 3, [], [])
     assert look.describe(1_000_000_000) == (
         "frame 3 taken 0.00 s before the search, 2 boxes: lime 0.90 (box 8.2 x 7.1 x 8.6 cm at [0.300, -0.200, 0.413], 67 deg), bowl 0.80"
     )

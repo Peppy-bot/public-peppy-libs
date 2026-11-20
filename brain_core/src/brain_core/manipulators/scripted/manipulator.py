@@ -404,9 +404,11 @@ class Carried:
 @dataclass(frozen=True)
 class Landed:
     """Where a line down ended: the grasp point its result gives, none when
-    it gives none, and whether it ended on contact."""
+    it gives none, the time of that measurement on the clock of transforms,
+    and whether it ended on contact."""
 
     position: Optional[Vec3]
+    timestamp: Optional[float]
     on_contact: bool
 
 
@@ -842,7 +844,7 @@ class ScriptedManipulator:
                 gripper.name, _offset_cm(landed.position, point),
             )
         _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
-        return Outcome(True, "", landed.position, steps=tuple(steps))
+        return Outcome(True, "", landed.position, landed.timestamp, steps=tuple(steps))
 
     async def _place_into(self, gripper: Gripper, target: TargetItem, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
         """A place into or onto `target`: the carry to the pre-place point
@@ -882,7 +884,7 @@ class ScriptedManipulator:
                 gripper.name, target.item_id,
             )
         _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
-        return Outcome(True, "", landed.position, steps=tuple(steps))
+        return Outcome(True, "", landed.position, landed.timestamp, steps=tuple(steps))
 
     async def _release(
         self, gripper: Gripper, cancel: CancelToken, climb: Optional[tuple[Vec3, Quat]] = None
@@ -1338,7 +1340,9 @@ class ScriptedManipulator:
         except _Failed as failure:
             return _failed_step("descend", inputs, failure)
         measured = {} if moved.final_position is None else {"short_of_end_m": math.dist(moved.final_position, end)}
-        return StepRecord("descend", inputs, Landed(moved.final_position, moved.ended_on_contact), measured=measured)
+        return StepRecord(
+            "descend", inputs, Landed(moved.final_position, moved.final_timestamp, moved.ended_on_contact), measured=measured
+        )
 
     async def _move_arm(
         self, arm: str, point: Vec3, orientation: Quat, *,

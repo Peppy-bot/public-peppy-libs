@@ -11,6 +11,7 @@ description = "Room maps from 2-D scans, as Nav2's pointcloud_to_laserscan proje
 camera_core = { path = "../camera_core" }
 control_core = { path = "../control_core" }
 faer = "0.24"
+frame_tree = { path = "../frame_tree" }
 libstdcxx_heap = { path = "../libstdcxx_heap" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

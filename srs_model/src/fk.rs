@@ -10,8 +10,8 @@
 //!
 //! Poses come back in the **arm base frame**, lining up with the SRS geometry in
 //! [`crate::model`] and the IK target frame. [`crate::gravity`] and
-//! [`crate::coriolis`] read the world-frame accessors instead, because gravity is
-//! a world quantity (it acts along world -Z).
+//! [`crate::coriolis`] read the root-frame accessors instead, with gravity along
+//! the root's -Z.
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection, Tree};
 use nalgebra::Isometry3;
@@ -92,12 +92,12 @@ impl ForwardKinematics {
         self.chain.at(q)
     }
 
-    /// The fixed `world -> base` mount transform resolved from the URDF. It is
+    /// The fixed `root -> base` mount transform resolved from the URDF. It is
     /// **identity** when `base_link` is the URDF root (no mount tree above it),
     /// i.e. gravity is then computed in the base frame. Exposed so a caller can
     /// log/verify which frame is in play rather than assume one.
-    pub fn base_from_world(&self) -> Isometry3<f64> {
-        self.chain.base_from_world()
+    pub fn base_from_root(&self) -> Isometry3<f64> {
+        self.chain.base_from_root()
     }
 }
 
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[hegel::test]
-    fn point_world_jacobian_matches_finite_difference(tc: hegel::TestCase) {
+    fn point_root_jacobian_matches_finite_difference(tc: hegel::TestCase) {
         let h = 1e-6;
         let fk = crate::test_support::v1_fk(tc.draw(sides()));
         let q = tc.draw(configs(fk.limits()));
@@ -173,15 +173,15 @@ mod tests {
         // A fixed offset in the segment's frame, so the same material point is
         // tracked across the perturbed configurations.
         let offset = Point3::from(tc.draw(gs::arrays(gs::floats().min_value(-0.1).max_value(0.1))));
-        let point = fk.at(&q).link_pose_world(segment) * offset;
-        let cols = fk.at(&q).point_world_jacobian(&point, segment);
+        let point = fk.at(&q).link_pose_root(segment) * offset;
+        let cols = fk.at(&q).point_root_jacobian(&point, segment);
         for j in 0..ARM_DOF {
             let mut qp = q;
             let mut qm = q;
             qp[j] += h;
             qm[j] -= h;
-            let pp = fk.at(&qp).link_pose_world(segment) * offset;
-            let pm = fk.at(&qm).link_pose_world(segment) * offset;
+            let pp = fk.at(&qp).link_pose_root(segment) * offset;
+            let pm = fk.at(&qm).link_pose_root(segment) * offset;
             let fd = (pp.coords - pm.coords) / (2.0 * h);
             // For j > segment the column is zero and the point does not move (a
             // distal joint), so both sides are ~0.
@@ -217,33 +217,33 @@ mod tests {
     }
 
     #[test]
-    fn last_link_world_pose_matches_ee_pose_via_mount() {
-        // link_pose_world(6) is the tip link's world pose; ee_pose is the same
+    fn last_link_root_pose_matches_ee_pose_via_mount() {
+        // link_pose_root(6) is the tip link's root-frame pose; ee_pose is the same
         // pose re-expressed in the base frame, so they must agree through the
         // fixed mount transform.
         let fk = fk();
         let q = [0.3, -0.4, 0.5, 0.6, -0.2, 0.1, 0.7];
         let posed = fk.at(&q);
-        let via_mount = posed.base_from_world() * posed.link_pose_world(ARM_DOF - 1);
+        let via_mount = posed.base_from_root() * posed.link_pose_root(ARM_DOF - 1);
         let ee = posed.ee_pose();
         assert!((via_mount.translation.vector - ee.translation.vector).norm() < 1e-12);
         assert!(via_mount.rotation.angle_to(&ee.rotation) < 1e-12);
     }
 
     #[test]
-    fn left_and_right_first_links_are_mirrored_in_world() {
+    fn left_and_right_first_links_are_mirrored_in_root() {
         // Both chains share the URDF root frame: at home, the two shoulder
         // (link1) origins must mirror across the XZ plane at the mount offsets.
         let left = crate::test_support::v1_fk("left");
         let right = crate::test_support::v1_fk("right");
         let l = left
             .at(&[0.0; ARM_DOF])
-            .link_pose_world(0)
+            .link_pose_root(0)
             .translation
             .vector;
         let r = right
             .at(&[0.0; ARM_DOF])
-            .link_pose_world(0)
+            .link_pose_root(0)
             .translation
             .vector;
         assert!(
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn rejects_urdf_missing_arm_links() {
         // A URDF without the arm links must Err, not panic.
-        let urdf = r#"<?xml version="1.0"?><robot name="x"><link name="world"/></robot>"#;
+        let urdf = r#"<?xml version="1.0"?><robot name="x"><link name="base_link"/></robot>"#;
         assert!(ForwardKinematics::from_urdf(urdf, "openarm_left_link0").is_err());
     }
 

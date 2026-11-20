@@ -5,12 +5,12 @@
 
 use std::collections::HashSet;
 
-use camera_core::pose::Pose;
 use collision_geometry::chain::{Padding, PlacedMask};
 use collision_geometry::gjk::Support;
 use collision_geometry::shapes::{PlacedMesh, PlacedShape};
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use nalgebra::{Point3, Vector3};
 
 use crate::grid::Grid;
@@ -103,14 +103,14 @@ pub struct RobotCutout<'a> {
     frame: &'a FrameName,
     /// The cutout's frame placed in the URDF root's: the root's pose,
     /// inverted.
-    to_root: Pose,
+    to_root: Transform,
     parts: Vec<PlacedMask<'a>>,
 }
 
 impl<'a> RobotCutout<'a> {
     /// The robot of grown parts `parts`, whose URDF root stands at `root` in
     /// `frame`.
-    pub fn new(frame: &'a FrameName, root: Pose, parts: Vec<PlacedMask<'a>>) -> Self {
+    pub fn new(frame: &'a FrameName, root: Transform, parts: Vec<PlacedMask<'a>>) -> Self {
         Self {
             frame,
             to_root: root.inverse(),
@@ -242,7 +242,7 @@ fn decide_regions(grid: &Grid, cells: &mut [Cell], touches: impl Fn(Key) -> bool
 /// it reads.
 pub struct Scan<'a> {
     pub frame: &'a FrameName,
-    pub sensor: Pose,
+    pub sensor: Transform,
     pub points: &'a [[f32; 3]],
     pub max_range_m: PositiveFinite,
 }
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn a_clone_holds_no_bytes_of_an_insert_and_takes_a_scan_alike() {
         let frame = FrameName::parse("world").expect("a frame");
-        let sensor = Pose::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let sensor = Transform::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let scan = |points| Scan {
             frame: &frame,
             sensor,

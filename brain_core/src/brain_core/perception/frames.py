@@ -2,13 +2,14 @@
 kept by two small loops the node starts, paired by capture, and decoded
 into the arrays the detector and the depth lookup take.
 
-Colour and depth are paired by `header.frame_id`, the capture-pair counter
-rgbd_camera:v1 gives both streams, so the depth under a box is the depth of
-the instant the picture was taken. The last `FRAME_BUFFER` frames of each
-stream are kept, so a stream a few frames ahead of the other still pairs.
-The depth is read at the colour pixels, so the two streams must be
-aligned: a pair whose frames name `align_mode` "none", or two different
-alignments, is refused with the reason, never deprojected.
+Colour and depth are paired by `header.capture_index`, the capture-pair
+counter rgbd_camera:v1 gives both streams, so the depth under a box is the
+depth of the instant the picture was taken. The last `FRAME_BUFFER` frames
+of each stream are kept, so a stream a few frames ahead of the other still
+pairs. The depth is read at the colour pixels, so the two streams must be
+aligned and name one frame: a pair whose frames name `align_mode` "none",
+two different alignments, or two different frames, is refused with the
+reason, never deprojected. A picture's pixels are its `data`.
 
 The camera slot is optional. When the launcher left it vacant the loops
 return at once and the store stays empty, which every search reports as
@@ -60,8 +61,10 @@ class Frame:
 
     @classmethod
     def paired(cls, color: ColorMessage, depth: DepthMessage, depth_unit: float) -> "Frame":
-        """The two frames as one, or a Refusal when their streams are not
-        aligned to each other."""
+        """The two frames as one, or a Refusal when they name different
+        frames or their streams are not aligned to each other."""
+        if depth.header.frame != color.header.frame:
+            raise _no_source(f"the colour and depth frames name different frames ('{color.header.frame}' and '{depth.header.frame}')")
         mode = color.header.align_mode
         if depth.header.align_mode != mode:
             raise _no_source(f"the colour and depth frames name different alignments ('{mode}' and '{depth.header.align_mode}')")
@@ -103,14 +106,14 @@ class FrameStore:
             raise _no_source("no depth frame received")
         if self.depth_unit is None:
             raise _no_source("the camera has not answered depth_stream_info yet")
-        depths = {message.header.frame_id: message for message in self.depths}
+        depths = {message.header.capture_index: message for message in self.depths}
         for color in reversed(self.colors):
-            depth = depths.get(color.header.frame_id)
+            depth = depths.get(color.header.capture_index)
             if depth is not None:
                 return color, depth
         raise _no_source(
-            f"no colour and depth frame of one capture received (latest colour frame_id {self.colors[-1].header.frame_id}, "
-            f"depth {self.depths[-1].header.frame_id})"
+            f"no colour and depth frame of one capture received (latest colour capture_index {self.colors[-1].header.capture_index}, "
+            f"depth {self.depths[-1].header.capture_index})"
         )
 
     def why_unavailable(self) -> str:
@@ -191,14 +194,14 @@ def decode_color(message: ColorMessage) -> np.ndarray:
     width, height = message.width, message.height
     if encoding in ("rgb8", "bgr8"):
         expected = width * height * 3
-        if len(message.frame) != expected:
-            raise _undecodable(f"colour frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} {encoding}")
-        image = np.frombuffer(message.frame, dtype=np.uint8).reshape(height, width, 3)
+        if len(message.data) != expected:
+            raise _undecodable(f"colour frame holds {len(message.data)} bytes, expected {expected} for {width}x{height} {encoding}")
+        image = np.frombuffer(message.data, dtype=np.uint8).reshape(height, width, 3)
         return image[:, :, ::-1] if encoding == "bgr8" else image
     if encoding in ("mjpeg", "jpeg", "jpg"):
         from PIL import Image
 
-        with Image.open(io.BytesIO(message.frame)) as decoded:
+        with Image.open(io.BytesIO(message.data)) as decoded:
             return np.asarray(decoded.convert("RGB"))
     raise _undecodable(f"unsupported colour encoding '{message.encoding}'")
 
@@ -211,9 +214,9 @@ def decode_depth(message: DepthMessage, depth_unit: float) -> np.ndarray:
     if encoding != "z16":
         raise _undecodable(f"unsupported depth encoding '{message.encoding}'")
     expected = width * height * 2
-    if len(message.frame) != expected:
-        raise _undecodable(f"depth frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} z16")
-    raw = np.frombuffer(message.frame, dtype="<u2").reshape(height, width)
+    if len(message.data) != expected:
+        raise _undecodable(f"depth frame holds {len(message.data)} bytes, expected {expected} for {width}x{height} z16")
+    raw = np.frombuffer(message.data, dtype="<u2").reshape(height, width)
     return raw.astype(np.float32) * float(depth_unit)
 
 

@@ -9,12 +9,12 @@
 use std::time::{Duration, Instant};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
-use camera_core::pose::Pose;
 use chain_kinematics::Tree;
 use collision_geometry::chain::Padding;
 use collision_geometry::gjk::Placed;
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
+use frame_tree::Transform;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, Cutout, DistanceField, RobotCutout, Scan, VoxelMap, depth_points};
 use robot_description::states;
@@ -203,7 +203,7 @@ fn time_one_640x360_frame() {
         .expect("a valid map")
     };
     let max_range_m = PositiveFinite::parse(3.0).expect("positive");
-    let at_root = Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let at_root = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
 
     let (mut deprojected, mut cut, mut bare, mut fields) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());

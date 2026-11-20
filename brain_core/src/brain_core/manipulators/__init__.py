@@ -42,7 +42,10 @@ class Manipulator(Protocol):
         ...
 
     async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
-        """Sets the held item down: at a pose, or in or on a target item."""
+        """Sets the held item down: at a pose in the robot frame, or in or
+        on a target item. A successful place reports where the measured
+        grasp point stood when the jaws opened, and the time of that
+        measurement."""
         ...
 
     async def stop(self) -> None:

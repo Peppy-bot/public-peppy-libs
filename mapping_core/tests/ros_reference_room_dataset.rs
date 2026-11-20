@@ -25,7 +25,7 @@
 //! in `ROS_REFERENCE_RESULTS`.
 
 use camera_core::laser_scan::{LaserScan, Sweep};
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use mapping_core::{
     GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
     LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan, RoomMap, SearchStep,

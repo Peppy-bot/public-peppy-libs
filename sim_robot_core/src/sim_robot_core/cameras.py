@@ -2,9 +2,10 @@
 
 Reads how a model's entry renders each camera, builds the configs of a
 robot's cameras from the optical frames of its description, with the depths
-each depth camera measures, and those renders, converts rendered depth to the
-z16 wire format, and paces per-camera capture; everything renderer-specific
-stays in the engine.
+each depth camera measures, and those renders, gives where a rendered
+camera's pixels point in the terms of camera_geometry:v1, converts rendered
+depth to the z16 wire format, counts captures, and paces per-camera capture;
+everything renderer-specific stays in the engine.
 """
 
 from __future__ import annotations
@@ -13,6 +14,14 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from control_core_py.geometry import (
+    IDENTITY,
+    Point,
+    Pose,
+    UnitQuaternion,
+    product,
+    wxyz_of_xyzw,
+)
 
 from sim_robot_core.errors import ModelEntryError
 
@@ -23,6 +32,21 @@ COLOR_ENCODING = "rgb8"
 DEPTH_ENCODING = "z16"
 DEPTH_UNIT_M_PER_LSB = 0.001
 ALIGN_MODE = "depth_to_color"
+
+# What the geometry topic says of a rendered camera, in the camera_geometry
+# contract's terms: an ideal pinhole, its depth the distance to the image
+# plane, and depth_to_color, the pose of its depth optical frame in the
+# camera's frame, its colour optical frame: the identity, since a rendered
+# depth comes from the colour camera's own viewpoint. The pose holds at every
+# time, so depth_to_color holds no timestamp.
+DISTORTION_MODEL = "none"
+DEPTH_MODEL = "z"
+DEPTH_TO_COLOR = Pose(Point((0.0, 0.0, 0.0)), UnitQuaternion(IDENTITY))
+
+# The engines' camera frame in the optical frame, (x, y, z, w): half a turn
+# about the optical frame's X, which takes its +Z view to -Z and its +Y down
+# the picture to +Y up it.
+_HALF_TURN_ABOUT_X = (1.0, 0.0, 0.0, 0.0)
 
 # The largest value the z16 wire carries, and the deepest depth it can therefore
 # express. Both the encoder and the range check derive from the unit declared
@@ -72,11 +96,15 @@ class CameraRender:
 
 @dataclass(frozen=True)
 class CameraConfig:
-    """One camera a robot carries: the link it hangs from and its pose in
-    that link's frame, in the engines' camera frame, which looks along its
-    own -Z with +Y up the picture and +X to its right; and how it renders."""
+    """One camera a robot carries: its frame, the link it hangs from and its
+    pose in that link's frame, in the engines' camera frame, which looks along
+    its own -Z with +Y up the picture and +X to its right; and how it renders."""
 
     name: str
+    # The camera's frame in the robot's tree: its optical frame, the link
+    # `<name>_optical_frame` of the description, which sensor_mounts gives for
+    # the camera's name and each of its pictures names.
+    frame: str
     parent_link: str
     pos: tuple[float, float, float]
     quat_wxyz: tuple[float, float, float, float]
@@ -111,18 +139,20 @@ def parse_renders(source: str, entries) -> dict[str, CameraRender]:
 
 
 def camera_configs(
-    source: str, frames, renders: dict[str, CameraRender] | None
+    source: str, description, renders: dict[str, CameraRender] | None
 ) -> tuple[CameraConfig, ...]:
     """The configs of a robot's cameras: each optical frame of its
-    description (`frames`, robot_description_py's CameraFrame), measuring
-    the depths the description gives it, rendered as the camera of the same
-    name in `renders`, the renders of the entry at `source`, or None where no
-    file is there. A camera of the description with no render and a render
+    description (robot_description_py's RobotDescription), placed by the
+    fixed joint that holds it to its link, measuring the depths the
+    description gives it, rendered as the camera of the same name in
+    `renders`, the renders of the entry at `source`, or None where no file is
+    there. A camera of the description with no render and a render
     of no camera of the description are refused, so a typo never drops a
     stream: the refusal names the entry, or says to create it where no file
     is there. A camera rendered with a depth stream is one the description
     gives a depth range, and one rendered without is one it gives none; any
     other is refused naming the camera and what to write."""
+    frames = description.cameras
     names = [frame.name for frame in frames]
     if renders is None and names:
         raise ModelEntryError(
@@ -137,13 +167,19 @@ def camera_configs(
             f"renders {sorted(renders)}: give the entry one render per camera of the "
             "description, under its name"
         )
-    return tuple(_config(source, frame, renders[frame.name]) for frame in frames)
+    placed = {transform.child: transform for transform in description.fixed_transforms()}
+    return tuple(
+        _config(source, frame, placed[frame.frame], renders[frame.name]) for frame in frames
+    )
 
 
-def _config(source: str, frame, render: CameraRender) -> CameraConfig:
-    pos, quat = camera_pose(frame.xyz, frame.rpy)
+def _config(source: str, frame, placed, render: CameraRender) -> CameraConfig:
+    """The config of the camera of `frame`, whose optical frame `placed`, the
+    fixed transform of its joint, places in its link."""
+    pos, quat = camera_pose(placed.position, placed.orientation)
     return CameraConfig(
         name=frame.name,
+        frame=frame.frame,
         parent_link=frame.parent_link,
         pos=pos,
         quat_wxyz=quat,
@@ -187,40 +223,18 @@ def _depth(source: str, frame, stream: DepthStream | None) -> DepthSpec | None:
         raise ModelEntryError(f"{source}: camera '{name}': {exc}") from exc
 
 
-def camera_pose(xyz, rpy) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+def camera_pose(
+    position, orientation
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
     """The pose in the engines' camera frame of a camera whose optical frame
-    stands at `xyz` turned by the URDF angles `rpy` (roll about x, then pitch
-    about y, then yaw about z, each about the parent's fixed axes). The
-    optical frame looks along its +Z with +Y down the picture; the camera
-    frame is the optical frame turned half a turn about its own X, which
-    looks along -Z with +Y up. The quaternion is unit, with w >= 0."""
-    roll, pitch, yaw = (float(angle) for angle in rpy)
-    optical = _quat_mul(
-        _quat_mul(_axis_quat((0.0, 0.0, 1.0), yaw), _axis_quat((0.0, 1.0, 0.0), pitch)),
-        _axis_quat((1.0, 0.0, 0.0), roll),
-    )
-    camera = _quat_mul(optical, _axis_quat((1.0, 0.0, 0.0), math.pi))
-    if camera[0] < 0.0:
-        camera = tuple(-component for component in camera)
-    x, y, z = (float(coordinate) for coordinate in xyz)
-    return (x, y, z), camera
-
-
-def _axis_quat(axis, angle: float) -> tuple[float, float, float, float]:
-    half = angle / 2.0
-    s = math.sin(half)
-    return (math.cos(half), axis[0] * s, axis[1] * s, axis[2] * s)
-
-
-def _quat_mul(a, b) -> tuple[float, float, float, float]:
-    aw, ax, ay, az = a
-    bw, bx, by, bz = b
-    return (
-        aw * bw - ax * bx - ay * by - az * bz,
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-    )
+    stands at `position` turned by `orientation`, a unit quaternion
+    (x, y, z, w), in its link: the optical frame looks along its +Z with +Y
+    down the picture, and the camera frame is the optical frame turned half a
+    turn about its own X, which looks along -Z with +Y up. The orientation is
+    (w, x, y, z), the engines' order."""
+    x, y, z = (float(coordinate) for coordinate in position)
+    camera = product(tuple(float(c) for c in orientation), _HALF_TURN_ABOUT_X)
+    return (x, y, z), wxyz_of_xyzw(camera)
 
 
 def _parse_render(source: str, name: str, entry) -> CameraRender:
@@ -280,6 +294,31 @@ def _positive_int(value, fail, field: str) -> int:
     return value
 
 
+@dataclass(frozen=True)
+class Pinhole:
+    """The pinhole model of one published grid, in the camera_geometry
+    contract's pixel convention, which is OpenCV's: the centre of the top-left
+    pixel is (0, 0), so pixel centres sit on whole numbers. Focal lengths and
+    principal point are in pixels."""
+
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+
+
+def pinhole(fovy_deg: float, width: int, height: int) -> Pinhole:
+    """The model of a grid rendered `width` x `height` under a vertical field
+    of view of `fovy_deg`: square pixels and the optical axis through the image
+    centre, which is what an MJCF or a USD camera renders. With pixel centres
+    on whole numbers the middle of a `width` x `height` image is
+    ((width - 1) / 2, (height - 1) / 2)."""
+    focal = (height / 2.0) / math.tan(math.radians(fovy_deg) / 2.0)
+    return Pinhole(width, height, focal, focal, (width - 1) / 2.0, (height - 1) / 2.0)
+
+
 def depth_to_z16(depth_m: np.ndarray, spec: DepthSpec) -> bytes:
     """Metric depth (float meters, HxW) to the z16 wire format: little-endian
     u16 counts of DEPTH_UNIT_M_PER_LSB rounded to the nearest, 0 for anything
@@ -298,8 +337,9 @@ def depth_to_z16(depth_m: np.ndarray, spec: DepthSpec) -> bytes:
     return np.where(valid, np.clip(lsb, 1.0, _MAX_DEPTH_LSB), 0.0).astype("<u2").tobytes()
 
 
-class FrameIdCounter:
-    """Wrapping u32 capture counter; an rgbd pair shares one id per capture."""
+class CaptureIndexCounter:
+    """The capture_index of each capture: a wrapping u32 counter; the colour
+    and depth pictures of one rgbd capture share one index."""
 
     def __init__(self) -> None:
         self._next = 0

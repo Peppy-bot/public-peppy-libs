@@ -43,7 +43,7 @@ fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
         }
         _ => {}
     }
-    let start = arm.world_pose(&arm.at(&seed).ee_pose());
+    let start = arm.root_pose(&arm.at(&seed).ee_pose());
     let travel: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.4));
     let direction = tc.draw(unit_vectors());
     let turn: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.6));
@@ -67,7 +67,7 @@ fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
             assert!(limit.contains(v), "joint {i} at {v} on state {k}");
         }
     }
-    let landed = pose_miss(&arm.world_ee_pose(&walk[walk.len() - 1]), &end);
+    let landed = pose_miss(&arm.root_ee_pose(&walk[walk.len() - 1]), &end);
     assert!(
         landed.position_m <= PRECISION_M && landed.orientation_rad <= PRECISION_RAD,
         "the walk lands {landed:?} off the goal"
@@ -83,7 +83,7 @@ fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
     let duration = played.clock().duration();
     let ab = end.translation.vector - start.translation.vector;
     for k in 0..=400u32 {
-        let ee = arm.world_ee_pose(&played.sample(t0 + duration * k / 400));
+        let ee = arm.root_ee_pose(&played.sample(t0 + duration * k / 400));
         let from_start = ee.translation.vector - start.translation.vector;
         let along = if ab.norm_squared() > 0.0 {
             (from_start.dot(&ab) / ab.norm_squared()).clamp(0.0, 1.0)
@@ -103,7 +103,7 @@ fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
             "the hand turns {off_rad} rad off the line at {k}/400"
         );
     }
-    let miss = pose_miss(&arm.world_ee_pose(&played.sample(t0 + duration)), &end);
+    let miss = pose_miss(&arm.root_ee_pose(&played.sample(t0 + duration)), &end);
     assert!(
         miss.position_m <= PRECISION_M && miss.orientation_rad <= PRECISION_RAD,
         "the line ends {miss:?} from the goal"
@@ -115,7 +115,7 @@ fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
 fn a_goal_out_of_reach_has_no_line() {
     let arm = arm("left");
     let seed: JointVec = std::array::from_fn(|i| arm.limits()[i].midpoint());
-    let start = arm.world_ee_pose(&seed);
+    let start = arm.root_ee_pose(&seed);
     let far = Isometry3::from_parts(
         Translation3::from(start.translation.vector + srs_model::nalgebra::Vector3::x() * 3.0),
         start.rotation,
@@ -129,7 +129,7 @@ fn a_goal_out_of_reach_has_no_line() {
 fn a_goal_ten_meters_out_has_no_line() {
     let arm = arm("left");
     let seed: JointVec = [0.0, 0.3, 0.0, 0.8, 0.0, 0.5, 0.0];
-    let start = arm.world_ee_pose(&seed);
+    let start = arm.root_ee_pose(&seed);
     let far = Isometry3::from_parts(
         Translation3::from(start.translation.vector + srs_model::nalgebra::Vector3::x() * 10.0),
         start.rotation,

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use camera_core::pose::PlanarPose;
+use control_core::planar_pose::PlanarPose;
 use navigation_core::grid::LETHAL;
 use navigation_core::obstacles::{LiveObstacles, ObstacleLayer};
 

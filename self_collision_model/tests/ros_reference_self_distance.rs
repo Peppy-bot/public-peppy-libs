@@ -105,7 +105,9 @@ impl OnShape for EachDistanceIsNoLargerThanFcls<'_> {
         for (index, configuration) in cases.configurations.iter().enumerate() {
             model.set_gripper_openings(&arms.each_ref().map(|arm| opening(configuration, arm)));
             let joints: Joints<N, K> = arms.each_ref().map(|arm| arm_joints(configuration, arm));
-            let bodies = model.world_pieces(&joints).expect("a finite configuration");
+            let bodies = model
+                .pieces_in_root(&joints)
+                .expect("a finite configuration");
             let pieces_of = |body_name: &str| {
                 &bodies
                     .iter()

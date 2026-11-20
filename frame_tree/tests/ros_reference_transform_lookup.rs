@@ -2,7 +2,8 @@
 //! reference harness step by step, as tf2's `BufferCore` took it, and the evidence is that
 //! it takes the same transforms, refuses the same lookups with the same kind of error, and
 //! answers every other lookup with tf2's time and a transform within `POSITION_TOLERANCE`
-//! of tf2's position and within `ORIENTATION_TOLERANCE` of its orientation.
+//! of tf2's position and within `ORIENTATION_TOLERANCE` of its orientation. A lookup through
+//! a fixed frame, tf2's advanced `lookupTransform`, is held to tf2's likewise.
 //!
 //! A static step sends the transform with every static transform sent before it, as
 //! tf2_ros's static broadcaster sends its whole set, which `take_static` takes. The
@@ -18,9 +19,14 @@ use std::time::{Duration, SystemTime};
 
 use frame_tree::{
     BrokenTree, FrameName, FrameTree, HeldStamps, LookupError, LookupTime, MovingMessage,
-    Publisher, Stamp, StaticMessage,
+    Publisher, Stamp, StaticMessage, TransformRecord,
 };
 use ros_reference::transform_lookup::{Case, Cases, Found, SentTransform, Tf2Error};
+
+/// The record of a transform the reference sends.
+fn record(sent: &SentTransform) -> TransformRecord {
+    TransformRecord::new(&sent.parent, &sent.child, sent.position, sent.orientation)
+}
 
 /// The largest distance allowed between our position and tf2's, in meters. The two compute
 /// the same operations in the same order, so the difference measured is at the bits of the
@@ -64,10 +70,7 @@ fn every_lookup_agrees_with_tf2() {
                 } => {
                     let message = MovingMessage {
                         timestamp: SystemTime::UNIX_EPOCH + Duration::from_nanos(*stamp),
-                        child_frames: vec![transform.child.clone()],
-                        parent_frames: vec![transform.parent.clone()],
-                        positions: transform.position.to_vec(),
-                        orientations: transform.orientation.to_vec(),
+                        transforms: vec![record(transform)],
                         start_timestamp: START,
                     };
                     let refused = tree
@@ -84,13 +87,7 @@ fn every_lookup_agrees_with_tf2() {
                         None => static_set.push(transform.clone()),
                     }
                     let message = StaticMessage {
-                        child_frames: static_set.iter().map(|sent| sent.child.clone()).collect(),
-                        parent_frames: static_set.iter().map(|sent| sent.parent.clone()).collect(),
-                        positions: static_set.iter().flat_map(|sent| sent.position).collect(),
-                        orientations: static_set
-                            .iter()
-                            .flat_map(|sent| sent.orientation)
-                            .collect(),
+                        transforms: static_set.iter().map(record).collect(),
                     };
                     let refused = tree
                         .take_static(&publisher(), &message)
@@ -107,28 +104,27 @@ fn every_lookup_agrees_with_tf2() {
                     answer,
                 } => {
                     lookups += 1;
+                    let what = format!("{at}: {source} in {target}");
                     let ours = lookup(&tree, target, source, *time);
-                    match (ours, answer) {
-                        (Ok(ours), Ok(tf2)) => {
-                            assert_eq!(
-                                ours.time, tf2.time,
-                                "{at}: the time of {source} in {target}"
-                            );
-                            let (position, orientation) = differences(&ours, tf2);
-                            assert!(
-                                position <= POSITION_TOLERANCE
-                                    && orientation <= ORIENTATION_TOLERANCE,
-                                "{at}: {source} in {target} is {ours:?}, tf2 gives {tf2:?}"
-                            );
-                            worst = (worst.0.max(position), worst.1.max(orientation));
-                        }
-                        (Err(ours), Err(tf2)) => {
-                            assert_eq!(ours, *tf2, "{at}: the error of {source} in {target}");
-                        }
-                        (ours, tf2) => {
-                            panic!("{at}: {source} in {target} is {ours:?}, tf2 gives {tf2:?}")
-                        }
-                    }
+                    worst = agreeing(&what, ours, answer, worst);
+                }
+                Case::LookupThrough {
+                    target,
+                    target_time,
+                    source,
+                    source_time,
+                    fixed,
+                    answer,
+                } => {
+                    lookups += 1;
+                    let what = format!("{at}: {source} in {target} through {fixed}");
+                    let ours = lookup_through(
+                        &tree,
+                        (target, *target_time),
+                        (source, *source_time),
+                        fixed,
+                    );
+                    worst = agreeing(&what, ours, answer, worst);
                 }
             }
         }
@@ -139,21 +135,76 @@ fn every_lookup_agrees_with_tf2() {
     );
 }
 
-/// Our answer to a lookup, as the reference writes tf2's: an empty frame name refused as tf2
-/// refuses it.
+/// The largest differences so far, `worst`, with those of `ours` from tf2's answer, once the
+/// two agree: the same time and a transform within the tolerances, or the same error.
+fn agreeing(
+    what: &str,
+    ours: Result<Found, Tf2Error>,
+    tf2: &Result<Found, Tf2Error>,
+    worst: (f64, f64),
+) -> (f64, f64) {
+    match (ours, tf2) {
+        (Ok(ours), Ok(tf2)) => {
+            assert_eq!(ours.time, tf2.time, "{what}: the time");
+            let (position, orientation) = differences(&ours, tf2);
+            assert!(
+                position <= POSITION_TOLERANCE && orientation <= ORIENTATION_TOLERANCE,
+                "{what} is {ours:?}, tf2 gives {tf2:?}"
+            );
+            (worst.0.max(position), worst.1.max(orientation))
+        }
+        (Err(ours), Err(tf2)) => {
+            assert_eq!(ours, *tf2, "{what}: the error");
+            worst
+        }
+        (ours, tf2) => panic!("{what} is {ours:?}, tf2 gives {tf2:?}"),
+    }
+}
+
+/// The frame `name` names, an empty name refused as tf2 refuses it.
+fn frame(name: &str) -> Result<FrameName, Tf2Error> {
+    FrameName::parse(name).map_err(|_| Tf2Error::InvalidArgument)
+}
+
+/// The time of a lookup, in nanoseconds, or the latest time for none.
+fn time_of(time: Option<u64>) -> LookupTime {
+    time.map_or(LookupTime::Latest, |nanos| {
+        LookupTime::At(Stamp::from_nanos(nanos))
+    })
+}
+
+/// Our answer to a lookup, as the reference writes tf2's.
 fn lookup(
     tree: &FrameTree,
     target: &str,
     source: &str,
     time: Option<u64>,
 ) -> Result<Found, Tf2Error> {
-    let (Ok(target), Ok(source)) = (FrameName::parse(target), FrameName::parse(source)) else {
-        return Err(Tf2Error::InvalidArgument);
-    };
-    let time = time.map_or(LookupTime::Latest, |nanos| {
-        LookupTime::At(Stamp::from_nanos(nanos))
-    });
-    match tree.lookup(&target, &source, time) {
+    let found = tree.lookup(&frame(target)?, &frame(source)?, time_of(time));
+    answer(found)
+}
+
+/// Our answer to a lookup of the source at its time in the target at its time, through
+/// `fixed`, as the reference writes tf2's.
+fn lookup_through(
+    tree: &FrameTree,
+    (target, target_time): (&str, Option<u64>),
+    (source, source_time): (&str, Option<u64>),
+    fixed: &str,
+) -> Result<Found, Tf2Error> {
+    let found = tree.lookup_through(
+        &frame(target)?,
+        time_of(target_time),
+        &frame(source)?,
+        time_of(source_time),
+        &frame(fixed)?,
+    );
+    answer(found)
+}
+
+/// A lookup's answer as the reference writes tf2's.
+fn answer(found: Result<frame_tree::Found, LookupError>) -> Result<Found, Tf2Error> {
+    match found {
         Ok(found) => Ok(Found {
             position: found.placement.position(),
             orientation: found.placement.orientation(),

@@ -9,7 +9,7 @@ afterwards (`state.best_match`), so no detector implements selection.
 
 The Perceiver checks what it holds, the frames and the camera model, and
 refuses a search without them with `resource_unavailable`, as it refuses
-one whose frame its placer cannot place the camera for. Whether a
+one whose picture names a frame its placer cannot place. Whether a
 detector can search is the detector's own answer
 (`Detector.why_unavailable`), which the brain asks first (`Brain.look`).
 A search past its deadline fails with `timeout`.
@@ -44,11 +44,11 @@ from typing import TYPE_CHECKING, Callable, Optional, Sequence
 import numpy as np
 
 from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, ItemShape, Refusal, SearchTimeout, iou
-from .camera import CameraModel, CameraPose, Intrinsics
+from .camera import CameraModel, Intrinsics
 from .frames import FrameStore, decode_color, decode_depth, depth_at, depth_pixel
 
 if TYPE_CHECKING:
-    from .geometry import CameraPlacer
+    from .geometry import Placer
 
 # The budget of a search whose goal names a timeout_s of 0. A hosted model
 # with reasoning answers a scan in 3 to 10 s and at times later, and a
@@ -111,18 +111,20 @@ async def in_daemon_thread(function: Callable, *args):
 
 @dataclass(frozen=True)
 class Look:
-    """What one look at the camera gave: the detections, each placed in the
-    robot frame with its region in the picture, and the picture itself:
-    its size in pixels, its capture time and its capture-pair counter, so a
-    region can be read against the same frame. The detector's other boxes
-    are kept for the log: each duplicate of a more confident box, and each
-    box with no depth reading under its centre."""
+    """What one look at the camera gave: the detections, each placed in
+    `frame`, the robot frame, at the picture's capture time, with its region
+    in the picture, and the picture itself: its size in pixels, its capture
+    time and its capture-pair counter, so a region can be read against the
+    same frame. The detector's other boxes are kept for the log: each
+    duplicate of a more confident box, and each box with no depth reading
+    under its centre."""
 
     detections: list[Detection]
+    frame: str
     image_width: int
     image_height: int
-    frame_timestamp: float
-    frame_id: int
+    timestamp: float
+    capture_index: int
     duplicates: list[Box]
     unplaced: list[Box]
 
@@ -132,7 +134,7 @@ class Look:
         detector with its confidence, the placed ones first, each with the
         shape fitted around its depth points when it has one, then the
         duplicates and the boxes with no depth, each marked so."""
-        age_s = search_started_ns / 1e9 - self.frame_timestamp
+        age_s = search_started_ns / 1e9 - self.timestamp
         if age_s >= 0.0:
             taken = f"{age_s:.2f} s before the search"
         else:
@@ -141,9 +143,9 @@ class Look:
         boxes += [f"{box.label} {box.confidence:.2f} (duplicate)" for box in self.duplicates]
         boxes += [f"{box.label} {box.confidence:.2f} (no depth)" for box in self.unplaced]
         if not boxes:
-            return f"frame {self.frame_id} taken {taken}, no box"
+            return f"frame {self.capture_index} taken {taken}, no box"
         count = "1 box" if len(boxes) == 1 else f"{len(boxes)} boxes"
-        return f"frame {self.frame_id} taken {taken}, {count}: {', '.join(boxes)}"
+        return f"frame {self.capture_index} taken {taken}, {count}: {', '.join(boxes)}"
 
 
 def _shape_words(shape: Optional[ItemShape]) -> str:
@@ -174,28 +176,22 @@ class SourceReason:
 
 
 class Perceiver:
-    """The frames of the camera `camera_name`, its camera model, which holds
-    its intrinsics once the camera has answered, and the placer that gives
-    the camera's pose at the time of each picture."""
+    """The frames of the camera, its camera model, which holds its
+    intrinsics once the camera has answered, and the placer that places the
+    frame each picture names at the picture's capture time."""
 
-    def __init__(self, frames: FrameStore, camera: CameraModel, placer: "CameraPlacer", camera_name: str) -> None:
+    def __init__(self, frames: FrameStore, camera: CameraModel, placer: "Placer") -> None:
         self.frames = frames
         self.camera = camera
         self.placer = placer
-        self.camera_name = camera_name
         # Why the camera cannot place a pixel yet: its intrinsics, until
-        # the camera has answered. The placer says why the camera's pose
-        # cannot be had.
+        # the camera has answered. The placer says why a picture's frame
+        # cannot be placed.
         self.intrinsics = SourceReason("the camera's intrinsics have not been received yet")
 
     def set_intrinsics(self, intrinsics: Intrinsics) -> None:
         self.camera = self.camera.with_intrinsics(intrinsics)
         self.intrinsics.update("", starting=False)
-
-    async def pose_at(self, timestamp: float) -> CameraPose:
-        """The camera's pose in the robot frame at `timestamp`, the time a
-        picture of it was taken; a Refusal naming why it cannot be had."""
-        return await self.placer.pose_at(self.camera_name, timestamp)
 
     def why_unavailable(self) -> str:
         """Why the frames or the camera model cannot serve a search yet, or
@@ -207,8 +203,8 @@ class Perceiver:
         """Why the frames or the camera model cannot serve a search yet
         while their sources start, or the empty string: once they serve,
         and when a source does not become able to serve one (a vacant slot,
-        frames that are not aligned, a camera the robot does not carry, an
-        error reply that holds), whatever the other sources say. A camera
+        frames that are not aligned, sensor mounts that name no robot frame,
+        an error reply that holds), whatever the other sources say. A camera
         that never sends what the brain reads, such as one with no depth
         stream, reads as starting: nothing tells it from one that has not
         sent yet."""
@@ -218,9 +214,8 @@ class Perceiver:
         return f"no perception source: {reasons[0].reason}"
 
     def _sources(self) -> list[SourceReason]:
-        """The frames, the intrinsics and the camera's frame on the robot,
-        each with why it cannot serve a search yet, in the order a search
-        reports them."""
+        """The frames, the intrinsics and the robot frame, each with why it
+        cannot serve a search yet, in the order a search reports them."""
         frames = self.frames.why_unavailable()
         intrinsics = self.intrinsics if self.camera.intrinsics is None else SourceReason("", starting=False)
         return [SourceReason(frames, starting=frames == self.frames.starting()), intrinsics, self.placer.reason]
@@ -236,10 +231,11 @@ class Perceiver:
         """Looks once at the latest frame through `detector` for `phrases`,
         or for everything the detector knows when `phrases` is empty, within
         `timeout_s`, the default budget when that is zero. The camera is
-        placed where it stood when the frame was taken."""
+        placed where the frame its picture names stood when the picture was
+        taken."""
         self.refuse_unless_ready()
         frame = self.frames.latest()
-        camera = self.camera.with_pose(await self.pose_at(float(frame.color.header.timestamp)))
+        camera = self.camera.with_pose(await self.placer.place_picture(frame.color.header))
         image = decode_color(frame.color)
         depth_m = decode_depth(frame.depth, frame.depth_unit)
         deadline = Deadline.after(timeout_s if timeout_s > 0.0 else DEFAULT_TIMEOUT_S)
@@ -275,10 +271,11 @@ class Perceiver:
             )
         return Look(
             detections=detections,
+            frame=self.placer.robot_frame,
             image_width=int(frame.color.width),
             image_height=int(frame.color.height),
-            frame_timestamp=float(frame.color.header.timestamp),
-            frame_id=int(frame.color.header.frame_id),
+            timestamp=float(frame.color.header.timestamp),
+            capture_index=int(frame.color.header.capture_index),
             duplicates=duplicates,
             unplaced=unplaced,
         )

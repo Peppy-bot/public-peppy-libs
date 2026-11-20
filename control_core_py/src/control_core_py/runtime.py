@@ -5,6 +5,7 @@ asking another node until it answers, and wire timestamps."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -159,9 +160,11 @@ async def consume_gated(
     on_conform=None,
 ) -> None:
     """One wire-input stream: age-gate on the wire timestamp, then
-    handle(message). The gate is symmetric and what arrival-side freshness
-    cannot give: a backlog replayed after a stall, a future-stamped message,
-    or an unstampable one must not be followed as fresh commands.
+    handle(message), awaiting what it returns when that is awaitable. The
+    gate is symmetric and what arrival-side freshness cannot give: a backlog
+    replayed after a stall, a future-stamped message, or an unstampable one
+    must not be followed as fresh commands. A message with no timestamp, a
+    command at the latest time, has no age, and the gate passes it.
 
     A SetpointError rejects the message (on_reject may raise an alert; a
     later conforming message calls on_conform); any other handler surprise,
@@ -174,12 +177,15 @@ async def consume_gated(
     stale = Latch()
     async for _producer, message in messages(subscription, token, label):
         try:
-            age_s = now_s() - message.timestamp
-            if not math.isfinite(age_s) or abs(age_s) > stale_timeout_s:
-                stale.trip(f"{label} stale, future-stamped, or unstampable on arrival; dropping")
-                continue
+            if message.timestamp is not None:
+                age_s = now_s() - message.timestamp
+                if not math.isfinite(age_s) or abs(age_s) > stale_timeout_s:
+                    stale.trip(f"{label} stale, future-stamped, or unstampable on arrival; dropping")
+                    continue
             stale.clear()
-            handle(message)
+            handled = handle(message)
+            if inspect.isawaitable(handled):
+                await handled
         except SetpointError as e:
             rejected.trip(f"{label} rejected: {e}")
             if on_reject is not None:
@@ -209,12 +215,16 @@ async def serve(node_runner, service_module, handler, label: str) -> None:
         await asyncio.sleep(_SERVICE_RETRY_S)
 
 
-async def _unless_cancelled(awaitable: Awaitable[_Answer], token: CancellationToken) -> tuple[bool, _Answer | None]:
-    """Await `awaitable` unless the token cancels first: (True, its result), or
-    (False, None) on a cancel, which wins a tie. An error of `awaitable`
-    propagates."""
+async def _unless_cancelled(
+    start: Callable[[], Awaitable[_Answer]], token: CancellationToken
+) -> tuple[bool, _Answer | None]:
+    """Await what `start` gives unless the token cancels first: (True, its
+    result), or (False, None) on a cancel, which wins a tie. A token cancelled
+    already starts nothing. An error of the awaited work propagates."""
+    if token.is_cancelled():
+        return False, None
     cancelled = asyncio.ensure_future(token.cancelled())
-    work = asyncio.ensure_future(awaitable)
+    work = asyncio.ensure_future(start())
     try:
         await asyncio.wait([cancelled, work], return_when=asyncio.FIRST_COMPLETED)
         if cancelled.done() or not work.done():
@@ -230,19 +240,20 @@ async def ask(
     question: str, token: CancellationToken, ask_once: Callable[[], Awaitable[_Answer]]
 ) -> _Answer | None:
     """Ask `ask_once` until it answers, and give the answer, or None once the
-    token cancels. A cancel ends the loop at once, while it asks or waits.
+    token cancels. A cancel ends the loop at once, while it asks or waits, and
+    a token cancelled before the loop starts asks nothing.
     The first failure of a run is logged as "{question} failing: {error};
     suppressing repeats", and the loop asks again _ASK_RETRY_S after each
     failure."""
     failing = Latch()
     while True:
         try:
-            answered, answer = await _unless_cancelled(ask_once(), token)
+            answered, answer = await _unless_cancelled(ask_once, token)
         except Exception as e:
             failing.trip(f"{question} failing: {e!r}")
         else:
             return answer if answered else None
-        waited, _ = await _unless_cancelled(asyncio.sleep(_ASK_RETRY_S), token)
+        waited, _ = await _unless_cancelled(lambda: asyncio.sleep(_ASK_RETRY_S), token)
         if not waited:
             return None
 

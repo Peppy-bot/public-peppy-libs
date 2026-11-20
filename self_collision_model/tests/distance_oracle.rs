@@ -117,7 +117,7 @@ fn reported_distances_sit_inside_independent_support_bounds() {
                     p.on_b,
                 )
             };
-            let pieces = m.world_pieces(q).expect("pieces");
+            let pieces = m.pieces_in_root(q).expect("pieces");
             let of = |name: &str| -> &[Placed] {
                 &pieces.iter().find(|(n, _)| *n == name).expect("body").1
             };
@@ -194,7 +194,7 @@ fn every_checked_pair_matches_the_oracle_at_a_near_contact_pose() {
     // positive) distance, so a reported minimum above it means the model
     // missed a closer pair.
     let reported = m.min_distance(&q).expect("query").distance;
-    let pieces = m.world_pieces(&q).expect("pieces");
+    let pieces = m.pieces_in_root(&q).expect("pieces");
     let of =
         |name: &str| -> &[Placed] { &pieces.iter().find(|(n, _)| *n == name).expect("body").1 };
     for (la, lb) in &checked {
@@ -237,7 +237,7 @@ fn a_near_home_converging_pose_reads_clear_within_oracle_brackets() {
         (p.distance, p.link_a.to_string(), p.link_b.to_string())
     };
     let dirs = fibonacci_directions();
-    let pieces = m.world_pieces(&q).expect("pieces");
+    let pieces = m.pieces_in_root(&q).expect("pieces");
     let of =
         |name: &str| -> &[Placed] { &pieces.iter().find(|(n, _)| *n == name).expect("body").1 };
     let max_sep = dirs

@@ -271,7 +271,7 @@ fn the_chain_carries_the_links_its_joints_move(tc: TestCase) {
                 &spec(&joints),
             )
             .expect("a drawn robot is a valid chain");
-            let tip = chain.world_ee_pose(&q);
+            let tip = chain.root_ee_pose(&q);
             let placed = geometry.place(&q);
             let (_, tip_pose) = placed
                 .links()

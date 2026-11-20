@@ -76,7 +76,7 @@ fn the_fingers_hang_where_the_model_places_them() {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let placed = model.world_pieces(&q).expect("placed");
+        let placed = model.pieces_in_root(&q).expect("placed");
         let pose_of = |name: &str| {
             *placed
                 .iter()

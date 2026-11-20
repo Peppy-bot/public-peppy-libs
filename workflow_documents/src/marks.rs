@@ -3,11 +3,6 @@
 //! director reads. The mark list of contracts-hub names each with the owner
 //! `workflow`.
 
-/// A field that holds a position or a pose in the robot frame: a workflow
-/// gives it only a `$ref` to a field with this mark of a call or an
-/// observation of the same role.
-pub const ROBOT_FRAME: &str = "robot_frame";
-
 /// A field that holds an item id, valid only on the node instance that gives
 /// it: a workflow gives it only a `$ref` to a field with this mark of a call
 /// or an observation on the same instance.

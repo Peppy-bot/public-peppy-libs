@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "camera_core_py"
+version = "0.1.0"
+description = "What the Python camera nodes share: the camera a camera node runs as, the name it runs under and the frame it names in each picture, read once from sensor_mounts' describe_sensors through the node's poll of its bound link, or a frame of its own name with the link vacant, with the rules and the messages of camera_core's sensor_mounts module. Pure Python on control_core_py, no hardware or messaging deps; camera_core's Python sibling."
+requires-python = ">=3.12,<3.14"
+dependencies = ["control_core_py"]
+
+[tool.uv.sources]
+control_core_py = { path = "../control_core_py" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/camera_core_py"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+# Each asynchronous fixture runs in the event loop of its test.
+asyncio_default_fixture_loop_scope = "function"

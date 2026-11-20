@@ -21,20 +21,9 @@ from brain_core.manipulators.scripted.grasp import (
     orientation,
     orientations_for,
     pre_grasp,
-    unit,
 )
 from brain_core.ports import Item
-
-
-def rotate(q, v):
-    """`v` turned by the unit quaternion `q`."""
-    x, y, z, w = q
-    columns = (
-        (1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)),
-        (2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)),
-        (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)),
-    )
-    return tuple(sum(columns[j][i] * v[j] for j in range(3)) for i in range(3))
+from control_core_py.geometry import rotate
 
 
 def close(a, b, tolerance=1e-12):
@@ -84,11 +73,13 @@ def test_the_pre_grasp_point_is_clearance_back_along_the_approach_and_the_lift_s
 
 def test_a_chosen_orientation_is_tried_alone_and_none_tries_the_down_rolls():
     assert orientations_for(None) == candidates(GraspDirection.DOWN)
-    assert orientations_for((0.0, 2.0, 0.0, 0.0)) == ((0.0, 1.0, 0.0, 0.0),)
-    with pytest.raises(ValueError, match=r"^the orientation \[0.0, 0.0, 0.0, 0.0\] is not a rotation$"):
+    # A chosen orientation within control_core_py's tolerance is normalized.
+    ((chosen,),) = (orientations_for((0.0, 1.004, 0.0, 0.0)),)
+    assert chosen == pytest.approx((0.0, 1.0, 0.0, 0.0))
+    with pytest.raises(ValueError, match=r"^the orientation \[0, 0, 0, 0\] has a squared norm of 0,"):
         orientations_for((0.0, 0.0, 0.0, 0.0))
-    with pytest.raises(ValueError, match="is not a rotation"):
-        unit((math.nan, 0.0, 0.0, 1.0))
+    with pytest.raises(ValueError, match="must be finite"):
+        orientations_for((math.nan, 0.0, 0.0, 1.0))
 
 
 def test_a_grasp_needs_an_orientation_to_try():
@@ -146,7 +137,7 @@ def test_a_grasp_point_is_grasped_unlowered_in_its_orientation_alone_or_from_abo
     assert chosen == Grasp((0.5, 0.1, 0.7), ((0.0, 0.0, 0.0, 1.0),))
     free = proposer.propose(item((0.5, 0.1, 0.7), None, grasp_point=True))
     assert free == Grasp((0.5, 0.1, 0.7), candidates(GraspDirection.DOWN))
-    with pytest.raises(ValueError, match="is not a rotation"):
+    with pytest.raises(ValueError, match="send a unit quaternion"):
         proposer.propose(item((0.5, 0.1, 0.7), (0.0, 0.0, 0.0, 0.0), grasp_point=True))
 
 

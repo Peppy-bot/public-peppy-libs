@@ -1,7 +1,11 @@
 //! A robot's tree of frames as a node holds it: the messages of transforms taken into a
 //! [`FrameTree`] by the node's followers ([`follow_moving`], [`follow_static`]), and
 //! lookups in it that wait on the node's clock until the tree can answer them, as
-//! tf2_ros's buffer waits in `canTransform` with a timeout.
+//! tf2_ros's buffer waits in `canTransform` with a timeout: the place of a frame in another
+//! at a time ([`RobotTree::lookup_within`]) or at one time in another at another through the
+//! root of its chain ([`RobotTree::lookup_within_through`]), and a value of the geometry types
+//! placed in a frame ([`RobotTree::place`]) or in the root of its frame's chain
+//! ([`RobotTree::place_in_root`]), refused with a [`PlaceError`].
 //!
 //! Each message and each lookup looks at the node's clock first, so a clock that went back
 //! since the look before drops every moving stamp before the tree changes or answers, as
@@ -23,10 +27,44 @@ use frame_tree::{
 use tokio::sync::watch;
 use tracing::warn;
 
+use crate::geometry::{GeometryError, Placed, Stamped};
 use crate::latched_log::LatchedLog;
 use crate::node_clock::{BackSteps, NodeClock};
 use crate::receiving;
 use crate::sync::lock_ignoring_poison;
+
+/// A value placed in a target frame, and the time of that frame's place it is in: none for a
+/// value that holds at every time, as a lookup through static transforms alone places it.
+/// [`report_timestamp`] gives the time as the timestamp of a report that leaves it out for such a
+/// value.
+///
+/// [`report_timestamp`]: crate::geometry::report_timestamp
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedValue<T> {
+    pub value: T,
+    pub time: Option<Stamp>,
+}
+
+/// Why a value was not placed: the lookup that places it failed, or a coordinate the placement
+/// reaches is not finite, which the value's parse refuses.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum PlaceError {
+    #[error(transparent)]
+    Lookup(#[from] LookupError),
+    #[error(transparent)]
+    Value(#[from] GeometryError),
+}
+
+impl PlaceError {
+    /// The failure kind the contracts give this error: the lookup's, or `rejected` for a value
+    /// no contract takes.
+    pub fn failure_kind(&self) -> &'static str {
+        match self {
+            PlaceError::Lookup(error) => error.failure_kind(),
+            PlaceError::Value(_) => "rejected",
+        }
+    }
+}
 
 /// A robot's tree of frames, shared by the followers that fill it and the lookups that
 /// read it, on the node's clock.
@@ -141,14 +179,58 @@ impl RobotTree {
         time: LookupTime,
         timeout: Duration,
     ) -> Result<Found, LookupError> {
+        self.answered_within(timeout, |tree| tree.lookup(target, source, time))
+            .await
+    }
+
+    /// The place of `source` at `source_time` in `target` at `target_time`, either time the
+    /// latest time, waiting as [`RobotTree::lookup_within`] waits. Equal times give the lookup
+    /// at that time. Different times go through the root of `source`'s chain at `source_time`,
+    /// the frame that holds still across a move of the robot (odom or map on a mobile base, the
+    /// robot frame on a fixed one), as tf2's advanced `lookupTransform` goes through a fixed
+    /// frame; the answer holds at the target's time. A source the tree does not know, looked up
+    /// in itself, is the identity at the target's time, as tf2's lookup answers a frame in itself
+    /// before it checks its frames (buffer_core.cpp:830-846): no transform moves it between the
+    /// two times.
+    pub async fn lookup_within_through(
+        &self,
+        target: &FrameName,
+        target_time: LookupTime,
+        source: &FrameName,
+        source_time: LookupTime,
+        timeout: Duration,
+    ) -> Result<Found, LookupError> {
+        if target_time == source_time {
+            return self
+                .lookup_within(target, source, source_time, timeout)
+                .await;
+        }
+        self.answered_within(timeout, |tree| {
+            if source == target && !tree.knows(source) {
+                return tree.lookup(target, source, target_time);
+            }
+            let fixed = tree.root_at(source, source_time)?;
+            tree.lookup_through(target, target_time, source, source_time, &fixed)
+        })
+        .await
+    }
+
+    /// The answer of `look` on the tree: at once when it succeeds, or once a message the tree
+    /// takes lets it succeed, or its last failure once the node's clock reads `timeout` past
+    /// the call, or reads before the call, as [`RobotTree::lookup_within`] waits.
+    async fn answered_within<A>(
+        &self,
+        timeout: Duration,
+        look: impl Fn(&FrameTree) -> Result<A, LookupError>,
+    ) -> Result<A, LookupError> {
         let mut taken = self.taken.subscribe();
         let timeout_ns = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
         let start_ns = self.clock.now_ns();
         let deadline_ns = start_ns.saturating_add(timeout_ns);
         loop {
             taken.borrow_and_update();
-            let failure = match self.on_the_clock(|tree| tree.lookup(target, source, time)) {
-                Ok(found) => return Ok(found),
+            let failure = match self.on_the_clock(|tree| look(tree)) {
+                Ok(answer) => return Ok(answer),
                 Err(failure) => failure,
             };
             let now_ns = self.clock.now_ns();
@@ -164,6 +246,61 @@ impl RobotTree {
                 _ = taken.changed() => {}
             }
         }
+    }
+
+    /// The value of `stamped` in `target` at the latest time, with the time of `target`'s place it
+    /// is in (none for a value that holds at every time), or the failure of the lookup that places
+    /// it or the refusal of the placed value ([`PlaceError`]), waiting within `timeout` as
+    /// [`RobotTree::lookup_within`] waits. A value at the latest time is placed by the place of its
+    /// frame in `target` then. A value at a time is placed where its frame stood at that time:
+    /// through the root of its frame's chain at that time, the frame that holds still across a move
+    /// of the robot (odom or map on a mobile base, the robot frame on a fixed one), as tf2's
+    /// advanced `lookupTransform` places a value through a fixed frame. So a robot-frame pose from
+    /// before a base move names the same place on the floor after it, as Nav2 places a goal at its
+    /// stamp.
+    pub async fn place<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        target: &FrameName,
+        timeout: Duration,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        let found = self
+            .lookup_within_through(
+                target,
+                LookupTime::Latest,
+                stamped.frame(),
+                stamped.time(),
+                timeout,
+            )
+            .await?;
+        Ok(PlacedValue {
+            value: stamped.value().placed_by(&found.placement)?,
+            time: found.time,
+        })
+    }
+
+    /// `stamped` placed in the root of its frame's chain at its time, stamped in that root at the
+    /// latest time, or the failure of the lookup that places it or the refusal of the placed value
+    /// ([`PlaceError`]), waiting within `timeout` as [`RobotTree::lookup_within`] waits. The root
+    /// holds still across a move of the robot (odom or map on a mobile base, the robot frame on a
+    /// fixed one), so the value names one place at every later time. A frame with no parent is its
+    /// own root, and its value comes back as it was.
+    pub async fn place_in_root<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        timeout: Duration,
+    ) -> Result<Stamped<T>, PlaceError> {
+        let (root, found) = self
+            .answered_within(timeout, |tree| {
+                let root = tree.root_at(stamped.frame(), stamped.time())?;
+                let found = tree.lookup(&root, stamped.frame(), stamped.time())?;
+                Ok((root, found))
+            })
+            .await?;
+        Ok(Stamped::at_latest(
+            root,
+            stamped.value().placed_by(&found.placement)?,
+        ))
     }
 
     /// Runs `act` on the tree once the tree looked at the node's clock: a clock that went
@@ -257,7 +394,9 @@ mod tests {
 
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use frame_tree::TransformErrorReason;
+    use frame_tree::{TransformErrorReason, TransformRecord};
+
+    use crate::geometry::{Point, Pose};
 
     use crate::node_clock::TickFeed;
     use crate::test_support::Logged;
@@ -283,6 +422,8 @@ mod tests {
             instance_id: "init_inst".into(),
         }
     }
+
+    const IDENTITY: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
 
     fn frame(name: &str) -> FrameName {
         FrameName::parse(name).expect("a frame name")
@@ -313,10 +454,12 @@ mod tests {
     fn arm_at(seconds: u64, x: f64) -> MovingMessage {
         MovingMessage {
             timestamp: time(seconds),
-            child_frames: vec!["arm".into()],
-            parent_frames: vec!["base_link".into()],
-            positions: vec![x, 0.0, 0.0],
-            orientations: vec![0.0, 0.0, 0.0, 1.0],
+            transforms: vec![TransformRecord::new(
+                "base_link",
+                "arm",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
             start_timestamp: time(1),
         }
     }
@@ -324,10 +467,12 @@ mod tests {
     /// The camera fixed 1 m above the arm link.
     fn camera_on_the_arm() -> StaticMessage {
         StaticMessage {
-            child_frames: vec!["camera".into()],
-            parent_frames: vec!["arm".into()],
-            positions: vec![0.0, 0.0, 1.0],
-            orientations: vec![0.0, 0.0, 0.0, 1.0],
+            transforms: vec![TransformRecord::new(
+                "arm",
+                "camera",
+                [0.0, 0.0, 1.0],
+                IDENTITY,
+            )],
         }
     }
 
@@ -371,6 +516,344 @@ mod tests {
             failure,
             Err(LookupError::Extrapolation { transform, .. }) if transform.child == frame("arm")
         )
+    }
+
+    /// The point at the camera's origin, in the camera frame at `timestamp`, or at the latest
+    /// time for none.
+    fn camera_origin(timestamp: Option<SystemTime>) -> Stamped<Point> {
+        Stamped::parse(
+            "camera",
+            timestamp,
+            Point::parse([0.0; 3]).expect("a point"),
+        )
+        .expect("a stamped point")
+    }
+
+    // A point is placed where its frame stood at its time, and at the newest stamp of the chain
+    // for no timestamp, as Nav2 places a goal at its stamp; the Unix epoch is a time like any
+    // other, which the tree does not hold.
+    #[tokio::test(start_paused = true)]
+    async fn a_point_is_placed_where_its_frame_stood_at_its_time() {
+        let (tree, _ticks) = tree_at(21);
+        tree.take_static(&initializer(), &camera_on_the_arm())
+            .expect("taken");
+        tree.take_moving(&backbone(), &arm_at(18, 0.5))
+            .expect("taken");
+        tree.take_moving(&backbone(), &arm_at(20, 0.9))
+            .expect("taken");
+        let base = frame("base_link");
+        let then = tree
+            .place(&camera_origin(Some(time(18))), &base, Duration::ZERO)
+            .await;
+        assert_eq!(then.expect("placed").value.position(), [0.5, 0.0, 1.0]);
+        let latest = tree
+            .place(&camera_origin(None), &base, Duration::ZERO)
+            .await;
+        assert_eq!(latest.expect("placed").value.position(), [0.9, 0.0, 1.0]);
+        let unknown = Stamped::parse(
+            "gripper",
+            Some(time(18)),
+            Point::parse([0.0; 3]).expect("a point"),
+        )
+        .expect("a stamped point");
+        assert!(matches!(
+            tree.place(&unknown, &base, Duration::ZERO).await,
+            Err(PlaceError::Lookup(LookupError::UnknownFrame { .. }))
+        ));
+        for before in [time(5), UNIX_EPOCH] {
+            assert!(matches!(
+                tree.place(&camera_origin(Some(before)), &base, Duration::ZERO)
+                    .await,
+                Err(PlaceError::Lookup(LookupError::Extrapolation { .. }))
+            ));
+        }
+    }
+
+    // A robot-frame point stamped before the base moves names the same place on the floor after
+    // it: it is placed through the root of its frame's chain, odom; one at the latest time stands
+    // where the robot frame stands then.
+    #[tokio::test(start_paused = true)]
+    async fn a_robot_frame_point_from_before_a_base_move_keeps_its_place_on_the_floor() {
+        let (tree, _ticks) = tree_at(21);
+        let base_at = |seconds, x| MovingMessage {
+            transforms: vec![TransformRecord::new(
+                "odom",
+                "base_footprint",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
+            ..arm_at(seconds, x)
+        };
+        tree.take_moving(&backbone(), &base_at(18, 0.0))
+            .expect("taken");
+        tree.take_moving(&backbone(), &base_at(20, 1.0))
+            .expect("taken");
+        let base = frame("base_footprint");
+        let ahead = |timestamp| {
+            Stamped::parse(
+                "base_footprint",
+                timestamp,
+                Point::parse([1.0, 0.0, 0.0]).unwrap(),
+            )
+            .unwrap()
+        };
+        let before = tree
+            .place(&ahead(Some(time(18))), &base, Duration::ZERO)
+            .await;
+        assert_eq!(
+            before.as_ref().expect("placed").value.position(),
+            [0.0, 0.0, 0.0]
+        );
+        assert_eq!(before.map(|placed| placed.time), Ok(Some(stamp(20))));
+        let latest = tree.place(&ahead(None), &base, Duration::ZERO).await;
+        assert_eq!(latest.expect("placed").value.position(), [1.0, 0.0, 0.0]);
+        assert!(matches!(
+            tree.place(&ahead(Some(time(5))), &base, Duration::ZERO)
+                .await,
+            Err(PlaceError::Lookup(LookupError::Extrapolation { .. }))
+        ));
+    }
+
+    // A value is placed in the root of its frame's chain where its frame stood at its time, and
+    // comes back stamped in that root at the latest time; a frame with no parent is its own
+    // root, and a frame the tree does not know is refused.
+    #[tokio::test(start_paused = true)]
+    async fn a_value_is_placed_in_the_root_of_its_frames_chain_at_its_time() {
+        let (tree, _ticks) = tree_at(21);
+        let base_at = |seconds, x| MovingMessage {
+            transforms: vec![TransformRecord::new(
+                "odom",
+                "base_footprint",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
+            ..arm_at(seconds, x)
+        };
+        tree.take_moving(&backbone(), &base_at(18, 0.5))
+            .expect("taken");
+        tree.take_moving(&backbone(), &base_at(20, 1.0))
+            .expect("taken");
+        let ahead = |frame: &str| {
+            Stamped::parse(
+                frame,
+                Some(time(18)),
+                Point::parse([1.0, 0.0, 0.0]).unwrap(),
+            )
+            .unwrap()
+        };
+        let in_odom = tree
+            .place_in_root(&ahead("base_footprint"), Duration::ZERO)
+            .await
+            .expect("placed");
+        assert_eq!(in_odom.frame(), &frame("odom"));
+        assert_eq!(in_odom.time(), LookupTime::Latest);
+        assert_eq!(in_odom.value().position(), [1.5, 0.0, 0.0]);
+        let in_itself = tree
+            .place_in_root(&ahead("odom"), Duration::ZERO)
+            .await
+            .expect("placed");
+        assert_eq!(in_itself.frame(), &frame("odom"));
+        assert_eq!(in_itself.value().position(), [1.0, 0.0, 0.0]);
+        assert!(matches!(
+            tree.place_in_root(&ahead("gripper"), Duration::ZERO).await,
+            Err(PlaceError::Lookup(LookupError::UnknownFrame { .. }))
+        ));
+    }
+
+    // A value whose placement reaches a coordinate that is not finite is refused as its parse
+    // refuses one, with `rejected`; a failed lookup keeps its own kind.
+    #[tokio::test(start_paused = true)]
+    async fn a_value_placed_past_the_finite_numbers_is_refused_as_its_parse_refuses_it() {
+        let (tree, _ticks) = tree_at(21);
+        tree.take_static(
+            &initializer(),
+            &StaticMessage {
+                transforms: vec![TransformRecord::new(
+                    "base_link",
+                    "far",
+                    [f64::MAX, 0.0, 0.0],
+                    IDENTITY,
+                )],
+            },
+        )
+        .expect("taken");
+        let beyond =
+            Stamped::parse("far", None, Point::parse([f64::MAX, 0.0, 0.0]).unwrap()).unwrap();
+        let refused = tree
+            .place(&beyond, &frame("base_link"), Duration::ZERO)
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            refused.to_string(),
+            "a position must be finite: got x inf, y 0, z 0; give a finite number of meters on \
+             each axis"
+        );
+        assert_eq!(refused.failure_kind(), "rejected");
+        let in_root = tree.place_in_root(&beyond, Duration::ZERO).await;
+        assert_eq!(
+            in_root.map_err(|error| error.failure_kind()),
+            Err("rejected")
+        );
+        let unknown = tree
+            .place(&beyond, &frame("gripper"), Duration::ZERO)
+            .await
+            .expect_err("refused");
+        assert_eq!(unknown.failure_kind(), "unknown_frame");
+    }
+
+    // A lookup across two times goes through the root of the source's chain at the source's
+    // time, either time the latest; equal times give the lookup at that time.
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_across_two_times_goes_through_the_root_and_equal_times_do_not() {
+        let (tree, _ticks) = tree_at(21);
+        let base_at = |seconds, x| MovingMessage {
+            transforms: vec![TransformRecord::new(
+                "odom",
+                "base_footprint",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
+            ..arm_at(seconds, x)
+        };
+        tree.take_moving(&backbone(), &base_at(18, 0.0))
+            .expect("taken");
+        tree.take_moving(&backbone(), &base_at(20, 1.0))
+            .expect("taken");
+        let base = frame("base_footprint");
+        let at = |seconds| LookupTime::At(stamp(seconds));
+        let position =
+            |found: Result<Found, LookupError>| found.expect("found").placement.position();
+        let then_in_now = tree
+            .lookup_within_through(&base, LookupTime::Latest, &base, at(18), Duration::ZERO)
+            .await;
+        assert_eq!(position(then_in_now), [-1.0, 0.0, 0.0]);
+        let now_in_then = tree
+            .lookup_within_through(&base, at(18), &base, LookupTime::Latest, Duration::ZERO)
+            .await;
+        assert_eq!(position(now_in_then), [1.0, 0.0, 0.0]);
+        let equal = tree
+            .lookup_within_through(&base, at(18), &base, at(18), Duration::ZERO)
+            .await;
+        assert_eq!(position(equal), [0.0, 0.0, 0.0]);
+    }
+
+    // A frame the tree does not know, looked up in itself across two times, is the identity at
+    // the target's time, so a value in it at a time is placed as it was; in another frame it is
+    // refused.
+    #[tokio::test(start_paused = true)]
+    async fn an_unknown_frame_in_itself_across_two_times_is_the_identity() {
+        let (tree, _ticks) = tree_at(21);
+        let base = frame("base_footprint");
+        let at = |seconds| LookupTime::At(stamp(seconds));
+        let now = tree
+            .lookup_within_through(&base, LookupTime::Latest, &base, at(18), Duration::ZERO)
+            .await
+            .expect("the identity");
+        assert_eq!(now.placement, frame_tree::Placement::IDENTITY);
+        assert_eq!(now.time, None);
+        let then = tree
+            .lookup_within_through(&base, at(20), &base, at(18), Duration::ZERO)
+            .await
+            .expect("the identity");
+        assert_eq!(then.time, Some(stamp(20)));
+        let ahead = Stamped::parse(
+            "base_footprint",
+            Some(time(18)),
+            Point::parse([1.0, 0.0, 0.0]).unwrap(),
+        )
+        .unwrap();
+        let placed = tree.place(&ahead, &base, Duration::ZERO).await;
+        assert_eq!(placed.expect("placed").value.position(), [1.0, 0.0, 0.0]);
+        assert!(matches!(
+            tree.place(&ahead, &frame("odom"), Duration::ZERO).await,
+            Err(PlaceError::Lookup(LookupError::UnknownFrame { .. }))
+        ));
+    }
+
+    // Values of one frame at one time are placed by one answer of the tree, each where its frame
+    // stood then, and refused whole where one leaves the finite numbers.
+    #[tokio::test(start_paused = true)]
+    async fn values_of_one_frame_and_one_time_are_placed_together() {
+        let (tree, _ticks) = tree_at(21);
+        tree.take_static(
+            &initializer(),
+            &StaticMessage {
+                transforms: vec![
+                    TransformRecord::new("arm", "camera", [0.0, 0.0, 1.0], IDENTITY),
+                    TransformRecord::new("base_link", "far", [f64::MAX, 0.0, 0.0], IDENTITY),
+                ],
+            },
+        )
+        .expect("taken");
+        tree.take_moving(&backbone(), &arm_at(18, 0.5))
+            .expect("taken");
+        tree.take_moving(&backbone(), &arm_at(20, 0.9))
+            .expect("taken");
+        let points = |frame: &str, timestamp, positions: &[[f64; 3]]| {
+            let points: Vec<Point> = positions
+                .iter()
+                .map(|p| Point::parse(*p).unwrap())
+                .collect();
+            Stamped::parse(frame, timestamp, points).unwrap()
+        };
+        let base = frame("base_link");
+        let placed = tree
+            .place(
+                &points("camera", Some(time(18)), &[[0.0; 3], [1.0, 0.0, 0.0]]),
+                &base,
+                Duration::ZERO,
+            )
+            .await
+            .expect("placed");
+        let positions: Vec<[f64; 3]> = placed.value.iter().map(|p| p.position()).collect();
+        assert_eq!(positions, [[0.5, 0.0, 1.0], [1.5, 0.0, 1.0]]);
+        let one_past = points("far", None, &[[0.0; 3], [f64::MAX, 0.0, 0.0]]);
+        let refused = tree.place(&one_past, &base, Duration::ZERO).await;
+        assert_eq!(
+            refused.map_err(|error| error.failure_kind()),
+            Err("rejected")
+        );
+    }
+
+    // A pose's orientation turns by the place of its frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_pose_turns_with_its_frame() {
+        let (tree, _ticks) = tree_at(21);
+        let half = std::f64::consts::FRAC_PI_4;
+        let quarter_turn = [0.0, 0.0, half.sin(), half.cos()];
+        tree.take_static(
+            &initializer(),
+            &StaticMessage {
+                transforms: vec![TransformRecord::new(
+                    "base_link",
+                    "turned",
+                    [1.0, 0.0, 0.0],
+                    quarter_turn,
+                )],
+            },
+        )
+        .expect("taken");
+        let base = frame("base_link");
+        let pose = Stamped::parse(
+            "turned",
+            None,
+            Pose::parse([1.0, 0.0, 0.0], quarter_turn).unwrap(),
+        )
+        .unwrap();
+        let placed = tree
+            .place(&pose, &base, Duration::ZERO)
+            .await
+            .expect("placed")
+            .value;
+        let [x, y, z] = placed.position().position();
+        assert!(
+            (x - 1.0).abs() < 1e-12 && (y - 1.0).abs() < 1e-12 && z == 0.0,
+            "{x} {y} {z}"
+        );
+        let [qx, qy, qz, qw] = placed.orientation().quaternion();
+        assert!(
+            qx.abs() < 1e-12 && qy.abs() < 1e-12 && (qz - 1.0).abs() < 1e-12 && qw.abs() < 1e-12
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -598,7 +1081,7 @@ mod tests {
     fn a_refused_transform_and_a_message_refused_whole_are_named() {
         let (tree, _ticks) = tree_at(21);
         let mut looped = arm_at(20, 1.0);
-        looped.parent_frames = vec!["arm".into()];
+        looped.transforms[0].frame = "arm".into();
         assert!(matches!(
             tree.take_moving(&backbone(), &looped),
             Err(Refused::Transforms(refused))
@@ -610,11 +1093,11 @@ mod tests {
             .take_moving(&backbone(), &arm_at(5, 1.0))
             .expect_err("a stamp older than the window");
         assert!(old.to_string().contains("\"arm\""), "{old}");
-        let mut ragged = camera_on_the_arm();
-        ragged.positions.pop();
+        let mut twice = camera_on_the_arm();
+        twice.transforms.push(twice.transforms[0].clone());
         assert!(matches!(
-            tree.take_static(&initializer(), &ragged),
-            Err(Refused::Message(MessageError::Shape { .. }))
+            tree.take_static(&initializer(), &twice),
+            Err(Refused::Message(MessageError::RepeatedChild { .. }))
         ));
     }
 
@@ -626,9 +1109,9 @@ mod tests {
         let mut waiting = waiting_for_the_camera_at(&tree, 21);
         assert!(still_waits(&mut waiting).await);
         let woken = tree.taken.subscribe();
-        let mut ragged = arm_at(21, 1.0);
-        ragged.positions.pop();
-        assert!(tree.take_moving(&backbone(), &ragged).is_err());
+        let mut twice = arm_at(21, 1.0);
+        twice.transforms.push(twice.transforms[0].clone());
+        assert!(tree.take_moving(&backbone(), &twice).is_err());
         assert!(!woken.has_changed().expect("the tree holds the sender"));
         assert!(still_waits(&mut waiting).await);
         tree.take_moving(&backbone(), &arm_at(21, 1.0))
@@ -641,11 +1124,11 @@ mod tests {
     async fn the_followers_take_each_message_and_log_a_run_of_refusals_once() {
         let (logged, _guard) = Logged::capture();
         let (tree, _ticks) = tree_at(21);
-        let mut ragged = arm_at(20, 1.0);
-        ragged.positions.pop();
+        let mut twice = arm_at(20, 1.0);
+        twice.transforms.push(twice.transforms[0].clone());
         let mut received = vec![
-            Ok(Some((backbone(), ragged.clone()))),
-            Ok(Some((backbone(), ragged))),
+            Ok(Some((backbone(), twice.clone()))),
+            Ok(Some((backbone(), twice))),
             Err("a message that does not decode"),
             Ok(Some((backbone(), arm_at(20, 1.0)))),
             Ok(None),
@@ -693,16 +1176,24 @@ mod tests {
     async fn each_publishers_refusals_are_logged_once_a_run_whatever_the_others_send() {
         let (logged, _guard) = Logged::capture();
         let (tree, _ticks) = tree_at(21);
-        let mut ragged = arm_at(20, 1.0);
-        ragged.positions.pop();
+        // A message stamped before the epoch, which the tree refuses whole.
+        let untimely = MovingMessage {
+            timestamp: UNIX_EPOCH - Duration::from_nanos(1),
+            ..arm_at(20, 1.0)
+        };
         let camera = |seconds, x| MovingMessage {
-            child_frames: vec!["camera".into()],
+            transforms: vec![TransformRecord::new(
+                "base_link",
+                "camera",
+                [x, 0.0, 0.0],
+                IDENTITY,
+            )],
             ..arm_at(seconds, x)
         };
         let mut received = (0..3)
             .flat_map(|second| {
                 [
-                    Ok::<_, &str>(Some((initializer(), ragged.clone()))),
+                    Ok::<_, &str>(Some((initializer(), untimely.clone()))),
                     Ok(Some((backbone(), camera(10 + second, 1.0)))),
                 ]
             })

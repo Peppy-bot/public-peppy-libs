@@ -30,9 +30,10 @@ def test_a_refusal_and_an_expected_failure_carry_their_kind_and_message():
     assert (refusal.kind, refusal.message) == (FailureKind.PRECONDITION_FAILED, "scan_items is running")
 
 
-def test_the_brains_kinds_are_the_kinds_of_peppy_and_not_found():
+def test_the_brains_kinds_are_the_kinds_of_peppy_not_found_and_the_kinds_of_a_lookup():
     assert [kind.value for kind in FailureKind] == [
         "attempt_failed", "timeout", "precondition_failed", "resource_unavailable", "rejected", "not_found",
+        "unknown_frame", "no_chain", "extrapolation", "broken_tree",
     ]
 
 

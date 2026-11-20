@@ -250,30 +250,29 @@ check, padded by the clearance, refuses a start in collision (START_STATE_IN_COL
 the refusal names the nearest such pair and how far apart it stands
 (`StartFault::InsideClearance`). MoveIt pads no pair of the robot's own body.
 
-The robot runs a path from its measured joints, the start. A start otherwise closer than
-the plan's clearance of a term, such as one whose links stand a millimeter apart, departs
-along the straight line from the start by the start rule, each term judged on its own,
-until it keeps that clearance. The rule holds at the states the walk checks: each lies no nearer than the
-farthest checked state before it, or than the plan's clearance where that is nearer, to
-the rounding of the arithmetic, 1e-9 m. Between two checked states the term comes nearer
-by at most half its room. The start sets each term's floor: 0 when the start is nearer
-than the clearance asked of the term, and when it is at least that far, that clearance or
-the start's distance less twice its moving bodies times the shortest step, 0.1 mm,
-whichever is lower. The term's room is its farthest checked distance above the floor, and
-a step moves no point farther than the room over twice its moving bodies, so between two
-checked states it stays above the middle of its floor and its farthest distance: from a
-start below the clearance asked above half that distance, so nothing touches; from one at
-least 0.2 mm above it from the map and the objects, or 0.4 mm above it from its own body,
-above that clearance; and from one nearer above it, at most 0.1 mm below it from the map
-and the objects, and 0.2 mm from its own body, each. An attached object, asked to keep 0
-from the arm that carries it, has a floor of 0 there and never comes nearer than 0. A
-motion ends where its step falls under 0.1 mm. A term the start keeps the clearance of
-keeps it as on any run. A run whose path from the start lies on the straight line from the
-start to the run's end, past waypoints on it such as one a corner's repair adds to the
-first run, is walked by the rule from the start, and so is a walked motion whose first
-state lies on the straight line from the start to its end; any other run is walked by its
-spare from its first state, so one that leaves a state short of the plan's clearance fails
-there.
+The robot runs a path from its measured joints, the start. A start otherwise closer than the
+plan's clearance of a term, such as one whose links stand a millimeter apart, departs along
+the straight line from the start by the start rule, each term judged on its own, until it
+keeps that clearance. The rule holds at the states the walk checks: each lies no nearer than
+the farthest checked state before it, or than the plan's clearance where that is nearer, to
+the rounding of the arithmetic, 1e-9 m. Between two checked states the term comes nearer by
+at most half its room. The start sets each term's floor: 0 when the start is nearer than the
+clearance asked of the term, and when it is at least that far, that clearance or the start's
+distance less twice its moving bodies times the shortest step, 0.1 mm, whichever is lower.
+The term's room is its farthest checked distance above the floor, and a step moves no point
+farther than the room over twice its moving bodies, so between two checked states it stays
+above the middle of its floor and its farthest distance: from a start below the clearance
+asked above half that distance, so nothing touches; from one at least 0.2 mm above it from
+the map and the objects, or 0.4 mm above it from its own body, above that clearance; and
+from one nearer above it, at most 0.1 mm below it from the map and the objects, and 0.2 mm
+from its own body, each. An attached object, asked to keep 0 from the arm that carries it,
+has a floor of 0 there and never comes nearer than 0. A motion ends where its step falls
+under 0.1 mm. A term the start keeps the clearance of keeps it as on any run. A run whose
+path from the start lies on the straight line from the start to the run's end, past
+waypoints on it such as one a corner's repair adds to the first run, is walked by the rule
+from the start, and so is a walked motion whose first state lies on the straight line from
+the start to its end; any other run is walked by its spare from its first state, so one that
+leaves a state short of the plan's clearance fails there.
 
 Run from the plan's start, the path keeps the clearance asked of each term. Run from up to
 a tolerance from the start in each joint, as a robot's controller allows, it comes nearer
@@ -286,9 +285,15 @@ MoveIt's execution starts within its allowed start tolerance and checks nothing 
 A goal holds joints within tolerances above and below their targets, or holds the grasp
 point, a link of the chain or one fixed below it, or a part a link carries through a plan
 (`Frame`; `Frame::Part`, from a part's `Rider`, stands where the clearance checks place
-the part): its origin within a distance of a position of the robot frame, and its
-orientation within an angle of a target, the angle of the rotation between them, or, with
-a free axis, the angle between that axis and its target direction. MoveIt holds a pose
+the part): its origin within a distance of a position, and its orientation within an angle
+of a target, the angle of the rotation between them, or, with a free axis, the angle between
+that axis and its target direction. Each target gives its values in the robot frame or in a
+frame of an arm of the plan's group (`Reference`), its own arm or another, which each state
+places where that arm's joints put it, as MoveIt holds a constraint whose frame is a link of
+the robot (moveit2 2.15.2 kinematic_constraint.cpp, `mobile_frame_`): the target is met where
+the frame stands in the state judged. The hand frame scenario of the ROS reference harness gives
+the left hand's goal in the right hand's frame, and MoveIt's constraints of the goal hold at the
+end of each path of this crate there. MoveIt holds a pose
 goal's orientation by each component of the rotation vector between the two within the
 tolerance (moveit2 2.15.2 `constructGoalConstraints`, `ROTATION_VECTOR`, utils.cpp:220-226
 and kinematic_constraint.cpp:765-775), a box that admits a rotation of up to the square
@@ -323,37 +328,52 @@ plan once the sampling has ended.
 Each arm of a plan has its own goal and sampler (`ArmGoal`), and a goal sample of several
 arms is MoveIt's sample of a group whose constraint sampler is the union of its arms'
 (`UnionConstraintSampler`, union_constraint_sampler.cpp): it draws every arm in turn
-(`GoalSampler::sample_from`) from its joints of the state the sample has reached, with the
-4 attempts, and from the draws of the request's seed plus the arm's place in the group;
-the plan's clearance check decides on that state with the arms before it at their sampled
-joints and the arms after it at the working state's, an arm the plan does not move among
-the scene. From a start that keeps its clearances, the check judges the whole state, as
+(`GoalSampler::sample_from`) from its joints of the state the sample has reached, with the 4
+attempts, and from the draws of the request's seed plus the arm's place in the group; the
+plan's clearance check decides on that state with the arms sampled before it at their
+sampled joints and the others at the working state's, an arm the plan does not move among
+the scene. The arms sample in MoveIt's order of the union's samplers (`OrderSamplers`): an
+arm after each arm in whose frames its goal's targets are, and among the arms that leaves
+free an arm whose goal names joints first, then by the arms' names; where the frames of the
+arms left name one another, the first of them by that order goes next, an order of this
+crate's own: MoveIt's comparator holds each of two such arms before the other
+(union_constraint_sampler.cpp:100-107), which orders neither. A target in a frame of another
+arm is placed where the state the sample has reached puts that frame (`Goal::placed_for`,
+which gives the `PlacedGoal` a sampler draws and judges), as `UnionConstraintSampler` hands
+each arm's sampler the state the samplers before it left; a target in a frame of the arm's
+own is drawn where the working state puts that frame and met where the configuration found
+puts it, as `samplePose` draws by the reference state and `validate` judges the state found
+(default_constraint_samplers.cpp). Once every arm is sampled, each goal in a frame of
+another arm is judged at the state found, as MoveIt decides the goal's constraints on it
+(constrained_goal_sampler.cpp:126-137), so a goal in a frame of an arm sampled after it,
+where the frames of the arms name one another, holds where that arm ends, or the sample
+finds no goal. From a start that keeps its clearances, the check judges the whole state, as
 MoveIt's validity callback does. From a start nearer than the plan's clearance, which the
 start rule plans from, a turn judges each pair that holds a body of its arm and none of an
-arm after it (`Moving::Arm`), and a pair with an arm after it waits for that arm's turn,
-where both stand as the goal holds them: so an arm that starts nearer the scene or the
-other arm than the clearance holds back no goal, and every goal keeps every clearance. A
-sample in which an arm finds none finds no goal. A plan whose sampling finds no goal fails
-`Unreachable`, saying so and, for a plan of several arms, naming the first arm that met
-its goal in no sample; one whose sampling rejects states and finds no goal fails
-`Unreachable` and says that instead, how many states the sampling rejected, naming, of the
-state that falls short least, the nearest pair the check judged: of the robot's own body,
-of an attached object and the arm that carries it, or of a body of an arm and the map, an
-object or a part of the robot, of each clearance it falls short of and how far apart they
-stand.
+arm sampled after it (`Moving::Arm`, which names the arms sampled before it), and a pair
+with an arm sampled after it waits for that arm's turn, where both stand as the goal holds
+them: so an arm that starts nearer the scene or the other arm than the clearance holds back
+no goal, and every goal keeps every clearance. A sample in which an arm finds none finds no
+goal. A plan whose sampling finds no goal fails `Unreachable`, saying so and, for a plan of
+several arms, naming the first arm in the order of the samples that met its goal in no
+sample; one whose sampling rejects states and finds no goal fails `Unreachable` and says
+that instead, how many states the sampling rejected, naming, of the state that falls short
+least, the nearest pair the check judged: of the robot's own body, of an attached object and
+the arm that carries it, or of a body of an arm and the map, an object or a part of the
+robot, of each clearance it falls short of and how far apart they stand.
 
 `IkGoalSampler` makes a sample. For a goal of joints it draws one configuration inside the
-joint limits, the targeted joints inside their targets, as MoveIt's
-`JointConstraintSampler` does. For a pose, as MoveIt's `IKConstraintSampler`, each attempt
-draws a pose of the goal's frame inside the goal and searches for it by MoveIt's KDL
-inverse kinematics, as [`chain_kinematics`](../chain_kinematics) holds it, at the search's
-budget of 9274 passes, so a seed gives the same goals on every machine: the first attempt
-from the working state, each later one from a configuration drawn inside the limits. The
-grasp point, and a link that the chain's every joint moves and that is fixed below the last
-joint's link, are the tip of MoveIt's solver or a link fixed to it, and the search solves
-for them as KDL does. A link the chain's later joints do not move, and a part a link
-carries such as a finger, which hangs on a joint of its own, depart from MoveIt, which has
-no inverse kinematics for them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
+joint limits, the targeted joints inside their targets, as MoveIt's `JointConstraintSampler`
+does. For a pose, as MoveIt's `IKConstraintSampler`, each attempt draws a pose of the goal's
+frame inside the goal and searches for it by MoveIt's KDL inverse kinematics, as
+[`chain_kinematics`](../chain_kinematics) holds it, at the search's budget of 9274 passes,
+so a seed gives the same goals on every machine: the first attempt from the working state,
+each later one from a configuration drawn inside the limits. The grasp point, and a link
+that the chain's every joint moves and that is fixed below the last joint's link, are the
+tip of MoveIt's solver or a link fixed to it, and the search solves for them as KDL does. A
+link the chain's later joints do not move, and a part a link carries such as a finger, which
+hangs on a joint of its own, depart from MoveIt, which has no inverse kinematics for them:
+MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
 (`IKConstraintSampler::loadIKSolver`, default_constraint_samplers.cpp:386-439), so its
 constraint sampler manager selects none (constraint_sampler_manager.cpp:395) and its goal
 sampler draws states uniformly and keeps those that meet the goal by chance
@@ -506,9 +526,19 @@ answers each straight path as it is.
 ## Path orientations
 
 `PlanRequest::path_orientations` lists the orientations every state of the path holds, each
-a frame of an arm of the group with an `OrientationTarget`, the measure a goal's orientation
-takes: the angle of the rotation from the target, or, with a free axis, the angle between
-that axis and its direction in the target. The list carries no order. It holds fewer
+of a frame (`Holder`) with an `OrientationTarget`, the measure a goal's orientation takes:
+the angle of the rotation from the target, or, with a free axis, the angle between that axis
+and its direction in the target, in the robot frame or in a frame of an arm of the group
+(`Reference`), against which every state holds it where that state puts the frame. The hand
+frame scenario of the ROS reference harness holds the left hand's orientation in the right
+hand's frame and the right hand's in the frame of a link of its own arm, and MoveIt's forward
+kinematics finds every probe of each path of this crate there within both. The frame
+that holds it is a frame of an arm of the group, or a frame no state moves at its rotation in
+the robot frame, such as a link of an arm outside the group where the plan's start stands it,
+as MoveIt judges a constraint on a link outside its planning group with the group's joints
+from each state and every other joint at the start state's (moveit_planners/ompl
+state_validity_checker.cpp:58, :102-107; kinematic_constraint.cpp:728-735). The
+list carries no order. It holds fewer
 orientations than the state has joints, for OMPL's projection needs fewer rows than
 dimensions; a longer list fails with `PlanFailure::Request`.
 
@@ -516,33 +546,36 @@ The plan corrects its states onto the orientations with OMPL's projected state s
 function holds one row for each orientation, the error above the angle the plan allows it:
 `HELD_SHARE`, 0.9, of the tolerance, or the start's error where that is more. Each row's
 Jacobian is the unit axis along which the error grows against each joint that turns the
-frame, and 0 for every other joint, so the row of one arm leaves the other arm's joints
-alone. MoveIt's constrained planning projects so for one orientation path constraint, its
-default for one (moveit2 2.15.2 `ConstrainedPlanningStateSpaceFactory`, priority 200), with
-each component of a rotation vector bounded by twice its tolerance (ompl_constraints.cpp).
-With two or more it plans in pose space through inverse kinematics, and on a group of two
+frame, less it against each joint that turns the frame of the reference, and 0 for every
+other joint, so the row of one arm in the robot frame leaves the other arm's joints alone,
+and a joint that turns both frames alike, which leaves the error as it is, holds 0.
+MoveIt's constrained planning projects so for one orientation path constraint, its default
+for one (moveit2 2.15.2 `ConstrainedPlanningStateSpaceFactory`, priority 200), with each
+component of a rotation vector bounded by twice its tolerance (ompl_constraints.cpp). With
+two or more it plans in pose space through inverse kinematics, and on a group of two
 chains its Jacobian is refused (`RobotState::getJacobian`, robot_state.cpp:1516). Here the
 rows of every orientation stack on one arm and on two.
 
 Every state of the rounded path holds each orientation. A joint turning by an angle turns a
-frame it moves by at most that angle, so a frame turns along a motion at most the sum of the
-changes of its joints, and a step that turns it no farther than what lies between its error
-and its tolerance keeps every state of the step inside. The plan walks each run and each arc
-so, apart from the walks of its clearances, and a state within 1% of the tolerance ends the
-walk: the planner's motions, each straight stretch of OMPL's walk along the orientations as
-one motion; the runs of its answer; and each arc. A corner whose arc breaks an orientation
-gains a waypoint on each of its runs, a quarter of the run from the corner and then each time
-half as far, which pulls the arc in until it holds or its waypoints lie at the corner. OMPL's
-walk checks no bounds when the caller checks its states, so the bridge refuses a walk with a
-state outside the joints' limits, as MoveIt's validity check does (state_validity_checker.cpp).
-A run of the answer stays inside between its states: a straight joint motion `a` turns a frame
-off the shortest rotation between its ends by at most `|a|_1^2 / 16`, a free axis as much again
-by the small circle it follows, and the plan spaces its states so that the first is at most half
-of what lies between the allowed angle and the tolerance (`Projection::spacing`), which is
-OMPL's default, 0.1, from a tolerance of about 0.09 rad up on a frame all seven joints turn. The
-answer drops the waypoints inside a straight stretch. Run from up to a tolerance from the start
-in each joint, as a robot's controller allows, a frame turns from the plan's start by at most
-the sum of its joints' differences from it.
+frame it moves by at most that angle, so a frame turns from its reference along a motion at
+most the sum of the changes of the joints that turn exactly one of the two, and a step that
+turns it no farther than what lies between its error and its tolerance keeps every state of
+the step inside. The plan walks each run and each arc so, apart from the walks of its
+clearances, and a state within 1% of the tolerance ends the walk: the planner's motions,
+each straight stretch of OMPL's walk along the orientations as one motion; the runs of its
+answer; and each arc. A corner whose arc breaks an orientation gains a waypoint on each of
+its runs, a quarter of the run from the corner and then each time half as far, which pulls
+the arc in until it holds or its waypoints lie at the corner. OMPL's walk checks no bounds
+when the caller checks its states, so the bridge refuses a walk with a state outside the
+joints' limits, as MoveIt's validity check does (state_validity_checker.cpp). A run of the
+answer stays inside between its states: a straight joint motion `a` turns a frame off the
+shortest rotation between its ends by at most `|a|_1^2 / 16`, a free axis as much again by
+the small circle it follows, and the plan spaces its states so that the first is at most
+half of what lies between the allowed angle and the tolerance (`Projection::spacing`), which
+is OMPL's default, 0.1, from a tolerance of about 0.09 rad up on a frame all seven joints
+turn. The answer drops the waypoints inside a straight stretch. Run from up to a tolerance
+from the start in each joint, as a robot's controller allows, a frame turns from the plan's
+start by at most the sum of its joints' differences from it.
 
 A start more than 99% of a tolerance from its orientation fails with `PlanFailure::NoPath`.
 A goal stands within the angle the plan allows: a goal that names a frame's position or
@@ -551,7 +584,8 @@ constraints, drawing from the smaller of the two sampling volumes (constraint_sa
 and meeting both, and any other goal is judged by the orientations as it is sampled. A goal
 orientation whose middle stands farther from a path orientation's than the goal's tolerance and
 the allowed angle together fails with `PlanFailure::NoPath` at once, unless the two hold different
-free axes, whose distance no one angle states. After each sample that misses, an attempt samples
+free axes, whose distance no one angle states, or stand in different frames, which a state turns
+apart. After each sample that misses, an attempt samples
 the goal alone, until a sample of either finds a state. A plan with no goal fails with
 `PlanFailure::NoPath` where a sample of the goal alone found a configuration, and with
 `PlanFailure::Unreachable` where none did, as a plan that holds nothing does.
@@ -564,21 +598,21 @@ the goal alone, until a sample of either finds a state. A plan with no goal fail
 waypoints, each holding every arm's joints, with the checks of a plan's answer: the start
 inside its limits by its tolerance and out of contact, each waypoint inside the joint
 limits, a joint at most `TARGET_SLACK` (0.001) outside a limit taken at the limit as
-execute_joint_path takes it, and, after the start, at the plan's clearances, each run as the plan walks the runs
-of its answer, the run whose path from the start lies on the straight line from the start
-by the start rule, and each arc of the rounded path as the plan walks its arcs. The walks
-follow the run into the first waypoint outside a limit up to where it leaves the limits,
-and go no farther. It answers the first fault along the path (`PathFault`): the start's, a
-waypoint that holds a joint, by its URDF name, outside its limits, or a state short of the
-plan's clearance, where it lies (`Place`: at a waypoint, on a run, or on the arc at a
-corner) and how near it comes to the map and the objects, within the robot's own body, and
-between an attached object and the arm that carries it. It answers too the most waypoints,
-from the first, whose path, every arm run together through them with the last of them as
-its end, passes: the waypoints up to the one whose run or corner fails, the start counted
-as waypoint 0, or before the waypoint that fails. A corner's arc runs before the rest of
-the run from its waypoint, and that run before the waypoint it ends at. Each walk of a run
-or of a corner starts only before the check's deadline, and a check that reaches its
-deadline fails `TimeEnded`.
+execute_joint_path takes it, and, after the start, at the plan's clearances, each run as the
+plan walks the runs of its answer, the run whose path from the start lies on the straight
+line from the start by the start rule, and each arc of the rounded path as the plan walks
+its arcs. The walks follow the run into the first waypoint outside a limit up to where it
+leaves the limits, and go no farther. It answers the first fault along the path
+(`PathFault`): the start's, a waypoint that holds a joint, by its URDF name, outside its
+limits, or a state short of the plan's clearance, where it lies (`Place`: at a waypoint, on
+a run, or on the arc at a corner) and how near it comes to the map and the objects, within
+the robot's own body, and between an attached object and the arm that carries it. It answers
+too the most waypoints, from the first, whose path, every arm run together through them with
+the last of them as its end, passes: the waypoints up to the one whose run or corner fails,
+the start counted as waypoint 0, or before the waypoint that fails. A corner's arc runs
+before the rest of the run from its waypoint, and that run before the waypoint it ends at.
+Each walk of a run or of a corner starts only before the check's deadline, and a check that
+reaches its deadline fails `TimeEnded`.
 
 ## Cartesian paths
 
@@ -632,14 +666,17 @@ motion_planning's scene members; a node parses the wire into its requests and ma
 refusals (`SceneError`), each `rejected` but a link whose pose is not known yet
 (`Unplaced`).
 
-- `apply_collision_objects` applies a batch in order, all or none. "add" places an object
-  with its shapes, in place of one of the same id, whose allowed pairs stay; "move" reads
-  only the id and the pose; "remove" reads only the id, and drops every pair that names
-  the object. Refused: an empty id, an id that names a link or `"occupancy_map"`, an
-  unknown id for "move" or "remove", an attached object, an object of no shape, and a
-  shape that cannot be built, an open mesh among them. A pose's position is finite, and
-  its orientation within 0.001 of unit length is normalized (`pose_from_parts`). MoveIt
-  removes every object for a "remove" of an empty id; this crate refuses it.
+- `apply_collision_objects` applies a batch of `ObjectRequest`s in order, all or none,
+  each operation holding the fields it reads, a pose in the robot frame. "add" places an
+  object with its shapes, in place of one of the same id, whose allowed pairs stay; "move"
+  places an object at a new pose; "remove" drops every pair that names the object.
+  Refused: an empty id, an id that names a link or `"occupancy_map"`, an unknown id for
+  "move" or "remove", an attached object, an add of no shape, and a shape that cannot be
+  built, an open mesh among them. A shape's pose is read by `control_core`'s one parse of
+  the contracts' geometry (`pose_from_parts`): its position finite, and its orientation
+  normalized where its squared norm lies within 0.01 of 1, the tolerance of tf2's buffer,
+  and refused otherwise. MoveIt removes every object for a "remove" of an empty id; this
+  crate refuses it.
 - `apply_attached_collision_object` attaches an object no link carries to an arm's grasp
   link, where it stands, with touch links of the robot; a detach, which reads only the id,
   leaves it where it stands. Attaching an attached object and detaching one no link
@@ -652,6 +689,11 @@ refusals (`SceneError`), each `rejected` but a link whose pose is not known yet
   attached objects, each sorted by id, the attached ones in their links' frames; each
   allowed pair once, its first name before its second in sort order, the pairs sorted; and
   the clearance and the voxel size its caller gives it.
+- `standing_pose` gives the pose in the robot frame of one object no link carries, by its
+  id, or none for an attached object or an id the scene does not hold.
+- `move_objects` moves each object no link carries to the pose its caller gives it, its
+  shapes and pairs as they stand, and clears no voxel of the map, for a node that holds the
+  objects in a frame other than the robot frame and places them in the robot frame again.
 
 Adding, moving or attaching an object clears every voxel of the map it intersects where
 it then stands (`VoxelMap::clear_intersecting`); a batch clears where it leaves each

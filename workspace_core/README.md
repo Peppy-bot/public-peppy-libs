@@ -17,7 +17,7 @@ A backbone in Python uses it through its bindings,
 
 | Item | Definition |
 |---|---|
-| Robot frame | Fixed to the robot's base: origin where the base stands, +X the way the robot faces, +Y to its left, +Z up. |
+| Robot frame | The root link of the robot's URDF, fixed to its base: origin where the URDF puts that link, +X the way the robot faces, +Y to its left, +Z up. |
 | Grid (`Grid::STANDARD`) | x from 0.0 to 1.0 m every 0.02 m, y from -0.30 to +0.30 m every 0.05 m: 51 rows of 13 lanes. |
 | Grasp frame | Origin at the grasp point, +Z along the gripper's approach (out of the gripper), +Y along the axis its jaws close on. |
 | Grasp orientations (`GraspOrientation::all`) | The approach straight down (-Z) or straight forward (+X), each at 8 rolls about it, every 45°. |
@@ -51,7 +51,7 @@ gives the rest, so that every robot answers alike.
 
 | | |
 |---|---|
-| `SurfaceHeight::from_wire`, `Positions::from_wire` | the parsing of a describe_workspace and a check_positions request: a finite surface height within `MAX_COORDINATE` (1000 m) of the robot's base point, to the millimetre, and at least one point of three finite coordinates, each within `MAX_COORDINATE` of the robot's base point; the bound itself is within it, and applies to the values as the request gives them; a refusal reads as the contract says (`SurfaceHeightError`, `PositionsError`) |
+| `SurfaceHeight::from_wire`, `Positions::parse` | the parsing of a describe_workspace and a check_positions request: a finite surface height within `MAX_COORDINATE` (1000 m) of the robot's base point, to the millimetre, as the request gives it; and at least one point, each a `control_core` geometry point that the robot's node placed in the robot frame, with each coordinate within `MAX_COORDINATE` of the robot's base point; the bound itself is within it; a refusal reads as the contract says (`SurfaceHeightError`, `PositionsError`) |
 | `SurfaceHeight::grid_targets` | the targets an arm reaches for on a surface: `ABOVE_SURFACE` above each point of `Grid::STANDARD`, in the grid's order |
 | `SurfaceReach`, `PositionsReach` | the reach of each target of a surface or of a request, in order: measured now by the robot's solver (`measure`), or measured elsewhere and given one per target (`from_grid_order`, `from_request_order`; else `ReachCountError`) |
 | `ReachMemo` | the reach of the surfaces measured last, one per height: past `REACH_MEMO_HEIGHTS` (32) heights it drops the height it stored first, also when a caller asked that height again after it was stored |

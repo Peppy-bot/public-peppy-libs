@@ -3,13 +3,14 @@ carries, kept by a small loop the node starts.
 
 The node's `wrist_cameras` slot takes any number of rgb_camera producers,
 and the `wrist_cameras` parameter names each arm's camera by the instance
-id its fragment gives it ("left_arm:wrist_left,right_arm:wrist_right"),
-the name sensor_mounts knows it by. A frame is matched to its camera by
-the producer that published it: in a stack that runs the robot as a copy,
-the instance runs as `<copy>_<id>` (`alpha_wrist_left`), and the slot's
-bound members say which copy each producer belongs to, so the store takes
-the copy's prefix off. The launcher binds the cameras and the parameter
-names them; nothing here knows how a camera is mounted. An arm the
+id its fragment gives it ("left_arm:wrist_left,right_arm:wrist_right").
+A frame is matched to its camera by the producer that published it: in a
+stack that runs the robot as a copy, the instance runs as `<copy>_<id>`
+(`alpha_wrist_left`), and the slot's bound members say which copy each
+producer belongs to, so the store takes the copy's prefix off. The
+launcher binds the cameras and the parameter names them; each frame names
+in its header the frame of the robot's tree that places it
+(`Senses.camera_pose`). An arm the
 parameter does not name has no wrist camera: an alignment of that arm is
 unavailable and says so before any move.
 
@@ -196,7 +197,7 @@ def jpeg_of(message: ColorMessage) -> bytes:
     streams MJPEG, else the decoded picture encoded at JPEG_QUALITY. A
     Refusal names a frame that cannot be decoded."""
     if message.encoding.lower() in ("mjpeg", "jpeg", "jpg"):
-        return bytes(message.frame)
+        return bytes(message.data)
     from PIL import Image
 
     image = decode_color(message)

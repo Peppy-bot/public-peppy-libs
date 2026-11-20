@@ -9,6 +9,7 @@ description = "The documents of the workflow side: workflow/v1, the program of t
 [dependencies]
 cel = { version = "0.15", default-features = false }
 documents_core = { path = "../documents_core" }
+frame_tree = { path = "../frame_tree" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_path_to_error = "0.1"
