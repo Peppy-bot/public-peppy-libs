@@ -49,6 +49,49 @@ pub struct DescribedSensors {
     pub carried_by: Vec<String>,
 }
 
+/// One sensor of an answer of `describe_sensors`: its entry in each of the four arrays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DescribedSensor<'a> {
+    pub name: &'a str,
+    pub kind: &'a str,
+    pub frame: &'a str,
+    pub carried_by: &'a str,
+}
+
+impl DescribedSensors {
+    /// The sensors of the answer, in its order, one for each index of its arrays; refused
+    /// when the arrays do not give each sensor one kind, one frame and one carrier.
+    pub fn sensors(&self) -> Result<Vec<DescribedSensor<'_>>, SensorMountsError> {
+        let names = self.sensor_names.len();
+        let [kinds, frames, carriers] = [
+            self.sensor_kinds.len(),
+            self.sensor_frames.len(),
+            self.carried_by.len(),
+        ];
+        if [kinds, frames, carriers] != [names; 3] {
+            return Err(SensorMountsError::Counts {
+                names,
+                kinds,
+                frames,
+                carriers,
+            });
+        }
+        Ok(self
+            .sensor_names
+            .iter()
+            .zip(&self.sensor_kinds)
+            .zip(&self.sensor_frames)
+            .zip(&self.carried_by)
+            .map(|(((name, kind), frame), carried_by)| DescribedSensor {
+                name,
+                kind,
+                frame,
+                carried_by,
+            })
+            .collect())
+    }
+}
+
 /// A sensor as sensor_mounts places it: the class it was read as, the name it runs under and
 /// the frame each of its measurements names.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,38 +287,23 @@ fn sensor_frame(
     sensors: &DescribedSensors,
     name: &str,
 ) -> Result<FrameName, SensorMountsError> {
-    let names = sensors.sensor_names.len();
-    if [
-        sensors.sensor_kinds.len(),
-        sensors.sensor_frames.len(),
-        sensors.carried_by.len(),
-    ] != [names; 3]
-    {
-        return Err(SensorMountsError::Counts {
-            names,
-            kinds: sensors.sensor_kinds.len(),
-            frames: sensors.sensor_frames.len(),
-            carriers: sensors.carried_by.len(),
-        });
-    }
-    let index = sensors
-        .sensor_names
-        .iter()
-        .position(|named| named == name)
+    let sensor = sensors
+        .sensors()?
+        .into_iter()
+        .find(|sensor| sensor.name == name)
         .ok_or_else(|| SensorMountsError::NoSuchSensor {
             class,
             name: name.to_owned(),
             names: sensors.sensor_names.clone(),
         })?;
-    let kind = &sensors.sensor_kinds[index];
-    if !class.kinds.contains(&kind.as_str()) {
+    if !class.kinds.contains(&sensor.kind) {
         return Err(SensorMountsError::OtherKind {
             class,
             name: name.to_owned(),
-            kind: kind.clone(),
+            kind: sensor.kind.to_owned(),
         });
     }
-    FrameName::parse(&sensors.sensor_frames[index]).map_err(|error| {
+    FrameName::parse(sensor.frame).map_err(|error| {
         SensorMountsError::SensorFrame {
             name: name.to_owned(),
             error,
@@ -627,6 +655,25 @@ mod tests {
                 frames: 3,
                 carriers: 2,
             }
+        );
+    }
+
+    #[test]
+    fn an_answer_reads_as_its_sensors_in_its_order() {
+        let answer = answer();
+        let sensors = answer.sensors().expect("arrays that line up");
+        assert_eq!(
+            sensors.last(),
+            Some(&DescribedSensor {
+                name: "lidar",
+                kind: "lidar_2d",
+                frame: "lidar_link",
+                carried_by: "",
+            })
+        );
+        assert_eq!(
+            sensors.iter().map(|sensor| sensor.name).collect::<Vec<_>>(),
+            ["chest", "wrist_left", "lidar"]
         );
     }
 
