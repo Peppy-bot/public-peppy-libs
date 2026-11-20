@@ -575,7 +575,7 @@ fn each_voxel_takes_the_strongest_update_of_a_scan_once(tc: TestCase) {
     )
     .expect("a valid map");
     let sensor_key = Key(tc.draw(gs::arrays(gs::integers().min_value(-4).max_value(4))));
-    let sensor = Pose::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
     // A whole number of voxels, so a point at the range lies far from a face of its
     // voxel.
     let max_range_m =

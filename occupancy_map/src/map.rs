@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn a_clone_holds_no_bytes_of_an_insert_and_takes_a_scan_alike() {
         let frame = FrameName::parse("world").expect("a frame");
-        let sensor = Pose::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let sensor = Transform::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
         let scan = |points| Scan {
             frame: &frame,
             sensor,
