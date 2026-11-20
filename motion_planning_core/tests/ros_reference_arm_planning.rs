@@ -592,6 +592,15 @@ fn moveit_finds_every_path_of_this_crate_free() {
 /// path timing parity. The plan's own walks leave a hundredth of the tolerance for it.
 const PROBE_SHARE_ROUNDING: f64 = 1e-6;
 
+/// Holds `share`, the share of an orientation's tolerance that MoveIt's probe reads of a path of
+/// ours, within the tolerance and the probe's rounding; `what` names the path.
+fn assert_within_its_tolerance(what: &str, share: f64) {
+    assert!(
+        share <= 1.0 + PROBE_SHARE_ROUNDING,
+        "{what}: our path reaches {share} of an orientation's tolerance"
+    );
+}
+
 // Each path of this crate in each scenario meets its scene's goal and holds its orientations as
 // MoveIt reads them, each in its frame where the probe's state puts it: MoveIt's kinematic
 // constraints of the goal hold at the path's last waypoint, and MoveIt's forward kinematics finds
@@ -612,10 +621,7 @@ fn moveit_finds_every_path_of_this_crate_at_its_goal_and_within_its_orientations
                     "{what}: MoveIt's goal constraints do not hold at our path's end"
                 );
                 if let Some(share) = probed.share_of_tolerance {
-                    assert!(
-                        share <= 1.0 + PROBE_SHARE_ROUNDING,
-                        "{what}: our path reaches {share} of an orientation's tolerance"
-                    );
+                    assert_within_its_tolerance(&what, share);
                 }
             }
             if let Some(probed) = c.moveit.probed {
@@ -1054,11 +1060,7 @@ fn holds_its_orientations_and_lies_on_its_side_of_moveits(name: &str) {
         theirs.len(),
         past(&theirs)
     );
-    assert!(
-        largest(&ours) <= 1.0 + PROBE_SHARE_ROUNDING,
-        "{name}: a path of ours reaches {} of its tolerance",
-        largest(&ours)
-    );
+    assert_within_its_tolerance(name, largest(&ours));
     lies_on_its_side_of_moveits(name);
 }
 
