@@ -1,10 +1,10 @@
 //! The sensor a node runs as, as sensor_mounts:v1 places it: the name it runs under and the
 //! frame it names in each measurement. With its sensor_mounts link bound, that frame is the one
 //! `describe_sensors` gives the sensor of that name; with the link vacant, it is a frame of the
-//! sensor's own name, which no robot's tree holds, so a consumer that places a measurement drops
-//! it with `unknown_frame`. A sensor node reads it once at its start through [`read_sensor`],
-//! before it opens anything, with the [`SensorClass`] of the sensors it streams as: a camera with
-//! [`CAMERA`].
+//! sensor's own name, and a consumer whose tree holds no frame of that name drops the
+//! measurement with `unknown_frame`. A sensor node reads it once at its start through
+//! [`read_sensor`], before it opens anything, with the [`SensorClass`] of the sensors it
+//! streams as: a camera with [`CAMERA`].
 
 use std::fmt::{self, Display};
 use std::future::Future;
