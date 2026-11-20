@@ -2,12 +2,13 @@
 //! limiting, the timing of a motion, the health of a motor, a mobile base's
 //! footprint, its body velocity, its limiter and its wheel odometry, where a
 //! frame sits on the floor plane, the geometry types of the contracts, the
-//! setpoint stream, the service, receive and ask loops, the fault that ends a
-//! node, the model a component is configured for, latched failure logging, a
-//! node's wall or simulation clock, a robot's tree of frames with the lookups
-//! that wait on that clock, waiting and locking from synchronous code, the
-//! reason a robot stop gives each move it ends, and the arms a request names,
-//! for robot nodes and the kinematics crates that plan their moves.
+//! setpoint stream, the single-flight move slot of a goal, the service,
+//! receive and ask loops, the fault that ends a node, the model a component is
+//! configured for, latched failure logging, a node's wall or simulation clock,
+//! a robot's tree of frames with the lookups that wait on that clock, waiting
+//! and locking from synchronous code, the reason a robot stop gives each move
+//! it ends, and the arms a request names, for robot nodes and the kinematics
+//! crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -39,6 +40,8 @@
 //!   with a [`PlaceError`](robot_tree::PlaceError).
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
+//! - [`move_slot`]: the single-flight move slot a goal claims on its admission and
+//!   releases on its end, which a stop marks for a goal its loop has not taken.
 //! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
 //!   as Nav2's controller reads it, in frame_tree's arithmetic.
 //! - [`twist`]: a body velocity on the floor plane in the robot frame, finite by construction.
@@ -102,6 +105,7 @@ pub mod latched_log;
 pub mod limiter;
 pub mod minimum_jerk;
 pub mod motor_health;
+pub mod move_slot;
 pub mod node_clock;
 pub mod non_negative_finite;
 pub mod not_finite;
