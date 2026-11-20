@@ -1,9 +1,12 @@
 //! The loop that asks another node until it answers, for a node that starts serving
-//! only once it has the answer, and the pause after a failed ask.
+//! only once it has the answer, and the pause after a failed ask; and the ask of a loop of
+//! the node's own, which answers each request it takes on a channel, within a timeout.
 
 use std::fmt::Display;
 use std::future::Future;
 use std::time::Duration;
+
+use tokio::sync::{mpsc, oneshot};
 
 use crate::latched_log::LatchedLog;
 use crate::time::sleep_unless_cancelled;
@@ -41,6 +44,44 @@ pub async fn ask<T, E: Display>(
             return None;
         }
     }
+}
+
+/// Hands `request` to the loop that `requests` feeds, the loop `name` names, and gives the answer
+/// the loop sends on `answer`, waiting at most `within` for both: for its place in the loop's
+/// queue and for the answer. The error says, in words that name the loop, what went wrong:
+/// - the loop is not running;
+/// - it dropped the request;
+/// - it did not take and answer the request within `within`, which leaves the request
+///   unqueued when the queue had no place for it, and queued when it had one; the error
+///   then says to call again and to check the node's log for what holds the loop up.
+pub async fn ask_loop<R, T>(
+    name: &str,
+    requests: &mpsc::Sender<R>,
+    request: R,
+    answer: oneshot::Receiver<T>,
+    within: Duration,
+) -> Result<T, String> {
+    let asked = async {
+        requests
+            .send(request)
+            .await
+            .map_err(|_| format!("the {name} is not running"))?;
+        answer
+            .await
+            .map_err(|_| format!("the {name} dropped the request"))
+    };
+    tokio::time::timeout(within, asked)
+        .await
+        .unwrap_or_else(|_| Err(not_answered(name, within)))
+}
+
+/// The error of an ask that the loop `name` names did not answer within `within`, with what its
+/// caller does next.
+fn not_answered(name: &str, within: Duration) -> String {
+    format!(
+        "the {name} did not answer within {within:?}: call again, and check the node's log for \
+         what holds up the {name}"
+    )
 }
 
 #[cfg(test)]
@@ -160,6 +201,72 @@ mod tests {
         assert_eq!(
             logged.lines_holding("robot_identity failing, suppressing repeats: no reply"),
             1
+        );
+    }
+
+    /// A loop whose one place in its queue holds an earlier request: the ask fails naming its
+    /// time, and the loop never takes it.
+    #[tokio::test(start_paused = true)]
+    async fn an_ask_the_loop_does_not_take_within_its_time_fails_naming_it() {
+        let (requests, mut queued) = mpsc::channel(1);
+        requests.try_send("earlier").expect("a free queue");
+        let (_reply, answer) = oneshot::channel::<u8>();
+        let within = Duration::from_millis(10);
+        assert_eq!(
+            ask_loop("control loop", &requests, "stop", answer, within).await,
+            Err(format!(
+                "the control loop did not answer within {within:?}: call again, and check the \
+                 node's log for what holds up the control loop"
+            ))
+        );
+        assert_eq!(queued.try_recv(), Ok("earlier"));
+        assert!(queued.try_recv().is_err(), "the timed-out ask never queued");
+    }
+
+    /// A loop that queues the request and never answers it: the ask fails naming its time,
+    /// and the request stays queued.
+    #[tokio::test(start_paused = true)]
+    async fn an_ask_the_loop_queues_and_never_answers_fails_naming_its_time() {
+        let (requests, mut queued) = mpsc::channel(1);
+        let (_reply, answer) = oneshot::channel::<u8>();
+        let within = Duration::from_millis(10);
+        let asked = tokio::time::timeout(
+            2 * within,
+            ask_loop("control loop", &requests, "stop", answer, within),
+        )
+        .await
+        .expect("the ask ends within its time");
+        assert_eq!(asked, Err(not_answered("control loop", within)));
+        assert_eq!(queued.try_recv(), Ok("stop"), "the request was queued");
+    }
+
+    /// A loop that takes the request and answers it gives its answer; one that is gone, or
+    /// that drops the request, gives the error that says so.
+    #[tokio::test]
+    async fn an_ask_gives_the_loops_answer_or_says_why_it_has_none() {
+        let within = Duration::from_secs(30);
+        let (requests, mut queued) = mpsc::channel::<oneshot::Sender<u8>>(1);
+        let (reply, answer) = oneshot::channel();
+        let answering = tokio::spawn(async move {
+            let reply = queued.recv().await.expect("the request");
+            reply.send(7).expect("the asker waits");
+            let dropped = queued.recv().await.expect("the second request");
+            drop(dropped);
+        });
+        assert_eq!(
+            ask_loop("coordinator", &requests, reply, answer, within).await,
+            Ok(7)
+        );
+        let (reply, answer) = oneshot::channel();
+        assert_eq!(
+            ask_loop("coordinator", &requests, reply, answer, within).await,
+            Err("the coordinator dropped the request".to_string())
+        );
+        answering.await.expect("the loop ends");
+        let (reply, answer) = oneshot::channel();
+        assert_eq!(
+            ask_loop("coordinator", &requests, reply, answer, within).await,
+            Err("the coordinator is not running".to_string())
         );
     }
 }
