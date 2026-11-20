@@ -1,12 +1,11 @@
-"""Where the camera model comes from: its intrinsics from the camera
-itself, through `camera_geometry:v1` on the `geometry` slot, and its pose
-at the time of each picture from the robot's tree of frames, through
+"""Where the brain places what it sees and what it is asked: the camera
+model's intrinsics from the camera itself, through `camera_geometry:v1` on
+the `geometry` slot, and the robot's tree of frames, through
 `sensor_mounts:v1` on the `sensor_mounts` slot and `transform_lookup:v1` on
 the `transform_lookup` slot. get_color_intrinsics gives the pinhole the
 detections' pixels are in; get_depth_intrinsics says what a depth sample
-measures; describe_sensors names the robot frame and the frame of each
-camera the robot carries; lookup_transform places a camera's frame in the
-robot frame at the time a picture was taken.
+measures; describe_sensors names the robot frame, the frame the brain holds
+every place in; lookup_transform places a frame in it.
 
 The slots are optional, like the camera's. Vacant, the source never comes
 and every search is refused naming the slot. Bound, the camera's services
@@ -29,13 +28,25 @@ detections' pixels are in; the depth is read at the same pixels, so the
 frame store refuses a pair of frames that are not aligned.
 
 describe_sensors is asked the same way, until the robot gives its response
-and names the camera of the `camera_name` parameter among its cameras. Its
-answer holds for as long as the robot runs, so it is read once. A camera's
-pose is then asked at the time of each picture: lookup_transform waits up
-to `lookup_timeout_s`, which the launcher sets, for the transforms of that
-time, and a lookup that fails refuses the search that needed it with the
-lookup's words. A camera an arm carries is placed where the arm held it
-when the picture was taken.
+and names its robot frame. Its answer holds for as long as the robot runs,
+so it is read once. The `Placer` then places by lookup_transform, which
+waits up to `lookup_timeout_s`, which the launcher sets, for the transforms
+of the lookup's time:
+
+- the frame a picture names, in the robot frame at the picture's capture
+  time (`place_picture`), so a camera an arm carries is placed where the
+  arm held it when the picture was taken; a picture whose frame the tree
+  cannot place is dropped, and the log gives the lookup's failure kind;
+- a goal's target, its frame at its timestamp in the robot frame at the
+  latest time (`place_target`), as item_manipulation places a target when
+  it accepts a goal: a target in the robot frame with no timestamp names
+  where the robot frame stands at acceptance, and one with the timestamp of
+  a report names where the robot frame stood then.
+
+A lookup that fails gives a `LookupFailure` with the failure kind of the
+lookup, its message naming the value placed and then the lookup's cause.
+A lookup that gives no answer, or fails with a kind of peppy, gives a
+Refusal, `resource_unavailable`, as a robot frame not known yet does.
 
 Each reason is a source that is not there, so its Refusal is
 `resource_unavailable`, the kind a search refused for it gives.
@@ -45,12 +56,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Optional
 
-from ..ports import FailureKind, Refusal
+from control_core_py.geometry import GeometryError, Placement, Point, PoseTarget, Stamped, UnitQuaternion
+
+from ..ports import FailureKind, Pose, Refusal
 from ..waiting import unless_cancelled
-from .camera import CameraPose, Intrinsics
+from .camera import Intrinsics
 from .perceiver import SourceReason
 
 logger = logging.getLogger(__name__)
@@ -67,9 +79,6 @@ NOT_DESCRIBED = "the robot's sensors have not been described yet"
 # The longest wait (s) a request of transform_lookup's lookup_transform may
 # ask for; the implementer refuses a longer one with `rejected`.
 MAX_LOOKUP_TIMEOUT_S = 1.0
-# The contracts a camera streams on, as describe_sensors names them: the
-# frame of each is the camera's colour optical frame.
-CAMERA_KINDS = ("rgb_camera", "rgbd_camera")
 # The depth model the brain reads: a sample is the distance along the
 # optical axis.
 Z_DEPTH = "z"
@@ -181,7 +190,7 @@ async def learn_intrinsics(node_runner, token, perceiver, get_color_intrinsics, 
 
 def parse_lookup_timeout(value) -> float:
     """The `lookup_timeout_s` parameter: how long lookup_transform waits for
-    the transforms of a picture's time (s), from 0 to MAX_LOOKUP_TIMEOUT_S,
+    the transforms of a lookup's time (s), from 0 to MAX_LOOKUP_TIMEOUT_S,
     as the contract takes it; a ValueError otherwise, so the node stops at
     its start."""
     timeout_s = float(value)
@@ -193,79 +202,51 @@ def parse_lookup_timeout(value) -> float:
     return timeout_s
 
 
-@dataclass(frozen=True)
-class Sensor:
-    """One sensor of the robot as describe_sensors gives it: the contract it
-    streams on and its frame in the robot's tree."""
-
-    kind: str
-    frame: str
-
-
-@dataclass(frozen=True)
-class SensorFrames:
-    """What describe_sensors says of the robot: the robot frame, and each
-    sensor by the name it runs under."""
-
-    robot_frame: str
-    sensors: Mapping[str, Sensor]
-
-    @classmethod
-    def parse(cls, data) -> "SensorFrames":
-        """The frames of a describe_sensors response; a ValueError names
-        what is unusable: an empty robot frame, a sensor name given twice or
-        empty, an empty sensor frame, or arrays that do not run beside
-        sensor_names."""
-        robot_frame = str(data.robot_frame)
-        if not robot_frame:
-            raise ValueError("it names no robot frame")
-        names = [str(name) for name in data.sensor_names]
-        kinds = [str(kind) for kind in data.sensor_kinds]
-        frames = [str(frame) for frame in data.sensor_frames]
-        if not len(names) == len(kinds) == len(frames) == len(data.carried_by):
-            raise ValueError(
-                f"it names {len(names)} sensors and gives {len(kinds)} kinds, {len(frames)} frames "
-                f"and {len(data.carried_by)} carriers"
-            )
-        if "" in names or len(set(names)) != len(names):
-            raise ValueError(f"its sensor names are not distinct and not empty: {names}")
-        if "" in frames:
-            raise ValueError(f"a sensor of {names} has no frame")
-        return cls(robot_frame, {name: Sensor(kind, frame) for name, kind, frame in zip(names, kinds, frames)})
-
-    def camera_frame(self, name: str) -> str:
-        """The frame of the camera `name`, its colour optical frame; a
-        Refusal when the robot carries no camera of that name."""
-        sensor = self.sensors.get(name)
-        if sensor is not None and sensor.kind in CAMERA_KINDS:
-            return sensor.frame
-        cameras = [other for other, each in self.sensors.items() if each.kind in CAMERA_KINDS]
-        carried = ", ".join(cameras) if cameras else "none"
-        if sensor is None:
-            raise _not_there(f"the robot carries no camera named '{name}' (its cameras: {carried})")
-        raise _not_there(f"the robot's sensor '{name}' streams on {sensor.kind}, not as a camera (its cameras: {carried})")
+def robot_frame_of(data) -> str:
+    """The robot frame a describe_sensors response names; a ValueError when
+    it names none."""
+    robot_frame = str(data.robot_frame)
+    if not robot_frame:
+        raise ValueError("it names no robot frame")
+    return robot_frame
 
 
-class CameraPlacer:
-    """Where the robot's cameras stand in the robot frame at a time. The
-    robot frame and each camera's frame come from describe_sensors, which
-    `learn` asks until the robot answers and names the brain's camera, and
-    a camera's pose at a time from lookup_transform, which waits up to
-    `lookup_timeout_s` for the transforms of that time. `reason` says why
-    no camera can be placed yet, or is empty once one can."""
+# The failure kinds of a lookup, as transform_lookup names them.
+LOOKUP_KINDS = ("unknown_frame", "no_chain", "extrapolation", "broken_tree")
+
+
+class LookupFailure(Refusal):
+    """A lookup the robot's tree answered with the failure of the lookup:
+    its kind, one of LOOKUP_KINDS, and its message, which names the value
+    placed and then the lookup's cause."""
+
+
+class Placer:
+    """The robot's tree as transform_lookup answers it, and the robot frame
+    describe_sensors names, which `learn` asks until the robot answers. Each
+    lookup waits up to `lookup_timeout_s` for the transforms of its time.
+    `reason` says why nothing can be placed yet, or is empty once the robot
+    frame is known."""
 
     def __init__(self, node_runner, describe_sensors, lookup_transform, lookup_timeout_s: float) -> None:
         self._node_runner = node_runner
         self._describe_sensors = describe_sensors
         self._lookup_transform = lookup_transform
         self._lookup_timeout_s = lookup_timeout_s
-        self.frames: Optional[SensorFrames] = None
+        self._robot_frame: Optional[str] = None
         self.reason = SourceReason(NOT_DESCRIBED)
 
-    async def learn(self, token, camera_name: str) -> None:
-        """Asks the sensor_mounts slot for the robot's sensors until the
-        robot answers and names `camera_name` among its cameras; meanwhile
-        `reason` carries why it has not."""
+    @property
+    def robot_frame(self) -> str:
+        """The robot frame, or the Refusal, `resource_unavailable`, that says
+        why it is not known yet."""
+        if self._robot_frame is None:
+            raise _not_there(self.reason.reason)
+        return self._robot_frame
+
+    async def learn(self, token) -> None:
+        """Asks the sensor_mounts slot for the robot frame until the robot
+        names one; meanwhile `reason` carries why it has not."""
         producer = self._describe_sensors.bound_producer(self._node_runner)
         if producer is None:
             self.reason.update(MOUNTS_VACANT, starting=False)
@@ -274,39 +255,67 @@ class CameraPlacer:
             self.reason.update(LOOKUP_VACANT, starting=False)
             return
 
-        async def ask() -> SensorFrames:
+        async def ask() -> str:
             answer = await _answer(
                 self._describe_sensors, self._node_runner, producer,
                 "the robot cannot describe its sensors", "the robot's sensor mounts are not answered yet",
             )
             try:
-                frames = SensorFrames.parse(answer)
+                return robot_frame_of(answer)
             except ValueError as error:
                 raise _not_there(f"the robot's sensor mounts are unusable: {error}") from error
-            frames.camera_frame(camera_name)
-            return frames
 
-        def learned(frames: SensorFrames) -> None:
-            self.frames = frames
+        def learned(robot_frame: str) -> None:
+            self._robot_frame = robot_frame
             self.reason.update("", starting=False)
-            logger.info(
-                "camera '%s' is the frame '%s' of the robot, whose robot frame is '%s'",
-                camera_name, frames.camera_frame(camera_name), frames.robot_frame,
-            )
+            logger.info("the robot frame is '%s'", robot_frame)
 
         await _learn(token, self.reason, ask, learned)
 
-    async def pose_at(self, camera_name: str, timestamp: float) -> CameraPose:
-        """The pose of the camera `camera_name` in the robot frame at
-        `timestamp`, the time a picture of it was taken; a Refusal naming
-        why it cannot be had: the robot's sensors are not known yet, the
-        robot carries no such camera, or the lookup failed."""
-        if self.frames is None:
-            raise _not_there(self.reason.reason)
-        frame = self.frames.camera_frame(camera_name)
+    async def place_picture(self, header) -> Placement:
+        """Where the frame a picture's `header` names stood in the robot frame
+        at the picture's capture time. A picture whose frame the tree cannot
+        place is dropped: the log gives its capture_index, the lookup's
+        failure kind and its cause. Each refusal is `resource_unavailable`,
+        the kind a search refused for its source gives: the dropped picture,
+        a robot frame not known yet, or a lookup with no answer."""
+        frame, timestamp = str(header.frame), float(header.timestamp)
+        try:
+            return await self._look_up(frame, timestamp, timestamp, f"the frame '{frame}' at {timestamp:.3f} s")
+        except LookupFailure as failure:
+            reason = f"picture {header.capture_index} dropped: {failure.kind.value}: {failure.message}"
+            logger.warning("%s", reason)
+            raise _not_there(reason) from failure
+
+    async def place_target(self, target: Stamped[PoseTarget]) -> Pose:
+        """`target` in the robot frame at the latest time, where its frame
+        stood at its timestamp, the latest time when it has none, as
+        item_manipulation places a goal's target when it accepts the goal; a
+        LookupFailure when the tree cannot place it, and a Refusal,
+        `resource_unavailable`, when the robot frame is not known or the
+        lookup gives no answer; the Refusal `rejected` for one placed past
+        the finite numbers."""
+        placement = await self._look_up(target.frame, target.timestamp, None, "the target")
+        try:
+            placed = placement.place(target.value)
+        except GeometryError as error:
+            raise Refusal(FailureKind.REJECTED, f"the target: {error}") from None
+        orientation = placed.orientation.quaternion if placed.orientation is not None else None
+        return Pose(placed.position.position, orientation)
+
+    async def _look_up(
+        self, frame: str, source_timestamp: Optional[float], target_timestamp: Optional[float], what: str
+    ) -> Placement:
+        """Where `frame` stood at `source_timestamp` in the robot frame as it
+        stands at `target_timestamp`, each none for the latest time."""
+        robot_frame = self.robot_frame
         lookup = self._lookup_transform
         request = lookup.Request(
-            target_frame=self.frames.robot_frame, source_frame=frame, time=timestamp, timeout_s=self._lookup_timeout_s
+            target_frame=robot_frame,
+            source_frame=frame,
+            source_timestamp=source_timestamp,
+            target_timestamp=target_timestamp,
+            timeout_s=self._lookup_timeout_s,
         )
         try:
             answer = await lookup.poll(
@@ -314,10 +323,13 @@ class CameraPlacer:
                 self._lookup_timeout_s + SERVICE_TIMEOUT_S,
             )
         except lookup.Failure as failure:
-            raise _not_there(f"the robot cannot place camera '{camera_name}' at {timestamp:.3f} s: {failure.message}") from failure
+            kind = failure.kind.value
+            if kind not in LOOKUP_KINDS:
+                raise _not_there(f"{what}: the robot's transform lookup failed with {kind}: {failure.message}") from failure
+            raise LookupFailure(FailureKind(kind), f"{what}: {failure.message}") from failure
         except Exception as error:
-            raise _not_there(f"the robot's transform lookup is not answered ({error!r})") from error
+            raise _not_there(f"{what}: the robot's transform lookup is not answered ({error!r})") from error
         try:
-            return CameraPose.parse(answer.data.position, answer.data.orientation)
+            return Placement(Point.parse(answer.data.position).position, UnitQuaternion.parse(answer.data.orientation).quaternion)
         except ValueError as error:
-            raise _not_there(f"the robot's pose of camera '{camera_name}' is unusable: {error}") from error
+            raise _not_there(f"{what}: the robot's transform lookup gave no pose: {error}") from error

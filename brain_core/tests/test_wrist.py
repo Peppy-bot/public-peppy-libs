@@ -19,8 +19,8 @@ def camera(instance_id: str):
     return SimpleNamespace(core_node="cameras", instance_id=instance_id)
 
 
-def frame(timestamp: float, frame_id: int = 1):
-    message = rgb_frame(frame_id=frame_id)
+def frame(timestamp: float, capture_index: int = 1):
+    message = rgb_frame(capture_index=capture_index)
     message.header.timestamp = timestamp
     return message
 
@@ -59,8 +59,8 @@ async def test_frames_are_kept_by_the_producers_instance_id_and_a_newer_one_is_w
     waiting = asyncio.ensure_future(wrists.newer_than("left_arm", 1.0, 1.0))
     await asyncio.sleep(0)
     assert not waiting.done()
-    topic.push(frame(1.5, frame_id=2), camera("wrist_left"))
-    assert (await asyncio.wait_for(waiting, 1.0)).header.frame_id == 2
+    topic.push(frame(1.5, capture_index=2), camera("wrist_left"))
+    assert (await asyncio.wait_for(waiting, 1.0)).header.capture_index == 2
     token.cancel()
     await asyncio.wait_for(follower, 1.0)
 
@@ -116,7 +116,7 @@ async def test_a_slot_with_no_camera_bound_yet_is_followed_for_the_cameras_a_joi
 def test_the_jpeg_of_an_mjpeg_frame_is_its_own_bytes_and_an_rgb8_frame_is_encoded():
     from PIL import Image
 
-    mjpeg = SimpleNamespace(encoding="mjpeg", frame=b"\xff\xd8jpeg", width=16, height=12)
+    mjpeg = SimpleNamespace(encoding="mjpeg", data=b"\xff\xd8jpeg", width=16, height=12)
     assert jpeg_of(mjpeg) == b"\xff\xd8jpeg"
     encoded = jpeg_of(rgb_frame())
     with Image.open(io.BytesIO(encoded)) as picture:
@@ -125,7 +125,7 @@ def test_the_jpeg_of_an_mjpeg_frame_is_its_own_bytes_and_an_rgb8_frame_is_encode
 
 def test_a_frame_that_cannot_be_decoded_fails_the_step():
     with pytest.raises(ExpectedFailure, match="unsupported colour encoding") as failed:
-        jpeg_of(SimpleNamespace(encoding="yuv", frame=b"", width=16, height=12))
+        jpeg_of(SimpleNamespace(encoding="yuv", data=b"", width=16, height=12))
     assert failed.value.kind is FailureKind.ATTEMPT_FAILED
 
 

@@ -18,29 +18,20 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from brain_core.perception.camera import CameraModel, CameraPose, Intrinsics
+from control_core_py.geometry import Placement, product
+
+from brain_core.perception.camera import CameraModel, Intrinsics
 from brain_core.ports import Box
 
 WIDTH, HEIGHT = 320, 180
 TABLE_Z = 0.370
 
 
-def _product(a, b):
-    ax, ay, az, aw = a
-    bx, by, bz, bw = b
-    return (
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    )
-
-
 # The chest camera's optical frame as the robot's tree places it (see
 # test_perception.py), and its intrinsics at a quarter of their resolution.
 CHEST_POSITION = (0.0792, 0.0315, 0.7941)
-CHEST_ORIENTATION = _product((0.1710647, -0.1710647, -0.6861027, 0.6861027), (1.0, 0.0, 0.0, 0.0))
-CHEST = CameraModel().with_pose(CameraPose.parse(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(
+CHEST_ORIENTATION = product((0.1710647, -0.1710647, -0.6861027, 0.6861027), (1.0, 0.0, 0.0, 0.0))
+CHEST = CameraModel().with_pose(Placement(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(
     Intrinsics(WIDTH, HEIGHT, 738.1 / 4, 738.1 / 4, WIDTH / 2, HEIGHT / 2)
 )
 

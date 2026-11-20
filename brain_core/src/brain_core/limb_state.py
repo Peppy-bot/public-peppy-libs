@@ -3,11 +3,13 @@ backbone publishes on limb_states, kept by a small loop the node starts.
 
 Each message is parsed once into a `LimbSnapshot` by the contract's
 slicing rule (`contracts-hub/robot/limb_state.json5`): arm i's joints
-start at the sum of `joints_per_arm[0..i]`, its position at `3 * i` and its
-orientation at `4 * i`; the gripper openings follow `gripper_names`. A
-message whose arrays do not fit its names is dropped with a log line, and
-the store keeps the snapshot before it; with none before it, a grab is
-refused with the reason the message was dropped.
+start at the sum of `joints_per_arm[0..i]`, and its grasp-point pose is
+`grasp_points[i]`, in the robot frame the message names, parsed through
+control_core_py's geometry; the gripper openings follow `gripper_names`. A
+message whose arrays do not fit its names, or whose grasp-point pose is no
+pose, is dropped with a log line, and the store keeps the snapshot before
+it; with none before it, a grab is refused with the reason the message was
+dropped.
 
 A snapshot's stamp is the backbone's capture time, on the backbone's
 clock, which need not be the brain's: a launch can run one on a
@@ -25,6 +27,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
+
+from control_core_py.geometry import Pose
 
 from .ports import Quat, Vec3
 from .waiting import unless_cancelled
@@ -57,7 +61,8 @@ class LimbSnapshot:
     @classmethod
     def parse(cls, message) -> "LimbSnapshot":
         """The snapshot a limb_states message carries, or a ValueError
-        naming the array that does not fit the names."""
+        naming the array that does not fit the names, or the arm whose grasp
+        point is no pose."""
         names = list(message.arm_names)
         joints_per_arm = [int(count) for count in message.joints_per_arm]
         _require(len(joints_per_arm) == len(names), f"joints_per_arm has {len(joints_per_arm)} entries for {len(names)} arms")
@@ -65,8 +70,7 @@ class LimbSnapshot:
             len(message.joint_positions) == sum(joints_per_arm),
             f"joint_positions has {len(message.joint_positions)} entries, joints_per_arm adds up to {sum(joints_per_arm)}",
         )
-        _require(len(message.positions) == 3 * len(names), f"positions has {len(message.positions)} entries for {len(names)} arms")
-        _require(len(message.orientations) == 4 * len(names), f"orientations has {len(message.orientations)} entries for {len(names)} arms")
+        _require(len(message.grasp_points) == len(names), f"grasp_points has {len(message.grasp_points)} entries for {len(names)} arms")
         _require(
             len(message.gripper_openings) == len(message.gripper_names),
             f"gripper_openings has {len(message.gripper_openings)} entries for {len(message.gripper_names)} grippers",
@@ -75,13 +79,15 @@ class LimbSnapshot:
         _require(len(set(message.gripper_names)) == len(message.gripper_names), f"gripper_names repeats a name: {list(message.gripper_names)}")
         arms: dict[str, ArmState] = {}
         start = 0
-        for index, (name, count) in enumerate(zip(names, joints_per_arm)):
-            position = message.positions[3 * index : 3 * index + 3]
-            orientation = message.orientations[4 * index : 4 * index + 4]
+        for name, count, grasp_point in zip(names, joints_per_arm, message.grasp_points):
+            try:
+                pose = Pose.parse(grasp_point.position, grasp_point.orientation)
+            except ValueError as error:
+                raise ValueError(f"the grasp point of arm '{name}' is no pose: {error}") from None
             arms[name] = ArmState(
                 joint_positions=tuple(float(value) for value in message.joint_positions[start : start + count]),
-                position=(float(position[0]), float(position[1]), float(position[2])),
-                orientation=(float(orientation[0]), float(orientation[1]), float(orientation[2]), float(orientation[3])),
+                position=pose.position.position,
+                orientation=pose.orientation.quaternion,
             )
             start += count
         openings = {name: float(opening) for name, opening in zip(message.gripper_names, message.gripper_openings)}

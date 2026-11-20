@@ -11,18 +11,17 @@ from ..ports import parse_role
 ZERO = dict(role="", model="")
 
 
-def decide(brain, goal) -> None:
+async def admit(brain, goal):
     """Refuses a switch that cannot start now: `precondition_failed` once
     the node shuts down, then the refusals of the role and of the switch
     (`parse_role`, `Models.check_switch`)."""
     brain.sequencer.check(None)
     role = parse_role(goal.role, brain.models.roles())
     brain.models.check_switch(role, goal.model)
+    return goal
 
 
-async def run(brain, ctx) -> None:
-    goal = ctx.request().data
-
+async def run(brain, ctx, goal) -> None:
     async def body(job) -> dict:
         role = parse_role(goal.role, brain.models.roles())
         model = await brain.models.switch(role, goal.model, job)

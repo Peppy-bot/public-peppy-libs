@@ -28,6 +28,9 @@ from typing import Callable, Optional
 from brain_core.bindings import Bindings
 from brain_core.robot import PlannerModules
 
+# The robot frame the fakes name.
+ROBOT_FRAME = "base_link"
+
 # The kinds of peppy, which every member declares first.
 PEPPY_KINDS = ("attempt_failed", "timeout", "precondition_failed", "resource_unavailable", "rejected")
 
@@ -74,13 +77,16 @@ async def _expose_no_goals(node_runner) -> _NoGoals:
 
 class FakeAction:
     """A generated exposed action module: `ACTION_NAME`, the fields of its
-    result, `FailureKind` and `Failure`, `GoalDecision`, and an
-    `ActionHandle` that exposes an action receiving no goal."""
+    result, `FailureKind` and `Failure`, `GoalDecision`, an `ActionHandle`
+    that exposes an action receiving no goal, and the record types of its
+    result, `records`, each by its generated name."""
 
-    def __init__(self, name: str, result_fields: tuple[str, ...], *contract_kinds: str) -> None:
+    def __init__(self, name: str, result_fields: tuple[str, ...], *contract_kinds: str, records: Optional[dict] = None) -> None:
         self.ACTION_NAME = name
         self.RESULT_FIELDS = frozenset(result_fields)
         self.FailureKind, self.Failure = failure_types(name, *contract_kinds)
+        for record_name, record_type in (records or {}).items():
+            setattr(self, record_name, record_type)
         failure = self.Failure
 
         class GoalDecision:
@@ -100,19 +106,57 @@ class FakeAction:
         self.ActionHandle = SimpleNamespace(expose=_expose_no_goals)
 
 
-IMAGE_FIELDS = ("camera", "image_width", "image_height", "frame_timestamp", "action_time")
+@dataclass(frozen=True)
+class PointRecord:
+    """A point_stamped record of a result: frame, timestamp, position."""
+
+    frame: str
+    timestamp: float
+    position: list
+
+
+@dataclass(frozen=True)
+class PoseRecord:
+    """A pose_stamped record of a result: frame, timestamp, position,
+    orientation."""
+
+    frame: str
+    timestamp: float
+    position: list
+    orientation: list
+
+
+@dataclass(frozen=True)
+class PositionRecord:
+    """An item of an array of plain points: position alone."""
+
+    position: list
+
+
+IMAGE_FIELDS = ("camera", "image_width", "image_height", "action_time")
+
+# The failure kinds of a lookup in the robot's tree, which grab_item and
+# place_item list.
+LOOKUP_KINDS = ("unknown_frame", "no_chain", "extrapolation", "broken_tree")
 
 # item_perception:v1: no success field, and the kind `not_found`, which
 # identify_item lists.
-scan_items = FakeAction("scan_items", ("item_ids", "labels", "positions", "confidences", "regions", *IMAGE_FIELDS))
+scan_items = FakeAction(
+    "scan_items", ("item_ids", "labels", "frame", "timestamp", "points", "confidences", "regions", *IMAGE_FIELDS),
+    records={"ResultPointsItem": PositionRecord},
+)
 identify_item = FakeAction(
-    "identify_item", ("item_id", "label", "position", "orientation", "confidence", "region", *IMAGE_FIELDS), "not_found"
+    "identify_item", ("item_id", "label", "item_point", "item_pose", "confidence", "region", *IMAGE_FIELDS), "not_found",
+    records={"ResultItemPoint": PointRecord, "ResultItemPose": PoseRecord},
 )
 
 # item_manipulation:v1: success and message in each result.
-grab_item = FakeAction("grab_item", ("success", "message", "gripper_name", "item_id", "action_time"))
+grab_item = FakeAction("grab_item", ("success", "message", "gripper_name", "item_id", "action_time"), *LOOKUP_KINDS)
 drop_item = FakeAction("drop_item", ("success", "message", "gripper_name", "item_id", "action_time"))
-place_item = FakeAction("place_item", ("success", "message", "gripper_name", "item_id", "final_position", "action_time"))
+place_item = FakeAction(
+    "place_item", ("success", "message", "gripper_name", "item_id", "final_point", "action_time"), *LOOKUP_KINDS,
+    records={"ResultFinalPoint": PointRecord},
+)
 abort = FakeAction("abort", ("success", "message", "aborted_action", "action_time"))
 
 # brain_model:v1: no success field, the kinds of peppy alone.
@@ -184,10 +228,19 @@ class ResultStatus(IntEnum):
 
 
 @dataclass
+class Target:
+    """The target of a move_arm goal or a check_arm_move request."""
+
+    frame: Optional[str]
+    timestamp: Optional[float]
+    position: list[float]
+    orientation: Optional[list[float]]
+
+
+@dataclass
 class MoveArmRequest:
     arm_name: str
-    position: list[float]
-    orientation: list[float]
+    target: Target
     duration_s: float
     settle_position_tolerance_m: float
     settle_orientation_tolerance_rad: float
@@ -206,18 +259,18 @@ class MoveGripperRequest:
 # The kinds of limb_motion:v1 and motion_planning:v1 that each consumed
 # member lists beside the kinds of peppy.
 CONSUMED_KINDS = {
-    "move_arm": ("unreachable", "leader_streaming"),
+    "move_arm": ("unreachable", "leader_streaming", *LOOKUP_KINDS),
     "move_gripper": ("leader_streaming",),
-    "check_arm_move": ("leader_streaming",),
+    "check_arm_move": ("leader_streaming", *LOOKUP_KINDS),
     "execute_joint_path": ("unreachable", "leader_streaming"),
-    "plan_joint_path": ("unreachable", "no_path", "start_in_collision"),
-    "plan_cartesian_path": ("start_in_collision",),
+    "plan_joint_path": ("unreachable", "no_path", "start_in_collision", *LOOKUP_KINDS),
+    "plan_cartesian_path": ("start_in_collision", *LOOKUP_KINDS),
     "describe_arms": (),
     "get_planning_scene": (),
-    "apply_collision_objects": (),
+    "apply_collision_objects": LOOKUP_KINDS,
     "apply_attached_collision_object": (),
     "set_allowed_collision": (),
-    "lookup_transform": ("unknown_frame", "no_chain", "extrapolation", "broken_tree"),
+    "lookup_transform": LOOKUP_KINDS,
 }
 
 
@@ -345,15 +398,15 @@ def error_reply(kind: str, message: str) -> Callable:
 class LookupTransformRequest:
     target_frame: str
     source_frame: str
-    time: Optional[float]
+    source_timestamp: Optional[float]
+    target_timestamp: Optional[float]
     timeout_s: float
 
 
 @dataclass
 class CheckArmMoveRequest:
     arm_name: str
-    position: list[float]
-    orientation: list[float]
+    target: Target
     duration_s: float
 
 
@@ -458,7 +511,7 @@ class PlanJointPathArm:
 @dataclass
 class PlanJointPathJointConstraint:
     joint_name: str
-    position: float
+    joint_position: float
     tolerance_above: float
     tolerance_below: float
 
@@ -466,6 +519,8 @@ class PlanJointPathJointConstraint:
 @dataclass
 class PlanJointPathPositionConstraint:
     link_name: str
+    frame: Optional[str]
+    timestamp: Optional[float]
     position: list[float]
     tolerance_m: float
 
@@ -473,6 +528,8 @@ class PlanJointPathPositionConstraint:
 @dataclass
 class PlanJointPathOrientationConstraint:
     link_name: str
+    frame: Optional[str]
+    timestamp: Optional[float]
     orientation: list[float]
     tolerance_rad: float
     free_axis: str
@@ -501,6 +558,8 @@ class PlanCartesianPathRequest:
     arm_name: str
     start_joint_positions: list[float]
     link_name: str
+    frame: Optional[str]
+    timestamp: Optional[float]
     waypoints: list[PlanCartesianPathWaypoint]
     avoid_collisions: bool
 
@@ -509,7 +568,7 @@ class PlanCartesianPathRequest:
 class CollisionShape:
     kind: str
     dimensions: list[float]
-    mesh_vertices: list[float]
+    mesh_vertices: list[PositionRecord]
     mesh_triangles: list[int]
     position: list[float]
     orientation: list[float]
@@ -519,9 +578,11 @@ class CollisionShape:
 class CollisionObject:
     id: str
     operation: str
-    position: list[float]
-    orientation: list[float]
-    shapes: list[CollisionShape]
+    frame: Optional[str]
+    timestamp: Optional[float]
+    position: Optional[list[float]]
+    orientation: Optional[list[float]]
+    shapes: Optional[list[CollisionShape]]
 
 
 @dataclass
@@ -590,15 +651,23 @@ def planner_bindings(planner: PlannerModules) -> dict:
 
 
 @dataclass
+class GraspPoint:
+    """A grasp-point pose of a limb_states message."""
+
+    position: list[float]
+    orientation: list[float]
+
+
+@dataclass
 class LimbStatesMessage:
     """A limb_states message, as the generated module gives it."""
 
     timestamp: float
+    frame: str = ROBOT_FRAME
     arm_names: list[str] = field(default_factory=list)
     joints_per_arm: list[int] = field(default_factory=list)
     joint_positions: list[float] = field(default_factory=list)
-    positions: list[float] = field(default_factory=list)
-    orientations: list[float] = field(default_factory=list)
+    grasp_points: list[GraspPoint] = field(default_factory=list)
     gripper_names: list[str] = field(default_factory=list)
     gripper_openings: list[float] = field(default_factory=list)
 
@@ -619,8 +688,7 @@ def limb_states_message(timestamp: float, *, left_arm=LEFT_AT_REST, **openings: 
         arm_names=["left_arm", "right_arm"],
         joints_per_arm=[7, 7],
         joint_positions=[0.0] * 14,
-        positions=[*left_position, *right_position],
-        orientations=[*left_orientation, *right_orientation],
+        grasp_points=[GraspPoint(list(left_position), list(left_orientation)), GraspPoint(list(right_position), list(right_orientation))],
         gripper_names=list(openings),
         gripper_openings=list(openings.values()),
     )
@@ -687,9 +755,9 @@ def fake_bindings(**overrides) -> Bindings:
     replace any of them."""
     modules = dict(
         clock=FakeClock(),
-        move_arm=FakeConsumedAction("move_arm", MoveArmRequest),
+        move_arm=FakeConsumedAction("move_arm", MoveArmRequest, GoalRequestTarget=Target),
         move_gripper=FakeConsumedAction("move_gripper", MoveGripperRequest),
-        check_arm_move=FakeConsumedService("check_arm_move", CheckArmMoveRequest),
+        check_arm_move=FakeConsumedService("check_arm_move", CheckArmMoveRequest, RequestTarget=Target),
         limb_states=VacantSlot,
         video_stream=VacantSlot,
         depth_stream=VacantSlot,

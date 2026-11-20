@@ -4,7 +4,7 @@ lines a switch and a forget leave in the log."""
 
 import fake_peppygen
 import pytest
-from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames
+from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames, run_goal
 
 from brain_core.handlers import forget, get_model, get_state, list_models, switch_model
 from brain_core.ports import FailureKind, Refusal, Role
@@ -82,7 +82,7 @@ async def test_a_switch_names_its_role_and_model_and_get_model_reports_it(caplog
     brain, source = await brain_offering()
     ctx = switch_goal("perception", "careful")
     with records_of(caplog, "brain_core.brain") as log:
-        await switch_model.run(brain, ctx)
+        await run_goal(switch_model, brain, ctx)
     assert ctx.completed == dict(role="perception", model="careful", action_time=0.0)
     assert get_model.handle(brain, None).models == ["careful", "fake"]
     assert source.prepared == [(Role.PERCEPTION, "careful")]
@@ -92,7 +92,7 @@ async def test_a_switch_names_its_role_and_model_and_get_model_reports_it(caplog
 async def test_a_switch_to_the_active_model_succeeds():
     brain, _ = await brain_offering()
     ctx = switch_goal("manipulation", "fake")
-    await switch_model.run(brain, ctx)
+    await run_goal(switch_model, brain, ctx)
     assert ctx.completed["model"] == "fake"
 
 
@@ -102,9 +102,9 @@ async def test_a_role_the_brain_does_not_have_is_refused_at_parse_and_the_models
     for role in ("arm", "", "Perception"):
         ctx = switch_goal(role, "careful")
         with pytest.raises(Refusal, match=f"^this brain runs no model for the role '{role}'$") as raised:
-            switch_model.decide(brain, ctx.request().data)
+            await switch_model.admit(brain, ctx.request().data)
         assert raised.value.kind is FailureKind.REJECTED
-        await switch_model.run(brain, ctx)
+        await run_goal(switch_model, brain, ctx)
         # A failed switch gives no result.
         assert failed_with(ctx, FailureKind.REJECTED, f"this brain runs no model for the role '{role}'")
     assert source.asked == asked_at_start and source.prepared == []
@@ -120,26 +120,26 @@ async def test_a_model_the_role_does_not_offer_is_refused_with_the_sources_words
     brain, _ = await brain_offering()
     ctx = switch_goal("manipulation", "careful")
     with pytest.raises(Refusal, match="^'careful' is not a manipulation model here; see list_models$") as raised:
-        switch_model.decide(brain, ctx.request().data)
+        await switch_model.admit(brain, ctx.request().data)
     assert raised.value.kind is FailureKind.REJECTED
-    await switch_model.run(brain, ctx)
+    await run_goal(switch_model, brain, ctx)
     assert failed_with(ctx, FailureKind.REJECTED, "'careful' is not a manipulation model here; see list_models")
     assert get_model.handle(brain, None).models == ["fast", "fake"]
 
 
 async def test_a_switch_is_refused_at_once_while_its_role_is_busy_and_once_the_node_shuts_down():
     brain, source = await brain_offering()
-    switch_model.decide(brain, switch_goal("perception", "careful").request().data)
+    await switch_model.admit(brain, switch_goal("perception", "careful").request().data)
     busy = brain.sequencer.start(Role.PERCEPTION, "identify_item", 0)
     with pytest.raises(Refusal, match="^identify_item is running$") as raised:
-        switch_model.decide(brain, switch_goal("perception", "careful").request().data)
+        await switch_model.admit(brain, switch_goal("perception", "careful").request().data)
     assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     # The other role is free.
-    switch_model.decide(brain, switch_goal("manipulation", "fake").request().data)
+    await switch_model.admit(brain, switch_goal("manipulation", "fake").request().data)
     brain.sequencer.finish(busy)
     brain.sequencer.close()
     with pytest.raises(Refusal, match="^the node is shutting down$") as raised:
-        switch_model.decide(brain, switch_goal("perception", "careful").request().data)
+        await switch_model.admit(brain, switch_goal("perception", "careful").request().data)
     assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     assert source.prepared == []
 

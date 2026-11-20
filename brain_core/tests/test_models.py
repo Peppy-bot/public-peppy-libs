@@ -7,7 +7,7 @@ import asyncio
 
 import fake_peppygen
 import pytest
-from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, with_frames
+from conftest import UNREAD_TARGET, FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, run_goal, target, with_frames
 
 from brain_core.handlers import abort, grab_item, place_item, scan_items, switch_model
 from brain_core.manipulators.none import NoneManipulator
@@ -66,7 +66,7 @@ async def brain_with(source: FakeSource, manipulation_model: str = "none"):
 def switch(brain, role: Role, name: str):
     """A switch_model goal for `role`, and its run."""
     ctx = FakeCtx(fake_peppygen.switch_model, role=role.value, model=name)
-    return ctx, switch_model.run(brain, ctx)
+    return ctx, run_goal(switch_model, brain, ctx)
 
 
 async def switched(brain, role: Role, name: str) -> FakeCtx:
@@ -80,7 +80,7 @@ def scan_goal() -> FakeCtx:
 
 
 def grab_goal(**overrides) -> FakeCtx:
-    goal = dict(gripper_name="left_gripper", item_id="", position=[0.5, 0.1, 0.7], orientation=None, max_effort=0.0)
+    goal = dict(gripper_name="left_gripper", item_id="", target=target((0.5, 0.1, 0.7)), max_effort=0.0)
     goal.update(overrides)
     return FakeCtx(fake_peppygen.grab_item, **goal)
 
@@ -118,7 +118,7 @@ async def test_a_perception_switch_is_refused_during_a_scan_and_the_running_scan
     source = two_detectors(old, new)
     brain = await brain_with(source)
     scan = scan_goal()
-    running = asyncio.create_task(scan_items.run(brain, scan))
+    running = asyncio.create_task(run_goal(scan_items, brain, scan))
     await old.searching.wait()
     with pytest.raises(Refusal, match="^scan_items is running$") as raised:
         brain.models.check_switch(Role.PERCEPTION, "new")
@@ -140,7 +140,7 @@ async def test_a_scan_that_starts_after_a_switch_uses_the_new_model():
     assert ctx.completed == dict(role="perception", model="new", action_time=0.0)
     assert brain.models.current(Role.PERCEPTION) is new
     scan = scan_goal()
-    await scan_items.run(brain, scan)
+    await run_goal(scan_items, brain, scan)
     assert scan.completed["labels"] == ["bowl"]
     assert old.phrases == [] and new.phrases == [[]]
 
@@ -150,12 +150,12 @@ async def test_a_grab_never_asks_the_perception_model():
     source = FakeSource({Role.PERCEPTION: {"trap": TrapDetector()}, Role.MANIPULATION: {"fake": manipulator}})
     brain = await make_brain(source=source, perception_model="trap", manipulation_model="fake")
     by_pose = grab_goal()
-    await grab_item.run(brain, by_pose)
+    await run_goal(grab_item, brain, by_pose)
     assert by_pose.completed["success"] is True
-    await place_item.run(brain, FakeCtx(fake_peppygen.place_item, gripper_name="", position=[0.6, 0.2, 0.75], orientation=None, target_item_id=None))
+    await run_goal(place_item, brain, FakeCtx(fake_peppygen.place_item, gripper_name="", target=target((0.6, 0.2, 0.75)), target_item_id=None))
     # The item's position comes from the brain's memory, not from a look.
-    by_id = grab_goal(item_id=by_pose.completed["item_id"], position=[0.0, 0.0, 0.0])
-    await grab_item.run(brain, by_id)
+    by_id = grab_goal(item_id=by_pose.completed["item_id"], target=UNREAD_TARGET)
+    await run_goal(grab_item, brain, by_id)
     assert by_id.completed["success"] is True
     assert [call[0] for call in manipulator.calls] == ["grab", "place", "grab"]
 
@@ -164,14 +164,14 @@ async def test_a_perception_switch_succeeds_during_a_grab():
     manipulator = FakeManipulator(wait_for_stop=True)
     brain = await brain_with(two_detectors(FakeDetector(), FakeDetector(), manipulator), manipulation_model="fake")
     grab = grab_goal()
-    running = asyncio.create_task(grab_item.run(brain, grab))
+    running = asyncio.create_task(run_goal(grab_item, brain, grab))
     await manipulator.begun()
     ctx = await switched(brain, Role.PERCEPTION, "new")
     assert ctx.completed is not None and brain.models.current_name(Role.PERCEPTION) == "new"
     # A manipulation switch, though, waits for the grab to end.
     refused = await switched(brain, Role.MANIPULATION, "fake")
     assert failed_with(refused, FailureKind.PRECONDITION_FAILED, "grab_item is running")
-    await abort.run(brain, FakeCtx(fake_peppygen.abort, reason="done"))
+    await run_goal(abort, brain, FakeCtx(fake_peppygen.abort, reason="done"))
     await asyncio.wait_for(running, 1.0)
 
 
@@ -213,7 +213,7 @@ async def test_a_lane_that_becomes_busy_during_prepare_refuses_the_switch_at_the
     await source.preparing.wait()
     # A scan is admitted while the switch prepares: the switch holds no lane.
     scan = scan_goal()
-    scanning = asyncio.create_task(scan_items.run(brain, scan))
+    scanning = asyncio.create_task(run_goal(scan_items, brain, scan))
     await old.searching.wait()
     source.gate.set()
     await asyncio.wait_for(switching, 1.0)

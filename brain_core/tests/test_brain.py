@@ -11,21 +11,23 @@ import fake_peppygen
 import pytest
 from conftest import (
     LOOKUP_TIMEOUT_S, PARAMS, FakeCtx, FakeDetector, FakeManipulator, FakeSource, FakeToken, Ticks, failed_with,
-    lookup_answer, make_brain, records_of, sensors_described, with_frames,
+    lookup_answer, make_brain, records_of, sensors_described, with_frames, run_goal,
 )
 from fake_peppygen import (
-    FakeConsumedService, FakeTopic, LookupTransformRequest, answering, fake_bindings, limb_states_message,
+    ROBOT_FRAME, FakeConsumedService, FakeTopic, LookupTransformRequest, answering, fake_bindings, limb_states_message,
 )
-from brain_core.brain import RESULT_ENDS, STATUS_ENDS, Brain, decider
+from brain_core.brain import RESULT_ENDS, STATUS_ENDS, Brain, Decider
 from brain_core.manipulators.none import NoneManipulator
-from brain_core.perception.camera import CameraPose
+from control_core_py.geometry import Placement
+
+from brain_core.perception.geometry import NOT_DESCRIBED
 from brain_core.perception.none import NoneDetector
-from brain_core.handlers import abort
+from brain_core.handlers import abort, scan_items
 from brain_core.perception.frames import FrameStore
 from brain_core.ports import ExpectedFailure, FailureKind, Refusal, Role
 
 
-async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the_robots_sensors():
+async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the_robot_frame():
     colour = SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
     depth = SimpleNamespace(depth_model="z")
     lookup = FakeConsumedService("lookup_transform", LookupTransformRequest, producer="robot")
@@ -36,18 +38,23 @@ async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the
         describe_sensors=answering("describe_sensors", sensors_described(("chest", "wrist_left"))),
         lookup_transform=lookup,
     )
-    brain = await make_brain(bindings=bindings)
-    assert brain.perceiver.camera.intrinsics is None and brain.placer.frames is None
+    brain = Brain(SimpleNamespace(**PARAMS), None, bindings, FakeSource.of(NoneDetector(), NoneManipulator()), now=Ticks(), run_token="t0")
+    await brain.start()
+    assert brain.perceiver.camera.intrinsics is None
+    with pytest.raises(Refusal, match=f"^{NOT_DESCRIBED}$"):
+        brain.placer.robot_frame
     # The camera slot is vacant, so the frame follower returns at once; the
     # two learners return once they have their answer.
     await asyncio.wait_for(asyncio.gather(*brain.background(FakeToken())), 1.0)
     camera = brain.perceiver.camera
     assert (camera.intrinsics.fx, camera.intrinsics.cx) == (6.0, 8.0)
-    assert brain.perceiver.placer is brain.placer and brain.placer.frames.robot_frame == "base_link"
-    # A manipulator asks where a camera stood when its picture was taken.
-    assert await brain.senses.camera_pose("wrist_left", 3.25) == CameraPose((0.3, 0.0, 0.5), (0.0, 0.0, 0.0, 1.0))
+    assert brain.perceiver.placer is brain.placer and brain.placer.robot_frame == "base_link"
+    # A manipulator asks where the frame a picture names stood when the
+    # picture was taken.
+    header = SimpleNamespace(frame="wrist_left_color_optical_frame", timestamp=3.25, capture_index=7)
+    assert await brain.senses.camera_pose(header) == Placement((0.3, 0.0, 0.5), (0.0, 0.0, 0.0, 1.0))
     assert lookup.polled == [
-        LookupTransformRequest("base_link", "wrist_left_color_optical_frame", 3.25, LOOKUP_TIMEOUT_S)
+        LookupTransformRequest("base_link", "wrist_left_color_optical_frame", 3.25, 3.25, LOOKUP_TIMEOUT_S)
     ]
     assert not hasattr(brain, "camera") and not hasattr(brain, "frames")
 
@@ -145,7 +152,7 @@ async def test_a_cancelled_or_aborted_goal_reports_its_elapsed_time():
     await manipulator.begun()
     ticks.now_ns += 4_000_000_000
     stop = FakeCtx(fake_peppygen.abort, reason="operator")
-    await abort.run(brain, stop)
+    await run_goal(abort, brain, stop)
     await asyncio.wait_for(running, 1.0)
     assert (aborted.completed["message"], aborted.completed["action_time"]) == ("aborted: operator", 4.0)
     assert (stop.completed["aborted_action"], stop.completed["action_time"]) == ("grab_item", 0.0)
@@ -314,26 +321,25 @@ class ScriptedModule:
         self.Failure = action.Failure
 
 
-async def test_the_decider_accepts_refuses_with_the_kind_and_refuses_a_broken_check(caplog):
+async def test_the_decider_accepts_refuses_with_the_kind_refuses_a_broken_admit_and_gives_the_goal_it_accepted(caplog):
     brain = await make_brain()
     module = ScriptedModule()
     request = SimpleNamespace(data=SimpleNamespace(role="arm"))
     seen = []
 
-    def passing(brain_, goal) -> None:
+    async def passing(brain_, goal):
         seen.append((brain_, goal.role))
+        return f"the goal of {goal.role}"
 
-    def refusing(brain_, goal) -> None:
+    async def refusing(brain_, goal):
         raise Refusal(FailureKind.REJECTED, f"this brain runs no model for the role '{goal.role}'")
 
-    def broken(brain_, goal) -> None:
+    async def broken(brain_, goal):
         raise KeyError("role")
 
+    deciders = [Decider(module, brain, admit) for admit in (passing, refusing, broken, None)]
     with records_of(caplog, "brain_core.brain") as log:
-        accepted = decider(module, brain, passing)(request)
-        refused = decider(module, brain, refusing)(request)
-        failed = decider(module, brain, broken)(request)
-        every = decider(module, brain, None)(request)
+        accepted, refused, failed, every = [await decider.decide(request) for decider in deciders]
     assert accepted.refusal is None and every.refusal is None
     assert seen == [(brain, "arm")]
     assert refused.refusal == module.Failure("rejected", "this brain runs no model for the role 'arm'")
@@ -343,6 +349,11 @@ async def test_the_decider_accepts_refuses_with_the_kind_and_refuses_a_broken_ch
         (logging.ERROR, "probe_action could not be decided: KeyError('role')"),
     ]
     assert log.records[1].exc_info is not None
+    # Each decider gives the goal of its accepted decision once: the goal
+    # its admit made, or the request data without one; a refused goal none.
+    taken = [decider.take() for decider in deciders]
+    assert taken == ["the goal of arm", None, None, request.data]
+    assert [decider.take() for decider in deciders] == [None] * 4
 
 
 async def test_a_shutdown_ends_a_lane_less_job_cancelled_and_refuses_every_goal_after():
@@ -373,7 +384,8 @@ async def test_a_shutdown_ends_a_lane_less_job_cancelled_and_refuses_every_goal_
 
 async def test_a_shutdown_ends_a_search_cancelled_and_a_manipulation_aborted():
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = await make_brain(manipulator=manipulator)
+    ticks = Ticks()
+    brain = await make_brain(manipulator=manipulator, ticks=ticks)
     began = asyncio.Event()
 
     async def search(job) -> dict:
@@ -387,14 +399,19 @@ async def test_a_shutdown_ends_a_search_cancelled_and_a_manipulation_aborted():
         return dict(GRAB_ZERO)
 
     scan = FakeCtx(fake_peppygen.scan_items, timeout_s=0.0)
-    scan_zero = dict(item_ids=[], labels=[], positions=[], confidences=[], regions=[], camera="", image_width=0, image_height=0, frame_timestamp=0.0)
     grabbing = grab_ctx()
-    searching = asyncio.create_task(brain.run_guarded(scan, Role.PERCEPTION, "scan_items", search, scan_zero, ends=STATUS_ENDS))
+    searching = asyncio.create_task(
+        brain.run_guarded(scan, Role.PERCEPTION, "scan_items", search, scan_items.ZERO, ends=STATUS_ENDS, stamped=True)
+    )
     moving = asyncio.create_task(brain.run_guarded(grabbing, Role.MANIPULATION, "grab_item", grab, GRAB_ZERO, ends=RESULT_ENDS))
     await began.wait()
     await manipulator.begun()
+    ticks.now_ns += 2_500_000_000
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await asyncio.wait_for(asyncio.gather(searching, moving), 1.0)
-    assert (scan.cancelled_reason, scan.cancelled) == ("the node is shutting down", dict(action_time=0.0, **scan_zero))
+    # The empty result of the scan names the robot frame and the time of the cancel.
+    assert (scan.cancelled_reason, scan.cancelled) == (
+        "the node is shutting down", dict(scan_items.ZERO, frame=ROBOT_FRAME, timestamp=3.5, action_time=2.5),
+    )
     assert grabbing.cancelled is None
-    assert grabbing.completed == dict(success=False, message="aborted: the node is shutting down", action_time=0.0, **GRAB_ZERO)
+    assert grabbing.completed == dict(success=False, message="aborted: the node is shutting down", action_time=2.5, **GRAB_ZERO)

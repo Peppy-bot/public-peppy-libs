@@ -7,8 +7,7 @@ from __future__ import annotations
 from ..ports import Role
 
 
-async def run(brain, ctx) -> None:
-    goal = ctx.request().data
+async def run(brain, ctx, goal) -> None:
     started = brain.now()
     reason = goal.reason.strip() or "aborted"
     try:

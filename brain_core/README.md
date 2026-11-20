@@ -11,9 +11,30 @@ calls `node.setup`.
 item_perception and brain_model report a refusal or a failure by the status
 of the goal: a refused goal and a failed goal carry a failure kind and a
 message, and a failed goal gives no result. item_manipulation reports both in
-its result, with `success` false and a message.
+its result, with `success` false and a message, but for the target of a
+grab_item or a place_item goal, which the goal's decision refuses: `rejected`
+for a target no contract takes, the failure kind of the lookup
+(`unknown_frame`, `no_chain`, `extrapolation`, `broken_tree`) for one the
+robot's tree cannot place.
 
-Pure Python on numpy and Pillow. brain_core never imports peppygen: peppygen is
+The brain holds every place in the robot frame, which `sensor_mounts:v1`'s
+describe_sensors names. A picture's points are placed by the frame its header
+names, looked up in the robot frame at the picture's capture time through
+`transform_lookup:v1`; a picture whose frame the tree does not place is
+dropped, and the log gives the lookup's failure kind. A goal's target is
+parsed through control_core_py's geometry and placed by its frame, the robot
+frame when it names none, at its timestamp in the robot frame at the latest
+time, as `item_manipulation:v1` places a target when it accepts a goal. Each
+report names the robot frame and the time of what it reports: a scan's and a
+search's points the capture time of the picture they come from, a place's
+final point the time the backbone measured it. Every move and every request of
+the motion planner names the robot frame with no timestamp, the latest time.
+So the brain's memory holds while the robot frame stands still on the floor,
+as a fixed-base robot's does. Colour and depth are paired by `capture_index`,
+and a picture's pixels are its `data`.
+
+Pure Python on numpy, Pillow and control_core_py, whose geometry holds every
+rotation the brain makes. brain_core never imports peppygen: peppygen is
 generated per node, so the node passes its modules in through `Bindings`.
 
 ## Using it
@@ -25,6 +46,11 @@ A node depends on brain_core by commit. Both brains pin it in
 [tool.uv.sources]
 brain_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", subdirectory = "brain_core", rev = "<commit>" }
 ```
+
+brain_core depends on control_core_py, the package beside it, by path, so uv
+takes control_core_py from the same commit. A node that imports
+control_core_py itself lists it among its dependencies with no source of its
+own, and gets it from that commit too.
 
 uv fetches a git source with git, and the `peppybot/python-uv-base` image has
 no git, so the node's `apptainer.def` installs it in `%post` before
@@ -58,27 +84,28 @@ def main() -> None:
     NodeBuilder().run(setup)
 ```
 
-The parameters the core reads are `limbs`, `camera_name`, `lookup_timeout_s`,
-how long a lookup of a camera's pose waits for the transforms of a picture's
-time, and the starting model of each role, `perception_model` and
+The parameters the core reads are `limbs`, `camera_name`, the name the
+camera runs under, which each search's result names, `lookup_timeout_s`, how
+long a lookup in the robot's tree waits for the transforms of its time, and
+the starting model of each role, `perception_model` and
 `manipulation_model`.
 
 ## The parts
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `TargetItem`, the item a place or a drop puts the held item in or on, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the pose of a camera at a picture's time), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `TargetItem`, the item a place or a drop puts the held item in or on, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the place of the frame a picture names at its capture time), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, `target_item`, the target value of a place or a drop or its refusal, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing, `execute_joint_path`, which runs a plan from its start, and the planner's `describe_arms`, `get_planning_scene` and three scene writes (`apply_collision_objects`, `apply_attached_collision_object`, `set_allowed_collision`), service calls like `check_arm_move` that say why when they give no answer |
+| `robot` | The proxy to the backbone and to the motion planner: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, `stop`, which cancels every move in flight, `has_planner`, whether the brain consumes the motion planner and its slot is bound, `plan_joint_path` and `plan_cartesian_path`, each a goal in flight like a move that a stop cancels and that moves nothing, `execute_joint_path`, which runs a plan from its start, and the planner's `describe_arms`, `get_planning_scene` and three scene writes (`apply_collision_objects`, `apply_attached_collision_object`, `set_allowed_collision`), service calls like `check_arm_move` that say why when they give no answer; every command in the robot frame at the latest time |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
-| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, `release_placed` and `release_dropped`, each the held flag of a result and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags, after each of those and at the start of each grab and each place: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
+| `brain` | The parts assembled, `Decider`, where a goal is refused before it is accepted and the goal its handler runs is made from its request, `place_target`, a goal's target parsed and placed in the robot frame, `run_guarded`, where every goal is admitted, ended the way its contract asks and logged, `hold`, `release_placed` and `release_dropped`, each the held flag of a result and then the scene, and `make_scene_follow_holds`, which makes the motion planner's scene equal to the held flags, after each of those and at the start of each grab and each place: each held item's object `brain/<item_id>` attached to its arm's grasp link, and no other object of the brain |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
-| `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model, the intrinsics learner and the `CameraPlacer` (the robot frame and each camera's frame from sensor_mounts, a camera's pose at a picture's time from transform_lookup), `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
+| `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model, the intrinsics learner and the `Placer` (the robot frame from sensor_mounts; the frame a picture names at its capture time, and a goal's target at its timestamp, placed in it by transform_lookup), `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
 | `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
@@ -269,8 +296,9 @@ on a `GraspProposer`, as it is or with an `Aligner` of the node's own.
 
 `identify_item`; `scan_items` runs the same way, and `switch_model` is
 decided by its role and model (`Models.check_switch`). The manipulation
-goals accept every goal at once, run in the manipulation lane on the
-manipulation model, and report a refusal or a failure in their result.
+goals accept every goal whose target, where they read one, the robot's tree
+places, run in the manipulation lane on the manipulation model, and report
+every other refusal and a failure in their result.
 
 ```mermaid
 sequenceDiagram
@@ -285,13 +313,13 @@ sequenceDiagram
     participant D as Detector
     participant St as State
     C->>S: identify_item goal
-    S->>B: decider: check_search()
+    S->>B: Decider: check_search()
     alt the node shuts down, or the lane runs a search
         B-->>C: refused, precondition_failed: "scan_items is running"
     else no perception source
         B-->>C: refused, resource_unavailable ("no perception source: ...")<br/>or precondition_failed for the model "none"
     else accepted
-        S-)T: create_task(run(ctx))
+        S-)T: create_task(run(ctx, goal))
         S->>S: wait for the next goal
         T->>B: run_guarded(ctx, PERCEPTION, "identify_item", body, ZERO, STATUS_ENDS)
         B->>Q: start(PERCEPTION, "identify_item")
@@ -308,7 +336,7 @@ sequenceDiagram
             B->>D: why_unavailable(): checked again
             B->>P: scan(detector, phrases, job.cancel, timeout_s)
             P->>P: the frames and the camera model, checked again
-            P->>P: the camera's pose at the frame's time, from transform_lookup
+            P->>P: the frame the picture names, at its time, from transform_lookup
             P->>D: await detect(image, phrases, deadline)
             D-->>P: boxes, or SearchTimeout, or an ExpectedFailure
             P-->>B: Look, the boxes placed in the robot frame
@@ -541,8 +569,7 @@ bottom in its reach test; with an aligner, the model corrects the held item's
 place above the target, told its label and width (`AlignRequest.into`); the
 line down from there to the target's bottom stops on contact, so the item
 rests on the target's floor or on what it holds, and the jaws open where the
-arm stopped, then the arm climbs back. `position` and `orientation` of the
-goal are not read. A drop above a target makes the scene follow the holds,
+arm stopped, then the arm climbs back. The goal's `target` is not read. A drop above a target makes the scene follow the holds,
 carries the same way with the pre-place point alone in its reach test, aligns
 with no descent after it (`AlignRequest.descends` false), and opens there,
 with no climb; the brain forgets the dropped item. The target keeps its id

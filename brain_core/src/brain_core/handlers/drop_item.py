@@ -13,9 +13,7 @@ from ..ports import ExpectedFailure, FailureKind, Role
 ZERO = dict(gripper_name="", item_id="")
 
 
-async def run(brain, ctx) -> None:
-    goal = ctx.request().data
-
+async def run(brain, ctx, goal) -> None:
     async def body(job) -> dict:
         manipulator = brain.models.current(Role.MANIPULATION)
         gripper = brain.state.holder(goal.gripper_name)
