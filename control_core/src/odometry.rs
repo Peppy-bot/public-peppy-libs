@@ -24,7 +24,7 @@
 use std::num::NonZeroUsize;
 
 use crate::not_finite::NotFinite;
-use crate::positive_finite::PositiveFinite;
+use crate::positive_finite::{NotPositiveFinite, PositiveFinite};
 use crate::twist::PlanarTwist;
 
 /// The shortest time (s) an update integrates over, as odometry.cpp's
@@ -86,7 +86,34 @@ pub struct WheelGeometry {
     pub right_wheel_radius_m: PositiveFinite,
 }
 
+/// A length of a wheel geometry that is not above 0, by its name.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("the wheel geometry's {length} {source}")]
+pub struct WheelGeometryError {
+    /// `wheel_separation`, `left_wheel_radius` or `right_wheel_radius`.
+    pub length: &'static str,
+    pub source: NotPositiveFinite,
+}
+
 impl WheelGeometry {
+    /// The geometry of two wheels `separation_m` apart, the left of radius
+    /// `left_radius_m` and the right of `right_radius_m`, each a length (m)
+    /// above 0, or the refusal naming the first that is not.
+    pub fn parse(
+        separation_m: f64,
+        left_radius_m: f64,
+        right_radius_m: f64,
+    ) -> Result<Self, WheelGeometryError> {
+        let length = |length, value| {
+            PositiveFinite::parse(value).map_err(|source| WheelGeometryError { length, source })
+        };
+        Ok(Self {
+            wheel_separation_m: length("wheel_separation", separation_m)?,
+            left_wheel_radius_m: length("left_wheel_radius", left_radius_m)?,
+            right_wheel_radius_m: length("right_wheel_radius", right_radius_m)?,
+        })
+    }
+
     /// The wheel rates (rad/s), [left, right], that drive the base at
     /// `velocity`, as the diff drive controller mixes them: the inverse of
     /// the odometry's mix. A differential base executes no linear_y.
@@ -333,5 +360,31 @@ mod tests {
             odometry.linear(),
         );
         assert_eq!(after, before);
+    }
+
+    // A wheel geometry takes three lengths above 0, and refuses the first that is
+    // not by its name.
+    #[test]
+    fn a_wheel_length_not_above_zero_is_refused_by_its_name() {
+        let geometry = WheelGeometry::parse(0.4, 0.1, 0.12).expect("a wheel geometry");
+        assert_eq!(
+            [
+                geometry.wheel_separation_m.get(),
+                geometry.left_wheel_radius_m.get(),
+                geometry.right_wheel_radius_m.get()
+            ],
+            [0.4, 0.1, 0.12]
+        );
+        let refused = WheelGeometry::parse(0.4, 0.1, 0.0).expect_err("a wheel of no radius");
+        assert_eq!(
+            refused.to_string(),
+            "the wheel geometry's right_wheel_radius must be a positive finite number, got 0"
+        );
+        assert_eq!(
+            WheelGeometry::parse(f64::NAN, 0.1, 0.1)
+                .expect_err("no separation")
+                .length,
+            "wheel_separation"
+        );
     }
 }
