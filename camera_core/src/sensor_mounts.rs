@@ -4,7 +4,7 @@
 //! sensor's own name, and a consumer whose tree holds no frame of that name drops the
 //! measurement with `unknown_frame`. A sensor node reads it once at its start through
 //! [`read_sensor`], before it opens anything, with the [`SensorClass`] of the sensors it
-//! streams as: a camera with [`CAMERA`].
+//! streams as: a camera with [`CAMERA`], a 2-D lidar with [`LIDAR_2D`].
 
 use std::fmt::{self, Display};
 use std::future::Future;
@@ -30,6 +30,12 @@ pub struct SensorClass {
 pub const CAMERA: SensorClass = SensorClass {
     noun: "camera",
     kinds: &["rgb_camera", "rgbd_camera"],
+};
+
+/// The 2-D lidars: a sensor that streams on lidar_2d, whose frame is its sensor frame.
+pub const LIDAR_2D: SensorClass = SensorClass {
+    noun: "lidar",
+    kinds: &["lidar_2d"],
 };
 
 /// The fields of an answer of `describe_sensors` that place each sensor, which a node's poll
@@ -538,16 +544,12 @@ mod tests {
 
     #[test]
     fn a_class_takes_its_own_kinds_and_its_refusals_use_its_noun() {
-        const LIDAR: SensorClass = SensorClass {
-            noun: "lidar",
-            kinds: &["lidar_2d"],
-        };
         assert_eq!(
-            sensor_frame(LIDAR, &answer(), "lidar"),
+            sensor_frame(LIDAR_2D, &answer(), "lidar"),
             Ok(frame("lidar_link"))
         );
         assert_eq!(
-            sensor_frame(LIDAR, &answer(), "chest")
+            sensor_frame(LIDAR_2D, &answer(), "chest")
                 .unwrap_err()
                 .to_string(),
             "sensor_mounts' describe_sensors names \"chest\" a sensor of \"rgbd_camera\": run the \
