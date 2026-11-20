@@ -4,15 +4,13 @@
 
 use control_core::planar_pose::PlanarPose;
 
-use crate::pose::distance;
-
 /// The point `lookahead_dist` along `plan` from its first pose: on the step
 /// that reaches that distance, or the last pose when the plan is shorter.
 pub(super) fn lookahead_point(lookahead_dist: f64, plan: &[PlanarPose]) -> [f64; 2] {
     let mut path_dist = 0.0;
     for step in plan.windows(2) {
         let (previous, current) = (step[0], step[1]);
-        let d = distance(previous, current);
+        let d = previous.distance_to(current);
         if path_dist + d >= lookahead_dist {
             return linear_interpolation(previous, current, lookahead_dist - path_dist);
         }

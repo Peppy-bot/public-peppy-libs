@@ -32,7 +32,7 @@ use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::planar_pose::PlanarPose;
 
 use crate::path_handler::PrunedPlan;
-use crate::pose::{path_length, shortest_angular_distance};
+use crate::pose::path_length;
 
 /// The goal checker's settings, by Nav2's names.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,7 +107,6 @@ impl GoalChecker {
         if !self.is_goal_xy_reached(pose, plan) {
             return false;
         }
-        shortest_angular_distance(pose.yaw(), plan.goal().yaw()).abs()
-            <= self.params.yaw_goal_tolerance_rad.get()
+        pose.yaw_to(plan.goal()).abs() <= self.params.yaw_goal_tolerance_rad.get()
     }
 }

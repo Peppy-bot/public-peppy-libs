@@ -71,6 +71,19 @@ impl PlanarPose {
         self.yaw
     }
 
+    /// The distance, in meters, from this pose's position to `target`'s, as
+    /// nav2_util's `euclidean_distance` gives it (include/nav2_util/geometry_utils.hpp).
+    pub fn distance_to(self, target: PlanarPose) -> f64 {
+        (self.x - target.x).hypot(self.y - target.y)
+    }
+
+    /// The turn, in radians, of least magnitude from this pose's heading to
+    /// `target`'s, in (-pi, pi]: the angles library's `shortest_angular_distance`
+    /// ([`normalize_angle`] of the difference).
+    pub fn yaw_to(self, target: PlanarPose) -> f64 {
+        normalize_angle(target.yaw - self.yaw)
+    }
+
     /// The transform in space: the position on the floor plane, at height 0, and
     /// the heading as a turn about +Z, its quaternion made as tf2's
     /// `setRPY(0, 0, yaw)` makes it ([`arithmetic::quaternion_of_yaw`]).
@@ -314,6 +327,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    // The distance between two poses is that of their positions, and the
+    // turn from one heading to another is the shorter one, crossing the cut at
+    // pi when that is shorter.
+    #[test]
+    fn a_pose_gives_the_distance_and_the_shorter_turn_to_another() {
+        use std::f64::consts::PI;
+        let (from, to) = (planar(1.0, 1.0, 3.0), planar(4.0, 5.0, -3.0));
+        assert_eq!(from.distance_to(to), 5.0);
+        assert_eq!(to.distance_to(from), 5.0);
+        assert!((from.yaw_to(to) - (2.0 * PI - 6.0)).abs() < 1e-15);
+        assert_eq!(planar(0.0, 0.0, 0.25).yaw_to(planar(0.0, 0.0, 0.75)), 0.5);
     }
 
     // An angle comes into (-pi, pi], pi itself staying.

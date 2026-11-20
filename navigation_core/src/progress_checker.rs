@@ -13,8 +13,6 @@ use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::planar_pose::PlanarPose;
 use control_core::time::{elapsed_ns, nanoseconds, seconds};
 
-use crate::pose::distance;
-
 /// The progress checker's settings: Nav2's `required_movement_radius` and
 /// `movement_time_allowance`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,7 +75,7 @@ impl ProgressChecker {
             self.baseline = Some(here);
             return Ok(());
         };
-        let moved_m = distance(pose, baseline.pose);
+        let moved_m = pose.distance_to(baseline.pose);
         if moved_m > self.params.required_movement_m.get() {
             self.baseline = Some(here);
             return Ok(());
