@@ -396,7 +396,7 @@ mod tests {
 
     use frame_tree::{TransformErrorReason, TransformRecord};
 
-    use crate::geometry::{Point, Pose};
+    use crate::geometry::{Point, Pose, Twist};
 
     use crate::node_clock::TickFeed;
     use crate::test_support::Logged;
@@ -815,9 +815,10 @@ mod tests {
         );
     }
 
-    // A pose's orientation turns by the place of its frame.
+    // A pose's orientation and a twist's vectors turn by the place of their frame; a twist does
+    // not move with the place's origin.
     #[tokio::test(start_paused = true)]
-    async fn a_pose_turns_with_its_frame() {
+    async fn a_pose_turns_with_its_frame_and_a_twist_turns_alone() {
         let (tree, _ticks) = tree_at(21);
         let half = std::f64::consts::FRAC_PI_4;
         let quarter_turn = [0.0, 0.0, half.sin(), half.cos()];
@@ -854,6 +855,23 @@ mod tests {
         assert!(
             qx.abs() < 1e-12 && qy.abs() < 1e-12 && (qz - 1.0).abs() < 1e-12 && qw.abs() < 1e-12
         );
+        let twist = Stamped::parse(
+            "turned",
+            None,
+            Twist::parse([1.0, 0.0, 0.0], [0.0, 0.0, 0.5]).unwrap(),
+        )
+        .unwrap();
+        let turned = tree
+            .place(&twist, &base, Duration::ZERO)
+            .await
+            .expect("placed")
+            .value;
+        let [vx, vy, vz] = turned.linear_velocity();
+        assert!(
+            vx.abs() < 1e-12 && (vy - 1.0).abs() < 1e-12 && vz == 0.0,
+            "{vx} {vy} {vz}"
+        );
+        assert_eq!(turned.angular_velocity(), [0.0, 0.0, 0.5]);
     }
 
     #[tokio::test(start_paused = true)]

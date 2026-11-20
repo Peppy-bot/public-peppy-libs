@@ -35,9 +35,8 @@ IDENTITY: Quaternion = (0.0, 0.0, 0.0, 1.0)
 # (buffer_core.cpp:66), which the transforms contract names.
 _QUATERNION_NORMALIZATION_TOLERANCE = 10e-3
 
-# How far a planar pose's height and its tilt may lie from 0, in m and rad: a value composed
-# through planar transforms alone gives an exact 0, and the rounding of a chain of 20 transforms
-# at 100 m stays near 4.4e-13.
+# How far a planar pose's height and its tilt may lie from 0, in m and rad: base_motion's bound on
+# a planar target, control_core's PLANAR_TOLERANCE.
 _PLANAR_TOLERANCE = 1e-9
 
 # The one frame of a simulation: every report of a simulation contract gives its values in it,

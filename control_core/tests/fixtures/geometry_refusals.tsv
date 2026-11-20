@@ -9,6 +9,8 @@ UnitQuaternion.parse	0 0 0 0	the orientation [0, 0, 0, 0] has a squared norm of 
 UnitQuaternion.parse	-0.51 0.15 0.05 0.75	the orientation [-0.51, 0.15, 0.05, 0.75] has a squared norm of 0.8475999999999999, 0.01 or more from 1: send a unit quaternion [x, y, z, w], such as [0, 0, 0, 1]
 PoseTarget.parse	inf 0 0		a position must be finite: got x inf, y 0, z 0; give a finite number of meters on each axis
 PoseTarget.pose	1 2 0		the target gives no orientation: send a unit quaternion [x, y, z, w]
+Pose.planar	1 0 1e-7	0 0 0 1	the position lies 0.0000001 m above the floor plane: send a position [x, y, 0] on the floor
+Pose.planar	1 0 0	1 0 0 0	the orientation [1, 0, 0, 0] tilts 3.141592653589793 rad off the vertical: send a turn about +z alone, [0, 0, sin(yaw/2), cos(yaw/2)]
 Stamped.parse		5	the frame is empty: name a frame of the robot's tree, such as the robot frame that sensor_mounts' describe_sensors names
 Stamped.parse			the frame is empty: name a frame of the robot's tree, such as the robot frame that sensor_mounts' describe_sensors names
 Stamped.parse	odom	-1.5	the timestamp -1.5 s from 1970-01-01T00:00:00Z lies outside the times a stamp holds: send one from 0 s to 18446744073.709551615 s after it

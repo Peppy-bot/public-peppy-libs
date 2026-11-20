@@ -39,6 +39,7 @@ CALLS = {
     "PoseTarget.pose": lambda position, orientation: g.PoseTarget.parse(
         _numbers(position), _optional_numbers(orientation)
     ).pose(),
+    "Pose.planar": lambda position, orientation: g.Pose.parse(_numbers(position), _numbers(orientation)).planar(),
     "Stamped.parse": lambda frame, seconds: g.Stamped.parse(frame, _optional_seconds(seconds), None),
 }
 
@@ -168,25 +169,9 @@ def test_a_value_of_another_number_of_entries_is_refused_with_what_to_send():
         assert str(refused.value) == message
 
 
-def test_a_planar_pose_is_refused_off_the_plane_saying_what_to_send():
+def test_a_planar_pose_reads_its_heading_and_refuses_a_slight_tilt():
     planar = g.Pose.parse([1.0, -2.0, 0.0], about_z(2.5)).planar()
     assert (planar.x, planar.y) == (1.0, -2.0) and abs(planar.yaw - 2.5) < 1e-12
-    cases = [
-        (
-            ([1.0, 0.0, 1e-7], g.IDENTITY),
-            "the position lies 0.0000001 m above the floor plane: send a position [x, y, 0] on "
-            "the floor",
-        ),
-        (
-            ([1.0, 0.0, 0.0], (1.0, 0.0, 0.0, 0.0)),
-            "the orientation [1, 0, 0, 0] tilts 3.141592653589793 rad off the vertical: send a "
-            "turn about +z alone, [0, 0, sin(yaw/2), cos(yaw/2)]",
-        ),
-    ]
-    for (position, orientation), message in cases:
-        with pytest.raises(g.GeometryError) as refused:
-            g.Pose.parse(position, orientation).planar()
-        assert str(refused.value) == message
     with pytest.raises(g.GeometryError, match="tilts"):
         g.Pose.parse([1.0, 0.0, 0.0], [math.sin(0.05), 0.0, 0.0, math.cos(0.05)]).planar()
 
