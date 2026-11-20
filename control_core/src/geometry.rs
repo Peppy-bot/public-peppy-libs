@@ -5,9 +5,10 @@
 //! finite, an orientation whose squared norm lies [`QUATERNION_NORMALIZATION_TOLERANCE`] or more from
 //! 1, an empty frame, and a timestamp a stamp does not hold. A command with no timestamp is placed
 //! at the latest time, which tf2 names `TimePointZero`, and a given timestamp is a time like any
-//! other, 0 the Unix epoch; a target with no orientation gives none ([`PoseTarget`]). Every
-//! refusal says what to send instead, each number in it printed as Rust's `Display` prints it,
-//! and control_core_py's geometry gives the same text for the same refusal
+//! other, 0 the Unix epoch; a target with no orientation gives none ([`PoseTarget`]). A
+//! planar member reads a pose on the floor plane through [`Pose::planar`], which refuses a part
+//! off the plane. Every refusal says what to send instead, each number in it printed as Rust's
+//! `Display` prints it, and control_core_py's geometry gives the same text for the same refusal
 //! (`tests/fixtures/geometry_refusals.tsv`).
 //!
 //! Behind the `nalgebra` feature a point, an orientation and a pose go into nalgebra's types with
@@ -22,10 +23,16 @@ use frame_tree::{
 };
 
 use crate::not_finite::NotFinite;
+use crate::planar_pose::PlanarPose;
 
 /// The one frame of a simulation: every report of a simulation contract gives its values in it,
 /// and a command names it or leaves its frame out.
 pub const WORLD: &str = "world";
+
+/// How far a planar pose's height and tilt may lie from 0, in m and rad: a value composed
+/// through planar transforms alone gives an exact 0, and the rounding of a chain of 20
+/// transforms at 100 m stays near 4.4e-13.
+const PLANAR_TOLERANCE: f64 = 1e-9;
 
 /// A position [x, y, z] in m, every coordinate finite.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -114,6 +121,34 @@ impl Pose {
         Transform::new(self.position.position(), self.orientation.quaternion())
             .expect("a finite position and a normalized quaternion make a transform")
     }
+
+    /// The pose on the floor plane: its position's x and y and its heading as tf2's `getYaw`
+    /// reads it; refused when its height or its tilt lies farther than 1e-9 m or rad from 0.
+    pub fn planar(self) -> Result<PlanarPose, GeometryError> {
+        let [x, y, z] = self.position.position();
+        if z.abs() > PLANAR_TOLERANCE {
+            return Err(GeometryError::OffFloor { z });
+        }
+        let quaternion = self.orientation.quaternion();
+        let tilt_rad = tilt_of(quaternion);
+        if tilt_rad > PLANAR_TOLERANCE {
+            return Err(GeometryError::Tilted {
+                orientation: quaternion,
+                tilt_rad,
+            });
+        }
+        Ok(
+            PlanarPose::new(x, y, arithmetic::yaw_of_quaternion(quaternion)).expect(
+                "the finite x and y of a parsed point and the heading of a unit quaternion",
+            ),
+        )
+    }
+}
+
+/// The angle (rad) between a unit quaternion's +Z and its frame's +Z: its turn about a
+/// horizontal axis, `2 asin(sqrt(x^2 + y^2))`.
+fn tilt_of([x, y, _, _]: Quaternion) -> f64 {
+    2.0 * (x * x + y * y).sqrt().min(1.0).asin()
 }
 
 /// The target of a goal: a position, and an orientation or none, as a command leaves out an
@@ -298,6 +333,19 @@ pub enum GeometryError {
         orientation: [f64; 4],
         squared_norm: f64,
     },
+    #[error(
+        "the position lies {z} m above the floor plane: send a position [x, y, 0] on the floor"
+    )]
+    OffFloor { z: f64 },
+    #[error(
+        "the orientation {} tilts {tilt_rad} rad off the vertical: send a turn about +z alone, \
+         [0, 0, sin(yaw/2), cos(yaw/2)]",
+        listed(.orientation)
+    )]
+    Tilted {
+        orientation: [f64; 4],
+        tilt_rad: f64,
+    },
     #[error("the target gives no orientation: send a unit quaternion [x, y, z, w]")]
     NoOrientation,
     #[error(
@@ -386,6 +434,10 @@ mod tests {
             .split_whitespace()
             .map(|number| number.parse().expect("a number"))
             .collect()
+    }
+
+    fn about_z(yaw: f64) -> [f64; 4] {
+        [0.0, 0.0, (yaw / 2.0).sin(), (yaw / 2.0).cos()]
     }
 
     fn array<const N: usize>(field: &str) -> [f64; N] {
@@ -607,5 +659,33 @@ mod tests {
         for (a, b) in by_nalgebra.coords.iter().zip(by_tf2) {
             assert!((a - b).abs() < 1e-9, "{by_nalgebra} vs {by_tf2:?}");
         }
+    }
+
+    #[test]
+    fn a_planar_pose_is_refused_off_the_floor_or_tilted() {
+        let off = Pose::parse([1.0, 0.0, 0.3], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        assert_eq!(off.planar(), Err(GeometryError::OffFloor { z: 0.3 }));
+        let half = 0.05_f64;
+        let rolled = Pose::parse([1.0, 0.0, 0.0], [half.sin(), 0.0, 0.0, half.cos()]).unwrap();
+        assert!(matches!(rolled.planar(), Err(GeometryError::Tilted { .. })));
+    }
+
+    // A pose on the floor, turned about +z alone, reads back its position and its heading,
+    // within the rounding of a quaternion's half angles.
+    #[hegel::test]
+    fn a_floor_pose_reads_back_its_heading(tc: TestCase) {
+        let x: f64 = tc.draw(gs::floats().min_value(-100.0).max_value(100.0));
+        let y: f64 = tc.draw(gs::floats().min_value(-100.0).max_value(100.0));
+        let yaw: f64 = tc.draw(gs::floats().min_value(-3.1).max_value(3.1));
+        let planar = Pose::parse([x, y, 0.0], about_z(yaw))
+            .unwrap()
+            .planar()
+            .unwrap();
+        assert_eq!([planar.x(), planar.y()], [x, y]);
+        assert!(
+            (planar.yaw() - yaw).abs() < 1e-12,
+            "{} vs {yaw}",
+            planar.yaw()
+        );
     }
 }
