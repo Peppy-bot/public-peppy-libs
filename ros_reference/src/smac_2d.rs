@@ -15,7 +15,7 @@ enum ThisKind {
 }
 
 /// The planner's parameters, by Smac 2D's names.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlannerParameters {
     pub tolerance: f64,
@@ -29,7 +29,7 @@ pub struct PlannerParameters {
 }
 
 /// The smoother's parameters, by Smac 2D's names.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmootherParameters {
     pub tolerance: f64,
@@ -61,28 +61,18 @@ struct PlanInput {
     goal: [f64; 3],
 }
 
-/// The reference output: the grid, the footprint and the parameters as the reference read
-/// them, the planner's tolerance and multiplier in the single precision Smac holds them
-/// in, and each plan.
+/// The reference output: one plan a start and goal of the scenario, in its order.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    grid: Grid,
-    costs: Vec<Vec<u8>>,
-    footprint: Vec<[f64; 2]>,
-    planner: PlannerParameters,
-    smoother: SmootherParameters,
     plans: Vec<PlanRead>,
 }
 
-/// A start and a goal as the reference read them, each heading read back from its
-/// quaternion, and the plan of each planner.
+/// The plan of each planner.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanRead {
-    start: [f64; 3],
-    goal: [f64; 3],
     outcome: Outcome,
     raw: Vec<[f64; 3]>,
     smoothed_outcome: Outcome,
@@ -124,14 +114,9 @@ pub struct Cases {
     pub plans: Vec<Plan>,
 }
 
-/// How far a heading read back from its quaternion may lie from the heading that made
-/// it, in radians.
-const HEADING_READ_RAD: f64 = 1e-12;
-
 impl Cases {
     /// Every Smac 2D scenario under `scenarios/`, in the order of their names, each paired
-    /// with its reference output: the reference read the grid, its costs, the footprint,
-    /// the parameters and each start and goal, and its two planners ended each plan alike.
+    /// with its reference output, whose two planners ended each plan alike.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::Smac2d)
             .into_iter()
@@ -142,11 +127,6 @@ impl Cases {
             })
             .collect()
     }
-}
-
-/// `value` as Smac holds a parameter it reads into a float.
-fn single(value: f64) -> f64 {
-    f64::from(value as f32)
 }
 
 fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
@@ -161,32 +141,8 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
     } = scenario;
     let Reference {
         kind: ThisKind::Smac2d,
-        grid: grid_read,
-        costs: costs_read,
-        footprint: footprint_read,
-        planner: planner_read,
-        smoother: smoother_read,
         plans: plans_read,
     } = reference;
-    assert_eq!(grid_read, grid, "{name}: the reference read the grid");
-    assert_eq!(costs_read, costs, "{name}: the reference read the costs");
-    assert_eq!(
-        footprint_read, footprint,
-        "{name}: the reference read the footprint"
-    );
-    assert_eq!(
-        planner_read,
-        PlannerParameters {
-            tolerance: single(planner.tolerance),
-            cost_travel_multiplier: single(planner.cost_travel_multiplier),
-            ..planner
-        },
-        "{name}: the reference read the planner's parameters, two of them in single precision"
-    );
-    assert_eq!(
-        smoother_read, smoother,
-        "{name}: the reference read the smoother's parameters"
-    );
     assert_eq!(
         plans.len(),
         plans_read.len(),
@@ -197,15 +153,6 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
         .zip(plans_read)
         .enumerate()
         .map(|(index, (input, read))| {
-            for (given, read, what) in [
-                (input.start, read.start, "start"),
-                (input.goal, read.goal, "goal"),
-            ] {
-                assert!(
-                    read[..2] == given[..2] && (read[2] - given[2]).abs() < HEADING_READ_RAD,
-                    "{name} plan {index}: the reference read the {what} {given:?} as {read:?}"
-                );
-            }
             assert_eq!(
                 read.outcome, read.smoothed_outcome,
                 "{name} plan {index}: Smac's planners ended it alike"

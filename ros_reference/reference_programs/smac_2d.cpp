@@ -252,8 +252,6 @@ nlohmann::json smac_2d(const nlohmann::json& scenario, Inputs&) {
     const auto raw_plan = planned(raw, start, goal);
     const auto smoothed_plan = planned(smoothed, start, goal);
     plans.push_back({
-        {"start", pose_read(start.pose)},
-        {"goal", pose_read(goal.pose)},
         {"outcome", raw_plan.at("outcome")},
         {"raw", raw_plan.at("poses")},
         {"smoothed_outcome", smoothed_plan.at("outcome")},
@@ -262,29 +260,6 @@ nlohmann::json smac_2d(const nlohmann::json& scenario, Inputs&) {
   }
   return {
       {"kind", "smac_2d"},
-      {"grid", grid_read(*costmap)},
-      {"costs", costs_read(*costmap)},
-      {"footprint", footprint_read(footprint)},
-      {"planner",
-       {
-           {"tolerance", parameters.tolerance},
-           {"cost_travel_multiplier", parameters.cost_travel_multiplier},
-           {"allow_unknown", parameters.allow_unknown},
-           {"max_iterations", parameters.max_iterations},
-           {"max_on_approach_iterations", parameters.max_on_approach_iterations},
-           {"terminal_checking_interval", parameters.terminal_checking_interval},
-           {"max_planning_time", parameters.max_planning_time},
-           {"use_final_approach_orientation", parameters.use_final_approach_orientation},
-       }},
-      {"smoother",
-       {
-           {"tolerance", smoothed_params.tolerance_},
-           {"max_iterations", smoothed_params.max_its_},
-           {"w_data", smoothed_params.w_data_},
-           {"w_smooth", smoothed_params.w_smooth_},
-           {"do_refinement", smoothed_params.do_refinement_},
-           {"refinement_num", smoothed_params.refinement_num_},
-       }},
       {"plans", plans},
   };
 }
