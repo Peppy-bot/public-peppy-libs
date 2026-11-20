@@ -482,6 +482,14 @@ impl Mapping {
         self.scans
     }
 
+    /// The number of scans in the pose graph: each scan that passed the gate and joined it.
+    /// The grid changes when it does, as karto adds a scan or closes a loop on adding one.
+    pub fn graph_scans(&self) -> usize {
+        self.mapper
+            .as_ref()
+            .map_or(0, |mapper| mapper.scans().len())
+    }
+
     /// The extent of the map's grid as it stands, as karto's `ComputeDimensions` gives it
     /// of the scans' points; none before a scan was added.
     pub fn extent(&self) -> Result<Option<GridExtent>, GridError> {

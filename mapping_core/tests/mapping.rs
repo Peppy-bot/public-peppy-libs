@@ -160,6 +160,7 @@ fn each_scan_read_counts_once_and_each_scan_the_graph_adds_answers_once(tc: Test
             answered += 1;
         }
         assert_eq!(mapping.scans(), index as u32 + 1, "scan {index}");
+        assert_eq!(mapping.graph_scans(), answered, "scan {index}");
     }
     assert_eq!(mapping.poses().len(), answered);
     let map = room_map_of(&room, &drive, &odometry, sync_parameters());
