@@ -43,10 +43,11 @@ The SRDF of every model gives:
   `right_gripper` on an OpenArm, `arm` and `gripper` on an SO-101.
 - the states `ready`, `home` and `start` of each arm, `park` where the arm has one, and
   `closed` and `open` of each gripper ([`states`]).
-- the disabled pairs, each with its reason: `Adjacent` for two links on one
-  joint, `Never` for two links the joint limits keep apart, `Default` for two
-  that touch with every joint at zero, `Always` for two that touch wherever the
-  robot stands.
+- the disabled pairs, each with its reason, as MoveIt's setup assistant names
+  them: `Adjacent` for two links that one joint joins, or that links with no
+  collision geometry alone join between them, `Never` for two links the joint
+  limits keep apart, `Default` for two that touch with every joint at zero,
+  `Always` for two that touch wherever the robot stands.
 
 A camera the robot carries is a link `<camera>_optical_frame` of the URDF
 ([`CameraFrame::frame`]), on a fixed joint, in the optical frame of REP-103: +z

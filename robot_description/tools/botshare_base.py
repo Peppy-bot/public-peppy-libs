@@ -12,13 +12,12 @@ openAMRobot/openamr-platform-sw (MIT) at COMMIT, expanded by xacro 2.1.1
 (ros/xacro, BSD-3-Clause) at its defaults.
 
 The URDF is upstream's expansion, with the changes URDF_HEADER lists and the
-repository's licence after that header. The SRDF
-disables every pair of links with collision geometry, as MoveIt's setup
-assistant names the reasons: Adjacent for two links one joint joins, or two
-neighbors of a link with no collision geometry, and Never for two whose bounds
-in the robot frame stand apart. The base is rigid but for its two wheels, each a cylinder
-about its joint's axis, so the bounds of every link hold wherever the wheels
-turn. Any other pair stops the tool, naming it.
+repository's licence after that header. The SRDF disables every pair of links
+with collision geometry, as MoveIt's setup assistant names the reasons:
+Adjacent for two links that one joint joins, or that links with no collision
+geometry alone join between them, and Never for every other pair.
+collision_geometry's test of the bundled base holds the bounds of each Never
+pair in the robot frame apart wherever the wheels turn.
 
 Run it from any directory:
 
@@ -28,7 +27,6 @@ Run it from any directory:
 
 import argparse
 import itertools
-import math
 import os
 import sys
 import tempfile
@@ -91,10 +89,10 @@ URDF_HEADER = f"""<!--
 SRDF_HEADER = """<!--
   robot_description/tools/botshare_base.py writes this file. A base has no arm
   and no gripper, so it has no group and no named state. Each pair of links
-  with collision geometry is disabled: Adjacent for two links one joint joins,
-  or two neighbors of a link with no collision geometry, and Never for two
-  whose bounds in the robot frame stand apart, which they do wherever the
-  wheels turn.
+  with collision geometry is disabled: Adjacent for two links that one joint
+  joins, or that links with no collision geometry alone join between them, and
+  Never for two whose bounds in the robot frame stand apart, which they do
+  wherever the wheels turn.
 -->"""
 
 
@@ -186,145 +184,37 @@ def adapted(root: ET.Element, near: float, far: float) -> ET.Element:
     return root
 
 
-def vector(text: str | None) -> list[float]:
-    return [float(value) for value in (text or "0 0 0").split()]
-
-
-def rotation(rpy: list[float]) -> list[list[float]]:
-    """The matrix of a URDF origin's roll, pitch and yaw, each about the parent's fixed axes."""
-    (sr, cr), (sp, cp), (sy, cy) = ((math.sin(a), math.cos(a)) for a in rpy)
-    return [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ]
-
-
-def times(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
-    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-
-
-def apply(m: list[list[float]], v: list[float]) -> list[float]:
-    return [sum(m[i][k] * v[k] for k in range(3)) for i in range(3)]
-
-
-def frame(origin: ET.Element | None) -> tuple[list[list[float]], list[float]]:
-    if origin is None:
-        return rotation([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]
-    return rotation(vector(origin.get("rpy"))), vector(origin.get("xyz"))
-
-
-def compose(outer, inner):
-    (r_outer, p_outer), (r_inner, p_inner) = outer, inner
-    moved = apply(r_outer, p_inner)
-    return times(r_outer, r_inner), [p_outer[i] + moved[i] for i in range(3)]
-
-
-def link_frames(root: ET.Element) -> dict[str, tuple]:
-    """Each link's frame in the root link's, every joint at zero."""
-    joints = {joint.find("child").get("link"): joint for joint in root.findall("joint")}
-    frames: dict[str, tuple] = {}
-
-    def of(link: str):
-        if link not in frames:
-            joint = joints.get(link)
-            frames[link] = (
-                frame(None) if joint is None else compose(of(joint.find("parent").get("link")), frame(joint.find("origin")))
-            )
-        return frames[link]
-
-    for link in root.findall("link"):
-        of(link.get("name"))
-    return frames
-
-
-def half_extent(element: ET.Element, turn: list[list[float]]) -> list[float]:
-    """The half size, along each axis of the root frame, of a collision element's geometry turned by `turn`."""
-    (geometry,) = list(element.find("geometry"))
-    if geometry.tag == "box":
-        half = [size / 2 for size in vector(geometry.get("size"))]
-        return [sum(abs(turn[i][k]) * half[k] for k in range(3)) for i in range(3)]
-    if geometry.tag == "sphere":
-        return [float(geometry.get("radius"))] * 3
-    if geometry.tag == "cylinder":
-        radius, length = float(geometry.get("radius")), float(geometry.get("length"))
-        axis = [turn[i][2] for i in range(3)]
-        return [radius * math.sqrt(max(0.0, 1 - a * a)) + length / 2 * abs(a) for a in axis]
-    sys.exit(f"a collision element of upstream's URDF is a {geometry.tag}, which the tool does not bound")
-
-
-def bounds(root: ET.Element) -> dict[str, tuple[list[float], list[float]]]:
-    """The box, in the root link's frame, that holds the collision geometry of each link that has some."""
-    frames = link_frames(root)
-    boxes = {}
-    for link in root.findall("link"):
-        elements = link.findall("collision")
-        if not elements:
-            continue
-        lows, highs = [], []
-        for element in elements:
-            turn, center = compose(frames[link.get("name")], frame(element.find("origin")))
-            half = half_extent(element, turn)
-            lows.append([center[i] - half[i] for i in range(3)])
-            highs.append([center[i] + half[i] for i in range(3)])
-        boxes[link.get("name")] = ([min(c) for c in zip(*lows)], [max(c) for c in zip(*highs)])
-    return boxes
-
-
-def is_wheel(joint: ET.Element, links: dict[str, ET.Element]) -> bool:
-    """Whether `joint` is continuous and its link's one collision element a cylinder about the
-    joint's axis, a shape that stays where it is wherever the joint turns."""
-    if joint.get("type") != "continuous":
-        return False
-    elements = links[joint.find("child").get("link")].findall("collision")
-    if len(elements) != 1 or elements[0].find("geometry/cylinder") is None:
-        return False
-    cylinder_axis = [row[2] for row in rotation(vector(elements[0].find("origin").get("rpy")))]
-    joint_axis = vector(joint.find("axis").get("xyz"))
-    alignment = sum(c * j for c, j in zip(cylinder_axis, joint_axis))
-    return abs(abs(alignment) - 1) < 1e-6
-
-
-def hold_rigid_but_wheels(root: ET.Element) -> None:
-    """Stops the tool unless every joint is fixed or a wheel."""
-    links = {link.get("name"): link for link in root.findall("link")}
-    for joint in root.findall("joint"):
-        if joint.get("type") != "fixed" and not is_wheel(joint, links):
-            sys.exit(f"joint {joint.get('name')} moves a link that is no wheel; the tool derives the pairs from one pose")
-
-
 def adjacent_pairs(root: ET.Element) -> set[frozenset[str]]:
-    """The pairs of links MoveIt's setup assistant calls adjacent: two links one joint joins,
-    and any two neighbors of a link with no collision geometry."""
+    """The pairs of links MoveIt's setup assistant calls adjacent: two links that one joint joins,
+    or that links with no collision geometry alone join between them, as its connection graph
+    joins the neighbors of each link with no geometry until no pair is new."""
     neighbors: dict[str, set[str]] = {link.get("name"): set() for link in root.findall("link")}
     for joint in root.findall("joint"):
         parent, child = joint.find("parent").get("link"), joint.find("child").get("link")
         neighbors[parent].add(child)
         neighbors[child].add(parent)
-    pairs = {frozenset((link, other)) for link, others in neighbors.items() for other in others}
-    for link in root.findall("link"):
-        if not link.findall("collision"):
-            around = sorted(neighbors[link.get("name")])
-            pairs |= {frozenset(pair) for pair in itertools.combinations(around, 2)}
+    bare = {link.get("name") for link in root.findall("link") if not link.findall("collision")}
+    pairs: set[frozenset[str]] = set()
+    for start in neighbors:
+        reached, through = {start}, [start]
+        while through:
+            for other in neighbors[through.pop()] - reached:
+                reached.add(other)
+                pairs.add(frozenset((start, other)))
+                if other in bare:
+                    through.append(other)
     return pairs
 
 
 def disabled_pairs(root: ET.Element) -> list[tuple[str, str, str]]:
-    """Every pair of links with collision geometry, each (link1, link2, reason), link1 before link2."""
-    hold_rigid_but_wheels(root)
-    boxes = bounds(root)
+    """Every pair of links with collision geometry, each (link1, link2, reason), link1 before link2:
+    Adjacent for an adjacent pair, Never for any other."""
+    colliding = sorted(link.get("name") for link in root.findall("link") if link.findall("collision"))
     adjacent = adjacent_pairs(root)
-    pairs = []
-    for first, second in itertools.combinations(sorted(boxes), 2):
-        if frozenset((first, second)) in adjacent:
-            pairs.append((first, second, "Adjacent"))
-            continue
-        (low_a, high_a), (low_b, high_b) = boxes[first], boxes[second]
-        apart = any(high_a[i] < low_b[i] or high_b[i] < low_a[i] for i in range(3))
-        if not apart:
-            sys.exit(f"links {first} and {second} meet and no joint joins them: the SRDF needs a reason for the pair")
-        pairs.append((first, second, "Never"))
-    return pairs
+    return [
+        (first, second, "Adjacent" if frozenset((first, second)) in adjacent else "Never")
+        for first, second in itertools.combinations(colliding, 2)
+    ]
 
 
 def urdf_text(root: ET.Element, license_text: str) -> str:
