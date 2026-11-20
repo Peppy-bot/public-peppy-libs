@@ -379,7 +379,7 @@ def lookup_time(timestamp: float | None) -> float | None:
     """The time of a lookup that `timestamp`, seconds from the Unix epoch, names: None, the latest
     time, as tf2 names `TimePointZero`, for None, and the time given otherwise, the Unix epoch
     among them; refused for a time before the epoch or past the last nanosecond a stamp of
-    control_core holds. control_core::geometry's lookup_time, which gives the latest time as
+    control_core holds. It gives what control_core::geometry's lookup_time gives, None for
     `LookupTime::Latest`."""
     if timestamp is None:
         return None
