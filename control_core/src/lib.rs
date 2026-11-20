@@ -73,7 +73,8 @@
 //! - [`serving`]: the loop that serves one service for the life of a node,
 //!   with the pause after a runtime error.
 //! - [`asking`]: the loop that asks another node until it answers, with the
-//!   pause after a failed ask.
+//!   pause after a failed ask, and the ask of a loop of the node's own within a
+//!   timeout ([`ask_loop`](asking::ask_loop)).
 //! - [`fault`]: the fault that ends a node after its setup has returned, the
 //!   error the node exits with for it, and the task whose panic raises it.
 //! - [`component_model`]: the model of the robot a component is a part of, as
