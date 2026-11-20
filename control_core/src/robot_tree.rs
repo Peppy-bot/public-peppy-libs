@@ -5,7 +5,11 @@
 //! at a time ([`RobotTree::lookup_within`]) or at one time in another at another through the
 //! root of its chain ([`RobotTree::lookup_within_through`]), and a value of the geometry types
 //! placed in a frame ([`RobotTree::place`]) or in the root of its frame's chain
-//! ([`RobotTree::place_in_root`]), refused with a [`PlaceError`].
+//! ([`RobotTree::place_in_root`]), refused with a [`PlaceError`]; the failure of a command its
+//! tree cannot place, in a node's own failure kinds ([`TargetFailure`]), each generated member
+//! given the node's kinds by [`member_failure_kinds!`](crate::member_failure_kinds) and those of
+//! a placement, every one of which [`PlaceKind::ALL`] lists, by its own parse
+//! ([`PlaceKind::of_member`]).
 //!
 //! Each message and each lookup looks at the node's clock first, so a clock that went back
 //! since the look before drops every moving stamp before the tree changes or answers, as
@@ -64,6 +68,139 @@ impl PlaceError {
             PlaceError::Value(_) => "rejected",
         }
     }
+}
+
+/// The failure kind of a placement in the robot's tree, as [`PlaceError::failure_kind`] names
+/// it: the kind of the lookup, as transform_lookup names the failures of a lookup, or `rejected`
+/// for a placed value no contract takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaceKind(&'static str);
+
+impl PlaceKind {
+    /// Every failure kind of a placement: the kind of each failure of a lookup, as
+    /// transform_lookup names them, and `rejected`. A member that places a frame lists each.
+    pub const ALL: [PlaceKind; 5] = [
+        PlaceKind("unknown_frame"),
+        PlaceKind("no_chain"),
+        PlaceKind("extrapolation"),
+        PlaceKind("broken_tree"),
+        PlaceKind("rejected"),
+    ];
+
+    pub fn of(error: &PlaceError) -> Self {
+        Self(error.failure_kind())
+    }
+
+    /// The kind's name, as the contracts give it.
+    pub fn name(self) -> &'static str {
+        self.0
+    }
+
+    /// The generated failure kind of the same name of a member that places a frame, which
+    /// lists the kinds of a lookup and `rejected`: `parse` is the member's parse of a kind's
+    /// name.
+    pub fn of_member<Member>(self, parse: impl FnOnce(&str) -> Option<Member>) -> Member {
+        parse(self.0).expect("a member that places a frame lists each failure kind of a placement")
+    }
+}
+
+/// Why a node refuses or fails a goal: a failure kind `K` of the node's, one that peppy or a
+/// contract declares, and a message for a person. A node keeps one kind for every member and
+/// gives each generated member its own with [`member_failure_kinds!`](crate::member_failure_kinds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure<K> {
+    pub kind: K,
+    pub message: String,
+}
+
+impl<K> Failure<K> {
+    pub fn new(kind: K, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// The same failure with `label` before its message, such as the name of the part whose
+    /// share of a goal failed.
+    pub fn labelled(self, label: impl Display) -> Self {
+        Self {
+            message: format!("{label}: {}", self.message),
+            ..self
+        }
+    }
+}
+
+/// Why the robot's tree cannot place a command: the kind of the placement, and a message that
+/// names the command, then the cause as transform_lookup's message does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unplaced {
+    pub kind: PlaceKind,
+    pub message: String,
+}
+
+impl Unplaced {
+    /// The failure of the placement `error` of the command `what` names.
+    pub fn of(what: impl Display, error: &PlaceError) -> Self {
+        Self {
+            kind: PlaceKind::of(error),
+            message: format!("{what}: {error}"),
+        }
+    }
+}
+
+/// Why a node refuses a command that places a target: a [`Failure`] of the node's kinds `K`, or a
+/// target the robot's tree cannot place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetFailure<K> {
+    Failed(Failure<K>),
+    Unplaced(Unplaced),
+}
+
+impl<K> From<Failure<K>> for TargetFailure<K> {
+    fn from(failure: Failure<K>) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl<K> From<Unplaced> for TargetFailure<K> {
+    fn from(unplaced: Unplaced) -> Self {
+        Self::Unplaced(unplaced)
+    }
+}
+
+impl<K> TargetFailure<K> {
+    /// The kind `Member`, the generated kind of a member that places a target, gives this
+    /// failure, and its message: a failure's own kind, and the kind of a placement by its name
+    /// through `parse`, the member's parse of a kind's name ([`PlaceKind::of_member`]).
+    pub fn for_member<Member: From<K>>(
+        self,
+        parse: impl FnOnce(&str) -> Option<Member>,
+    ) -> (Member, String) {
+        match self {
+            Self::Failed(failure) => (failure.kind.into(), failure.message),
+            Self::Unplaced(unplaced) => (unplaced.kind.of_member(parse), unplaced.message),
+        }
+    }
+}
+
+/// Gives each generated `FailureKind` of a member the variant of the same name of a node's own
+/// kind: `member_failure_kinds!(FailureKind { Rejected, Timeout } => a::FailureKind,
+/// b::FailureKind)`.
+#[macro_export]
+macro_rules! member_failure_kinds {
+    (@member $kind:ident { $($variant:ident),+ $(,)? } $member:ty) => {
+        impl From<$kind> for $member {
+            fn from(kind: $kind) -> Self {
+                match kind {
+                    $($kind::$variant => Self::$variant,)+
+                }
+            }
+        }
+    };
+    ($kind:ident $variants:tt => $($member:ty),+ $(,)?) => {
+        $($crate::member_failure_kinds!(@member $kind $variants $member);)+
+    };
 }
 
 /// A robot's tree of frames, shared by the followers that fill it and the lookups that
@@ -1245,6 +1382,125 @@ mod tests {
         spawnable(follow_static(tree, std::future::pending(), async || {
             Ok::<_, String>(None)
         }));
+    }
+
+    /// A node's own failure kinds.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum NodeKind {
+        Rejected,
+        Timeout,
+    }
+
+    /// A generated member's failure kinds: the node's, and those of a placement.
+    #[derive(Debug, PartialEq)]
+    enum MemberKind {
+        Rejected,
+        Timeout,
+        UnknownFrame,
+        NoChain,
+        Extrapolation,
+        BrokenTree,
+    }
+
+    impl MemberKind {
+        fn parse(name: &str) -> Option<Self> {
+            Some(match name {
+                "rejected" => Self::Rejected,
+                "timeout" => Self::Timeout,
+                "unknown_frame" => Self::UnknownFrame,
+                "no_chain" => Self::NoChain,
+                "extrapolation" => Self::Extrapolation,
+                "broken_tree" => Self::BrokenTree,
+                _ => return None,
+            })
+        }
+    }
+
+    crate::member_failure_kinds!(NodeKind { Rejected, Timeout } => MemberKind);
+
+    // A failure of the node reaches a member with the kind of the same name, and a target the
+    // tree cannot place with the kind of the placement and a message that names the target, then
+    // the cause; a labelled failure keeps its kind and names the label first.
+    #[test]
+    fn a_failure_reaches_a_member_by_the_kind_of_its_name() {
+        let failed = TargetFailure::from(Failure::new(NodeKind::Timeout, "unsettled"));
+        assert_eq!(
+            failed.for_member(MemberKind::parse),
+            (MemberKind::Timeout, "unsettled".to_string())
+        );
+        let unknown = PlaceError::Lookup(LookupError::UnknownFrame {
+            frame: frame("gripper"),
+            held: Vec::new(),
+        });
+        let unplaced = TargetFailure::<NodeKind>::from(Unplaced::of("the target", &unknown));
+        assert_eq!(
+            unplaced.for_member(MemberKind::parse),
+            (MemberKind::UnknownFrame, format!("the target: {unknown}"))
+        );
+        let refused = PlaceError::Value(GeometryError::NoFrame);
+        assert_eq!(
+            PlaceKind::of(&refused).of_member(MemberKind::parse),
+            MemberKind::Rejected
+        );
+        assert_eq!(
+            Failure::new(NodeKind::Rejected, "too far").labelled("left_arm"),
+            Failure::new(NodeKind::Rejected, "left_arm: too far")
+        );
+    }
+
+    // Each failure of a placement has a kind that PlaceKind::ALL lists, and ALL lists no other:
+    // one failure of each kind of a lookup, then a placed value no contract takes.
+    #[test]
+    fn every_kind_of_a_placement_is_listed_once() {
+        use frame_tree::{BrokenTree, HeldStamps, TransformName};
+        let transform = TransformName {
+            parent: frame("odom"),
+            child: frame("base_footprint"),
+        };
+        let lookups = [
+            LookupError::UnknownFrame {
+                frame: frame("gripper"),
+                held: Vec::new(),
+            },
+            LookupError::NoChain {
+                target_frame: frame("base_link"),
+                source_frame: frame("odom"),
+            },
+            LookupError::Extrapolation {
+                transform: transform.clone(),
+                requested: LookupTime::At(Stamp::from_nanos(5)),
+                held: HeldStamps::Empty,
+            },
+            LookupError::BrokenTree(BrokenTree::Cycle {
+                transforms: vec![transform],
+            }),
+        ];
+        // One failure of each kind of a lookup: a kind the list lacks fails to compile here.
+        for lookup in &lookups {
+            match lookup {
+                LookupError::UnknownFrame { .. }
+                | LookupError::NoChain { .. }
+                | LookupError::Extrapolation { .. }
+                | LookupError::BrokenTree(_) => {}
+            }
+        }
+        let kinds: Vec<PlaceKind> = lookups
+            .into_iter()
+            .map(PlaceError::Lookup)
+            .chain([PlaceError::Value(GeometryError::NoFrame)])
+            .map(|error| PlaceKind::of(&error))
+            .collect();
+        assert_eq!(kinds, PlaceKind::ALL);
+        assert_eq!(
+            PlaceKind::ALL.map(PlaceKind::name),
+            [
+                "unknown_frame",
+                "no_chain",
+                "extrapolation",
+                "broken_tree",
+                "rejected"
+            ]
+        );
     }
 
     #[test]
