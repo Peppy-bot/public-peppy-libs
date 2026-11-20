@@ -1,10 +1,8 @@
 {
   "kind": "planning",
-  "motion_step": 0.01,
   "plans": [
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 2.5777836650541426,
       "path": [
         [0.1,0.1],
@@ -18,9 +16,6 @@
         [0.8429327636999825,0.4429327636999826],
         [0.9,0.1]
       ],
-      "planner": "RRTConnect",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.10568967939207104,0.38674059503277225],
@@ -29,12 +24,10 @@
         [0.5939438488579956,0.8225291577089233],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 2.4947456453259607,
       "path": [
         [0.1,0.1],
@@ -47,9 +40,6 @@
         [0.9240864958582251,0.1179725430490867],
         [0.9,0.1]
       ],
-      "planner": "RRT",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.10049705652407145,0.11309065613906023],
@@ -58,12 +48,10 @@
         [0.5609437058251286,0.7915227359649202],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "IterationBound",
-      "iterations": 2000,
       "length": 2.203782340793275,
       "path": [
         [0.1,0.1],
@@ -95,9 +83,6 @@
         [0.8992113964281884,0.13623062194174868],
         [0.9,0.1]
       ],
-      "planner": "RRTstar",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.20055060602658054,0.609901790399713],
@@ -106,12 +91,10 @@
         [0.5507816153702093,0.8008186797955822],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 2.451659080218096,
       "path": [
         [0.1,0.1],
@@ -152,9 +135,6 @@
         [0.9060647144799265,0.16393528552007353],
         [0.9,0.1]
       ],
-      "planner": "BiTRRT",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.19321502364318405,0.5880483086905391],
@@ -165,12 +145,10 @@
         [0.5651616569025892,0.7776207952055065],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 7.883350834105793,
       "path": [
         [0.1,0.1],
@@ -201,9 +179,6 @@
         [0.8094518551591785,0.13773122642543503],
         [0.9,0.1]
       ],
-      "planner": "KPIECE1",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.21828934629636648,0.694578812661941],
@@ -211,12 +186,10 @@
         [0.5994987145030861,0.7562916116908927],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 8.24810711528905,
       "path": [
         [0.1,0.1],
@@ -249,21 +222,16 @@
         [0.8965455567850036,0.3712224935406041],
         [0.9,0.1]
       ],
-      "planner": "BKPIECE1",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.19297744647227077,0.6341747779230151],
         [0.5272350521654259,0.8486867325973848],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 8.373557256891585,
       "path": [
         [0.1,0.1],
@@ -291,9 +259,6 @@
         [0.8965455567850036,0.3712224935406041],
         [0.9,0.1]
       ],
-      "planner": "LBKPIECE1",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.17072287001752895,0.5790558982872398],
@@ -301,12 +266,10 @@
         [0.5319429964696769,0.8513486742034733],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 2.72706279442237,
       "path": [
         [0.1,0.1],
@@ -318,9 +281,6 @@
         [0.6796856465082823,0.5524831738136587],
         [0.9,0.1]
       ],
-      "planner": "EST",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.19562078052030024,0.6027123405657164],
@@ -329,12 +289,10 @@
         [0.5781827949137578,0.8077729894159392],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 2.8757369188516475,
       "path": [
         [0.1,0.1],
@@ -349,9 +307,6 @@
         [0.7387140693465422,0.3339465904207569],
         [0.9,0.1]
       ],
-      "planner": "SBL",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.1923336825166983,0.6001671005304027],
@@ -360,13 +315,11 @@
         [0.6731264882182593,0.6915505010827017],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
-    {"ended_by":null,"iterations":2000,"length":null,"path":null,"planner":"PRM","seed":1,"simplification":0,"simplified":null,"status":"Exact solution","world":0},
+    {"ended_by":null,"length":null,"path":null,"simplified":null,"status":"Exact solution"},
     {
       "ended_by": "IterationBound",
-      "iterations": 2000,
       "length": 2.203363255931517,
       "path": [
         [0.1,0.1],
@@ -398,9 +351,6 @@
         [0.8992113964281884,0.13623062194174868],
         [0.9,0.1]
       ],
-      "planner": "PRMstar",
-      "seed": 1,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.20131641284562643,0.602857120952675],
@@ -409,12 +359,10 @@
         [0.5601444727477829,0.7992911678660864],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 10.927098030422009,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -428,9 +376,6 @@
         [0.7441739928545066,0.471206048072359,0.21956916759222028,0.5746396354786686,0.6012342962921817,0.434561081046036,0.8512242616495537],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "RRTConnect",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.21496226250348946,0.7191815212412916,0.2595999525761119,0.7883371103632648,0.2904343478577328,0.2874382810176229,0.2905199246322092],
@@ -438,12 +383,10 @@
         [0.5676025109679472,0.810314205342213,0.2468481847100404,0.7332771580962384,0.14086869631835316,0.2738226682753731,0.18461958059029418],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 11.299177940844963,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -458,9 +401,6 @@
         [0.585544423639151,0.14552981536338858,0.46085101270944884,0.4944884064164996,0.3582650268207253,0.38860697973827346,0.39596609161875757],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "RRT",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.14006847951356233,0.5459624838289361,0.6715207358548039,0.605777197595369,0.3949692072071107,0.7464618377007858,0.46092097010528277],
@@ -470,12 +410,10 @@
         [0.5548157690117841,0.8439462437655525,0.4469425372626088,0.20538009620440503,0.4895121972203154,0.8643594230789511,0.3726049234582034],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "IterationBound",
-      "iterations": 2000,
       "length": 3.7642888962396697,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -483,9 +421,6 @@
         [0.7880624813396931,0.8895395272600124,0.4468262822643601,0.5959522799266737,0.6130107293049716,0.4849112699882925,0.5894096687187859],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "RRTstar",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.13473408390463157,0.451644173510218,0.49037409303531887,0.5294857244486735,0.645266858826123,0.47346309793470853,0.5490748822280218],
@@ -494,12 +429,10 @@
         [0.5576125913605454,0.8091570567947269,0.4621907315624805,0.5768039722533937,0.6687108157543025,0.47241885423501284,0.5868577957131843],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 7.834767974514298,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -536,9 +469,6 @@
         [0.8835573586667063,0.14803502519759038,0.46272969990751645,0.5555239962399354,0.5005326657562333,0.44829404689664853,0.5354894182771122],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "BiTRRT",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.20146437825791375,0.6127921380087313,0.35414488430174396,0.3994229759589363,0.6244184497872449,0.2990460643374402,0.22645136692603468],
@@ -547,12 +477,10 @@
         [0.5510043733073043,0.80000856932481,0.42814670193073007,0.593543486671859,0.5378234484222103,0.39152223805756187,0.2861184367070055],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 15.005778207199336,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -567,9 +495,6 @@
         [0.5559842774556296,0.3033922812658003,0.30595248247980955,0.3704277172628082,0.21186506860588605,0.43159323809726446,0.4576889354098703],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "KPIECE1",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.1591793855550599,0.524827044863606,0.6360742152784591,0.6255956198406928,0.4710092578335645,0.7224697441148056,0.44687025185804574],
@@ -579,12 +504,10 @@
         [0.5635799639809529,0.7869182838096684,0.5925097169498367,0.5364913257291564,0.5316474655366836,0.7644576906991319,0.5609027189869891],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 25.000840869059825,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -601,9 +524,6 @@
         [0.7090899212428692,0.5547827231846444,0.15643044263522785,0.5914446756909555,0.6240270981211629,0.41982757307245766,0.9303020572831935],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "BKPIECE1",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.1582465282481833,0.5908512093120428,0.42848911278736557,0.7152295406143251,0.4513139977974242,0.31755115652757987,0.4427238930490547],
@@ -611,12 +531,10 @@
         [0.585263584892618,0.8366519878062967,0.3087626501120221,0.8336047378765705,0.19626913430929183,0.3504340819267364,0.2279865175036498],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 36.90719752128768,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -638,9 +556,6 @@
         [0.7090899212428692,0.5547827231846444,0.15643044263522785,0.5914446756909555,0.6240270981211629,0.41982757307245766,0.9303020572831935],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "LBKPIECE1",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.18799644410781324,0.5974783972209714,0.4224543944126095,0.3889555302211287,0.6656113637475922,0.5061693100461734,0.6680500216959395],
@@ -648,12 +563,10 @@
         [0.5487532473949965,0.8168473284773003,0.6821327293851076,0.37477488732466646,0.4577659394552181,0.7490703923517485,0.5123165743161098],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 10.333385699916242,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -663,9 +576,6 @@
         [0.6325519912649603,0.319875884529059,0.6467736214313871,0.38212567830303584,0.19889622477225977,0.9873248712453068,0.2977315529751196],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "EST",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.15808696792640667,0.5825294352804805,0.6651828418727943,0.6864858289868728,0.4948120518241268,0.737649741858549,0.40487275336791095],
@@ -674,12 +584,10 @@
         [0.5816362455872812,0.8092594475795576,0.7151275258419827,0.7103986862168503,0.4750124168438775,0.7796850308854404,0.5581856669938751],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "PlannerReturned",
-      "iterations": 2000,
       "length": 7.332523670742814,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -689,22 +597,17 @@
         [0.7572252883261036,0.3292536785497351,0.4676804888672858,0.5753650893719342,0.573123442495751,0.7638064315253835,0.49112056280975375],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "SBL",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.22886543333443166,0.8221792108386687,0.6842977818052174,0.6758058405224756,0.26045141172766173,0.07015477361508073,0.5029963520889734],
         [0.6003896591714498,0.8003729069586705,0.6379443146722543,0.5504925814620543,0.451430906579,0.152786696983783,0.7277976644426194],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
-    {"ended_by":null,"iterations":2000,"length":null,"path":null,"planner":"PRM","seed":2,"simplification":0,"simplified":null,"status":"Exact solution","world":1},
+    {"ended_by":null,"length":null,"path":null,"simplified":null,"status":"Exact solution"},
     {
       "ended_by": "IterationBound",
-      "iterations": 2000,
       "length": 4.423900584000579,
       "path": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
@@ -712,9 +615,6 @@
         [0.7760677929322058,0.9346350574948387,0.49681664755897,0.4369249160780372,0.6660754919756091,0.7546309041607601,0.653220265173106],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "planner": "PRMstar",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1,0.5,0.5,0.5,0.5,0.5],
         [0.15567850304029612,0.6583612059680646,0.492836551948477,0.5205474278692666,0.7348707642140173,0.5025514714468229,0.5871382977937245],
@@ -722,12 +622,10 @@
         [0.5435772857296707,0.8163685103032357,0.49487491000511474,0.4756877211114675,0.7013757150081426,0.6387898156107383,0.6242058078258551],
         [0.9,0.1,0.5,0.5,0.5,0.5,0.5]
       ],
-      "status": "Exact solution",
-      "world": 1
+      "status": "Exact solution"
     },
     {
       "ended_by": "IterationBound",
-      "iterations": 2000,
       "length": 2.202115271711364,
       "path": [
         [0.1,0.1],
@@ -761,9 +659,6 @@
         [0.8973631844065935,0.16630573141856494],
         [0.9,0.1]
       ],
-      "planner": "RRTstar",
-      "seed": 2,
-      "simplification": 100,
       "simplified": [
         [0.1,0.1],
         [0.198468473068206,0.6023930826893188],
@@ -771,45 +666,18 @@
         [0.5481995363330969,0.8005769363262782],
         [0.9,0.1]
       ],
-      "status": "Exact solution",
-      "world": 0
+      "status": "Exact solution"
     },
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"RRTConnect","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"RRT","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"RRTstar","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"BiTRRT","seed":1,"simplification":100,"simplified":null,"status":"Timeout","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"KPIECE1","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"BKPIECE1","seed":1,"simplification":100,"simplified":null,"status":"Timeout","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"LBKPIECE1","seed":1,"simplification":100,"simplified":null,"status":"Timeout","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"EST","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"SBL","seed":1,"simplification":100,"simplified":null,"status":"Timeout","world":2},
-    {"ended_by":null,"iterations":2000,"length":null,"path":null,"planner":"PRM","seed":1,"simplification":0,"simplified":null,"status":"Approximate solution","world":2},
-    {"ended_by":"IterationBound","iterations":2000,"length":null,"path":null,"planner":"PRMstar","seed":1,"simplification":100,"simplified":null,"status":"Approximate solution","world":2}
-  ],
-  "worlds": [
-    {
-      "goal": [0.9,0.1],
-      "obstacles": [
-        {"max":[0.55,0.8],"min":[0.45,-1]},
-        {"max":[0.3,0.6],"min":[0.2,-1]}
-      ],
-      "start": [0.1,0.1]
-    },
-    {
-      "goal": [0.9,0.1,0.5,0.5,0.5,0.5,0.5],
-      "obstacles": [
-        {"max":[0.55,0.8,2,2,2,2,2],"min":[0.45,-1,-1,-1,-1,-1,-1]},
-        {"max":[0.3,0.6,2,2,2,2,2],"min":[0.2,-1,-1,-1,-1,-1,-1]}
-      ],
-      "start": [0.1,0.1,0.5,0.5,0.5,0.5,0.5]
-    },
-    {
-      "goal": [0.9,0.1],
-      "obstacles": [
-        {"max":[0.85,0.25],"min":[0.8,-1]},
-        {"max":[2,0.25],"min":[0.8,0.2]}
-      ],
-      "start": [0.1,0.1]
-    }
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Timeout"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Timeout"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Timeout"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Timeout"},
+    {"ended_by":null,"length":null,"path":null,"simplified":null,"status":"Approximate solution"},
+    {"ended_by":"IterationBound","length":null,"path":null,"simplified":null,"status":"Approximate solution"}
   ]
 }

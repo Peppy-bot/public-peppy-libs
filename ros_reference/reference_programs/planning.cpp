@@ -338,14 +338,6 @@ World world_of(const nlohmann::json& world, double motion_step) {
   return out;
 }
 
-nlohmann::json echo_of(const World& world) {
-  auto obstacles = nlohmann::json::array();
-  for (const auto& obstacle : world.obstacles) {
-    obstacles.push_back({{"min", obstacle.min}, {"max", obstacle.max}});
-  }
-  return {{"obstacles", obstacles}, {"start", world.start}, {"goal", world.goal}};
-}
-
 // What a plan gave: OMPL's status, what ended the plan, and the planner's exact path with
 // its length and its simplification, when it found one.
 struct Answer {
@@ -443,10 +435,8 @@ nlohmann::json planning(const nlohmann::json& scenario, Inputs&) {
   ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
   const double motion_step = scenario.at("motion_step").get<double>();
   std::vector<World> worlds;
-  auto echoed_worlds = nlohmann::json::array();
   for (const auto& world : scenario.at("worlds")) {
     worlds.push_back(world_of(world, motion_step));
-    echoed_worlds.push_back(echo_of(worlds.back()));
   }
 
   auto plans = nlohmann::json::array();
@@ -459,11 +449,6 @@ nlohmann::json planning(const nlohmann::json& scenario, Inputs&) {
     const auto simplification = p.at("simplification").get<std::uint32_t>();
     const Answer answer = plan(world, planner, seed, iterations, simplification);
     nlohmann::json answered = {
-        {"world", index},
-        {"planner", planner},
-        {"seed", seed},
-        {"iterations", iterations},
-        {"simplification", simplification},
         {"status", answer.status.asString()},
         {"ended_by", nullptr},
         {"path", nullptr},
@@ -480,12 +465,7 @@ nlohmann::json planning(const nlohmann::json& scenario, Inputs&) {
     }
     plans.push_back(answered);
   }
-  return {
-      {"kind", "planning"},
-      {"motion_step", motion_step},
-      {"worlds", echoed_worlds},
-      {"plans", plans},
-  };
+  return {{"kind", "planning"}, {"plans", plans}};
 }
 
 }  // namespace ros_reference
