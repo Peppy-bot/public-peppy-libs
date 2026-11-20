@@ -2,8 +2,8 @@
 //! `_`, at most 64 characters, as room_map:v1 states it; a store lists the maps whose
 //! description reads, sorted by name, each with the summary of the map it loads as; a save
 //! of a name a saved map has is refused, and of racing saves of one name one saves; a
-//! removed map lists and loads no more, and its name is free again; and what a crashed save
-//! left is no saved map.
+//! removed map lists and loads no more, and its name is free again, a delete that fails
+//! after the rename included; and what a crashed save left is no saved map.
 
 use hegel::TestCase;
 use hegel::generators::{self as gs, Generator};
@@ -161,6 +161,52 @@ fn a_removed_map_lists_and_loads_no_more_and_its_name_is_free_again() {
         names(&store.list().expect("the maps list")),
         ["kitchen", "lab"]
     );
+}
+
+// A removal whose delete fails after its rename has removed the map: the map lists and
+// loads no more and its name is free; the leftover directory is the temporary one.
+#[cfg(unix)]
+#[test]
+fn a_removal_whose_delete_fails_has_still_removed_the_map() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = scratch_directory("store_remove_undeleted");
+    let store = MapStore::open(&directory).expect("the store opens");
+    store.save(&name("lab"), &MAP).expect("the map saves");
+    // A directory inside the map that the delete cannot empty.
+    let locked = directory.join("lab").join("locked");
+    std::fs::create_dir(&locked).expect("a directory in the map");
+    std::fs::write(locked.join("file"), "").expect("a file in it");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+        .expect("the directory is read-only");
+    let removed = store.remove(&name("lab"));
+    let leftovers: Vec<_> = std::fs::read_dir(&directory)
+        .expect("the store's directory")
+        .map(|entry| entry.expect("an entry").path())
+        .collect();
+    for leftover in &leftovers {
+        let locked = leftover.join("locked");
+        if locked.exists() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+                .expect("the directory is writable again");
+        }
+    }
+    removed.expect("the map is removed");
+    assert!(!leftovers.is_empty(), "the delete failed and left the map's directory");
+    assert_eq!(store.list().expect("the maps list"), []);
+    assert!(matches!(
+        store.load(&name("lab")),
+        Err(StoreError::NotFound { .. })
+    ));
+    assert!(
+        leftovers.iter().all(|path| path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('.'))),
+        "{leftovers:?}"
+    );
+    store
+        .save(&name("lab"), &MAP)
+        .expect("the name is free again");
 }
 
 #[test]

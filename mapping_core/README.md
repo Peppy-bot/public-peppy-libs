@@ -36,8 +36,9 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   lists the maps whose description reads, sorted by name, each with its summary; it saves a
   map under a name no saved map has, claiming the name's directory, writing the map into a
   temporary directory, flushing it and renaming it over the claim; it loads a map; and it
-  removes one by renaming its directory before deleting it. A reader finds no map of a name
-  or a whole one.
+  removes one by renaming its directory before deleting it. A listing gives a whole map of a
+  name or none; a save that stops before its rename leaves a claimed directory, which lists
+  no map, refuses a load and holds the name until a removal frees it.
 - `Localization` keeps the base's pose in a map as slam_toolbox does in its localization
   mode: each scan added to the graph, linked and its loops closed, and the oldest added
   scan beyond the buffer dropped. It starts from an `InitialPose` with a search radius and a

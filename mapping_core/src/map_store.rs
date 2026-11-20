@@ -19,9 +19,13 @@
 //!
 //! A save claims its name by creating the name's directory, which no other writer of the
 //! directory can then create, writes the map into a temporary directory of its own, flushes
-//! it to the disk and renames it over the claimed directory, so a reader finds no map or a
-//! whole one. A removal renames the map's directory to a temporary directory before it
-//! deletes it. A temporary directory's name starts with `.`, so it is no map's name.
+//! it to the disk and renames it over the claimed directory, so a listing gives a whole map
+//! of a name or none. A save that stops before its rename leaves its claimed directory, which
+//! lists no map, refuses a load and holds the name until a removal frees it, and its temporary
+//! directory, which no listing reads. A removal renames the map's directory to a temporary
+//! directory before it deletes it: the map is gone once the rename is done, and a failure to
+//! flush or delete after it is logged. A temporary directory's name starts with `.`, so it is
+//! no map's name.
 
 use crate::saved_map::{LoadError, MapSummary, RoomMap, SaveError};
 use std::fmt;
@@ -36,8 +40,12 @@ use tracing::warn;
 const LONGEST_NAME: usize = 64;
 
 /// What a map name is, as a refusal of one says it.
-const NAME_RULE: &str = "name the map with a lowercase letter, then lowercase letters, \
-     digits and `_`, at most 64 characters, such as `lab` or `second_floor`";
+fn name_rule() -> String {
+    format!(
+        "name the map with a lowercase letter, then lowercase letters, digits and `_`, at \
+         most {LONGEST_NAME} characters, such as `lab` or `second_floor`"
+    )
+}
 
 /// The name of a saved map, as room_map:v1 states it: a lowercase letter, then lowercase
 /// letters, digits and `_`, at most [`LONGEST_NAME`] characters. Two names are the same name
@@ -48,13 +56,13 @@ pub struct MapName(String);
 /// Why a text is no map name.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum MapNameError {
-    #[error("the map name is empty: {NAME_RULE}")]
+    #[error("the map name is empty: {}", name_rule())]
     Empty,
-    #[error("the map name {name:?} starts with {first:?}: {NAME_RULE}")]
+    #[error("the map name {name:?} starts with {first:?}: {}", name_rule())]
     First { name: String, first: char },
-    #[error("the map name {name:?} holds {character:?}: {NAME_RULE}")]
+    #[error("the map name {name:?} holds {character:?}: {}", name_rule())]
     Character { name: String, character: char },
-    #[error("the map name {name:?} holds {length} characters: {NAME_RULE}")]
+    #[error("the map name {name:?} holds {length} characters: {}", name_rule())]
     Length { name: String, length: usize },
 }
 
@@ -221,11 +229,16 @@ impl MapStore {
         self.found(name)?;
         let temporary = self.temporary_path();
         rename(&self.path_of(name), &temporary)?;
-        sync(&self.directory)?;
-        fs::remove_dir_all(&temporary).map_err(|error| StoreError::Write {
-            path: temporary,
-            error,
-        })
+        let cleared = sync(&self.directory).and_then(|()| {
+            fs::remove_dir_all(&temporary).map_err(|error| StoreError::Write {
+                path: temporary,
+                error,
+            })
+        });
+        if let Err(error) = cleared {
+            warn!("the map {name} is removed, and its directory is not cleared: {error}");
+        }
+        Ok(())
     }
 
     /// Refuses `name` unless a map of that name is saved.
