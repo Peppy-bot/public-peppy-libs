@@ -55,6 +55,11 @@ class FailureKind(StrEnum):
     BROKEN_TREE = "broken_tree"
 
 
+# The failure kinds of a lookup in the robot's tree, as transform_lookup
+# names them.
+LOOKUP_KINDS = (FailureKind.UNKNOWN_FRAME, FailureKind.NO_CHAIN, FailureKind.EXTRAPOLATION, FailureKind.BROKEN_TREE)
+
+
 class GoalFailure(Exception):
     """Why a goal ends with no result: a failure kind, and a message for a
     person."""

@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
 from control_core_py.geometry import GeometryError, PoseTarget, Stamped, lookup_time
@@ -127,21 +126,18 @@ STATUS_ENDS = EndsByStatus()
 RESULT_ENDS = EndsInResult()
 
 
-@dataclass(frozen=True)
-class GoalTarget:
-    """A goal's target as its decision found it: placed in the robot frame,
-    or, when the brain could not place it then for want of the robot frame
-    or of the lookup's answer, the Refusal the goal's result reports."""
+# A goal's target as its decision found it: placed in the robot frame, or,
+# when the brain could not place it then for want of the robot frame or of the
+# lookup's answer, the Refusal the goal's result reports.
+type GoalTarget = Pose | Refusal
 
-    placed: Optional[Pose] = None
-    unplaced: Optional[Refusal] = None
 
-    def pose(self) -> Pose:
-        """The placed target; the Refusal of a target the brain could not
-        place."""
-        if self.unplaced is not None:
-            raise self.unplaced
-        return self.placed
+def placed_target(target: GoalTarget) -> Pose:
+    """The placed target; the Refusal of a target the brain could not
+    place."""
+    if isinstance(target, Refusal):
+        raise target
+    return target
 
 
 class Decider:
@@ -206,7 +202,7 @@ class Brain:
         )
         self.robot = Robot(
             node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move,
-            robot_frame=lambda: self.placer.robot_frame, planner=PlannerModules.from_bindings(bindings),
+            planner=PlannerModules.from_bindings(bindings),
         )
         # The robot's measured limbs, which a manipulator reads.
         self.limb_states = LimbStateStore()
@@ -336,7 +332,7 @@ class Brain:
             timestamp = lookup_time(target.timestamp)
             frame = self.placer.robot_frame if target.frame is None else target.frame
             stamped = Stamped.parse(frame, timestamp, value)
-            return GoalTarget(placed=await self.placer.place_target(stamped))
+            return await self.placer.place_target(stamped)
         except GeometryError as error:
             raise Refusal(FailureKind.REJECTED, f"the target: {error}") from None
         except LookupFailure:
@@ -344,7 +340,7 @@ class Brain:
         except Refusal as refusal:
             if refusal.kind is FailureKind.REJECTED:
                 raise
-            return GoalTarget(unplaced=refusal)
+            return refusal
 
     def manipulator_or_refuse(self, manipulator: Manipulator) -> Manipulator:
         """`manipulator`, or the refusal, `precondition_failed`, it gives

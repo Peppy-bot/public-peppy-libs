@@ -76,12 +76,12 @@ def backbone(**kwargs):
 
 
 def backbone_with_check(**kwargs):
-    """A Robot on scripted limb_motion clients, its commands in ROBOT_FRAME,
-    and the three clients."""
+    """A Robot on scripted limb_motion clients, its commands with no frame,
+    the robot frame, and the three clients."""
     move_arm = FakeConsumedAction("move_arm", MoveArmRequest, GoalRequestTarget=Target)
     move_gripper = FakeConsumedAction("move_gripper", MoveGripperRequest)
     check_arm_move = FakeConsumedService("check_arm_move", CheckArmMoveRequest, RequestTarget=Target)
-    robot = Robot("runner", move_arm, move_gripper, check_arm_move, robot_frame=lambda: ROBOT_FRAME, **kwargs)
+    robot = Robot("runner", move_arm, move_gripper, check_arm_move, **kwargs)
     return robot, move_arm, move_gripper, check_arm_move
 
 
@@ -104,8 +104,8 @@ async def test_a_completed_move_returns_where_the_limb_stands():
     move = asyncio.create_task(robot.move_arm("left_arm", POSITION, ORIENTATION, duration_s=1.5, **BARS))
     goal = await asyncio.wait_for(move_arm.next_goal(), WAIT)
     assert goal.request.arm_name == "left_arm"
-    # The target names the robot frame, with no timestamp: the latest time.
-    assert goal.request.target == Target(ROBOT_FRAME, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]) and goal.request.duration_s == 1.5
+    # The target gives no frame, the robot frame, and no timestamp, the latest time.
+    assert goal.request.target == Target(None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]) and goal.request.duration_s == 1.5
     assert {name: getattr(goal.request, name) for name in BARS} == BARS
     # The client keeps every feedback message, up to peppylib's own bound.
     assert goal.feedback_bound is None
@@ -236,7 +236,7 @@ async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
     assert planned == MoveCheck(True, "", 1.25)
     [request] = check.polled
     assert request == CheckArmMoveRequest(
-        arm_name="left_arm", target=Target(ROBOT_FRAME, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]), duration_s=1.5,
+        arm_name="left_arm", target=Target(None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0]), duration_s=1.5,
     )
     # A check moves nothing: no goal is in flight for a stop to cancel.
     assert robot.moves_in_flight == 0
@@ -320,11 +320,11 @@ async def test_a_plan_asks_for_the_link_at_the_pose_and_reads_its_start_and_wayp
         arms=[PlanJointPathArm(arm_name="left_arm", start_joint_positions=[])],
         goal_joint_constraints=[],
         goal_position_constraints=[
-            PlanJointPathPositionConstraint(link_name=LINK, frame=ROBOT_FRAME, timestamp=None, position=[0.5, 0.1, 0.7], tolerance_m=0.001)
+            PlanJointPathPositionConstraint(link_name=LINK, frame=None, timestamp=None, position=[0.5, 0.1, 0.7], tolerance_m=0.001)
         ],
         goal_orientation_constraints=[
             PlanJointPathOrientationConstraint(
-                link_name=LINK, frame=ROBOT_FRAME, timestamp=None, orientation=[0.0, 0.0, 0.0, 1.0], tolerance_rad=0.01, free_axis="none",
+                link_name=LINK, frame=None, timestamp=None, orientation=[0.0, 0.0, 0.0, 1.0], tolerance_rad=0.01, free_axis="none",
             )
         ],
         path_orientation_constraints=[],
@@ -427,7 +427,7 @@ async def test_a_cartesian_path_asks_for_the_lines_through_the_poses_and_reads_h
         arm_name="left_arm",
         start_joint_positions=PLANNED,
         link_name=LINK,
-        frame=ROBOT_FRAME,
+        frame=None,
         timestamp=None,
         waypoints=[
             PlanCartesianPathWaypoint(position=[0.5, 0.1, 0.625], orientation=[0.0, 0.0, 0.0, 1.0]),
@@ -640,11 +640,11 @@ async def test_an_add_a_move_and_a_remove_are_sent_in_order_with_their_shapes():
     box = CollisionShapeRequest("box", [0.086, 0.084, 0.071], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     sphere = CollisionShapeRequest("sphere", [0.05], [], [], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     assert planner.apply_collision_objects.polled == [ApplyCollisionObjectsRequest(objects=[
-        CollisionObject(LIME, "add", ROBOT_FRAME, None, [0.3, -0.2, 0.405], [0.0, 0.0, 0.38, 0.92], [box]),
+        CollisionObject(LIME, "add", None, None, [0.3, -0.2, 0.405], [0.0, 0.0, 0.38, 0.92], [box]),
         # A move and a remove leave out what they do not read.
-        CollisionObject(LIME, "move", ROBOT_FRAME, None, [0.3, -0.2, 0.48], [0.0, 0.0, 0.38, 0.92], None),
+        CollisionObject(LIME, "move", None, None, [0.3, -0.2, 0.48], [0.0, 0.0, 0.38, 0.92], None),
         CollisionObject("brain/apple_1-t0", "remove", None, None, None, None, None),
-        CollisionObject("brain/item_1-t0", "add", ROBOT_FRAME, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0], [sphere]),
+        CollisionObject("brain/item_1-t0", "add", None, None, [0.5, 0.1, 0.7], [0.0, 0.0, 0.0, 1.0], [sphere]),
     ])]
 
 

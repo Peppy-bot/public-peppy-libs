@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..brain import RESULT_ENDS, GoalTarget
+from ..brain import RESULT_ENDS, GoalTarget, placed_target
 from ..ports import ExpectedFailure, FailureKind, Role
 
 ZERO = dict(gripper_name="", item_id="", final_point=None)
@@ -47,7 +47,7 @@ async def run(brain, ctx, goal: Goal) -> None:
         gripper = brain.state.holder(goal.gripper_name)
         item_id = gripper.held_item_id
         into = brain.state.target_item(goal.target_item_id, gripper) if goal.target_item_id else None
-        pose = goal.target.pose() if into is None else None
+        pose = placed_target(goal.target) if into is None else None
         brain.manipulator_or_refuse(manipulator)
         # The scene equal to the held flags before the manipulator plans, so
         # the held item rides attached to the arm.

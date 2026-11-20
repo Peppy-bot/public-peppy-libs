@@ -8,10 +8,10 @@ The motion planner is optional: `has_planner` says whether the brain
 consumes it and the launcher bound its slot. Without it the brain moves by
 move_arm lines alone.
 
-Every command names the robot frame, which `robot_frame` gives, with no
-timestamp, the latest time: the brain holds every place in the robot frame,
-so its backbone and its planner place each one where the robot frame stands
-when they take the command. Each pose of a result, in the robot
+Every command leaves its frame out, for the robot frame, and its timestamp,
+for the latest time: the brain holds every place in the robot frame, so its
+backbone and its planner place each one where the robot frame stands when
+they take the command. Each pose of a result, in the robot
 frame as its contract gives it, is parsed through control_core_py's
 geometry.
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from enum import StrEnum
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from control_core_py.geometry import Pose, quaternion_of_yaw
 
@@ -313,9 +313,7 @@ def item_object(item_id: str, shape: Optional[ItemShape], centre: Vec3) -> Objec
 class Robot:
     """`move_arm`, `move_gripper` and `check_arm_move` are the node's
     generated limb_motion modules, and `planner` its modules of the motion
-    planner, none for a brain that does not consume it. `robot_frame` gives
-    the robot frame every command names, or raises the Refusal that says
-    why it is not known yet."""
+    planner, none for a brain that does not consume it."""
 
     def __init__(
         self,
@@ -324,7 +322,6 @@ class Robot:
         move_gripper,
         check_arm_move,
         *,
-        robot_frame: Callable[[], str],
         planner: Optional[PlannerModules] = None,
         result_timeout_s: float = RESULT_TIMEOUT_S,
     ) -> None:
@@ -332,7 +329,6 @@ class Robot:
         self._move_arm = move_arm
         self._move_gripper = move_gripper
         self._check_arm_move = check_arm_move
-        self._robot_frame = robot_frame
         self._planner = planner
         self._result_timeout_s = result_timeout_s
         self._live: set = set()
@@ -500,18 +496,17 @@ class Robot:
         take, as motion_planning has them. Nothing moves. The plan is a goal
         in flight like a move, so a stop cancels it."""
         module = self._modules().plan_joint_path
-        frame = self._robot_frame()
         request = module.GoalRequest(
             arms=[module.GoalRequestArmsItem(arm_name=arm, start_joint_positions=[float(v) for v in start_joint_positions])],
             goal_joint_constraints=[],
             goal_position_constraints=[
                 module.GoalRequestGoalPositionConstraintsItem(
-                    link_name=link, frame=frame, timestamp=None, position=list(position), tolerance_m=position_tolerance_m,
+                    link_name=link, frame=None, timestamp=None, position=list(position), tolerance_m=position_tolerance_m,
                 )
             ],
             goal_orientation_constraints=[
                 module.GoalRequestGoalOrientationConstraintsItem(
-                    link_name=link, frame=frame, timestamp=None, orientation=list(orientation),
+                    link_name=link, frame=None, timestamp=None, orientation=list(orientation),
                     tolerance_rad=orientation_tolerance_rad, free_axis="none",
                 )
             ],
@@ -553,7 +548,7 @@ class Robot:
             arm_name=arm,
             start_joint_positions=[float(v) for v in start_joint_positions],
             link_name=link,
-            frame=self._robot_frame(),
+            frame=None,
             timestamp=None,
             waypoints=[module.GoalRequestWaypointsItem(position=list(position), orientation=list(orientation)) for position, orientation in poses],
             avoid_collisions=avoid_collisions,
@@ -606,7 +601,7 @@ class Robot:
             module.RequestObjectsItem(
                 id=operation.id,
                 operation=operation.operation,
-                frame=self._robot_frame() if operation.position is not None else None,
+                frame=None,
                 timestamp=None,
                 position=list(operation.position) if operation.position is not None else None,
                 orientation=list(operation.orientation) if operation.orientation is not None else None,
@@ -653,9 +648,9 @@ class Robot:
 
     def _arm_move_fields(self, target_type, arm: str, position: Vec3, orientation: Quat, duration_s: float) -> dict:
         """The fields a move_arm goal and a check_arm_move request share, the
-        target of the generated `target_type` in the robot frame with no
-        timestamp, the latest time."""
-        target = target_type(frame=self._robot_frame(), timestamp=None, position=list(position), orientation=list(orientation))
+        target of the generated `target_type` with no frame, the robot frame,
+        and no timestamp, the latest time."""
+        target = target_type(frame=None, timestamp=None, position=list(position), orientation=list(orientation))
         return dict(arm_name=arm, target=target, duration_s=duration_s)
 
     def _modules(self) -> PlannerModules:

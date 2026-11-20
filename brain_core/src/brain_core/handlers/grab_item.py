@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..brain import RESULT_ENDS, GoalTarget
+from ..brain import RESULT_ENDS, GoalTarget, placed_target
 from ..ports import ExpectedFailure, FailureKind, Role
 
 ZERO = dict(gripper_name="", item_id="")
@@ -39,7 +39,7 @@ async def run(brain, ctx, goal: Goal) -> None:
         state = brain.state
         # The item first: its position decides which free gripper suits it.
         known = state.item_to_grab(goal.item_id) if goal.item_id else None
-        target = goal.target.pose() if known is None else None
+        target = placed_target(goal.target) if known is None else None
         near = known.position if known is not None else target.position
         gripper = state.gripper_for_grab(goal.gripper_name, near)
         brain.manipulator_or_refuse(manipulator)

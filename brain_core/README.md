@@ -2,11 +2,11 @@
 
 The code every brain node shares. A brain serves `item_perception:v1`,
 `item_manipulation:v1` and `brain_model:v1` over a robot that `limb_motion:v1`
-drives and `limb_state:v1` measures, and a camera that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
-the gripper table, the lanes, the failure kinds and the result rules), the
-robot proxy, the camera frames and geometry, and the loop of each exposed
-member. A node brings its generated peppygen modules and its backends, and
-calls `node.setup`.
+drives and `limb_state:v1` measures, and a camera that `rgbd_camera:v1`
+streams. brain_core holds the contract rules (item ids, the gripper table, the
+lanes, the failure kinds and the result rules), the robot proxy, the camera
+frames and geometry, and the loop of each exposed member. A node brings its
+generated peppygen modules and its backends, and calls `node.setup`.
 
 item_perception and brain_model report a refusal or a failure by the status
 of the goal: a refused goal and a failed goal carry a failure kind and a
@@ -564,16 +564,17 @@ is under half the item's width across the picture is fitted around
 something that lies in the item, such as a fruit in a bowl: x and y then
 come from the seen point and the width from `width_m`. A place into a target
 carries the held item from above, at each roll, to 12.5 cm over the target's
-top (`above_target_m`), else 7.5 cm, with the line down to the target's
-bottom in its reach test; with an aligner, the model corrects the held item's
-place above the target, told its label and width (`AlignRequest.into`); the
-line down from there to the target's bottom stops on contact, so the item
-rests on the target's floor or on what it holds, and the jaws open where the
-arm stopped, then the arm climbs back. The goal's `target` is not read. A drop above a target makes the scene follow the holds,
-carries the same way with the pre-place point alone in its reach test, aligns
-with no descent after it (`AlignRequest.descends` false), and opens there,
-with no climb; the brain forgets the dropped item. The target keeps its id
-and what the brain knew of it.
+top (`above_target_m`), else 7.5 cm, with the line down to the target's bottom
+in its reach test; with an aligner, the model corrects the held item's place
+above the target, told its label and width (`AlignRequest.into`); the line
+down from there to the target's bottom stops on contact, so the item rests on
+the target's floor or on what it holds, and the jaws open where the arm
+stopped, then the arm climbs back. The goal's `target` is not read. A drop
+above a target makes the scene follow the holds, carries the same way with the
+pre-place point alone in its reach test, aligns with no descent after it
+(`AlignRequest.descends` false), and opens there, with no climb; the brain
+forgets the dropped item. The target keeps its id and what the brain knew of
+it.
 
 A look that names a known item with a box matches it when its box centre, or
 its seen point when it has no box, lies inside the footprint of that box:

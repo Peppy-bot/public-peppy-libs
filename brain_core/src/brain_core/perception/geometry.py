@@ -58,9 +58,9 @@ import asyncio
 import logging
 from typing import Optional
 
-from control_core_py.geometry import GeometryError, Placement, Point, PoseTarget, Stamped, UnitQuaternion
+from control_core_py.geometry import Placement, Point, PoseTarget, Stamped, UnitQuaternion
 
-from ..ports import FailureKind, Pose, Refusal
+from ..ports import LOOKUP_KINDS, FailureKind, Pose, Refusal
 from ..waiting import unless_cancelled
 from .camera import Intrinsics
 from .perceiver import SourceReason
@@ -211,10 +211,6 @@ def robot_frame_of(data) -> str:
     return robot_frame
 
 
-# The failure kinds of a lookup, as transform_lookup names them.
-LOOKUP_KINDS = ("unknown_frame", "no_chain", "extrapolation", "broken_tree")
-
-
 class LookupFailure(Refusal):
     """A lookup the robot's tree answered with the failure of the lookup:
     its kind, one of LOOKUP_KINDS, and its message, which names the value
@@ -293,13 +289,10 @@ class Placer:
         item_manipulation places a goal's target when it accepts the goal; a
         LookupFailure when the tree cannot place it, and a Refusal,
         `resource_unavailable`, when the robot frame is not known or the
-        lookup gives no answer; the Refusal `rejected` for one placed past
-        the finite numbers."""
+        lookup gives no answer; control_core_py's GeometryError for one placed
+        past the finite numbers."""
         placement = await self._look_up(target.frame, target.timestamp, None, "the target")
-        try:
-            placed = placement.place(target.value)
-        except GeometryError as error:
-            raise Refusal(FailureKind.REJECTED, f"the target: {error}") from None
+        placed = placement.place(target.value)
         orientation = placed.orientation.quaternion if placed.orientation is not None else None
         return Pose(placed.position.position, orientation)
 

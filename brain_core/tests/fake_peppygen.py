@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Callable, Optional
 
 from brain_core.bindings import Bindings
+from brain_core.ports import LOOKUP_KINDS
 from brain_core.robot import PlannerModules
 
 # The robot frame the fakes name.
@@ -135,9 +136,6 @@ class PositionRecord:
 
 IMAGE_FIELDS = ("camera", "image_width", "image_height", "action_time")
 
-# The failure kinds of a lookup in the robot's tree, which grab_item and
-# place_item list.
-LOOKUP_KINDS = ("unknown_frame", "no_chain", "extrapolation", "broken_tree")
 
 # item_perception:v1: no success field, and the kind `not_found`, which
 # identify_item lists.

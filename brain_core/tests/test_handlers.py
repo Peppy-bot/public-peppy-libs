@@ -22,7 +22,7 @@ from fake_peppygen import place_item as place_action
 from fake_peppygen import scan_items as scan_action
 from fake_peppygen import LEFT_AT_REST, ROBOT_FRAME, FakeTopic, PointRecord, fake_bindings, limb_states_message
 
-from control_core_py.geometry import Placement
+from control_core_py.geometry import GeometryError, Placement, PoseTarget
 
 from brain_core.brain import Brain, Decider
 from brain_core.handlers import abort, drop_item, forget, get_state, grab_item, identify_item, place_item, scan_items
@@ -232,8 +232,8 @@ async def test_a_grab_by_pose_runs_at_the_target_its_decision_placed_in_the_robo
     goal = await grab_item.admit(brain, ctx.request().data)
     [stamped] = placer.targets
     assert (stamped.frame, stamped.timestamp, stamped.value.position.position) == ("odom", 4.5, (0.2, 0.0, 0.1))
-    assert goal.target.pose().position == pytest.approx((1.0, 0.2, 0.1))
-    assert goal.target.pose().orientation == pytest.approx(QUARTER_TURN)
+    assert goal.target.position == pytest.approx((1.0, 0.2, 0.1))
+    assert goal.target.orientation == pytest.approx(QUARTER_TURN)
     await grab_item.run(brain, ctx, goal)
     assert ctx.completed["success"] is True
     item = brain.state.items[ctx.completed["item_id"]]
@@ -250,7 +250,7 @@ async def test_a_target_with_no_frame_is_placed_from_the_robot_frame_at_its_time
     ):
         decider = Decider(module, brain, admit)
         assert (await decider.decide(ctx.request())).refusal is None
-        assert decider.take().target.pose().position == pytest.approx((1.0, 0.2, 0.1))
+        assert decider.take().target.position == pytest.approx((1.0, 0.2, 0.1))
     assert [(stamped.frame, stamped.timestamp, stamped.value.position.position) for stamped in placer.targets] == [
         (ROBOT_FRAME, 4.5, (0.2, 0.0, 0.1)),
     ] * 2
@@ -308,6 +308,16 @@ async def test_a_target_no_contract_takes_refuses_the_goal_with_rejected_before_
         decision = await Decider(module, brain, grab_item.admit if module is grab_action else place_item.admit).decide(request)
         assert decision.refusal == module.Failure("rejected", words)
     assert manipulator.calls == [] and brain.placer.targets == []
+
+
+async def test_a_target_placed_past_the_finite_numbers_refuses_the_goal_with_rejected_naming_the_target_once():
+    far = Placement((1.7976931348623157e308, 0.0, 0.0), (0.0, 0.0, math.sin(math.pi / 8.0), math.cos(math.pi / 8.0)))
+    brain = await make_brain(manipulator=FakeManipulator(), placer=FixedPlacer(far))
+    record = target((1.7976931348623157e308, 0.0, 0.0))
+    with pytest.raises(GeometryError) as placing:
+        far.place(PoseTarget.parse(record.position, record.orientation))
+    decision = await Decider(grab_action, brain, grab_item.admit).decide(grab_goal(target=record).request())
+    assert decision.refusal == grab_action.Failure("rejected", f"the target: {placing.value}")
 
 
 async def test_a_target_whose_timestamp_no_stamp_holds_is_rejected_whatever_its_frame_before_the_robot_names_its_frame():
@@ -856,8 +866,8 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
         move = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
         target = move.request.target
         assert move.request.arm_name == "left_arm" and target.position == pytest.approx([0.5, 0.1, z])
-        # Each move names the robot frame, with no timestamp: the latest time.
-        assert (target.frame, target.timestamp, target.orientation) == ("base_link", None, [0.0, 1.0, 0.0, 0.0])
+        # Each move gives no frame, the robot frame, and no timestamp, the latest time.
+        assert (target.frame, target.timestamp, target.orientation) == (None, None, [0.0, 1.0, 0.0, 0.0])
         move.complete(landed(move))
     closed = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (closed.request.opening, closed.request.max_effort) == (0.0, 20.0)
