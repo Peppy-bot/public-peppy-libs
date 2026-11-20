@@ -9,7 +9,8 @@
 //! tree cannot place, in a node's own failure kinds ([`TargetFailure`]), each generated member
 //! given the node's kinds by [`member_failure_kinds!`](crate::member_failure_kinds) and those of
 //! a placement, every one of which [`PlaceKind::ALL`] lists, by its own parse
-//! ([`PlaceKind::of_member`]).
+//! ([`PlaceKind::of_member`]); and the [`Placer`] of a node's commands in its robot frame or
+//! another.
 //!
 //! Each message and each lookup looks at the node's clock first, so a clock that went back
 //! since the look before drops every moving stamp before the tree changes or answers, as
@@ -31,11 +32,11 @@ use frame_tree::{
 use tokio::sync::watch;
 use tracing::warn;
 
-use crate::geometry::{GeometryError, Placed, Stamped};
+use crate::geometry::{GeometryError, Placed, Stamped, Twist};
 use crate::latched_log::LatchedLog;
 use crate::node_clock::{BackSteps, NodeClock};
 use crate::receiving;
-use crate::sync::lock_ignoring_poison;
+use crate::sync::{lock_ignoring_poison, wait_for};
 
 /// A value placed in a target frame, and the time of that frame's place it is in: none for a
 /// value that holds at every time, as a lookup through static transforms alone places it.
@@ -468,6 +469,91 @@ impl RobotTree {
         if taken.is_ok() {
             self.taken.send_replace(());
         }
+    }
+}
+
+/// The placer of a node's commands by the robot's tree: in the node's robot frame, or in another
+/// frame of the tree, each placement waiting up to `wait` on the node's clock for the tree to
+/// answer, as [`RobotTree::place`] and [`RobotTree::lookup_within`] wait. A placement that fails
+/// gives the failure of the lookup, or the refusal of a placed value no contract takes.
+pub struct Placer {
+    tree: Arc<RobotTree>,
+    robot_frame: FrameName,
+    wait: Duration,
+}
+
+impl Placer {
+    pub fn new(tree: Arc<RobotTree>, robot_frame: FrameName, wait: Duration) -> Self {
+        Self {
+            tree,
+            robot_frame,
+            wait,
+        }
+    }
+
+    /// The robot frame, the root link of the robot's URDF, which every report names.
+    pub fn robot_frame(&self) -> &FrameName {
+        &self.robot_frame
+    }
+
+    /// The frame a command names: `frame`, or the robot frame for a command that names none, as
+    /// the contracts read a command with no frame.
+    pub fn frame_of<'a>(&'a self, frame: Option<&'a str>) -> &'a str {
+        frame.unwrap_or(self.robot_frame.as_str())
+    }
+
+    /// `stamped` in the robot frame at the latest time, with the time of the robot frame's place
+    /// ([`RobotTree::place`]).
+    pub async fn place<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        self.place_in(stamped, &self.robot_frame).await
+    }
+
+    /// [`Placer::place`] from a handler the generated code calls synchronously: the wait blocks
+    /// in place on the runtime.
+    pub fn place_now<T: Placed>(&self, stamped: &Stamped<T>) -> Result<PlacedValue<T>, PlaceError> {
+        wait_for(self.place(stamped))
+    }
+
+    /// `stamped` in `target` at the latest time, as [`Placer::place`] places in the robot frame.
+    async fn place_in<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        target: &FrameName,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        self.tree.place(stamped, target, self.wait).await
+    }
+
+    /// [`Placer::place_in`] from a handler the generated code calls synchronously.
+    pub fn place_in_now<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        target: &FrameName,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        wait_for(self.place_in(stamped, target))
+    }
+
+    /// The velocity `stamped` in the robot frame at its own time: its vectors turned by the place
+    /// of its frame in the robot frame then, so a velocity in the robot frame stands in it at any
+    /// time, as transforms looks a frame up in itself.
+    pub async fn place_velocity(&self, stamped: &Stamped<Twist>) -> Result<Twist, PlaceError> {
+        let found = self
+            .tree
+            .lookup_within(
+                &self.robot_frame,
+                stamped.frame(),
+                stamped.time(),
+                self.wait,
+            )
+            .await?;
+        Ok(stamped.value().placed_by(&found.placement)?)
+    }
+
+    /// [`Placer::place_velocity`] from a handler the generated code calls synchronously.
+    pub fn place_velocity_now(&self, stamped: &Stamped<Twist>) -> Result<Twist, PlaceError> {
+        wait_for(self.place_velocity(stamped))
     }
 }
 
@@ -1501,6 +1587,98 @@ mod tests {
                 "rejected"
             ]
         );
+    }
+
+    // A placer reads a command with no frame in the robot frame, places a value in the robot
+    // frame or in another, and a velocity in the robot frame by the place of its frame there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_placer_places_commands_in_the_robot_frame_or_another() {
+        let (tree, _ticks) = tree_at(20);
+        tree.take_static(&initializer(), &camera_on_the_arm())
+            .expect("the camera's transform");
+        tree.take_moving(&backbone(), &arm_at(20, 0.5))
+            .expect("the arm's transform");
+        let placer = Placer::new(Arc::clone(&tree), frame("base_link"), WAIT);
+        assert_eq!(placer.frame_of(None), "base_link");
+        assert_eq!(placer.frame_of(Some("camera")), "camera");
+        let placed = placer.place(&camera_origin(None)).await.expect("placed");
+        assert_eq!(placed.value.position(), [0.5, 0.0, 1.0]);
+        let in_arm = placer
+            .place_in(&camera_origin(None), &frame("arm"))
+            .await
+            .expect("placed in the arm");
+        assert_eq!(in_arm.value.position(), [0.0, 0.0, 1.0]);
+        let turning = Stamped::parse(
+            "camera",
+            None,
+            Twist::parse([1.0, 0.0, 0.0], [0.0, 0.0, 0.5]).unwrap(),
+        )
+        .unwrap();
+        let velocity = placer.place_velocity(&turning).await.expect("placed");
+        assert_eq!(velocity, *turning.value());
+    }
+
+    // A placed velocity turns by the place of its frame in the robot frame: one in odom, where
+    // the base faces a half turn from odom's +x, drives the base backward, and one in a
+    // camera's optical frame turns the view's axis, the frame's +z, onto the base's +x, and the
+    // frame's +y, down the picture, onto the base's -z.
+    #[tokio::test(start_paused = true)]
+    async fn a_placed_velocity_turns_by_the_place_of_its_frame_in_the_robot_frame() {
+        async fn placed(
+            placer: &Placer,
+            frame: &str,
+            linear: [f64; 3],
+            angular: [f64; 3],
+        ) -> Twist {
+            let velocity = Stamped::parse(frame, None, Twist::parse(linear, angular).unwrap())
+                .expect("a stamped twist");
+            placer.place_velocity(&velocity).await.expect("placed")
+        }
+        let assert_near = |found: [f64; 3], expected: [f64; 3]| {
+            assert!(
+                found
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| (a - b).abs() < 1e-12),
+                "{found:?} != {expected:?}"
+            );
+        };
+        let (tree, _ticks) = tree_at(20);
+        let half_turn = [0.0, 0.0, 1.0, 0.0];
+        tree.take_moving(
+            &backbone(),
+            &MovingMessage {
+                timestamp: time(20),
+                transforms: vec![TransformRecord::new(
+                    "odom",
+                    "base_link",
+                    [3.0, 0.0, 0.0],
+                    half_turn,
+                )],
+                start_timestamp: time(1),
+            },
+        )
+        .expect("the base's place in odom");
+        let optical = [-0.5, 0.5, -0.5, 0.5];
+        tree.take_static(
+            &initializer(),
+            &StaticMessage {
+                transforms: vec![TransformRecord::new(
+                    "base_link",
+                    "camera_optical",
+                    [0.2, 0.0, 0.5],
+                    optical,
+                )],
+            },
+        )
+        .expect("the camera's optical frame");
+        let placer = Placer::new(Arc::clone(&tree), frame("base_link"), WAIT);
+        let backward = placed(&placer, "odom", [0.3, 0.0, 0.0], [0.0, 0.0, 0.5]).await;
+        assert_near(backward.linear_velocity(), [-0.3, 0.0, 0.0]);
+        assert_near(backward.angular_velocity(), [0.0, 0.0, 0.5]);
+        let viewed = placed(&placer, "camera_optical", [0.0, 0.0, 0.3], [0.0, 0.5, 0.0]).await;
+        assert_near(viewed.linear_velocity(), [0.3, 0.0, 0.0]);
+        assert_near(viewed.angular_velocity(), [0.0, 0.0, -0.5]);
     }
 
     #[test]

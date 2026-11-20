@@ -37,9 +37,10 @@
 //!   and a value of the geometry types placed in a frame
 //!   ([`place`](robot_tree::RobotTree::place)) or in the root of its frame's
 //!   chain ([`place_in_root`](robot_tree::RobotTree::place_in_root)), refused
-//!   with a [`PlaceError`](robot_tree::PlaceError), and the failure of a command
+//!   with a [`PlaceError`](robot_tree::PlaceError), the failure of a command
 //!   the tree cannot place in a node's own failure kinds
-//!   ([`TargetFailure`](robot_tree::TargetFailure)).
+//!   ([`TargetFailure`](robot_tree::TargetFailure)), and the
+//!   [`Placer`](robot_tree::Placer) of a node's commands.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`move_slot`]: the single-flight move slot a goal claims on its admission and
