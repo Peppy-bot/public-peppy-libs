@@ -7,8 +7,7 @@
 // progress, and the controller computes the command. The output holds, for each step,
 // the pruned plan, the goal checker's and the progress checker's verdicts, each null when
 // the step ended before it, and the command or the exception that ended the step, with
-// the grid, the footprint, the plan and each step's pose and speed as the reference read
-// them.
+// the inscribed and circumscribed radii of the footprint.
 #pragma once
 
 #include <nlohmann/json.hpp>

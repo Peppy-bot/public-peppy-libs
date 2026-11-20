@@ -143,10 +143,8 @@ nlohmann::json pure_pursuit(const nlohmann::json& scenario, Inputs&) {
   // ControllerServer::setPlannerPath with the scenario's plan.
   nav_msgs::msg::Path plan;
   plan.header.frame_id = odometry_frame;
-  auto plan_read = nlohmann::json::array();
   for (const auto& entry : scenario.at("plan")) {
     plan.poses.push_back(pose_stamped_of(entry, odometry_frame));
-    plan_read.push_back(pose_read(plan.poses.back().pose));
   }
   controller.newPathReceived(plan);
   path_handler.setPlan(plan);
@@ -161,11 +159,7 @@ nlohmann::json pure_pursuit(const nlohmann::json& scenario, Inputs&) {
     pose.header.stamp = rclcpp::Time(at_ns, RCL_ROS_TIME);
     tf->setTransform(base_transform(pose), "pure_pursuit_reference", false);
     const auto speed = twist_of(step.at("speed"));
-    nlohmann::json record = {
-        {"at_ns", at_ns},
-        {"pose", pose_read(pose.pose)},
-        {"speed", twist_read(speed)},
-    };
+    nlohmann::json record = nlohmann::json::object();
     // ControllerServer::transformedPlanAndGoal, isGoalReached and
     // computeAndPublishVelocity, in that order.
     nav_msgs::msg::Path pruned;
@@ -207,12 +201,8 @@ nlohmann::json pure_pursuit(const nlohmann::json& scenario, Inputs&) {
 
   return {
       {"kind", "pure_pursuit"},
-      {"grid", grid_read(*grid)},
-      {"costs", costs_read(*grid)},
-      {"footprint", footprint_read(footprint)},
       {"inscribed_radius", costmap->getLayeredCostmap()->getInscribedRadius()},
       {"circumscribed_radius", costmap->getLayeredCostmap()->getCircumscribedRadius()},
-      {"plan", plan_read},
       {"steps", steps},
   };
 }
