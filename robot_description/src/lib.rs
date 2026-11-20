@@ -28,10 +28,14 @@
 //!   each link stands in its parent link, a [`LinkTransform`] per joint, the fixed joints'
 //!   for the life of the robot and the moving joints' at their positions; and
 //!   [`LinkTransform::frame_transform`]: the transform as the transforms contract carries it.
+//! - [`RobotDescription::link_frames_at_zero`]: where each link stands in the root link's
+//!   frame with every joint at zero.
 //! - [`RobotDescription::differential_base`]: the two wheels of a differential base, the
 //!   continuous joints on a link that fixed joints alone join to the root link that no
 //!   group of the SRDF holds, each with its radius and the width of its tire, and their
 //!   separation.
+//! - [`RobotDescription::outline`]: the rectangle on the floor that holds every collision
+//!   element of the robot, each a box, a cylinder or a sphere, with every joint at zero.
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal
@@ -73,7 +77,7 @@ mod transforms;
 mod xml;
 
 pub use arms::{ArmId, PerArm};
-pub use base::{DifferentialBase, NoDifferentialBase, Wheel};
+pub use base::{DifferentialBase, NoDifferentialBase, NoOutline, Outline, Wheel};
 pub use bundled::{Model, UnknownModel, model, models, models_with_arms, write_meshes};
 pub use description::{
     Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
