@@ -15,10 +15,12 @@ use nalgebra::{Point3, Vector3};
 
 use crate::grid::Grid;
 use crate::key::{Key, TREE_VOXELS, VoxelSize};
-use crate::ray::ray_keys;
+use crate::ray::walk_ray;
+use crate::scan_updates::{ScanUpdate, ScanUpdates};
 use crate::sensor_model::{SensorModel, occupied};
 
-/// The most voxels a map holds, a gibibyte of log-odds: a map that fits in
+/// The most voxels a map holds, a gibibyte of log-odds and a quarter of a
+/// gibibyte of the bytes of an insert (`ScanUpdates`): a map that fits in
 /// memory.
 const MAX_VOXELS: usize = 1 << 28;
 
@@ -301,7 +303,7 @@ pub enum Voxel {
 }
 
 /// A voxel map of what a sensor sees.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VoxelMap {
     frame: FrameName,
     grid: Grid,
@@ -309,6 +311,24 @@ pub struct VoxelMap {
     /// reached it.
     log_odds: Vec<f32>,
     model: SensorModel,
+    /// Where an insert gathers the update of each voxel, which the map keeps
+    /// from one insert to the next.
+    updates: ScanUpdates,
+}
+
+/// A clone holds the voxels of the map and none of the bytes of an insert, so it
+/// copies the log-odds and no more, as a planner that clones the map for each plan
+/// needs. The first scan that the clone takes makes its own bytes.
+impl Clone for VoxelMap {
+    fn clone(&self) -> Self {
+        Self {
+            frame: self.frame.clone(),
+            grid: self.grid,
+            log_odds: self.log_odds.clone(),
+            model: self.model,
+            updates: ScanUpdates::default(),
+        }
+    }
 }
 
 impl VoxelMap {
@@ -343,6 +363,7 @@ impl VoxelMap {
             grid: Grid { size, lo, dims },
             log_odds: vec![f32::NAN; voxels as usize],
             model: SensorModel::octomap(),
+            updates: ScanUpdates::default(),
         })
     }
 
@@ -620,7 +641,11 @@ impl VoxelMap {
 
     /// The insert of `scan` with `cutouts` and with the points `clearing`
     /// that clear and mark nothing, as [`VoxelMap::insert`] and
-    /// [`VoxelMap::insert_clearing`] give it.
+    /// [`VoxelMap::insert_clearing`] give it. It walks each ray voxel by
+    /// voxel, gathers the strongest update of each voxel at the voxel's index
+    /// (`ScanUpdates`), and then gives each voxel that holds an update that one
+    /// update: its work follows the voxels that its rays cross, not the voxels
+    /// of the map.
     fn insert_points(
         &mut self,
         scan: &Scan,
@@ -673,38 +698,34 @@ impl VoxelMap {
                 Reading::NoReturn(at_range) => beyond_range.extend(size.key(at_range)),
             }
         }
-        let mut misses = HashSet::new();
-        let cross = |end: Key, misses: &mut HashSet<Key>| {
-            if let Some(ray) = ray_keys(size, origin, size.center_f32(end)) {
-                misses.extend(ray);
+        let mut updates = std::mem::take(&mut self.updates);
+        updates.ready_for(self.grid.len());
+        let grid = self.grid;
+        // A voxel outside the map takes nothing, and a ray that ends outside
+        // the map still gives each voxel of the map that it crosses.
+        let mut give = |key: Key, update: ScanUpdate| {
+            if let Some(index) = grid.index(key) {
+                updates.give(index, update);
             }
         };
-        for &key in hits.iter().chain(&cut_out).chain(&cleared) {
-            cross(key, &mut misses);
+        let ends = hits.iter().chain(&cut_out).chain(&cleared);
+        for &end in ends.chain(&beyond_range) {
+            walk_ray(size, origin, size.center_f32(end), |crossed| {
+                give(crossed, ScanUpdate::Miss);
+            });
         }
         for &key in &beyond_range {
-            misses.insert(key);
-            cross(key, &mut misses);
+            give(key, ScanUpdate::Miss);
         }
-        for key in &cut_out {
-            hits.remove(key);
-            misses.remove(key);
+        for &key in &hits {
+            give(key, ScanUpdate::Hit);
         }
-        for key in &hits {
-            misses.remove(key);
+        for &key in &cut_out {
+            give(key, ScanUpdate::CutOut);
         }
         let model = self.model;
-        for (keys, update) in [
-            (&misses, model.miss),
-            (&hits, model.hit),
-            (&cut_out, model.cut_out),
-        ] {
-            for key in keys {
-                if let Some(index) = self.grid.index(*key) {
-                    self.update(index, update);
-                }
-            }
-        }
+        updates.drain(|index, update| self.update(index, update.log_odds(&model)));
+        self.updates = updates;
         Ok(())
     }
 }
@@ -763,6 +784,35 @@ mod tests {
              holds 32768 voxels from the origin on each side of each axis, 1638.4 m at 0.05 m \
              voxels: give bounds within 1638.4 m of the origin or use larger voxels"
         );
+    }
+
+    // A clone holds none of the bytes of an insert, and takes a scan as the map takes
+    // it: after the same scan, the two hold the same voxels at the same log-odds.
+    #[test]
+    fn a_clone_holds_no_bytes_of_an_insert_and_takes_a_scan_alike() {
+        let frame = FrameName::parse("world").expect("a frame");
+        let sensor = Pose::new([0.01, 0.02, 0.03], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+        let scan = |points| Scan {
+            frame: &frame,
+            sensor,
+            points,
+            max_range_m: PositiveFinite::parse(0.8).expect("positive"),
+        };
+        let mut original = map();
+        original
+            .insert(&scan(&[[0.3, 0.1, 0.5], [0.0, -0.2, 0.9]]), &[])
+            .expect("the map's frame");
+        assert_ne!(original.updates, ScanUpdates::default());
+        let mut clone = original.clone();
+        assert_eq!(clone.updates, ScanUpdates::default());
+        let next = [[0.4, 0.0, 0.4], [-0.1, -0.2, 0.9], [0.3, 0.1, 0.5]];
+        original.insert(&scan(&next), &[]).expect("the map's frame");
+        clone.insert(&scan(&next), &[]).expect("the map's frame");
+        let voxels = |map: &VoxelMap| -> Vec<(Key, Voxel)> {
+            map.known().map(|key| (key, map.voxel(key))).collect()
+        };
+        assert!(!voxels(&original).is_empty());
+        assert_eq!(voxels(&clone), voxels(&original));
     }
 
     // The grid index and the key of a voxel run both ways.

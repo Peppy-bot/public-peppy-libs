@@ -115,6 +115,14 @@ reads. It goes in by the rules of MoveIt's point cloud updater
 - In one scan each voxel takes one update: a cut-out voxel is free, else a hit voxel is
   a hit, else a crossed voxel is a miss.
 
+An insert walks each ray voxel by voxel and keeps no list of its voxels. It gathers the
+strongest update of each voxel in one byte at the place of the voxel in the grid, with
+the list of the voxels that hold one, and then gives each of them its update. So its
+work follows the voxels that its rays cross, not the voxels of the map. The map keeps
+the bytes from one insert to the next: one byte for each voxel, beside the four of its
+log-odds. A clone of the map holds the log-odds alone, and makes its own bytes at its
+first insert.
+
 `Scan::readings` gives each point as the map reads it, in the map's frame: a
 `Reading::Return` where a point within `max_range_m` lies, and a `Reading::NoReturn` at
 `max_range_m` along the ray of a point beyond it. A navigator reads a frame's rays from

@@ -41,6 +41,7 @@ mod grid;
 mod key;
 mod map;
 mod ray;
+mod scan_updates;
 mod sensor_model;
 
 pub use depth::{DepthError, depth_points};

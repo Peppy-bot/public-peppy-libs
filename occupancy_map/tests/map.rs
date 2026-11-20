@@ -6,10 +6,11 @@
 //! of a box, and a collision object clearing the voxels it intersects or touches, those
 //! it covers in part among them, a mesh clearing the voxels each one measured on its own
 //! finds, and cutting what the sensor sees of it, grown by a padding, out of a scan;
-//! points that clear their rays and mark nothing; and the map's columns, each voxel's
-//! center inside its column, and the clear of a column.
+//! points that clear their rays and mark nothing; one update for each voxel of a scan
+//! whose rays share voxels, the strongest; and the map's columns, each voxel's center
+//! inside its column, and the clear of a column.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
@@ -83,6 +84,11 @@ fn lowest() -> f32 {
 /// OctoMap's log-odds of one miss, the log-odds of 0.4.
 fn one_miss() -> f32 {
     (0.4_f64 / (1.0 - 0.4)).ln() as f32
+}
+
+/// OctoMap's log-odds of one hit, the log-odds of 0.7.
+fn one_hit() -> f32 {
+    (0.7_f64 / (1.0 - 0.7)).ln() as f32
 }
 
 /// The pose that places nothing anywhere else.
@@ -478,6 +484,200 @@ fn a_point_that_clears_frees_its_ray_up_to_its_voxel_and_marks_nothing() {
         Err(InsertError::ScanFrame { .. })
     ));
     assert_eq!(voxels(&map), before);
+}
+
+/// The six directions along the map's axes.
+const AXES: [[i32; 3]; 6] = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+];
+
+/// What a point of a scan is to the map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Role {
+    /// A point that the scan sees.
+    Seen,
+    /// A point that the scan sees and a cutout holds.
+    CutOut,
+    /// A point that clears its ray and marks nothing.
+    Clearing,
+}
+
+/// An update that a scan gives a voxel, from the weakest to the strongest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Update {
+    Miss,
+    Hit,
+    CutOut,
+}
+
+/// A cutout that holds the points it lists, in the map's frame, and no other.
+struct Listed {
+    frame: FrameName,
+    points: Vec<[f64; 3]>,
+}
+
+impl Cutout for Listed {
+    fn frame(&self) -> &FrameName {
+        &self.frame
+    }
+
+    fn contains(&self, point: [f64; 3]) -> bool {
+        self.points.contains(&point)
+    }
+}
+
+/// The key of the voxel of the tree that holds `point`, inside the map or outside it,
+/// for a point that lies far from the faces of its voxel.
+fn tree_key(point: [f64; 3]) -> Key {
+    Key(point.map(|c| (c / VOXEL_M).floor() as i32))
+}
+
+/// The voxels from `from` up to and not including `to`, which lies on an axis through
+/// `from`: the voxels that a ray from the center of `from` to the center of `to` crosses.
+fn voxels_along_an_axis(from: Key, to: Key) -> Vec<Key> {
+    let step: [i32; 3] = std::array::from_fn(|i| (to.0[i] - from.0[i]).signum());
+    assert!(
+        step.iter().filter(|s| **s != 0).count() <= 1,
+        "{to:?} lies on no axis through {from:?}"
+    );
+    let count: i32 = (0..3).map(|i| (to.0[i] - from.0[i]).abs()).sum();
+    (0..count)
+        .map(|n| Key(std::array::from_fn(|i| from.0[i] + n * step[i])))
+        .collect()
+}
+
+// Each voxel takes one update for each scan, the strongest that the scan gives it, when
+// the rays of the scan share voxels: a voxel that many rays cross reads one miss, a voxel
+// that a point hits and other rays cross reads one hit, and a voxel that holds a cut-out
+// point reads the lowest log-odds, whatever else lies in it or crosses it. A point beyond
+// the range gives its voxel at the range one miss, and a point that clears gives its own
+// voxel nothing. The sensor stands at the center of a voxel and each point lies on an
+// axis through it, so each ray crosses the voxels from the sensor's up to its end's and
+// no other, and the test knows each voxel that each ray crosses. The first two points lie
+// on one axis, so the ray of the farther crosses the voxel of the nearer. The map is
+// smaller than the reach of the points: a ray that ends outside it clears the voxels of
+// the map that it crosses, and the map knows no other voxel.
+#[hegel::test]
+fn each_voxel_takes_the_strongest_update_of_a_scan_once(tc: TestCase) {
+    let frame = frame();
+    let mut map = VoxelMap::new(
+        frame.clone(),
+        PositiveFinite::parse(VOXEL_M).expect("positive"),
+        Bounds {
+            min: [-0.6; 3],
+            max: [0.6; 3],
+        },
+    )
+    .expect("a valid map");
+    let sensor_key = Key(tc.draw(gs::arrays(gs::integers().min_value(-4).max_value(4))));
+    let sensor = Pose::new(map.center(sensor_key), [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    // A whole number of voxels, so a point at the range lies far from a face of its
+    // voxel.
+    let max_range_m =
+        f64::from(tc.draw(gs::integers::<i32>().min_value(6).max_value(30))) * VOXEL_M;
+    let clears = tc.draw(gs::booleans());
+    let other = if clears { Role::Clearing } else { Role::CutOut };
+    let axis = || tc.draw(gs::integers::<usize>().max_value(AXES.len() - 1));
+    let shared = axis();
+    let near: i32 = tc.draw(gs::integers().min_value(1).max_value(10));
+    let far: i32 = tc.draw(gs::integers().min_value(near + 1).max_value(near + 15));
+    let mut placed = vec![(shared, near), (shared, far)];
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(10)) {
+        placed.push((axis(), tc.draw(gs::integers().min_value(0).max_value(30))));
+    }
+    let points: Vec<([f32; 3], Role)> = placed
+        .into_iter()
+        .map(|(axis, steps)| {
+            let within: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-0.4).max_value(0.4)));
+            let local = std::array::from_fn(|i| {
+                ((f64::from(AXES[axis][i] * steps) + within[i]) * VOXEL_M) as f32
+            });
+            let role = if tc.draw(gs::booleans()) {
+                other
+            } else {
+                Role::Seen
+            };
+            (local, role)
+        })
+        .collect();
+    let of_role = |kept: fn(Role) -> bool| -> Vec<[f32; 3]> {
+        points
+            .iter()
+            .filter(|(_, role)| kept(*role))
+            .map(|(point, _)| *point)
+            .collect()
+    };
+    let (seen, clearing) = (
+        of_role(|role| role != Role::Clearing),
+        of_role(|role| role == Role::Clearing),
+    );
+    let cut = Listed {
+        frame: frame.clone(),
+        points: of_role(|role| role == Role::CutOut)
+            .iter()
+            .map(|point| sensor.apply(point.map(f64::from)))
+            .collect(),
+    };
+    let scan = scan_of(&frame, sensor, &seen, max_range_m);
+    if clears {
+        map.insert_clearing(&scan, &clearing)
+    } else {
+        map.insert(&scan, &[&cut])
+    }
+    .expect("a scan in the map's frame");
+
+    let in_map = |key: Key| map.key(map.center(key)).is_some();
+    let mut expected: BTreeMap<Key, Update> = BTreeMap::new();
+    let mut give = |key: Key, update: Update| {
+        if in_map(key) {
+            let held = expected.entry(key).or_insert(update);
+            *held = (*held).max(update);
+        }
+    };
+    let seen_roles = points
+        .iter()
+        .map(|(_, role)| *role)
+        .filter(|role| *role != Role::Clearing);
+    let clearing_scan = scan_of(&frame, sensor, &clearing, max_range_m);
+    let readings = scan.readings().zip(seen_roles).chain(
+        clearing_scan
+            .readings()
+            .map(|reading| (reading, Role::Clearing)),
+    );
+    for (reading, role) in readings {
+        let (Reading::Return(end) | Reading::NoReturn(end)) = reading;
+        let end = tree_key(end);
+        for crossed in voxels_along_an_axis(sensor_key, end) {
+            give(crossed, Update::Miss);
+        }
+        match (reading, role) {
+            (Reading::NoReturn(_), _) => give(end, Update::Miss),
+            (Reading::Return(_), Role::Seen) => give(end, Update::Hit),
+            (Reading::Return(_), Role::CutOut) => give(end, Update::CutOut),
+            (Reading::Return(_), Role::Clearing) => {}
+        }
+    }
+    let expected: BTreeMap<Key, f32> = expected
+        .into_iter()
+        .map(|(key, update)| {
+            let value = match update {
+                Update::Miss => one_miss(),
+                Update::Hit => one_hit(),
+                Update::CutOut => lowest(),
+            };
+            (key, value)
+        })
+        .collect();
+    let known: BTreeMap<Key, f32> = map
+        .known()
+        .map(|key| (key, log_odds(&map, key).expect("known")))
+        .collect();
+    assert_eq!(known, expected);
 }
 
 // A point inside a cut-out shape marks nothing: its voxel takes the lowest
