@@ -43,7 +43,7 @@
 //!   as Nav2's controller reads it, in frame_tree's arithmetic.
 //! - [`twist`]: a body velocity on the floor plane in the robot frame, finite by construction.
 //! - [`geometry`]: the geometry types of the contracts, each parsed from a generated record's
-//!   fields, and behind the `nalgebra` feature their nalgebra forms.
+//!   fields, their planar forms, and behind the `nalgebra` feature their nalgebra forms.
 //! - [`limiter`]: the limiter of a base's body velocity, as Nav2 1.5.2's
 //!   velocity smoother limits a stream of setpoints in open loop: each axis
 //!   clamped to its velocity range, ramped at its acceleration and
