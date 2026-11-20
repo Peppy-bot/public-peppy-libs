@@ -14,16 +14,21 @@ control_core::geometry also gives has its text (control_core/tests/fixtures/geom
 
 A quaternion is (x, y, z, w), the order of the contracts; MuJoCo and Isaac hold (w, x, y, z),
 which `xyzw_of_wxyz` and `wxyz_of_xyzw` convert. Each operation runs as frame_tree's does, which
-runs it as tf2 does (geometry2 0.45.10, tf2/include/tf2/LinearMath).
+runs it as tf2 does (geometry2 0.45.10, tf2/include/tf2/LinearMath). A placement composes with
+another as frame_tree's lookup composes a chain, and `Placement.of_urdf_origin` reads where a URDF
+`<origin>` places a link, its rpy a roll, a pitch and a yaw about the parent's axes, as tf2's
+`setRPY` turns them.
 """
 
 from __future__ import annotations
 
 import math
+import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
+from typing import ClassVar
 
 Vector = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
@@ -170,20 +175,26 @@ def _rotated(m: Rotation, v: Vector) -> Vector:
     return tuple(row[0] * v[0] + row[1] * v[1] + row[2] * v[2] for row in m)  # type: ignore[return-value]
 
 
-def quaternion_of_yaw(yaw: float) -> Quaternion:
-    """A turn by `yaw` about +Z, as tf2's `setRPY(0, 0, yaw)` makes it (Quaternion.hpp:98-113)."""
-    roll = pitch = 0.0
+def _quaternion_of_rpy(roll: float, pitch: float, yaw: float) -> Quaternion:
+    """A turn by `roll` about +X, then by `pitch` about +Y, then by `yaw` about +Z, each axis the
+    parent's, as tf2's `setRPY` makes it (Quaternion.hpp:98-113): the turn of a URDF origin's
+    rpy."""
     half_yaw, half_pitch, half_roll = yaw * 0.5, pitch * 0.5, roll * 0.5
     cos_yaw, sin_yaw = math.cos(half_yaw), math.sin(half_yaw)
     cos_pitch, sin_pitch = math.cos(half_pitch), math.sin(half_pitch)
     cos_roll, sin_roll = math.cos(half_roll), math.sin(half_roll)
-    # The roll and the pitch of 0 stay in the arithmetic, so each sign of zero comes out as tf2's.
     return (
         sin_roll * cos_pitch * cos_yaw - cos_roll * sin_pitch * sin_yaw,
         cos_roll * sin_pitch * cos_yaw + sin_roll * cos_pitch * sin_yaw,
         cos_roll * cos_pitch * sin_yaw - sin_roll * sin_pitch * cos_yaw,
         cos_roll * cos_pitch * cos_yaw + sin_roll * sin_pitch * sin_yaw,
     )
+
+
+def quaternion_of_yaw(yaw: float) -> Quaternion:
+    """A turn by `yaw` about +Z, as tf2's `setRPY(0, 0, yaw)` makes it: the roll and the pitch of 0
+    stay in the arithmetic, so each sign of zero comes out as tf2's."""
+    return _quaternion_of_rpy(0.0, 0.0, yaw)
 
 
 # The sine of the pitch at or past which tf2's `getYaw` reads a heading from x and y alone
@@ -403,6 +414,30 @@ class Placement:
     position: Vector
     orientation: Quaternion
 
+    # A frame in itself.
+    IDENTITY: ClassVar[Placement]
+
+    @classmethod
+    def of_urdf_origin(cls, origin: ET.Element | None) -> Placement:
+        """Where a URDF `<origin>` places its child in its parent's frame: at its `xyz`, turned by
+        the turn of its `rpy`, an attribute it leaves out zeros and an origin left out
+        (None) the frame in itself, as URDF reads them; refused with GeometryError where an
+        attribute is not three numbers."""
+        if origin is None:
+            return cls.IDENTITY
+        roll, pitch, yaw = _urdf_triple(origin, "rpy", "roll pitch yaw, in rad")
+        return cls(_urdf_triple(origin, "xyz", "x y z, in m"), _quaternion_of_rpy(roll, pitch, yaw))
+
+    def compose(self, inner: Placement) -> Placement:
+        """Where the frame `inner` places in this placement's placed frame sits in the frame this
+        one is placed in: a point goes through `inner`, then through this placement. tf2's
+        `TransformAccum::accum` (buffer_core.cpp:547-556), as frame_tree's lookup composes a chain:
+        `inner`'s position turned by `rotate` and moved by this one's, and the product of the two
+        orientations."""
+        x, y, z = rotate(self.orientation, inner.position)
+        px, py, pz = self.position
+        return Placement((x + px, y + py, z + pz), product(self.orientation, inner.orientation))
+
     def place[V: (Point, Pose, PoseTarget, tuple)](self, value: V) -> V:
         """`value` in the other frame, as control_core places it: a point through tf2's rotation
         matrix, a pose's or a target's position placed and its orientation turned, and each value
@@ -428,3 +463,16 @@ class Placement:
     def _turned(self, orientation: UnitQuaternion) -> UnitQuaternion:
         """The orientation turned by this placement's."""
         return UnitQuaternion(normalized(product(self.orientation, orientation.quaternion)))
+
+
+Placement.IDENTITY = Placement((0.0, 0.0, 0.0), IDENTITY)
+
+
+def _urdf_triple(origin: ET.Element, attribute: str, give: str) -> Vector:
+    """The three numbers of the URDF origin's `attribute`, zeros where the origin leaves it out."""
+    text = origin.get(attribute, "0 0 0")
+    try:
+        x, y, z = (float(entry) for entry in text.split())
+    except ValueError:
+        raise GeometryError(f'the URDF origin\'s {attribute} "{text}" is not three numbers: give {give}') from None
+    return (x, y, z)
