@@ -6,17 +6,28 @@
 
 use crate::key::{Key, VoxelSize};
 
-/// The voxels a ray from `origin` to `end` crosses: the origin's voxel, then
-/// every voxel the ray enters, up to and not including the end's voxel, or
-/// the voxel where the ray has run its length by the walk's own sums. Empty
-/// where both lie in one voxel; `None` where either lies outside the tree.
-pub(crate) fn ray_keys(size: VoxelSize, origin: [f32; 3], end: [f32; 3]) -> Option<Vec<Key>> {
-    let key_origin = size.key(origin.map(f64::from))?;
-    let key_end = size.key(end.map(f64::from))?;
+/// Gives `cross` each voxel that a ray from `origin` to `end` crosses, in the
+/// order of the walk: the origin's voxel, then every voxel the ray enters, up
+/// to and not including the end's voxel, or the voxel where the ray has run
+/// its length by the walk's own sums. Gives none where both lie in one voxel or
+/// where either lies outside the tree. The walk keeps no list of the voxels, so
+/// a scan of many rays allocates nothing for each ray.
+pub(crate) fn walk_ray(
+    size: VoxelSize,
+    origin: [f32; 3],
+    end: [f32; 3],
+    mut cross: impl FnMut(Key),
+) {
+    let (Some(key_origin), Some(key_end)) = (
+        size.key(origin.map(f64::from)),
+        size.key(end.map(f64::from)),
+    ) else {
+        return;
+    };
     if key_origin == key_end {
-        return Some(Vec::new());
+        return;
     }
-    let mut ray = vec![key_origin];
+    cross(key_origin);
     let direction: [f32; 3] = std::array::from_fn(|i| end[i] - origin[i]);
     // octomath's norm: the squared norm summed in single precision, its
     // square root taken in double, the length kept in single.
@@ -26,7 +37,7 @@ pub(crate) fn ray_keys(size: VoxelSize, origin: [f32; 3], end: [f32; 3]) -> Opti
     // A squared norm that underflows leaves no direction to walk: the ray has
     // run its length in its origin's voxel. OctoMap's walk has no exit here.
     if length == 0.0 {
-        return Some(ray);
+        return;
     }
     let direction = direction.map(|d| d / length);
     let mut step = [0_i32; 3];
@@ -60,15 +71,15 @@ pub(crate) fn ray_keys(size: VoxelSize, origin: [f32; 3], end: [f32; 3]) -> Opti
         current.0[dim] += step[dim];
         t_max[dim] += t_delta[dim];
         if current == key_end {
-            return Some(ray);
+            return;
         }
         // How far the ray has run to the border of the voxel it is in: past
         // its length, it missed the end's voxel by the sums' rounding.
         let run = min(min(t_max[0], t_max[1]), t_max[2]);
         if run > f64::from(length) {
-            return Some(ray);
+            return;
         }
-        ray.push(current);
+        cross(current);
     }
 }
 
@@ -94,6 +105,13 @@ mod tests {
         ))
     }
 
+    /// The voxels that the walk of a ray from `origin` to `end` gives, in its order.
+    fn crossed(size: VoxelSize, origin: [f32; 3], end: [f32; 3]) -> Vec<Key> {
+        let mut ray = Vec::new();
+        walk_ray(size, origin, end, |key| ray.push(key));
+        ray
+    }
+
     // A ray starts in the origin's voxel, each voxel after it shares a face
     // with the one before, no voxel comes twice, and it stops before the
     // end's voxel, a face away from it or short of it by the rounding of the
@@ -102,7 +120,7 @@ mod tests {
     fn a_ray_steps_face_to_face_from_the_origin_toward_the_end(tc: TestCase) {
         let (origin, end) = (point(&tc), point(&tc));
         let size = size();
-        let ray = ray_keys(size, origin, end).expect("in range");
+        let ray = crossed(size, origin, end);
         let key_end = size.key(end.map(f64::from)).expect("in range");
         let key_origin = size.key(origin.map(f64::from)).expect("in range");
         if key_origin == key_end {
@@ -131,7 +149,7 @@ mod tests {
     // A ray along an axis crosses every voxel between its ends' voxels.
     #[test]
     fn a_ray_along_an_axis_crosses_every_voxel_between() {
-        let ray = ray_keys(size(), [0.01, 0.01, 0.01], [0.26, 0.01, 0.01]).expect("in range");
+        let ray = crossed(size(), [0.01, 0.01, 0.01], [0.26, 0.01, 0.01]);
         assert_eq!(
             ray,
             (0..5).map(|x| Key([x, 0, 0])).collect::<Vec<_>>(),
@@ -143,7 +161,17 @@ mod tests {
     // on two axes, ends at its origin's voxel.
     #[test]
     fn a_ray_of_a_length_that_rounds_to_zero_ends_at_its_origin() {
-        let ray = ray_keys(size(), [-1e-30, -1e-30, 0.0], [1e-30, 1e-30, 0.0]).expect("in range");
+        let ray = crossed(size(), [-1e-30, -1e-30, 0.0], [1e-30, 1e-30, 0.0]);
         assert_eq!(ray, [Key([-1, -1, 0])]);
+    }
+
+    // A ray with an end outside the tree crosses no voxel, as OctoMap's walk refuses
+    // it, whichever end lies outside.
+    #[test]
+    fn a_ray_with_an_end_outside_the_tree_crosses_no_voxel() {
+        let (inside, outside) = ([0.01_f32, 0.01, 0.01], [5000.0_f32, 0.01, 0.01]);
+        assert!(crossed(size(), inside, outside).is_empty());
+        assert!(crossed(size(), outside, inside).is_empty());
+        assert!(!crossed(size(), inside, [0.26, 0.01, 0.01]).is_empty());
     }
 }
