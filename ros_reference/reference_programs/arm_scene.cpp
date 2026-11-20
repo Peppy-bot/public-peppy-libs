@@ -529,7 +529,8 @@ nlohmann::json measured(const Probed& probed, double length,
           {"share_of_tolerance", probed.held_targets.empty()
                                      ? nlohmann::json(nullptr)
                                      : nlohmann::json(probed.share_of_tolerance)},
-          {"goal_met", probed.goal_met ? nlohmann::json(*probed.goal_met) : nlohmann::json(nullptr)},
+          {"goal_met",
+           probed.goal_met ? nlohmann::json(*probed.goal_met) : nlohmann::json(nullptr)},
           {"length", length},
           {"turning", turning},
           {"bending", bending},

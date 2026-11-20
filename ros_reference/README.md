@@ -287,13 +287,13 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    ours is better, and where fewer than two scenes both plan, the rate alone judges. A path
    holds the clearance where MoveIt's may come nearer, so length is judged on the scenes
    where MoveIt's path keeps the clearances. The test prints each side's means over every
-   path it answers beside them. Each arm planning
-   scenario has its own statistical test, of one arm or of both, among boxes, among objects,
-   to poses or holding path orientations, which a filter runs: `cargo test --test
-   ros_reference_arm_planning -- --ignored among_objects` runs the test of one arm among
-   objects, `both_arms` the tests of both arms, `holding` those of path orientations, and
-   `hand_frames` that of constraints in the arms' links. The
-   statistical test refuses a set too small for its intervals. For Cartesian paths,
+   path it answers beside them. Each arm planning scenario has its own statistical test, of
+   one arm or of both, among boxes, among objects, to poses or holding path orientations,
+   which a filter runs: `cargo test --test ros_reference_arm_planning -- --ignored
+   among_objects` runs the test of one arm among objects, `both_arms` the tests of both
+   arms, `holding` those of path orientations, and `hand_frames` that of constraints in the
+   arms' links. The statistical test refuses a set too small for its intervals. For
+   Cartesian paths,
    `tools/draw_cartesian_paths.py --drawn <count>` draws the set, each case of it at the
    clearance of its `--min-clearance <meters>`, as the arm planning script's pads MoveIt's
    links, and `cargo test --test ros_reference_cartesian_paths -- --ignored` tallies, by
@@ -505,11 +505,11 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    contracts expose, the arms it plans, one or both as one group (`--both-arms`), the planning
    scene it plans in, among collision objects and holding an attached object
    (`--objects`), and the goal a pose of the grasp point that MoveIt reaches through KDL's
-   inverse kinematics (`--poses`), the orientations a path holds, whole, free about an axis, on
-   two links and on each of both arms (`--path-orientation`), the frames its constraints name, a link
-   of the other arm or of the arm's own (`--hand-frame`), has its own arm planning
-   scenario and tally against
-   MoveIt at each one's production termination (`--planning-time`): MoveIt's plans ended
+   inverse kinematics (`--poses`), the orientations a path holds, whole, free about an axis,
+   on two links and on each of both arms (`--path-orientation`), the frames its constraints
+   name, a link of the other arm or of the arm's own (`--hand-frame`), has its own arm
+   planning scenario and tally against MoveIt at each one's production termination
+   (`--planning-time`): MoveIt's plans ended
    on their allowed planning time alone, and this crate's on that time or the robot's
    iteration bound, whichever comes first, at MoveIt's default of 5 s (moveit2 2.15.2
    `MoveGroupInterfaceImpl`, `allowed_planning_time_ = 5.0`) and at the time that the
@@ -540,9 +540,10 @@ writes. Its `lidar` holds `rays`, `min_angle_rad`, `angle_increment_rad`,
 `time_increment_s`, `min_range_m`, `max_range_m` and `scan_period_s`, as lidar_2d names
 them; `walls` holds each wall `[x0, y0, x1, y1]` (m); and `route` the base's timed poses
 `[t, x, y, yaw]` (s, m, rad) where each turn in place and each straight move starts and
-ends; a gap in the walls is a doorway. Scan k is stamped k scan periods into the route, and its ray i is cast
-`i × time_increment_s` after the stamp from the base's pose on the route then, interpolated
-between the timed poses around it, the lidar above the base frame's origin facing the way
+ends; a gap in the walls is a doorway. Scan k is stamped k scan periods into the route, and
+its ray i is cast `i × time_increment_s` after the stamp from the base's pose on the route
+then, interpolated between the timed poses around it, the lidar above the base frame's
+origin facing the way
 the base faces: the distance to the nearest wall in single precision, or lidar_2d's marks,
 0 for a wall nearer than `min_range_m` and 10000 for none within `max_range_m`. The ground
 truth at a scan is the route's pose at its stamp. A scenario of a drive keeps the scans

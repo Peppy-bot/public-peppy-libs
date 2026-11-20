@@ -106,12 +106,12 @@ ends on ITERATIONS, TIME_LIMIT far beyond them, so it repeats under its seed. Th
 ends MoveIt's plans on `--planning-time` alone and ours on ITERATIONS or that time,
 whichever comes first, as the robot runs (its motion planner's launcher fragment bounds a
 plan by max_iterations); that option, `--planner rrt_star` and `--refiner chomp` go with a
-drawn set or the episodes' scenes. The fifth draws 200
+drawn set or the episodes' scenes. The sixth draws 200
 scenes among collision objects, planned as the fourth plans them at 1 s, at a clearance
-of 4 cm, and the sixth 200 scenes whose goal is a pose, planned so at 5 s; `--objects` and
-`--poses` each go with every option but `--episodes` and the other. The seventh writes the
+of 4 cm, and the seventh 200 scenes whose goal is a pose, planned so at 5 s; `--objects` and
+`--poses` each go with every option but `--episodes` and the other. The eighth writes the
 committed scenario of both arms among collision objects; `--both-arms` goes with every
-option but `--episodes`, whose scenes plan the arm their episodes record. The ninth writes the
+option but `--episodes`, whose scenes plan the arm their episodes record. The tenth writes the
 committed scenario of both arms whose constraints name the arms' links; `--hand-frame` plans
 both arms, and goes with every option but `--episodes`, `--objects`, `--poses`,
 `--path-orientation` and `--robot so101`.

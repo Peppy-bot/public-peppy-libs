@@ -10,10 +10,10 @@
 // runs those passes, one of a timeout of 0 runs one descent, as KDL's search of one attempt
 // does, and the search of twice the default timeout that MoveIt's PoseModelStateSpace runs
 // where one attempt finds no configuration (moveit2 2.15.2 pose_model_state_space.cpp:241-245)
-// runs twice those passes. KDL reports the passes of a descent only in its debug line "Result <code>
-// after <i> iterations" (:493-494), so the plugin turns the KDL logger's debug lines on,
-// reads that line, and drops every line of that logger below a warning: KDL logs one at the
-// info level on each search of a position alone (:346), which the plugin runs once per
+// runs twice those passes. KDL reports the passes of a descent only in its debug line "Result
+// <code> after <i> iterations" (:493-494), so the plugin turns the KDL logger's debug lines
+// on, reads that line, and drops every line of that logger below a warning: KDL logs one at
+// the info level on each search of a position alone (:346), which the plugin runs once per
 // descent.
 
 #include <cmath>

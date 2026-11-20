@@ -179,10 +179,10 @@ trajectory_processing::Path rounded_path(const std::vector<Eigen::VectorXd>& poi
                                          double corner_tolerance);
 
 // `probed` as the references write it: its collisions; its clearances to the scene, from what
-// the grasp links hold, null where they hold nothing, and between the robot's own bodies,
-// null without `self`; the largest share of a held orientation's tolerance, null where the
-// path holds none; whether the probing's goal holds at the path's last waypoint, null where
-// the probing gives none; the path's `length`; and of `rounded`, the path rounded at the probing's
+// the grasp links hold, null where they hold nothing, and between the robot's own bodies, null
+// without `self`; the largest share of a held orientation's tolerance, null where the path
+// holds none; whether the probing's goal holds at the path's last waypoint, null where the
+// probing gives none; the path's `length`; and of `rounded`, the path rounded at the probing's
 // corner tolerance, its `turning`, the integral of the norm of its curvature over its length,
 // and its `bending`, the integral of the squared norm, each summed at the midpoints of equal
 // steps at most the probing's spacing long, and its `duration`, the time MoveIt's time-optimal
