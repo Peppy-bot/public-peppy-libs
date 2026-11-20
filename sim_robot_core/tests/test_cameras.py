@@ -11,9 +11,7 @@ from itertools import pairwise
 import numpy as np
 import pytest
 from control_core_py.geometry import (
-    Point,
     Pose,
-    UnitQuaternion,
     product,
     quaternion_of_yaw,
     rotate,
@@ -313,9 +311,13 @@ class TestPinhole:
         assert DISTORTION_MODEL == "none"
         assert DEPTH_MODEL == "z"
 
-        # The identity, a pose alone: depth_to_color gives it in the camera's
-        # frame, with no timestamp.
-        assert DEPTH_TO_COLOR == Pose(Point((0.0, 0.0, 0.0)), UnitQuaternion((0.0, 0.0, 0.0, 1.0)))
+        # The identity, a pose alone: the arrays an engine sends in
+        # depth_to_color, in the camera's frame with no timestamp, are the
+        # identity's and parse back to it.
+        position = list(DEPTH_TO_COLOR.position.position)
+        orientation = list(DEPTH_TO_COLOR.orientation.quaternion)
+        assert (position, orientation) == ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+        assert Pose.parse(position, orientation) == DEPTH_TO_COLOR
 
 
 class TestDepthSpec:
