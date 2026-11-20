@@ -63,11 +63,15 @@
 //!   [`odometry::WheelSetpoint::next`].
 //! - [`non_negative_finite`]: a finite float of at least zero, carried as proof it was
 //!   checked.
+//! - [`move_seconds`]: the seconds a move goal asks for, within the bound
+//!   limb_motion and base_motion state
+//!   ([`MAX_MOVE_DURATION_S`](move_seconds::MAX_MOVE_DURATION_S)), parsed off the wire.
 //! - [`not_finite`]: the refusal of values of which one or more is not finite,
 //!   each named, as a body velocity and a base's wheel angles refuse them.
 //! - [`footprint`]: a mobile base's footprint, the outline it covers about its
 //!   center.
-//! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
+//! - [`positive_finite`]: a positive finite float, carried as proof it was checked,
+//!   and a field of a request parsed into one ([`PositiveFinite::parse_field`](positive_finite::PositiveFinite::parse_field)).
 //! - [`receiving`]: the loop that receives one subscription for the life of
 //!   a node, with the pause after a receive error.
 //! - [`serving`]: the loop that serves one service for the life of a node,
@@ -109,6 +113,7 @@ pub mod latched_log;
 pub mod limiter;
 pub mod minimum_jerk;
 pub mod motor_health;
+pub mod move_seconds;
 pub mod move_slot;
 pub mod node_clock;
 pub mod non_negative_finite;
