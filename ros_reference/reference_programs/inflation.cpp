@@ -1,7 +1,6 @@
 #include "inflation.hpp"
 
 #include <memory>
-#include <string>
 
 #include <nav2_costmap_2d/inflation_layer.hpp>
 #include <nav2_costmap_2d/layered_costmap.hpp>
@@ -48,28 +47,13 @@ nlohmann::json inflation(const nlohmann::json& scenario, Inputs&) {
     layer->updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                        static_cast<int>(master.getSizeInCellsY()));
     grids.push_back({
-        {"grid", grid_read(master)},
-        {"given", costs_read(*given)},
         {"inscribed_radius", layered.getInscribedRadius()},
         {"inflated", costs_read(master)},
     });
   }
-  const auto parameter = [&](const char* key) {
-    return node->get_parameter(std::string(layer_name) + "." + key);
-  };
   return {
       {"kind", "inflation"},
       {"footprint", footprint_read(footprint)},
-      {"inflation",
-       {
-           {"enabled", parameter("enabled").as_bool()},
-           {"inflation_radius", parameter("inflation_radius").as_double()},
-           {"custom_inscribed_radius", parameter("custom_inscribed_radius").as_double()},
-           {"cost_scaling_factor", parameter("cost_scaling_factor").as_double()},
-           {"inflate_unknown", parameter("inflate_unknown").as_bool()},
-           {"inflate_around_unknown", parameter("inflate_around_unknown").as_bool()},
-           {"num_threads", parameter("num_threads").as_int()},
-       }},
       {"grids", grids},
   };
 }

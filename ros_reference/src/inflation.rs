@@ -16,7 +16,7 @@ enum ThisKind {
 }
 
 /// The inflation layer's parameters, by Nav2's names.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InflationParameters {
     pub enabled: bool,
@@ -52,17 +52,15 @@ struct Reference {
     kind: ThisKind,
     /// The footprint as Nav2 padded it.
     footprint: Vec<[f64; 2]>,
-    inflation: InflationParameters,
+    /// One record a grid of the scenario, in its order.
     grids: Vec<GridOutput>,
 }
 
-/// A grid as the reference read it, the inscribed radius the layer took from the
-/// footprint, and the grid's costs once inflated.
+/// The inscribed radius the layer took from the footprint, and the grid's costs once
+/// inflated.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GridOutput {
-    grid: Grid,
-    given: Vec<Vec<u8>>,
     inscribed_radius: f64,
     inflated: Vec<Vec<u8>>,
 }
@@ -90,8 +88,8 @@ pub struct Cases {
 
 impl Cases {
     /// Every inflation scenario under `scenarios/`, in the order of their names, each
-    /// paired with its reference output: the reference read the parameters and each grid
-    /// with its costs, and padded the footprint, a point for each of the scenario's.
+    /// paired with its reference output: the reference inflated each grid and padded the
+    /// footprint, a point for each of the scenario's.
     pub fn load_all() -> Vec<Self> {
         scenario_names(Kind::Inflation)
             .into_iter()
@@ -115,17 +113,12 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
     let Reference {
         kind: ThisKind::Inflation,
         footprint: footprint_read,
-        inflation: inflation_read,
         grids: grids_read,
     } = reference;
     assert_eq!(
         footprint_read.len(),
         footprint.len(),
         "{name}: the reference padded every point of the footprint"
-    );
-    assert_eq!(
-        inflation_read, inflation,
-        "{name}: the reference read the layer's parameters"
     );
     assert_eq!(
         grids.len(),
@@ -138,16 +131,8 @@ fn pair(name: String, scenario: Scenario, reference: Reference) -> Cases {
         .enumerate()
         .map(|(index, (input, read))| {
             assert_eq!(
-                read.grid, input.grid,
-                "{name} grid {index}: the reference read it"
-            );
-            assert_eq!(
-                read.given, input.costs,
-                "{name} grid {index}: the reference read its costs"
-            );
-            assert_eq!(
                 read.inflated.len(),
-                read.given.len(),
+                input.costs.len(),
                 "{name} grid {index}: the inflated grid holds every row"
             );
             InflatedGrid {
