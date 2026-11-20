@@ -263,8 +263,8 @@ def test_the_frame_store_pairs_colour_and_depth_by_capture():
     assert frame.color.header.capture_index == 2 and frame.depth.header.capture_index == 2
     assert store.why_unavailable() == "" and store.frames_seen == 3
     # Only the last FRAME_BUFFER frames of a stream are kept.
-    for frame_id in range(10, 10 + FRAME_BUFFER + 2):
-        store.add_color(rgb_frame(capture_index=frame_id))
+    for capture_index in range(10, 10 + FRAME_BUFFER + 2):
+        store.add_color(rgb_frame(capture_index=capture_index))
     assert [m.header.capture_index for m in store.colors] == list(range(12, 12 + FRAME_BUFFER))
 
 
