@@ -116,7 +116,7 @@ class TestJoining:
 class TestPairGrace:
     """The pair grace stamp each robot holds, which its stay reads to see whether
     the robot still holds the pairs its model asks for. It is set the first
-    time a limb reaches the robot: until then the robot's stay is its
+    time a limb or its base reaches the robot: until then the robot's stay is its
     goal's."""
 
     def test_a_robot_holding_its_pairs_marks_its_pair_grace_stamp(self):
@@ -129,23 +129,23 @@ class TestPairGrace:
         robots.note_paired({"nobody"}, now_s=10.0)
         assert robots.of_name("alpha").last_paired_s is None
 
-    def test_a_robot_no_limb_reached_has_no_pair_grace_time_to_run_out(self):
+    def test_a_robot_no_limb_or_base_reached_has_no_pair_grace_time_to_run_out(self):
         robots, _ = standing()
         robot = robots.of_name("alpha")
         assert not robot.pair_grace_ran_out(now_s=1_000_000.0, pair_grace_s=2.0)
 
-    def test_a_limb_reaching_a_robot_starts_its_pair_grace_time_once(self):
+    def test_a_limb_or_a_base_reaching_a_robot_starts_its_pair_grace_time_once(self):
         robots, _ = standing()
-        robots.note_limbs_reached("alpha", now_s=10.0)
-        robots.note_limbs_reached("alpha", now_s=11.0)
+        robots.note_driven_part_reached("alpha", now_s=10.0)
+        robots.note_driven_part_reached("alpha", now_s=11.0)
         robot = robots.of_name("alpha")
         assert robot.last_paired_s == 10.0
         assert not robot.pair_grace_ran_out(now_s=12.0, pair_grace_s=2.0)
         assert robot.pair_grace_ran_out(now_s=12.5, pair_grace_s=2.0)
 
-    def test_a_limb_reaching_a_robot_the_scene_does_not_hold_starts_nothing(self):
+    def test_a_part_reaching_a_robot_the_scene_does_not_hold_starts_nothing(self):
         robots, _ = standing()
-        robots.note_limbs_reached("nobody", now_s=10.0)
+        robots.note_driven_part_reached("nobody", now_s=10.0)
         assert robots.of_name("alpha").last_paired_s is None
 
     def test_the_pair_grace_time_runs_out_once_the_pairs_have_been_gone_for_it(self):
