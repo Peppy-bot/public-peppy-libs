@@ -408,6 +408,18 @@ impl RobotDescription {
         &self.tree.link(self.tree.root()).name
     }
 
+    /// The joint the link `link` hangs on, as the URDF gives it: none for the root link. A
+    /// link the URDF lacks is refused ([`UnknownLink`]).
+    pub fn parent_joint(&self, link: &str) -> Result<Option<&Joint>, UnknownLink> {
+        let index = self.tree.link_index(link).ok_or_else(|| UnknownLink {
+            link: link.to_string(),
+        })?;
+        Ok(self
+            .tree
+            .parent_joint(index)
+            .map(|joint| &self.robot.joints[joint]))
+    }
+
     /// The arm whose chain carries the link `link`: of the joints of every arm
     /// ([`Arm::joints`]), the arm that holds the one nearest above the link, and of two
     /// arms that hold it the first in the SRDF's order. None for a link that no arm's

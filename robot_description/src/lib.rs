@@ -21,7 +21,8 @@
 //!   Gazebo's URDF extension: a `<gazebo>` element that references the optical frame and
 //!   holds a `<sensor type="depth">` whose `<camera><clip>` gives the `<near>` and
 //!   `<far>` depths.
-//! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame, and
+//! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame,
+//!   [`RobotDescription::parent_joint`]: the joint a link hangs on, and
 //!   [`RobotDescription::arm_carrying`]: the arm whose chain carries a link, such as a
 //!   camera's, or none for a link no arm's joint moves.
 //! - [`RobotDescription::fixed_transforms`] and [`RobotDescription::transforms_at`]: where

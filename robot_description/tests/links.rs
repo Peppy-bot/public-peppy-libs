@@ -1,5 +1,5 @@
-//! The links a description names on the bundled models: the root link, each camera's
-//! optical frame, and the arm that carries each link.
+//! The links a description names on the bundled models: the root link, the joint each
+//! link hangs on, each camera's optical frame, and the arm that carries each link.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,6 +43,43 @@ fn the_root_link_is_the_one_link_that_hangs_on_no_joint() {
             .filter(|link| !children.contains(link))
             .collect();
         assert_eq!(roots, [description.root_link()], "{id}");
+    }
+}
+
+// Each link of every bundled model hangs on the URDF's joint whose child it is, the root
+// link on none; a link the URDF lacks is refused, naming it.
+#[test]
+fn each_link_hangs_on_the_joint_whose_child_it_is() {
+    for bundled in robot_description::models() {
+        let description = bundled.description();
+        let robot = description.robot();
+        for link in &robot.links {
+            let above = robot
+                .joints
+                .iter()
+                .find(|joint| joint.child.link == link.name);
+            assert_eq!(
+                description
+                    .parent_joint(&link.name)
+                    .map(|joint| joint.map(|joint| joint.name.as_str())),
+                Ok(above.map(|joint| joint.name.as_str())),
+                "{} {}",
+                bundled.id(),
+                link.name
+            );
+        }
+        assert_eq!(
+            description
+                .parent_joint(description.root_link())
+                .map(|joint| joint.is_none()),
+            Ok(true)
+        );
+        assert_eq!(
+            description.parent_joint("no_such_link").map(|_| ()),
+            Err(UnknownLink {
+                link: "no_such_link".to_string()
+            })
+        );
     }
 }
 
