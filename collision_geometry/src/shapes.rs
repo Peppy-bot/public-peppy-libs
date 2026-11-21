@@ -13,7 +13,9 @@
 
 use std::collections::HashMap;
 
+use chain_kinematics::primitive_bounds;
 use nalgebra::{Isometry3, Point3, Vector3};
+use urdf_rs::{Geometry, Vec3};
 
 use crate::chain::Padding;
 use crate::gjk::{self, Support, Vertex};
@@ -184,19 +186,19 @@ impl<'a> PlacedShape<'a> {
     }
 
     /// The least and the greatest corner of the smallest box along the frame's axes that
-    /// holds the shape.
+    /// holds the shape: a box's, a sphere's or a cylinder's as chain_kinematics bounds the
+    /// URDF primitive of the same dimensions ([`primitive_bounds`]), and a mesh's of its
+    /// vertices.
     pub fn bounds(&self) -> (Point3<f64>, Point3<f64>) {
-        let center = Point3::from(self.pose.translation.vector);
-        let rotation = self.pose.rotation.to_rotation_matrix();
-        let half = match &self.shape.0 {
-            Form::Box { size } => rotation.matrix().abs() * (size / 2.0),
-            &Form::Sphere { radius } => Vector3::repeat(radius),
-            &Form::Cylinder { radius, height } => {
-                // Along an axis at a share `a` of the cylinder's own: its half height
-                // times `a`, and its radius times the share across it.
-                let axis = rotation * Vector3::z();
-                axis.map(|a| a.abs() * height / 2.0 + radius * (1.0 - a * a).max(0.0).sqrt())
-            }
+        let primitive = match &self.shape.0 {
+            Form::Box { size } => Geometry::Box {
+                size: Vec3([size.x, size.y, size.z]),
+            },
+            &Form::Sphere { radius } => Geometry::Sphere { radius },
+            &Form::Cylinder { radius, height } => Geometry::Cylinder {
+                radius,
+                length: height,
+            },
             Form::Mesh(mesh) => {
                 let placed: Vec<Point3<f64>> =
                     mesh.used_vertices().map(|v| self.pose * v).collect();
@@ -204,7 +206,8 @@ impl<'a> PlacedShape<'a> {
                 return (bounds.min, bounds.max);
             }
         };
-        (center - half, center + half)
+        primitive_bounds(&primitive, &self.pose)
+            .expect("a box, a sphere and a cylinder are bounded")
     }
 
     /// The signed distance from the shape to a convex `body` that `sphere` holds:

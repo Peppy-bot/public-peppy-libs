@@ -3,8 +3,8 @@
 //! ([`RobotDescription::outline`]), each read from its tree of links and joints in the frame
 //! of its root link, the robot frame, with every joint at zero.
 
-use chain_kinematics::nalgebra::{Isometry3, UnitQuaternion, Vector3};
-use chain_kinematics::{JointKind, pose_of_origin};
+use chain_kinematics::nalgebra::{Isometry3, Vector3};
+use chain_kinematics::{JointKind, pose_of_origin, primitive_bounds};
 use urdf_rs::Geometry;
 
 use crate::RobotDescription;
@@ -327,45 +327,15 @@ fn same(a: [f64; 3], b: [f64; 3]) -> bool {
 }
 
 /// How far a collision element of `geometry`, placed by `placed` in the root link's frame,
-/// reaches on the floor: the rectangle along the frame's x and y that holds it, for a box, a
-/// cylinder and a sphere; none for another shape.
+/// reaches on the floor: the rectangle along the frame's x and y of its bounds
+/// ([`primitive_bounds`]); none for a shape other than a box, a cylinder and a sphere.
 fn floor_reach(geometry: &Geometry, placed: &Isometry3<f64>) -> Option<Outline> {
-    let rotation: &UnitQuaternion<f64> = &placed.rotation;
-    let [x, y, z] = [Vector3::x(), Vector3::y(), Vector3::z()].map(|unit| rotation * unit);
-    let [reach_x, reach_y] = match *geometry {
-        Geometry::Sphere { radius } => [radius, radius],
-        Geometry::Box { ref size } => {
-            let half = size.0.map(|side| side / 2.0);
-            let along = |i: usize| {
-                [x, y, z]
-                    .iter()
-                    .zip(half)
-                    .map(|(column, half)| column[i].abs() * half)
-                    .sum::<f64>()
-            };
-            [along(0), along(1)]
-        }
-        Geometry::Cylinder { radius, length } => {
-            // The axis's own reach along i, and the disc's: its radius times the part of
-            // the axis across i, which the two other components give.
-            let along = |i: usize| {
-                let across = (0..3)
-                    .filter(|&j| j != i)
-                    .map(|j| z[j] * z[j])
-                    .sum::<f64>()
-                    .sqrt();
-                z[i].abs() * length / 2.0 + radius * across
-            };
-            [along(0), along(1)]
-        }
-        _ => return None,
-    };
-    let center = placed.translation.vector;
+    let (low, high) = primitive_bounds(geometry, placed)?;
     Some(Outline {
-        front: center.x + reach_x,
-        rear: center.x - reach_x,
-        left: center.y + reach_y,
-        right: center.y - reach_y,
+        front: high.x,
+        rear: low.x,
+        left: high.y,
+        right: low.y,
     })
 }
 

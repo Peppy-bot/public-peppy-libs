@@ -35,7 +35,8 @@
 //!   join to the root link, each with its radius and the width of its tire, and their
 //!   separation.
 //! - [`RobotDescription::outline`]: the rectangle on the floor that holds every collision
-//!   element of the robot, each a box, a cylinder or a sphere, with every joint at zero.
+//!   element of the robot, each a box, a cylinder or a sphere, with every joint at zero, of
+//!   their bounds along the root link's axes ([`chain_kinematics::primitive_bounds`]).
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal

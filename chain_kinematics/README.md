@@ -79,6 +79,7 @@ robot_description holds the URDF of every description to the same tree rules
 | `Joint` / `JointPlacement` | a joint's name, child link, limits, mimic and placement: its origin and kind, a `Copy` value whose `pose_at(q)` is the child link's frame in the parent link's at position `q`; `JointKind::turns` tells a revolute or a continuous joint |
 | `Mimic` | how a joint follows another, as its URDF `<mimic>` gives it, its multiplier and offset finite: `position_from(leader)` |
 | `pose_of_origin` | a URDF `<origin>` as a transform |
+| `primitive_bounds` | the least and the greatest corner of the box along a frame's axes that holds a URDF box, cylinder or sphere at a pose; none for a mesh |
 | `take_targets` / `Limit::take_target` / `TARGET_SLACK` | a joint target as a robot takes it: a joint at most 0.001 rad outside its limit runs at the limit, one farther out is refused by its joint, position and limits (`OutsideLimits`) |
 
 ## Inverse kinematics
