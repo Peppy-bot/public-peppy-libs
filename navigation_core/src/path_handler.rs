@@ -22,7 +22,6 @@ use control_core::planar_pose::PlanarPose;
 
 use crate::goal_checker::{GoalChecker, GoalCheckerParams};
 use crate::grid::GridGeometry;
-use crate::pose::distance;
 
 /// The path handler's settings, by Nav2's names.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,7 +144,7 @@ impl GlobalPlan {
 fn first_after_integrated_distance(poses: &[PlanarPose], start: usize, limit: f64) -> usize {
     let mut integrated = 0.0;
     for (index, step) in poses[start..].windows(2).enumerate() {
-        integrated += distance(step[0], step[1]);
+        integrated += step[0].distance_to(step[1]);
         if integrated > limit {
             return start + index + 1;
         }
@@ -157,9 +156,9 @@ fn first_after_integrated_distance(poses: &[PlanarPose], start: usize, limit: f6
 /// the last of equally near ones.
 fn nearest_pose(poses: &[PlanarPose], pose: PlanarPose) -> usize {
     let mut nearest = 0;
-    let mut lowest = distance(pose, poses[0]);
+    let mut lowest = pose.distance_to(poses[0]);
     for (index, &candidate) in poses.iter().enumerate().skip(1) {
-        let here = distance(pose, candidate);
+        let here = pose.distance_to(candidate);
         if here <= lowest {
             lowest = here;
             nearest = index;

@@ -25,6 +25,13 @@ impl PositiveFinite {
             .ok_or(NotPositiveFinite(value))
     }
 
+    /// The value of the field `field` of a request off the wire, such as a
+    /// tolerance, or the refusal naming the field, in the words of
+    /// [`NotPositiveFinite`].
+    pub fn parse_field(field: &str, value: f64) -> Result<Self, String> {
+        Self::parse(value).map_err(|refusal| format!("{field} {refusal}"))
+    }
+
     pub fn get(self) -> f64 {
         self.0
     }
@@ -56,6 +63,22 @@ mod tests {
         assert_eq!(
             PositiveFinite::parse(f64::MIN_POSITIVE).unwrap().get(),
             f64::MIN_POSITIVE
+        );
+    }
+
+    // A field of a request takes a positive finite number, and its refusal names
+    // the field and the value.
+    #[test]
+    fn a_field_takes_a_positive_number_and_its_refusal_names_it() {
+        assert_eq!(
+            PositiveFinite::parse_field("settle_position_tolerance_m", 0.02)
+                .map(PositiveFinite::get),
+            Ok(0.02)
+        );
+        assert_eq!(
+            PositiveFinite::parse_field("settle_position_tolerance_m", 0.0)
+                .map(PositiveFinite::get),
+            Err("settle_position_tolerance_m must be a positive finite number, got 0".to_string())
         );
     }
 }

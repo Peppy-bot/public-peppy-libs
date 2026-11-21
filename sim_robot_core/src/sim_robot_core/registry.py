@@ -3,15 +3,15 @@
 A robot is reserved when its attach goal is admitted and stands once the
 engine has put it on the stage, so a limb commanded while the scene is still
 recompiling keeps its latest setpoint until the robot stands. Each robot's
-limbs reach it through its own pairs, and the copy the engine reads on a pair
-is the name the robot attached under, which is how one robot's limbs are told
-from another's.
+limbs and base reach it through its own pairs, and the copy the engine reads
+on a pair is the name the robot attached under, which is how one robot's
+parts are told from another's.
 
-A robot's limbs reach it once their nodes are up, however long that takes,
-and until the first of them does its stay is its attach goal's. From then on
-it stays while its pairs are the ones its model asks for: the pairs dissolve
-when its nodes stop, and a robot that has not held them for its pair grace
-time leaves the scene.
+A robot's limbs and base reach it once their nodes are up, however long that
+takes, and until the first of them does its stay is its attach goal's. From
+then on it stays while its pairs are the ones its model asks for: the pairs
+dissolve when its nodes stop, and a robot that has not held them for its pair
+grace time leaves the scene.
 """
 
 from __future__ import annotations
@@ -49,13 +49,13 @@ class Robot:
     stage, and until then it takes no command."""
 
     name: str
-    # What a robot of its model is made of: the limbs its pairs drive and the
-    # cameras they stream.
+    # What a robot of its model is made of: the limbs and the base its pairs
+    # drive and the cameras they stream.
     entry: ModelEntry
     caller: Caller
     stood: bool = False
     # When this robot last held the pairs its model asks for, or when a limb
-    # first reached it while they never were; None until a limb reaches it,
+    # or its base first reached it while they never were; None until one does,
     # so no pair grace time runs while its nodes are still starting.
     last_paired_s: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -70,7 +70,7 @@ class Robot:
 
     def pair_grace_ran_out(self, now_s: float, pair_grace_s: float) -> bool:
         """Whether the robot's pairs have not been its model's for the pair
-        grace time. A robot no limb ever reached has no pair grace time
+        grace time. A robot no limb or base ever reached has no pair grace time
         running: its stay is its goal's."""
         with self.lock:
             last = self.last_paired_s
@@ -96,7 +96,7 @@ class Registry:
         hosts it, which is what an initializer that died and came back does.
 
         No pair grace time runs yet: the robot stays for as long as the goal
-        admitting it does, until a limb first reaches it."""
+        admitting it does, until a limb or its base first reaches it."""
         if not name:
             raise ValueError("a robot stands under the name of the copy it runs as")
         with self._lock:
@@ -179,9 +179,10 @@ class Registry:
             with robot.lock:
                 robot.last_paired_s = now_s
 
-    def note_limbs_reached(self, name: str, now_s: float) -> None:
-        """Starts the named robot's pair grace time the first time a limb
-        reaches it: from then on its pairs are held to being its model's."""
+    def note_driven_part_reached(self, name: str, now_s: float) -> None:
+        """Starts the named robot's pair grace time the first time a limb or
+        its base reaches it: from then on its pairs are held to being its
+        model's."""
         robot = self.of_name(name)
         if robot is None:
             return
@@ -193,8 +194,8 @@ class Registry:
         """Starts again the pair grace time of every robot whose pair grace
         time runs. The scene takes no commands while it is being changed, so
         the robots already in it get their full pair grace time from the
-        moment it takes them again; a robot no limb reached yet has no pair
-        grace time to start again."""
+        moment it takes them again; a robot no limb or base reached yet has no
+        pair grace time to start again."""
         for robot in self.robots():
             with robot.lock:
                 if robot.last_paired_s is not None:

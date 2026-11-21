@@ -262,3 +262,45 @@ fn a_gripper_places_every_finger_between_its_closed_and_open_states(tc: TestCase
         }
     }
 }
+
+// Each link of a bundled model stands at zero where the transforms of its joints at zero
+// compose it, each link once, the root link first at the identity.
+#[test]
+fn a_bundled_model_places_each_link_at_zero_as_its_transforms_compose_it() {
+    for bundled in robot_description::models() {
+        let description = bundled.description();
+        let zeros: HashMap<&str, f64> = description
+            .robot()
+            .joints
+            .iter()
+            .map(|joint| (joint.name.as_str(), 0.0))
+            .collect();
+        let transforms = every_transform(&description, &zeros);
+        let frames = description.link_frames_at_zero();
+        let (root, at_root) = frames[0];
+        assert_eq!(
+            (root.name.as_str(), at_root),
+            (description.root_link(), Isometry3::identity())
+        );
+        let names: HashSet<&str> = frames.iter().map(|(link, _)| link.name.as_str()).collect();
+        assert_eq!(
+            (names.len(), frames.len()),
+            (
+                description.robot().links.len(),
+                description.robot().links.len()
+            ),
+            "{}",
+            bundled.id()
+        );
+        for (link, frame) in frames {
+            let expected = composed(&transforms, &link.name);
+            assert!(
+                (frame.translation.vector - expected.translation.vector).norm() < TOLERANCE
+                    && frame.rotation.angle_to(&expected.rotation) < TOLERANCE,
+                "{} {}",
+                bundled.id(),
+                link.name
+            );
+        }
+    }
+}

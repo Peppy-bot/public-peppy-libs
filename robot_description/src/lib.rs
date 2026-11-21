@@ -21,13 +21,23 @@
 //!   Gazebo's URDF extension: a `<gazebo>` element that references the optical frame and
 //!   holds a `<sensor type="depth">` whose `<camera><clip>` gives the `<near>` and
 //!   `<far>` depths.
-//! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame, and
+//! - [`RobotDescription::root_link`]: the URDF's root link, the robot frame,
+//!   [`RobotDescription::parent_joint`]: the joint a link hangs on, and
 //!   [`RobotDescription::arm_carrying`]: the arm whose chain carries a link, such as a
 //!   camera's, or none for a link no arm's joint moves.
 //! - [`RobotDescription::fixed_transforms`] and [`RobotDescription::transforms_at`]: where
 //!   each link stands in its parent link, a [`LinkTransform`] per joint, the fixed joints'
 //!   for the life of the robot and the moving joints' at their positions; and
 //!   [`LinkTransform::frame_transform`]: the transform as the transforms contract carries it.
+//! - [`RobotDescription::link_frames_at_zero`]: where each link stands in the root link's
+//!   frame with every joint at zero.
+//! - [`RobotDescription::differential_base`]: the two wheels of a differential base, the
+//!   continuous joints on a link that fixed joints alone join to the root link that no
+//!   group of the SRDF holds, each with its radius and the width of its tire, and their
+//!   separation.
+//! - [`RobotDescription::outline`]: the rectangle on the floor that holds every collision
+//!   element of the robot, each a box, a cylinder or a sphere, with every joint at zero, of
+//!   their bounds along the root link's axes ([`chain_kinematics::primitive_bounds`]).
 //!
 //! The reader is strict: an element or attribute of the SRDF or of a `<gazebo>` element of
 //! the URDF that it does not read, or a name the URDF lacks, is a refusal
@@ -43,7 +53,9 @@
 //! model id, the id robot_identity carries: its files, the [`Model::directory`] the build
 //! bundled them from, the [`Model::digest`] of them all and, behind the `meshes` feature,
 //! the collision meshes the URDF names, which [`write_meshes`] writes where a builder of
-//! the URDF's collision geometry reads them.
+//! the URDF's collision geometry reads them. [`Model::hold_digest`] refuses a description
+//! served under another digest ([`OtherDescription`]). [`models_with_arms`] gives the
+//! bundled models that have an arm.
 //!
 //! [`on_shape`] runs code compiled for the shapes of a robot's arms, its arm count and
 //! its arms' joint count, at the shape of a description's arms. [`NodeArms`] holds a
@@ -54,6 +66,7 @@
 #![deny(unsafe_code)]
 
 mod arms;
+mod base;
 mod bundled;
 mod description;
 #[cfg(all(test, feature = "meshes"))]
@@ -67,7 +80,10 @@ mod transforms;
 mod xml;
 
 pub use arms::{ArmId, PerArm};
-pub use bundled::{Model, UnknownModel, model, models, write_meshes};
+pub use base::{DifferentialBase, NoDifferentialBase, NoOutline, Outline, Wheel};
+pub use bundled::{
+    Model, OtherDescription, UnknownModel, model, models, models_with_arms, write_meshes,
+};
 pub use description::{
     Arm, CameraFrame, DepthRange, DisabledPair, DisabledReason, Finger, FingerSpan, Gripper,
     RobotDescription, mesh_name,

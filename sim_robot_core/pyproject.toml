@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sim_robot_core"
 version = "0.1.0"
-description = "What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the four pairing slots and what each pair names, one entry per robot model built from the robot's description with its checks, the camera configuration, and world, the one frame of a simulation, with the commands given in it. The engine supplies its gains, its model files and its transport."
+description = "What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the five pairing slots and what each pair names, one entry per robot model built from the robot's description with its checks, the setpoints an engine takes on a pair, each object's and each robot's record on object_state with a snapshot of both, the rule a MuJoCo model of a base's wheel is held to, the camera configuration, and world, the one frame of a simulation, with the commands given in it. The engine supplies its gains, its model files and its transport."
 requires-python = ">=3.12"
 dependencies = ["control_core_py", "numpy>=1.26", "pyjson5>=1.6", "robot_description_py"]
 

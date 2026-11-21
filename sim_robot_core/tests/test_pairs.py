@@ -1,14 +1,15 @@
-"""The four slots, and what each pair names: its robot, its limb or camera."""
+"""The five slots, and what each pair names: its robot, its limb, its base or
+its camera."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
-
 import pytest
+from members import member, table
 
 from sim_robot_core.pairs import (
     ARMS,
+    BASE_NAME,
+    BASES,
     GRIPPERS,
     RGB_CAMERAS,
     RGBD_CAMERAS,
@@ -20,36 +21,14 @@ from sim_robot_core.pairs import (
 )
 
 
-@dataclass(frozen=True)
-class Producer:
-    core_node: str
-    instance_id: str
-
-
-@dataclass(frozen=True)
-class Info:
-    producer: Producer
-    peer_link_id: str
-
-
-@dataclass(frozen=True)
-class Member:
-    info: Info
-    copy: Optional[str]
-
-
-def member(instance: str, link: str, copy: Optional[str] = "alpha") -> Member:
-    return Member(info=Info(producer=Producer("sim16", instance), peer_link_id=link), copy=copy)
-
-
-def table(sole: Optional[str] = None, **members) -> PairTable:
-    slots = {slot: (lambda held=tuple(members.get(slot, ())): held) for slot in SLOTS}
-    return PairTable(slots, lambda: sole)
-
-
 class TestWhatAPairNames:
     def test_a_limb_is_the_link_the_pair_comes_from_on_the_robots_side(self):
         assert limb_of(member("alpha_backbone_inst", "left_arm")) == "left_arm"
+
+    def test_a_base_is_the_link_its_base_node_pairs_it_from(self):
+        pairs = table(bases=[member("alpha_base_inst", BASE_NAME)])
+        assert pairs.held_by("alpha") == Held(bases=frozenset({"base"}))
+        assert pairs.pair_of(BASES, member("alpha_base_inst", "base").info) == ("alpha", "base")
 
     def test_a_camera_is_its_relays_name_in_the_copy(self):
         assert camera_of(member("alpha_wrist_left", "simulation")) == "wrist_left"
@@ -131,7 +110,21 @@ class TestPairTable:
 
     def test_a_robot_with_no_pair_holds_nothing(self):
         assert table().held_by("alpha") == Held()
-        assert Held().is_empty() and not Held().holds_a_limb()
+        assert Held().is_empty() and not Held().holds_a_driven_part()
+
+    @pytest.mark.parametrize(
+        "held",
+        [
+            Held(arms=frozenset({"arm"})),
+            Held(grippers=frozenset({"gripper"})),
+            Held(bases=frozenset({"base"})),
+        ],
+    )
+    def test_an_arm_a_gripper_and_a_base_each_drive(self, held):
+        assert held.holds_a_driven_part()
+
+    def test_a_camera_drives_nothing(self):
+        assert not Held(rgbd_cameras=frozenset({"base_camera"})).holds_a_driven_part()
 
     def test_a_table_missing_a_slot_is_refused(self):
         with pytest.raises(ValueError, match="lacks \\['rgbd_cameras'\\]"):

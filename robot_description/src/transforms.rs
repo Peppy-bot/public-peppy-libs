@@ -1,7 +1,8 @@
 //! The model's transforms: where each link of the robot stands in its parent link, from
 //! the joints of its URDF, as a robot's publishers send them on transforms. The
 //! transforms of the fixed joints hold for the life of the robot; the transform of a
-//! joint that moves follows its position.
+//! joint that moves follows its position. And where each link stands in the root link's
+//! frame with every joint at zero.
 
 use std::collections::HashMap;
 
@@ -83,6 +84,17 @@ impl RobotDescription {
                     .or_else(|| positions.get(joint.name.as_str()).copied())?;
                 Some(self.link_transform(index, joint.pose_at(position)))
             })
+            .collect()
+    }
+
+    /// Where each link stands in the root link's frame with every joint at zero, with its
+    /// URDF element: the root link first, at the identity, then the links below it,
+    /// breadth first.
+    pub fn link_frames_at_zero(&self) -> Vec<(&urdf_rs::Link, Isometry3<f64>)> {
+        let root = self.tree.root();
+        std::iter::once((root, Isometry3::identity()))
+            .chain(self.tree.subtree_from(root, &|_| 0.0))
+            .map(|(index, frame)| (&self.robot().links[index], frame))
             .collect()
     }
 

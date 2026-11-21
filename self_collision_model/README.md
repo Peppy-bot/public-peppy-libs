@@ -285,13 +285,13 @@ tests/
   so101.rs                        SO-101's folded and ready arm, and its jaw
   ros_reference_self_distance.rs  each checked distance against MoveIt's FCL
   fixtures/
-    models.rs                     each bundled model by its id, the check run on every model, and OpenArm
+    models.rs                     each bundled model by its id, the check run on every model with arms, and OpenArm
 ```
 
 The tests read the descriptions `robot_description` bundles and the collision meshes
-of its models directory. `tests/models.rs` runs its checks on every bundled model, at
-the shape of its self model, so a model added to `robot_description` is tested as it
-lands. The visualization example writes a model's meshes with
+of its models directory. `tests/models.rs` runs its checks on every bundled model with
+arms, at the shape of its self model, so a model of arms added to `robot_description`
+is tested as it lands. The visualization example writes a model's meshes with
 `robot_description`'s `meshes` feature. The model places the bodies fixed to the root
 once, in the root frame, so it models robots whose mount does not move.
 

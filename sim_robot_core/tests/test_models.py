@@ -11,7 +11,7 @@ from robot_description_py import HOME, RobotDescription, model
 
 from sim_robot_core import models as models_module
 from sim_robot_core.errors import ModelEntryError
-from sim_robot_core.models import Models, hold_to_bundled, shipped_entry
+from sim_robot_core.models import Base, Models, hold_to_bundled, shipped_entry
 from sim_robot_core.pairs import Held
 
 OPENARM_LIMBS = Held(
@@ -19,11 +19,38 @@ OPENARM_LIMBS = Held(
     grippers=frozenset({"left_gripper", "right_gripper"}),
 )
 SO101_LIMBS = Held(arms=frozenset({"arm"}), grippers=frozenset({"gripper"}))
+BASE = Held(bases=frozenset({"base"}))
 
 
 def bundled(name: str):
     """The entry of a robot of the bundled model `name`."""
     return shipped_entry(name, model(name).description())
+
+
+@pytest.fixture(name="stand_in")
+def stand_in_fixture(monkeypatch):
+    """The refusal models.py catches is the stand-in `_NoBase`."""
+    monkeypatch.setattr(models_module, "NoDifferentialBase", _NoBase)
+
+
+class _NoBase(ValueError):
+    """A stand-in of robot_description_py's NoDifferentialBase, a refusal of a
+    description's wheels: its kind and the wheel joints it found."""
+
+    def __init__(self, kind: str, found=()) -> None:
+        super().__init__(f"the refusal of kind {kind}")
+        self.kind = kind
+        self.found = list(found)
+
+
+class _Refusing:
+    """A description whose differential base is refused with `refusal`."""
+
+    def __init__(self, refusal: _NoBase) -> None:
+        self._refusal = refusal
+
+    def differential_base(self):
+        raise self._refusal
 
 
 def so101_with_srdf(old: str, new: str) -> RobotDescription:
@@ -69,6 +96,20 @@ class TestShippedEntries:
         assert (so101.arm_names(), so101.arm_joint_counts()) == (["arm"], [5])
         assert so101.gripper_names() == ["gripper"]
         assert (so101.rgb_camera_names(), so101.rgbd_camera_names()) == (["wrist"], [])
+
+    def test_the_botshare_base_is_a_base_on_two_wheels_and_a_depth_camera(self):
+        base = bundled("botshare_base")
+        assert (base.arms, base.grippers) == ((), ())
+        assert base.base == Base(name="base", wheels=("left_wheel_joint", "right_wheel_joint"))
+        assert (base.rgb_camera_names(), base.rgbd_camera_names()) == ([], ["base_camera"])
+        (camera,) = base.cameras
+        assert (camera.frame, camera.width, camera.height, camera.fps) == (
+            "base_camera_optical_frame",
+            640,
+            400,
+            15,
+        )
+        assert (camera.depth.min_depth_m, camera.depth.max_range_m) == (0.17, 20.0)
 
     def test_a_model_with_no_shipped_entry_renders_no_camera(self):
         assert shipped_entry("aloha", model("openarm_v1").description()).cameras == ()
@@ -131,6 +172,68 @@ class TestFromTheDescription:
         assert posture == expected
         assert set(posture) == set(bundled(name).joints())
 
+    @pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101"])
+    def test_an_arm_on_a_stand_has_no_base(self, name):
+        entry = bundled(name)
+        assert entry.base is None and not entry.rolls
+        assert entry.wheel_joints() == [] and entry.base_names() == []
+
+    def test_the_base_moves_its_wheels_left_then_right_and_starts_where_they_stand(self):
+        base = bundled("botshare_base")
+        assert base.rolls
+        assert base.joints() == ["left_wheel_joint", "right_wheel_joint"]
+        assert base.start_posture == {}
+
+    def test_a_part_is_moved_by_its_joints_in_the_order_its_pair_carries_them(self):
+        so101, base = bundled("so101"), bundled("botshare_base")
+        assert so101.joints_of("arms", "arm") == so101.arms[0].joints
+        assert so101.joints_of("arms", "left_arm") is None
+        assert so101.joints_of("grippers", "gripper") == so101.grippers[0].joints
+        assert so101.joints_of("grippers", "left_gripper") is None
+        assert so101.joints_of("bases", "base") is None
+        assert base.joints_of("bases", "base") == ("left_wheel_joint", "right_wheel_joint")
+        assert base.joints_of("bases", "wheels") is None
+
+    def test_a_description_with_no_arm_and_no_base_is_refused_naming_why_its_wheels_make_none(self):
+        bare = RobotDescription.parse('<robot name="r"><link name="base_link"/></robot>', '<robot name="r"/>')
+        with pytest.raises(
+            ModelEntryError,
+            match=re.escape(
+                "model r: the description names no arm and gives no differential base (wheel_count): "
+            ),
+        ):
+            shipped_entry("r", bare)
+
+    @pytest.mark.usefixtures("stand_in")
+    def test_a_robot_with_arms_and_no_wheel_joint_has_no_base(self):
+        assert models_module._base("model m", _Refusing(_NoBase("wheel_count")), has_arms=True) is None
+
+    @pytest.mark.usefixtures("stand_in")
+    @pytest.mark.parametrize(
+        "refusal",
+        [_NoBase("wheel_count", ["left_wheel_joint"]), _NoBase("wheel_off_axis")],
+        ids=["one_wheel", "wheel_off_axis"],
+    )
+    def test_a_robot_with_arms_whose_wheels_make_no_base_is_refused_naming_the_kind(self, refusal):
+        with pytest.raises(
+            ModelEntryError,
+            match=re.escape(
+                f"model m: the description's wheels make no differential base ({refusal.kind}): {refusal}"
+            ),
+        ):
+            models_module._base("model m", _Refusing(refusal), has_arms=True)
+
+    @pytest.mark.usefixtures("stand_in")
+    def test_a_robot_with_no_arm_and_no_wheel_joint_is_refused_naming_the_kind(self):
+        refusal = _NoBase("wheel_count")
+        with pytest.raises(
+            ModelEntryError,
+            match=re.escape(
+                f"model m: the description names no arm and gives no differential base (wheel_count): {refusal}"
+            ),
+        ):
+            models_module._base("model m", _Refusing(refusal), has_arms=False)
+
     def test_an_arm_with_no_home_state_is_refused(self):
         description = so101_with_srdf('<group_state name="home" group="arm">', '<group_state name="rest" group="arm">')
         with pytest.raises(ModelEntryError, match="^model so101: the description gives the arm 'arm' no home state$"):
@@ -154,23 +257,45 @@ class TestTheMatch:
         one_arm = Held(arms=frozenset({"left_arm"}), grippers=OPENARM_LIMBS.grippers)
         assert bundled("openarm_v2").mismatch(one_arm) == (
             "its pairs name arms ['left_arm'], grippers ['left_gripper', 'right_gripper'], "
-            "rgb_cameras [], rgbd_cameras [], and the model openarm_v2 has arms ['left_arm', "
-            "'right_arm'], grippers ['left_gripper', 'right_gripper'], rgb_cameras "
-            "['wrist_left', 'wrist_right'], rgbd_cameras ['chest']"
+            "bases [], rgb_cameras [], rgbd_cameras [], and the model openarm_v2 has arms "
+            "['left_arm', 'right_arm'], grippers ['left_gripper', 'right_gripper'], bases [], "
+            "rgb_cameras ['wrist_left', 'wrist_right'], rgbd_cameras ['chest']"
         )
 
     def test_an_so101_paired_as_an_openarm_matches_nothing(self):
         so101 = bundled("so101")
-        assert not so101.holds_every_limb(OPENARM_LIMBS)
+        assert not so101.holds_every_driven_part(OPENARM_LIMBS)
         assert so101.foreign(OPENARM_LIMBS) == OPENARM_LIMBS
         assert "the model so101 has arms ['arm'], grippers ['gripper']" in so101.mismatch(OPENARM_LIMBS)
 
     def test_a_limb_the_model_lacks_is_foreign_even_beside_every_limb_it_has(self):
         extra = Held(arms=frozenset({"arm", "left_arm"}), grippers=SO101_LIMBS.grippers)
         so101 = bundled("so101")
-        assert so101.holds_every_limb(extra)
+        assert so101.holds_every_driven_part(extra)
         assert so101.foreign(extra) == Held(arms=frozenset({"left_arm"}))
         assert so101.mismatch(extra) is not None
+
+    def test_a_base_is_a_match_once_its_base_is_paired(self):
+        base = bundled("botshare_base")
+        assert base.holds_every_driven_part(BASE)
+        assert base.mismatch(BASE) is None, "its camera may go unpaired"
+        viewed = Held(rgbd_cameras=frozenset({"base_camera"}))
+        assert not base.holds_every_driven_part(viewed)
+        assert base.mismatch(viewed) == (
+            "its pairs name arms [], grippers [], bases [], rgb_cameras [], rgbd_cameras "
+            "['base_camera'], and the model botshare_base has arms [], grippers [], bases "
+            "['base'], rgb_cameras [], rgbd_cameras ['base_camera']"
+        )
+
+    def test_a_base_the_model_lacks_is_foreign(self):
+        assert bundled("botshare_base").foreign(Held(bases=frozenset({"wheels"}))) == Held(
+            bases=frozenset({"wheels"})
+        )
+        so101_on_a_base = Held(arms=SO101_LIMBS.arms, grippers=SO101_LIMBS.grippers, bases=BASE.bases)
+        so101 = bundled("so101")
+        assert so101.holds_every_driven_part(so101_on_a_base)
+        assert so101.foreign(so101_on_a_base) == BASE
+        assert so101.mismatch(so101_on_a_base) is not None
 
     def test_a_camera_of_the_wrong_kind_is_foreign(self):
         depth_wrist = Held(
@@ -270,7 +395,7 @@ class TestTheShippedEntryReadsAtTheEnginesStart:
 
 
 class TestHeldToTheBundledDescription:
-    @pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101"])
+    @pytest.mark.parametrize("name", ["openarm_v1", "openarm_v2", "so101", "botshare_base"])
     def test_the_bundled_description_of_its_model_is_held(self, name):
         hold_to_bundled(name, model(name).description())
 

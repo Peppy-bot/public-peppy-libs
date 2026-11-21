@@ -28,6 +28,21 @@ pub struct UnknownModel {
     id: String,
 }
 
+/// A description the robot's initializer serves under another digest than the bundled
+/// description of its model that a node was built with: the two builds read different
+/// descriptions of one model.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error(
+    "the robot's initializer serves the description {served} of {model}, and this backbone \
+     was built with {built}: build the backbone and the initializer from one \
+     public-peppy-libs commit"
+)]
+pub struct OtherDescription {
+    pub model: &'static str,
+    pub served: String,
+    pub built: &'static str,
+}
+
 fn model_ids() -> String {
     let ids: Vec<String> = models().map(|model| format!("{:?}", model.id)).collect();
     ids.join(", ")
@@ -36,6 +51,12 @@ fn model_ids() -> String {
 /// The bundled models, in the order of their ids.
 pub fn models() -> impl Iterator<Item = &'static Model> {
     MODELS.iter()
+}
+
+/// The bundled models that have an arm, in the order of their ids: the ones a node of
+/// arms drives ([`crate::NodeArms`]) and a planner plans for.
+pub fn models_with_arms() -> impl Iterator<Item = &'static Model> {
+    models().filter(|model| !model.description().arms().is_empty())
 }
 
 /// The bundled model of the id `id`, as robot_identity gives it.
@@ -72,6 +93,20 @@ impl Model {
     /// meshes. Two builds that hold the same digest hold the same description.
     pub fn digest(&self) -> &'static str {
         self.digest
+    }
+
+    /// Holds the digest `served`, the digest of the description the robot's initializer
+    /// serves for this model, to this bundled description's: another digest is refused,
+    /// naming both ([`OtherDescription`]).
+    pub fn hold_digest(&self, served: &str) -> Result<(), OtherDescription> {
+        if served == self.digest {
+            return Ok(());
+        }
+        Err(OtherDescription {
+            model: self.id,
+            served: served.to_owned(),
+            built: self.digest,
+        })
     }
 
     /// The model's description. Panics only if a bundled file is malformed, which this
@@ -188,11 +223,19 @@ mod tests {
         );
     }
 
+    // The models with arms are every bundled model but the botshare base, which has none.
     #[test]
-    fn every_model_has_its_arms_ready_home_and_start_postures_and_gripper_ends_at_joint_limits() {
+    fn the_models_with_arms_are_every_model_but_the_armless_base() {
+        let all: Vec<&str> = models().map(Model::id).collect();
+        let with_arms: Vec<&str> = models_with_arms().map(Model::id).collect();
+        assert_eq!(all, ["botshare_base", "openarm_v1", "openarm_v2", "so101"]);
+        assert_eq!(with_arms, ["openarm_v1", "openarm_v2", "so101"]);
+    }
+
+    #[test]
+    fn every_arm_has_its_ready_home_and_start_postures_and_gripper_ends_at_joint_limits() {
         for bundled in models() {
             let description = bundled.description();
-            assert!(!description.arms().is_empty(), "{}: arms", bundled.id());
             for arm in description.arms() {
                 assert!(
                     !arm.joints.is_empty(),
@@ -326,6 +369,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    // A model holds its own digest, and refuses another, naming both and what to rebuild.
+    #[test]
+    fn a_model_holds_its_digest_and_refuses_another() {
+        let base = model("botshare_base").expect("the bundled base");
+        assert_eq!(base.hold_digest(base.digest()), Ok(()));
+        let other = "0".repeat(64);
+        let refused = base.hold_digest(&other).expect_err("another digest");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the robot's initializer serves the description {other} of botshare_base, and \
+                 this backbone was built with {}: build the backbone and the initializer from \
+                 one public-peppy-libs commit",
+                base.digest()
+            )
+        );
     }
 
     #[cfg(feature = "meshes")]

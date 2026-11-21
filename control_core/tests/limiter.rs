@@ -57,11 +57,6 @@ fn axis_limits(
     AxisLimits::parse(axis_params(range, rates, deadband))
 }
 
-/// The limits of an axis the base does not move along.
-fn still_axis() -> AxisLimits {
-    axis_limits([0.0, 0.0], [0.0, 0.0], 0.0).expect("an axis that does not move")
-}
-
 /// An axis the base does not move along, one time in four, or one it moves along: a
 /// range whose ends may differ in magnitude, acceleration and deceleration limits above
 /// 0, and a deadband below half its fastest velocity.
@@ -156,7 +151,7 @@ fn a_limited_velocity_leaves_its_range_by_no_more_than_one_rounding_of_a_step(tc
 #[test]
 fn a_step_to_the_end_of_the_range_lands_where_nav2s_arithmetic_puts_it() {
     let x = axis_limits([-1.0, 0.3], [1.0, 8.0], 0.0).expect("valid limits");
-    let mut limiter = limiter([x, still_axis(), still_axis()]);
+    let mut limiter = limiter([x, AxisLimits::STILL, AxisLimits::STILL]);
     limiter.take_setpoint(PlanarTwist::new(-0.1, 0.0, 0.0).expect("finite"), 0);
     limiter.tick(0);
     limiter.tick(CYCLE_NS);
@@ -262,7 +257,7 @@ fn a_stream_that_stops_rests_by_its_timeout_and_deceleration_time(tc: TestCase) 
 #[test]
 fn a_still_axis_takes_zero_limits_and_stays_at_rest() {
     let moving = axis_limits([-0.4, 0.6], [1.0, 2.0], 0.0).expect("valid limits");
-    let still = still_axis();
+    let still = AxisLimits::STILL;
     assert_eq!(still.velocity_range(), (0.0, 0.0));
     let mut limiter = limiter([moving, still, moving]);
     limiter.take_setpoint(PlanarTwist::new(0.6, 0.5, -0.3).expect("finite"), 0);
@@ -466,12 +461,33 @@ fn the_limiter_takes_exactly_the_frequencies_of_a_period_of_whole_milliseconds()
     }
 }
 
+// An axis of range 0 to 0 and no limit is the still axis.
+#[test]
+fn an_axis_of_no_range_and_no_limit_is_the_still_axis() {
+    assert_eq!(
+        axis_limits([0.0, 0.0], [0.0, 0.0], 0.0).expect("an axis that does not move"),
+        AxisLimits::STILL
+    );
+}
+
+// A limiter steps once a period of whole milliseconds, 1 / its frequency.
+#[test]
+fn a_limiter_steps_once_a_period_of_its_frequency() {
+    for (frequency_hz, period_ns) in [(20.0, 50_000_000), (50.0, 20_000_000), (1000.0, 1_000_000)] {
+        assert_eq!(
+            ramping_at(frequency_hz).period_ns(),
+            period_ns,
+            "{frequency_hz} Hz"
+        );
+    }
+}
+
 /// The limiter of an axis along x of range -100 to 100 m/s, accelerating at 0.1 m/s^2,
 /// and two still axes, at `frequency_hz`: from rest toward a setpoint of 100 m/s, every
 /// step of the first hundreds raises the velocity, so a step shows in the velocity.
 fn ramping_at(frequency_hz: f64) -> Limiter {
     let x = axis_limits([-100.0, 100.0], [0.1, 0.1], 0.0).expect("valid limits");
-    limiter_at([x, still_axis(), still_axis()], frequency_hz)
+    limiter_at([x, AxisLimits::STILL, AxisLimits::STILL], frequency_hz)
 }
 
 /// The setpoint `ramping_at`'s limiter ramps toward.

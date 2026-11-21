@@ -1,7 +1,8 @@
 //! Writes the table of the bundled models: each directory of `models/` is one model,
-//! named by its model id, holding `<id>.urdf`, `<id>.srdf` and the collision meshes under
-//! `meshes/`. The table embeds each model's files and carries the digest of them all,
-//! computed here so that a build without the `meshes` feature holds it too.
+//! named by its model id, holding `<id>.urdf`, `<id>.srdf` and, for a model whose URDF
+//! names collision meshes, those meshes under `meshes/`. The table embeds each model's
+//! files and carries the digest of them all, computed here so that a build without the
+//! `meshes` feature holds it too.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -21,7 +22,11 @@ fn main() {
         let urdf = model_dir.join(format!("{id}.urdf"));
         let srdf = model_dir.join(format!("{id}.srdf"));
         let meshes_dir = model_dir.join("meshes");
-        let mesh_names = sorted_names(&meshes_dir);
+        let mesh_names = if meshes_dir.is_dir() {
+            sorted_names(&meshes_dir)
+        } else {
+            Vec::new()
+        };
         let meshes: Vec<(String, Vec<u8>)> = mesh_names
             .iter()
             .map(|name| (name.clone(), read(&meshes_dir.join(name))))
