@@ -2,7 +2,7 @@
 name = "robot_description_py"
 version = "0.1.0"
 edition = "2024"
-description = "Python bindings of robot_description for the Python nodes and simulation engines: the bundled models by their model id, and a robot's description read from its URDF and SRDF, with its arms, grippers, named states, cameras and joint limits."
+description = "Python bindings of robot_description for the Python nodes and simulation engines: the bundled models by their model id, and a robot's description read from its URDF and SRDF, with its arms, grippers, named states, cameras, joint limits, the differential base it gives and where each link stands with every joint at zero."
 publish = false
 
 [workspace]
