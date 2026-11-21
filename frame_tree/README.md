@@ -5,8 +5,8 @@ tf2's buffer in Rust. A node that reads the transforms contract takes each messa
 any frame in any other, at a time or at the latest time common to the chain. The crate
 also holds tf2's `Transform`, a rotation matrix and an origin that places a point and
 composes on tf2's bits, and `arithmetic`, the rotation arithmetic of tf2 and KDL operation
-for operation, which the libraries' geometry runs on. Pure Rust; no hardware or messaging
-dependencies.
+for operation and the angles library's `normalize_angle`, which the libraries' geometry runs
+on. Pure Rust; no hardware or messaging dependencies.
 
 ## Quick start
 
