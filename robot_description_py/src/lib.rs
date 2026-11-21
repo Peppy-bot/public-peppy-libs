@@ -5,17 +5,77 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use pyo3::create_exception;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 use robot_description::chain_kinematics::Mimic;
+use robot_description::chain_kinematics::nalgebra::Isometry3;
 use robot_description::{
-    Arm, CameraFrame, DepthRange, Finger, FingerSpan, Gripper, LinkTransform, Model,
-    RobotDescription, states,
+    Arm, CameraFrame, DepthRange, DifferentialBase, Finger, FingerSpan, Gripper, LinkTransform,
+    Model, RobotDescription, Wheel, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
 type Vector3 = (f64, f64, f64);
+
+create_exception!(
+    robot_description_py,
+    NoDifferentialBase,
+    PyValueError,
+    "Why a description gives no differential base, its message robot_description's: `kind`, \
+     the rule its wheels break, one of the class's attributes WHEEL_COUNT, WHEEL_AXIS, NO_AXLE, \
+     NO_TRACK, AXLE_OFF_ORIGIN, WHEEL_SHAPE, WHEEL_OFF_AXIS and WHEEL_CARRIES; and for \
+     WHEEL_COUNT, `found`, the continuous joints on the base body that no group of the SRDF \
+     holds, and `grouped`, those a group holds, each empty for every other kind."
+);
+
+/// Each kind of a [`NoDifferentialBase`], the name of a variant of robot_description's
+/// enum: a constant of this module, and the class attribute of the same name.
+macro_rules! refusal_kinds {
+    ($($attribute:ident = $kind:literal),+ $(,)?) => {
+        $(const $attribute: &str = $kind;)+
+        /// Each kind by the name of its class attribute.
+        const REFUSAL_KINDS: &[(&str, &str)] = &[$((stringify!($attribute), $attribute)),+];
+    };
+}
+
+refusal_kinds! {
+    WHEEL_COUNT = "wheel_count",
+    WHEEL_AXIS = "wheel_axis",
+    NO_AXLE = "no_axle",
+    NO_TRACK = "no_track",
+    AXLE_OFF_ORIGIN = "axle_off_origin",
+    WHEEL_SHAPE = "wheel_shape",
+    WHEEL_OFF_AXIS = "wheel_off_axis",
+    WHEEL_CARRIES = "wheel_carries",
+}
+
+/// The [`NoDifferentialBase`] of `refusal`, its `kind` the kind of the refusal's variant, and
+/// its `found` and `grouped` the joints a `WheelCount` names.
+fn no_differential_base(py: Python<'_>, refusal: &robot_description::NoDifferentialBase) -> PyErr {
+    use robot_description::NoDifferentialBase as Refusal;
+    let (kind, found, grouped): (&str, &[String], &[String]) = match refusal {
+        Refusal::WheelCount { found, grouped, .. } => (WHEEL_COUNT, found, grouped),
+        Refusal::WheelAxis { .. } => (WHEEL_AXIS, &[], &[]),
+        Refusal::NoAxle { .. } => (NO_AXLE, &[], &[]),
+        Refusal::NoTrack { .. } => (NO_TRACK, &[], &[]),
+        Refusal::AxleOffOrigin { .. } => (AXLE_OFF_ORIGIN, &[], &[]),
+        Refusal::WheelShape { .. } => (WHEEL_SHAPE, &[], &[]),
+        Refusal::WheelOffAxis { .. } => (WHEEL_OFF_AXIS, &[], &[]),
+        Refusal::WheelCarries { .. } => (WHEEL_CARRIES, &[], &[]),
+    };
+    let error = NoDifferentialBase::new_err(refusal.to_string());
+    let value = error.value(py);
+    let described = value.setattr("kind", kind).and_then(|()| {
+        value.setattr("found", PyTuple::new(py, found)?)?;
+        value.setattr("grouped", PyTuple::new(py, grouped)?)
+    });
+    match described {
+        Ok(()) => error,
+        Err(failure) => failure,
+    }
+}
 
 /// The Python bindings of robot_description, for the Python nodes and the
 /// simulation engines: each bundled model by its model id, and a robot's
@@ -40,6 +100,13 @@ fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCameraFrame>()?;
     module.add_class::<PyDepthRange>()?;
     module.add_class::<PyJointLimits>()?;
+    module.add_class::<PyDifferentialBase>()?;
+    module.add_class::<PyWheel>()?;
+    let no_differential_base = module.py().get_type::<NoDifferentialBase>();
+    for (attribute, kind) in REFUSAL_KINDS {
+        no_differential_base.setattr(*attribute, *kind)?;
+    }
+    module.add("NoDifferentialBase", no_differential_base)?;
     module.add_function(wrap_pyfunction!(model, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     Ok(())
@@ -227,12 +294,36 @@ impl PyRobotDescription {
         })
     }
 
+    /// The two wheels of the differential base the description gives. A
+    /// description that gives none raises NoDifferentialBase, a ValueError
+    /// naming why, with the kind of the rule its wheels break.
+    fn differential_base(&self, py: Python<'_>) -> PyResult<PyDifferentialBase> {
+        self.0
+            .differential_base()
+            .map(PyDifferentialBase)
+            .map_err(|refusal| no_differential_base(py, &refusal))
+    }
+
     /// The transform of every fixed joint of the URDF, in the URDF's order
     /// of joints.
     fn fixed_transforms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(
             py,
             self.0.fixed_transforms().iter().map(PyLinkTransform::of),
+        )
+    }
+
+    /// Where each link stands in the root link's frame with every joint at
+    /// zero, as the transform of the link in the root link: the root link
+    /// first, at the identity, then the links below it, breadth first.
+    fn link_frames_at_zero<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let root = self.0.root_link();
+        PyTuple::new(
+            py,
+            self.0
+                .link_frames_at_zero()
+                .iter()
+                .map(|(link, frame)| PyLinkTransform::placed(root, &link.name, frame)),
         )
     }
 
@@ -272,11 +363,16 @@ struct PyLinkTransform {
 
 impl PyLinkTransform {
     fn of(transform: &LinkTransform) -> Self {
-        let position = transform.pose.translation.vector;
-        let orientation = transform.pose.rotation;
+        Self::placed(transform.parent, transform.child, &transform.pose)
+    }
+
+    /// `child` standing at `pose` in `parent`.
+    fn placed(parent: &str, child: &str, pose: &Isometry3<f64>) -> Self {
+        let position = pose.translation.vector;
+        let orientation = pose.rotation;
         Self {
-            parent: transform.parent.to_string(),
-            child: transform.child.to_string(),
+            parent: parent.to_owned(),
+            child: child.to_owned(),
             position: (position.x, position.y, position.z),
             orientation: (orientation.i, orientation.j, orientation.k, orientation.w),
         }
@@ -628,6 +724,67 @@ impl PyJointLimits {
     #[getter]
     fn effort(&self) -> f64 {
         self.effort
+    }
+}
+
+/// The two wheels of a differential base, as its description gives them.
+#[pyclass(name = "DifferentialBase", module = "robot_description_py", frozen)]
+struct PyDifferentialBase(DifferentialBase);
+
+#[pymethods]
+impl PyDifferentialBase {
+    /// The wheel further along the robot frame's +y.
+    #[getter]
+    fn left(&self) -> PyWheel {
+        PyWheel(self.0.left.clone())
+    }
+
+    /// The wheel further along the robot frame's -y.
+    #[getter]
+    fn right(&self) -> PyWheel {
+        PyWheel(self.0.right.clone())
+    }
+
+    /// The distance between the two wheel joints' origins, meters, along y.
+    #[getter]
+    fn separation_m(&self) -> f64 {
+        self.0.separation_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<DifferentialBase {} and {}>",
+            self.0.left.joint, self.0.right.joint
+        )
+    }
+}
+
+/// A wheel of a differential base.
+#[pyclass(name = "Wheel", module = "robot_description_py", frozen)]
+struct PyWheel(Wheel);
+
+#[pymethods]
+impl PyWheel {
+    /// Its continuous joint.
+    #[getter]
+    fn joint(&self) -> &str {
+        &self.0.joint
+    }
+
+    /// The radius of its link's one collision cylinder, meters.
+    #[getter]
+    fn radius_m(&self) -> f64 {
+        self.0.radius_m
+    }
+
+    /// The length of that cylinder, the width of its tire, meters.
+    #[getter]
+    fn width_m(&self) -> f64 {
+        self.0.width_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<Wheel {}>", self.0.joint)
     }
 }
 

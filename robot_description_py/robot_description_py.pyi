@@ -1,7 +1,7 @@
 """The types of robot_description_py, the extension module built from src/lib.rs."""
 
 from os import PathLike
-from typing import Final, final
+from typing import ClassVar, Final, final
 
 type _Vector3 = tuple[float, float, float]
 """A point or a set of angles, ``(x, y, z)`` or ``(roll, pitch, yaw)``."""
@@ -48,7 +48,9 @@ class RobotDescription:
     def root_link(self) -> str: ...
     def arm_carrying(self, link: str) -> Arm | None: ...
     def joint_limits(self, joint: str) -> JointLimits: ...
+    def differential_base(self) -> DifferentialBase: ...
     def fixed_transforms(self) -> tuple[LinkTransform, ...]: ...
+    def link_frames_at_zero(self) -> tuple[LinkTransform, ...]: ...
     def transforms_at(self, positions: dict[str, float]) -> tuple[LinkTransform, ...]: ...
 
 @final
@@ -149,3 +151,39 @@ class JointLimits:
     def velocity(self) -> float: ...
     @property
     def effort(self) -> float: ...
+
+class NoDifferentialBase(ValueError):
+    """Why a description gives no differential base: ``kind``, the rule its wheels break, one of
+    the class attributes below; and for ``WHEEL_COUNT``, ``found``, the continuous joints on the
+    base body that no group of the SRDF holds, and ``grouped``, those a group holds, each empty
+    for every other kind."""
+
+    WHEEL_COUNT: ClassVar[str]
+    WHEEL_AXIS: ClassVar[str]
+    NO_AXLE: ClassVar[str]
+    NO_TRACK: ClassVar[str]
+    AXLE_OFF_ORIGIN: ClassVar[str]
+    WHEEL_SHAPE: ClassVar[str]
+    WHEEL_OFF_AXIS: ClassVar[str]
+    WHEEL_CARRIES: ClassVar[str]
+    kind: str
+    found: tuple[str, ...]
+    grouped: tuple[str, ...]
+
+@final
+class DifferentialBase:
+    @property
+    def left(self) -> Wheel: ...
+    @property
+    def right(self) -> Wheel: ...
+    @property
+    def separation_m(self) -> float: ...
+
+@final
+class Wheel:
+    @property
+    def joint(self) -> str: ...
+    @property
+    def radius_m(self) -> float: ...
+    @property
+    def width_m(self) -> float: ...
