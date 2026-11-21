@@ -18,6 +18,7 @@
 //!   [`ButterworthFilter`](filters::ButterworthFilter),
 //!   [`HampelFilter`](filters::HampelFilter)).
 //! - [`time`]: a configured rate or seconds value as a `Duration` to wait on,
+//!   a parameter of seconds refused by its name,
 //!   the ticks a window spans, waits a cancel ends, async and blocking, and
 //!   times on a ROS clock as integer nanoseconds.
 //! - [`minimum_jerk`]: the quintic blend between two values and its peak rate.
@@ -77,8 +78,9 @@
 //! - [`serving`]: the loop that serves one service for the life of a node,
 //!   with the pause after a runtime error.
 //! - [`asking`]: the loop that asks another node until it answers, with the
-//!   pause after a failed ask, and the ask of a loop of the node's own within a
-//!   timeout ([`ask_loop`](asking::ask_loop)).
+//!   pause after a failed ask, the wait until another node is ready
+//!   ([`ask_until_ready`](asking::ask_until_ready)), and the ask of a loop of the
+//!   node's own within a timeout ([`ask_loop`](asking::ask_loop)).
 //! - [`fault`]: the fault that ends a node after its setup has returned, the
 //!   error the node exits with for it, and the task whose panic raises it.
 //! - [`component_model`]: the model of the robot a component is a part of, as
