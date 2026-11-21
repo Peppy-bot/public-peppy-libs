@@ -95,6 +95,46 @@ def test_latch_logs_once_and_rearms(capsys):
     assert capsys.readouterr().out.count("condition") == 1
 
 
+def test_a_latch_logs_where_its_caller_logs(capsys):
+    lines = []
+    latch = runtime.Latch(lines.append)
+    latch.trip("condition")
+    latch.trip("condition")
+    assert lines == ["condition; suppressing repeats"]
+    assert capsys.readouterr().out == ""
+
+
+class FailingThenClosedSubscription:
+    """Fails `failures` receives, then closes."""
+
+    def __init__(self, failures):
+        self._failures = failures
+
+    async def next(self):
+        if self._failures:
+            self._failures -= 1
+            raise RuntimeError("a frame that does not read")
+        return None
+
+
+async def test_failed_receives_are_logged_once_a_run_where_the_caller_logs(monkeypatch, capsys):
+    monkeypatch.setattr(runtime, "_RECEIVE_RETRY_S", 0.0)
+    lines = []
+
+    received = [
+        message
+        async for message in runtime.messages(
+            FailingThenClosedSubscription(2), FakeToken(), "arms setpoints", lines.append
+        )
+    ]
+
+    assert received == []
+    assert lines == [
+        "arms setpoints receive error: RuntimeError('a frame that does not read'); suppressing repeats"
+    ]
+    assert capsys.readouterr().out == ""
+
+
 async def test_ticks_pace_and_stop_on_cancel():
     token = FakeToken()
     seen = 0
