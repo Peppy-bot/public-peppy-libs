@@ -96,6 +96,8 @@
 //!   inside the runtime.
 //! - [`stop_reason`]: the reason a robot stop gives each move it ends, the
 //!   stop and the reason of the stop request.
+//! - [`stream_window`]: whether a leader's stream of commands is live, its
+//!   newest command within the window its link's contract states.
 //! - [`requested_arms`]: the arms a request names, their places among the robot's arms in
 //!   the request's order, the place of an arm or a gripper it names by name, the limb a
 //!   node's parameter names by its place, and the waypoints every arm of a joint path
@@ -132,6 +134,7 @@ pub mod robot_tree;
 pub mod serving;
 pub mod setpoint_stream;
 pub mod stop_reason;
+pub mod stream_window;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
