@@ -1,0 +1,24 @@
+// How the engines render the camera of the botshare base, by the name it has
+// in the description, whose optical frame places it: the Orbbec Gemini 336L
+// at the base's front, measuring the depths the description's depth sensor
+// gives it, the colour aligned to its depth.
+//
+// - fovy_deg: the depth field's 65 degrees high, of its 90 x 65
+//   (openAMRobot/openamr-platform-sw at 69847ab7, the commit the description
+//   is written from, ros2/src/openamrobot_description/config/sensor_profiles.yaml,
+//   base_camera_link depth fov_vertical, from Orbbec's product page).
+// - width, height and fps: a mode of this entry, 640 x 400 at 15 fps, half
+//   each way of the depth's largest, 1280 x 800 at up to 30 fps (the same
+//   file's width_max, height_max and frame_rate_max). botshare's software
+//   sets no mode of the camera: the file says the rate on the robot is set in
+//   the driver launch, and the repository holds none for it.
+{
+  cameras: {
+    base_camera: {
+      fovy_deg: 65.0,
+      color: { width: 640, height: 400 },
+      depth: { width: 640, height: 400 },
+      fps: 15,
+    },
+  },
+}

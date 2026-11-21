@@ -1,14 +1,17 @@
 """One entry per robot model: what a robot of that model is made of, whatever
 engine stands it.
 
-A robot's limbs and cameras come from its description, the URDF and SRDF its
-attach goal carries, as robot_description_py reads them: each arm group with
-the joints it moves, each gripper group with where its closed and open states
-put each finger and the finger each mimic finger follows, the optical frame
-of each camera with the depths a depth camera measures, and the posture the
+A robot's limbs, base and cameras come from its description, the URDF and
+SRDF its attach goal carries, as robot_description_py reads them: each arm
+group with the joints it moves, each gripper group with where its closed and
+open states put each finger and the finger each mimic finger follows, the
+wheels of the differential base the description gives, the optical frame of
+each camera with the depths a depth camera measures, and the posture the
 robot starts in, every arm at its home state and every gripper closed. The
 limbs have the names the robot answers to in limb_motion and limb_state
-(left_arm and left_gripper on an OpenArm, arm and gripper on an SO-101).
+(left_arm and left_gripper on an OpenArm, arm and gripper on an SO-101), and
+the base the name it answers to in base_state (base). A robot with a base
+rolls: it stands free on the floor and its wheels carry it.
 
 What the description does not hold, how the engines render each camera of a
 model, ships with this package under models/, one file per model that has a
@@ -27,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyjson5
-from robot_description_py import HOME, FingerSpan, Mimic, RobotDescription
+from robot_description_py import HOME, FingerSpan, Mimic, NoDifferentialBase, RobotDescription
 from robot_description_py import model as bundled_model
 
 from sim_robot_core.cameras import (
@@ -37,11 +40,14 @@ from sim_robot_core.cameras import (
     parse_renders,
 )
 from sim_robot_core.errors import ModelEntryError
-from sim_robot_core.pairs import Held
+from sim_robot_core.pairs import ARMS, BASE_NAME, BASES, DRIVEN_SLOTS, GRIPPERS, SLOTS, Held
 
 _ENTRIES_DIR = Path(__file__).parent / "models"
 _ENTRY_SUFFIX = ".json5"
 _ENTRY_KEYS = frozenset({"cameras"})
+# The kind of refusal of a description's wheels that, with no wheel joint
+# found, says the description holds no wheel at all.
+_WHEEL_COUNT = "wheel_count"
 
 @dataclass(frozen=True)
 class Arm:
@@ -85,6 +91,17 @@ class Gripper:
 
 
 @dataclass(frozen=True)
+class Base:
+    """The base of a robot: the name the robot answers to for it, and the
+    continuous joints of its two driven wheels, left then right, in the
+    order its pair carries them, as the description's differential base
+    gives them."""
+
+    name: str
+    wheels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ModelEntry:
     """What a robot of one model is made of."""
 
@@ -92,8 +109,18 @@ class ModelEntry:
     arms: tuple[Arm, ...]
     grippers: tuple[Gripper, ...]
     cameras: tuple[CameraConfig, ...]
-    # Joint name to the position the robot starts in.
+    # Joint name to the position the robot starts in: every arm and finger
+    # joint. A wheel starts where it stands.
     start_posture: dict[str, float]
+    # None for a robot that stands where it is placed.
+    base: Base | None
+
+    @property
+    def rolls(self) -> bool:
+        """Whether a robot of this model rolls on the wheels of its base: it
+        stands free on the floor, its placement where it starts, and its
+        wheels carry it from there."""
+        return self.base is not None
 
     def arm_names(self) -> list[str]:
         return [arm.name for arm in self.arms]
@@ -110,9 +137,15 @@ class ModelEntry:
     def finger_joints(self) -> list[str]:
         return [joint for gripper in self.grippers for joint in gripper.joints]
 
+    def base_names(self) -> list[str]:
+        return [] if self.base is None else [self.base.name]
+
+    def wheel_joints(self) -> list[str]:
+        return [] if self.base is None else list(self.base.wheels)
+
     def joints(self) -> list[str]:
         """Every joint a robot of this model moves."""
-        return [*self.arm_joints(), *self.finger_joints()]
+        return [*self.arm_joints(), *self.finger_joints(), *self.wheel_joints()]
 
     def rgb_camera_names(self) -> list[str]:
         return [camera.name for camera in self.cameras if camera.depth is None]
@@ -125,35 +158,44 @@ class ModelEntry:
         return Held(
             arms=frozenset(self.arm_names()),
             grippers=frozenset(self.gripper_names()),
+            bases=frozenset(self.base_names()),
             rgb_cameras=frozenset(self.rgb_camera_names()),
             rgbd_cameras=frozenset(self.rgbd_camera_names()),
         )
 
-    def holds_every_limb(self, held: Held) -> bool:
-        """Whether `held` drives every limb of this model, which is what a
-        robot's readiness asks: a setpoint reaches each limb and its state
-        comes back."""
+    def holds_every_driven_part(self, held: Held) -> bool:
+        """Whether `held` drives every limb and the base of this model, which
+        is what a robot's readiness asks: a setpoint reaches each of them and
+        its state comes back."""
         has = self.has()
-        return has.arms <= held.arms and has.grippers <= held.grippers
+        return all(has.of_slot(slot) <= held.of_slot(slot) for slot in DRIVEN_SLOTS)
 
     def foreign(self, held: Held) -> Held:
-        """The pairs of `held` that name a limb or a camera this model lacks.
-        Such a pair never drives or streams anything, so a robot holding one
-        does not stay."""
+        """The pairs of `held` that name a limb, a base or a camera this model
+        lacks. Such a pair never drives or streams anything, so a robot
+        holding one does not stay."""
         has = self.has()
-        return Held(
-            arms=held.arms - has.arms,
-            grippers=held.grippers - has.grippers,
-            rgb_cameras=held.rgb_cameras - has.rgb_cameras,
-            rgbd_cameras=held.rgbd_cameras - has.rgbd_cameras,
-        )
+        return Held(**{slot: held.of_slot(slot) - has.of_slot(slot) for slot in SLOTS})
+
+    def joints_of(self, slot: str, name: str) -> tuple[str, ...] | None:
+        """The joints the arm, the gripper or the base `name` of this model
+        moves, by the slot its pair is on: an arm's group's joints in the
+        order its pair carries them, a gripper's fingers, a base's wheels,
+        left then right. None for a part the model lacks, whose pair drives
+        nothing."""
+        parts = {
+            ARMS: [(arm.name, arm.joints) for arm in self.arms],
+            GRIPPERS: [(gripper.name, gripper.joints) for gripper in self.grippers],
+            BASES: [(base.name, base.wheels) for base in (self.base,) if base is not None],
+        }[slot]
+        return next((joints for part, joints in parts if part == name), None)
 
     def mismatch(self, held: Held) -> str | None:
         """Why `held` is not what a robot of this model pairs, naming both
-        lists, or None when it is: every limb of the model and nothing the
-        model lacks. A camera the model has may go unpaired, since a camera
-        nobody views is not rendered."""
-        if self.holds_every_limb(held) and self.foreign(held).is_empty():
+        lists, or None when it is: every limb and the base of the model and
+        nothing the model lacks. A camera the model has may go unpaired, since
+        a camera nobody views is not rendered."""
+        if self.holds_every_driven_part(held) and self.foreign(held).is_empty():
             return None
         return (
             f"its pairs name {held.describe()}, and the model {self.model} has "
@@ -172,6 +214,27 @@ def _gripper(gripper) -> Gripper:
         spans=tuple(finger.span for finger in gripper.fingers),
         mimics=tuple(finger.mimic for finger in gripper.fingers),
     )
+
+
+def _base(described: str, description: RobotDescription, has_arms: bool) -> Base | None:
+    """The base of the robot `description` describes, the wheels of its
+    differential base, or None for a robot with arms whose description holds
+    no wheel joint at all. Any other refusal of its wheels is refused, naming
+    the refusal's kind and why: a robot with arms whose wheels make no
+    differential base, and a description that names no arm and gives no
+    base."""
+    try:
+        wheels = description.differential_base()
+    except NoDifferentialBase as no_base:
+        if has_arms and no_base.kind == _WHEEL_COUNT and not no_base.found:
+            return None
+        what = (
+            "the description's wheels make no differential base"
+            if has_arms
+            else "the description names no arm and gives no differential base"
+        )
+        raise _fail(described, f"{what} ({no_base.kind}): {no_base}") from no_base
+    return Base(name=BASE_NAME, wheels=(wheels.left.joint, wheels.right.joint))
 
 
 def _start_posture(source: str, description: RobotDescription) -> dict[str, float]:
@@ -197,19 +260,21 @@ def _entry_of(
     its cameras rendered as `renders` gives the camera of the same name, the
     renders of the entry at `source`, or None where no file is there. A
     camera of the description with no render and a render of no camera of
-    the description are refused naming the entry; an arm with no home state
-    and a description that names no arm, naming the model."""
+    the description are refused naming the entry; an arm with no home state,
+    a description whose wheels make no differential base, and one that names
+    no arm and gives no differential base,
+    naming the model and why its wheels make no base."""
     described = f"model {model}"
     arms = tuple(Arm(name=arm.name, joints=arm.joints) for arm in description.arms)
     grippers = tuple(_gripper(arm.gripper) for arm in description.arms)
-    if not arms:
-        raise _fail(described, "the description names no arm")
+    base = _base(described, description, bool(arms))
     return ModelEntry(
         model=model,
         arms=arms,
         grippers=grippers,
         cameras=camera_configs(source, description, renders),
         start_posture=_start_posture(described, description),
+        base=base,
     )
 
 
