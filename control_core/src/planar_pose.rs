@@ -6,7 +6,7 @@
 use std::fmt;
 
 use frame_tree::Transform;
-use frame_tree::arithmetic::{self, kdl, quaternion_of_yaw, yaw_of_quaternion};
+use frame_tree::arithmetic::{self, kdl, normalize_angle, quaternion_of_yaw, yaw_of_quaternion};
 
 /// Where one frame sits in another on the floor plane: a position in meters,
 /// and a heading in radians, counterclockwise about +Z from +X.
@@ -169,17 +169,6 @@ fn heading_turned_by(lookup: [f64; 4], yaw: f64) -> f64 {
     yaw_of_quaternion(kdl::quaternion_of_turn_about_z(turned))
 }
 
-/// `angle` brought into (-pi, pi], as the angles library's `normalize_angle`
-/// brings it (angles/angles.h).
-pub fn normalize_angle(angle: f64) -> f64 {
-    let result = (angle + std::f64::consts::PI) % std::f64::consts::TAU;
-    if result <= 0.0 {
-        result + std::f64::consts::PI
-    } else {
-        result - std::f64::consts::PI
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,14 +329,5 @@ mod tests {
         assert_eq!(to.distance_to(from), 5.0);
         assert!((from.yaw_to(to) - (2.0 * PI - 6.0)).abs() < 1e-15);
         assert_eq!(planar(0.0, 0.0, 0.25).yaw_to(planar(0.0, 0.0, 0.75)), 0.5);
-    }
-
-    // An angle comes into (-pi, pi], pi itself staying.
-    #[test]
-    fn an_angle_normalizes_into_the_half_open_circle() {
-        use std::f64::consts::PI;
-        assert_eq!(normalize_angle(PI), PI);
-        assert_eq!(normalize_angle(-PI), PI);
-        assert!((normalize_angle(3.0 * PI / 2.0) + PI / 2.0).abs() < 1e-15);
     }
 }

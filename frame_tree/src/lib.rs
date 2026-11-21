@@ -26,7 +26,8 @@
 //!   composes, inverts and interpolates in tf2's arithmetic, bit for bit.
 //! - [`arithmetic`]: the rotation arithmetic of tf2 and KDL, operation for operation: the
 //!   quaternion products, rotations and interpolation a lookup takes, tf2's rotation matrix,
-//!   `setRPY` and `getYaw`, and KDL's matrices. control_core's geometry types run on it.
+//!   `setRPY` and `getYaw`, and KDL's matrices, and the angles library's `normalize_angle`.
+//!   control_core's geometry types run on it.
 //!
 //! The README lists each rule of tf2 the crate follows, by file and line of geometry2
 //! 0.45.10, and where it departs.

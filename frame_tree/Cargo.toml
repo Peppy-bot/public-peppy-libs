@@ -2,7 +2,7 @@
 name = "frame_tree"
 version = "0.1.0"
 edition = "2024"
-description = "tf2's buffer in Rust: the transforms between a robot's frames that the transforms contract carries, kept per child frame with a history in a window the caller sets, and the place of any frame in any other at a time or at the latest time common to the chain, interpolated and composed in tf2's arithmetic, or at one time in another at another through a fixed frame, and the root of a frame's chain, with tf2's extrapolation errors, and an error naming the transform where two publishers or a cycle break the tree; tf2's Transform, which places a point and composes on tf2's bits, and the rotation arithmetic of tf2 and KDL operation for operation. Pure Rust, no hardware or messaging deps."
+description = "tf2's buffer in Rust: the transforms between a robot's frames that the transforms contract carries, kept per child frame with a history in a window the caller sets, and the place of any frame in any other at a time or at the latest time common to the chain, interpolated and composed in tf2's arithmetic, or at one time in another at another through a fixed frame, and the root of a frame's chain, with tf2's extrapolation errors, and an error naming the transform where two publishers or a cycle break the tree; tf2's Transform, which places a point and composes on tf2's bits, the rotation arithmetic of tf2 and KDL operation for operation, and the angles library's normalize_angle. Pure Rust, no hardware or messaging deps."
 
 [workspace]
 

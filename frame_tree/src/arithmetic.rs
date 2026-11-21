@@ -14,12 +14,14 @@
 // arithmetic of tf2's LinearMath (geometry2 0.45.10), tf2/include/tf2/LinearMath/Quaternion.hpp,
 // Vector3.hpp, Matrix3x3.hpp and Scalar.hpp, which tf2 takes from Bullet, tf2's getYaw
 // (tf2/include/tf2/impl/utils.hpp), and KDL's rotation arithmetic (orocos_kdl 1.5.2
-// src/frames.cpp), which tf2_geometry_msgs runs a pose's turn through.
+// src/frames.cpp), which tf2_geometry_msgs runs a pose's turn through, and the angles
+// library's normalize_angle (angles/angles.h).
 
 //! The rotation arithmetic of the libraries, operation for operation as tf2 and KDL run it, so a
 //! lookup composes the bits tf2's `TransformAccum` composes and a point lands on the bits tf2 gives
-//! it. A quaternion is [x, y, z, w]; a rotation is a 3x3 matrix, row by row. control_core's
-//! geometry types run on it.
+//! it, and the turn of an angle into (-pi, pi] as the angles library turns it
+//! ([`normalize_angle`]). A quaternion is [x, y, z, w]; a rotation is a 3x3 matrix, row by row.
+//! control_core's geometry types run on it.
 
 pub type Vector = [f64; 3];
 pub type Quaternion = [f64; 4];
@@ -243,6 +245,17 @@ pub fn yaw_of_quaternion(q: Quaternion) -> f64 {
     (2.0 * (x * y + w * z)).atan2(sqw + sqx - sqy - sqz)
 }
 
+/// `angle` brought into (-pi, pi], as the angles library's `normalize_angle` brings it
+/// (angles/angles.h).
+pub fn normalize_angle(angle: f64) -> f64 {
+    let result = (angle + std::f64::consts::PI) % std::f64::consts::TAU;
+    if result <= 0.0 {
+        result + std::f64::consts::PI
+    } else {
+        result - std::f64::consts::PI
+    }
+}
+
 /// KDL's rotation arithmetic (orocos_kdl 1.5.2 src/frames.cpp), which tf2_geometry_msgs's
 /// `doTransform` runs a pose's turn through. A rotation here is KDL's 3x3 matrix, row by row in
 /// nine entries.
@@ -311,6 +324,15 @@ pub mod kdl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // An angle comes into (-pi, pi], pi itself staying.
+    #[test]
+    fn an_angle_normalizes_into_the_half_open_circle() {
+        use std::f64::consts::PI;
+        assert_eq!(normalize_angle(PI), PI);
+        assert_eq!(normalize_angle(-PI), PI);
+        assert!((normalize_angle(3.0 * PI / 2.0) + PI / 2.0).abs() < 1e-15);
+    }
 
     fn about_z(angle: f64) -> Quaternion {
         [0.0, 0.0, (angle / 2.0).sin(), (angle / 2.0).cos()]
