@@ -87,7 +87,8 @@
 //!   the robot's initializer names it on each readiness call.
 //! - [`setpoint_stream`]: the latest setpoint, published to a sink on a fixed
 //!   interval until cancelled, with one warning per failure burst.
-//! - [`throttle`]: admitting a repeating event at most once per window.
+//! - [`throttle`]: admitting a repeating event at most once per window, and
+//!   the window of a node's throttled failure log.
 //! - [`report_once`]: marking a run of repeated failures, so only its first is
 //!   reported.
 //! - [`latched_log`]: one log line per run of repeated failures, re-armed by
