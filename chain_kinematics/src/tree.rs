@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use nalgebra::{Isometry3, Matrix3, Translation3, Unit, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Translation3, Unit, UnitQuaternion, Vector3};
 
 use crate::{MimicError, TreeError};
 
@@ -437,6 +437,31 @@ pub fn pose_of_origin(p: &urdf_rs::Pose) -> Isometry3<f64> {
     )
 }
 
+/// The least and the greatest corner of the smallest box along the frame's axes that holds
+/// the URDF primitive `geometry` placed at `pose`: a box of its sides about its origin, a
+/// cylinder about its z axis or a sphere; none for a mesh or another shape.
+pub fn primitive_bounds(
+    geometry: &urdf_rs::Geometry,
+    pose: &Isometry3<f64>,
+) -> Option<(Point3<f64>, Point3<f64>)> {
+    let center = Point3::from(pose.translation.vector);
+    let rotation = pose.rotation.to_rotation_matrix();
+    let half = match *geometry {
+        urdf_rs::Geometry::Box { ref size } => {
+            rotation.matrix().abs() * (Vector3::from(size.0) / 2.0)
+        }
+        urdf_rs::Geometry::Sphere { radius } => Vector3::repeat(radius),
+        urdf_rs::Geometry::Cylinder { radius, length } => {
+            // Along an axis at a share `a` of the cylinder's own: its half length times `a`,
+            // and its radius times the share across it.
+            let axis = rotation * Vector3::z();
+            axis.map(|a| a.abs() * length / 2.0 + radius * (1.0 - a * a).max(0.0).sqrt())
+        }
+        _ => return None,
+    };
+    Some((center - half, center + half))
+}
+
 /// URDF `<inertia>`'s six independent entries as a symmetric matrix.
 fn inertia_of(i: &urdf_rs::Inertia) -> Matrix3<f64> {
     Matrix3::new(
@@ -499,4 +524,60 @@ fn limit_of(j: &urdf_rs::Joint, kind: JointKind) -> Result<Option<(f64, f64)>, T
         });
     }
     Ok(Some((lower, upper)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How far a bound may lie from the one the test expects (m): the rounding of a turn
+    /// built from an angle.
+    const TOLERANCE: f64 = 1e-9;
+
+    // A primitive's bounds hold it along the frame's axes wherever it is turned: a box turned a
+    // quarter about z swaps its x and y reach, a cylinder lying along x reaches its half
+    // length along x and its radius across, a sphere its radius every way; a mesh has none.
+    #[test]
+    fn a_primitive_is_held_by_its_bounds_along_the_frames_axes() {
+        let center = [1.0, 2.0, 3.0];
+        let at = |turn: UnitQuaternion<f64>| {
+            Isometry3::from_parts(Translation3::new(center[0], center[1], center[2]), turn)
+        };
+        let assert_bounds = |geometry: urdf_rs::Geometry, pose: Isometry3<f64>, half: [f64; 3]| {
+            let (low, high) = primitive_bounds(&geometry, &pose).expect("a primitive");
+            for axis in 0..3 {
+                assert!(
+                    (low[axis] - (center[axis] - half[axis])).abs() <= TOLERANCE
+                        && (high[axis] - (center[axis] + half[axis])).abs() <= TOLERANCE,
+                    "{geometry:?}: {low:?} {high:?}"
+                );
+            }
+        };
+        let quarter = std::f64::consts::FRAC_PI_2;
+        assert_bounds(
+            urdf_rs::Geometry::Box {
+                size: urdf_rs::Vec3([0.4, 0.2, 0.1]),
+            },
+            at(UnitQuaternion::from_euler_angles(0.0, 0.0, quarter)),
+            [0.1, 0.2, 0.05],
+        );
+        assert_bounds(
+            urdf_rs::Geometry::Cylinder {
+                radius: 0.1,
+                length: 0.6,
+            },
+            at(UnitQuaternion::from_euler_angles(0.0, quarter, 0.0)),
+            [0.3, 0.1, 0.1],
+        );
+        assert_bounds(
+            urdf_rs::Geometry::Sphere { radius: 0.25 },
+            at(UnitQuaternion::identity()),
+            [0.25; 3],
+        );
+        let mesh = urdf_rs::Geometry::Mesh {
+            filename: "part.stl".into(),
+            scale: None,
+        };
+        assert_eq!(primitive_bounds(&mesh, &Isometry3::identity()), None);
+    }
 }

@@ -36,7 +36,8 @@
 //! child link in the parent link at a position, and its [`Mimic`] where it follows
 //! another joint. A caller walks it by name ([`Tree::link_index`],
 //! [`Tree::joint_index`]) and by link ([`Tree::parent_joint`], [`Tree::parent_of`]),
-//! and [`pose_of_origin`] reads a URDF `<origin>`.
+//! [`pose_of_origin`] reads a URDF `<origin>`, and [`primitive_bounds`] gives the box along a
+//! frame's axes that holds a URDF box, cylinder or sphere at a pose.
 //!
 //! Frames: forward kinematics reports poses in the **base frame** named by the
 //! spec, and [`Chain::base_from_root`] relates that to the **root frame**, the
@@ -80,7 +81,7 @@ pub use payload::{Payload, segments_carrying};
 pub use rate::{
     DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
-pub use tree::{Joint, JointKind, JointPlacement, Mimic, Tree, pose_of_origin};
+pub use tree::{Joint, JointKind, JointPlacement, Mimic, Tree, pose_of_origin, primitive_bounds};
 
 /// Re-exported so downstream crates speak the same `nalgebra` version this crate
 /// was built against, rather than each picking their own and finding the
