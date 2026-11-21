@@ -1,6 +1,7 @@
 //! The loop that asks another node until it answers, for a node that starts serving
-//! only once it has the answer, and the pause after a failed ask; and the ask of a loop of
-//! the node's own, which answers each request it takes on a channel, within a timeout.
+//! only once it has the answer, and the pause after a failed ask; the wait until another
+//! node answers that it is ready; and the ask of a loop of the node's own, which answers
+//! each request it takes on a channel, within a timeout.
 
 use std::fmt::Display;
 use std::future::Future;
@@ -15,6 +16,10 @@ use crate::time::sleep_unless_cancelled;
 /// is asked once a second.
 const RETRY: Duration = Duration::from_secs(1);
 
+/// Pause after a failed ask or a not-ready answer before the wait until another node
+/// is ready asks again, so a node that is not ready is asked twice a second.
+const READY_RETRY: Duration = Duration::from_millis(500);
+
 /// Asks `ask` until it answers, and gives the answer, or `None` once `cancelled`
 /// resolves. A cancel ends the loop at once, while it asks or waits. The first failure
 /// of a run is logged at warn level as `"{question} failing, suppressing repeats:
@@ -26,7 +31,20 @@ const RETRY: Duration = Duration::from_secs(1);
 pub async fn ask<T, E: Display>(
     question: &str,
     cancelled: impl Future<Output = ()>,
+    ask: impl AsyncFnMut() -> Result<T, E>,
+) -> Option<T> {
+    ask_pausing(question, cancelled, RETRY, ask, |_| true).await
+}
+
+/// [`ask`] until an answer that `settles` takes, pausing `pause` after each failure and
+/// after each answer it does not take. An answer it does not take ends a run of failures
+/// and is logged at no level.
+async fn ask_pausing<T, E: Display>(
+    question: &str,
+    cancelled: impl Future<Output = ()>,
+    pause: Duration,
     mut ask: impl AsyncFnMut() -> Result<T, E>,
+    settles: impl Fn(&T) -> bool,
 ) -> Option<T> {
     let mut cancelled = std::pin::pin!(cancelled);
     let failures = LatchedLog::warn(question.to_owned());
@@ -37,13 +55,29 @@ pub async fn ask<T, E: Display>(
             asked = ask() => asked,
         };
         match asked {
-            Ok(answer) => return Some(answer),
+            Ok(answer) if settles(&answer) => return Some(answer),
+            Ok(_) => failures.success(),
             Err(e) => failures.failure(e),
         }
-        if !sleep_unless_cancelled(RETRY, &mut cancelled).await {
+        if !sleep_unless_cancelled(pause, &mut cancelled).await {
             return None;
         }
     }
+}
+
+/// Asks `ask_ready` whether another node is ready until it answers that it is, as [`ask`]
+/// asks until an answer, asking again 0.5 s after each failed ask and each answer of not
+/// ready. A failed ask is logged as [`ask`] logs it. An answer of not ready, which a node
+/// gives while it comes up, is logged at no level and ends a run of failures. True once the
+/// node is ready, false once `cancelled` resolves.
+pub async fn ask_until_ready<E: Display>(
+    question: &str,
+    cancelled: impl Future<Output = ()>,
+    ask_ready: impl AsyncFnMut() -> Result<bool, E>,
+) -> bool {
+    ask_pausing(question, cancelled, READY_RETRY, ask_ready, |ready| *ready)
+        .await
+        .is_some()
 }
 
 /// Hands `request` to the loop that `requests` feeds, the loop `name` names, and gives the answer
@@ -268,5 +302,76 @@ mod tests {
             ask_loop("coordinator", &requests, reply, answer, within).await,
             Err("the coordinator is not running".to_string())
         );
+    }
+
+    /// The pause of the wait until another node is ready, as its doc states it.
+    const HALF_A_SECOND: Duration = Duration::from_millis(500);
+
+    /// A node that answers not ready, then ready: the wait asks again after the pause and
+    /// ends once it is ready, and logs nothing for the answer of not ready.
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_until_ready_asks_again_until_the_node_is_ready() {
+        let (logged, _guard) = Logged::capture();
+        let answers = RefCell::new(vec![Ok::<_, &str>(true), Ok(false)]);
+        let asked = Listened::at_most(2);
+        let ready = ask_until_ready("robot_init", std::future::pending(), async || {
+            asked.note();
+            answers.borrow_mut().pop().expect("an ask past the answers")
+        })
+        .await;
+        assert!(ready);
+        let asks = asked.at.borrow();
+        assert_eq!(asks.len(), 2);
+        assert_eq!(asks[1] - asks[0], HALF_A_SECOND);
+        assert_eq!(logged.lines_holding("robot_init"), 0);
+    }
+
+    /// A node whose first ask fails, as a service with no producer yet fails: the wait logs
+    /// the failure, asks again after the pause and ends once the node is ready, so a failed
+    /// ask opens no gate.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_ask_of_the_wait_until_ready_is_logged_and_asked_again() {
+        let (logged, _guard) = Logged::capture();
+        let answers = RefCell::new(vec![Ok(true), Err("unbound")]);
+        let asked = Listened::at_most(2);
+        let ready = ask_until_ready("robot_init", std::future::pending(), async || {
+            asked.note();
+            answers.borrow_mut().pop().expect("an ask past the answers")
+        })
+        .await;
+        assert!(ready);
+        let asks = asked.at.borrow();
+        assert_eq!(asks.len(), 2);
+        assert_eq!(asks[1] - asks[0], HALF_A_SECOND);
+        assert_eq!(
+            logged.lines_holding("robot_init failing, suppressing repeats: unbound"),
+            1
+        );
+    }
+
+    /// Asks that keep failing: a cancel during the pause ends the wait unready.
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_ends_the_wait_until_ready_while_the_asks_fail() {
+        let (_logged, _guard) = Logged::capture();
+        let (sender, cancelled) = cancellation();
+        let asked = Listened::at_most(2);
+        let ready = ask_until_ready("robot_init", cancelled, async || {
+            if asked.note() == 2 {
+                cancel(&sender);
+            }
+            Err::<bool, _>("unbound")
+        })
+        .await;
+        assert!(!ready);
+        assert_eq!(asked.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_the_wait_until_ready() {
+        let ready = ask_until_ready("robot_init", std::future::ready(()), async || {
+            Ok::<_, &str>(true)
+        })
+        .await;
+        assert!(!ready);
     }
 }
