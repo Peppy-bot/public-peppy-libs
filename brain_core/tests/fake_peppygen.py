@@ -4,8 +4,10 @@ with no peppygen, no router and no robot.
 
 Each exposed action is a `FakeAction` named as the generated module is:
 its result's fields, which the fake goal context checks every end against,
-its `FailureKind` and `Failure`, which refuse an undeclared kind as the
-generated ones do, and its `GoalDecision`. `ActionHandle.expose` gives an
+the fields of its feedback and the stages its contract lists, which the
+fake goal context checks every report against, its `FailureKind` and
+`Failure`, which refuse an undeclared kind as the generated ones do, and
+its `GoalDecision`. `ActionHandle.expose` gives an
 action that never receives a goal, and `handle_requests` a service
 that never receives a request, for a node that boots and stops. The
 limb_motion, motion_planning and transform_lookup clients are scripted by
@@ -76,15 +78,33 @@ async def _expose_no_goals(node_runner) -> _NoGoals:
     return _NoGoals()
 
 
+# The fields of the feedback of each action of the brain that has a
+# feedback topic.
+FEEDBACK_FIELDS = ("stage", "activity", "number", "maximum")
+# The stages the feedback of each such action lists, as its contract's enum
+# of `stage` gives them.
+SEARCH_STAGES = ("look",)
+GRAB_STAGES = ("plan", "move_above", "align_look", "align_move", "grasp")
+DROP_STAGES = ("plan", "move_above", "align_look", "align_move", "release")
+PLACE_STAGES = ("plan", "move_above", "align_look", "align_move", "set_down")
+
+
 class FakeAction:
     """A generated exposed action module: `ACTION_NAME`, the fields of its
-    result, `FailureKind` and `Failure`, `GoalDecision`, an `ActionHandle`
-    that exposes an action receiving no goal, and the record types of its
-    result, `records`, each by its generated name."""
+    result, the fields of its feedback and the stages of its contract, none
+    for an action with no feedback topic, `FailureKind` and `Failure`,
+    `GoalDecision`, an `ActionHandle` that exposes an action receiving no
+    goal, and the record types of its result, `records`, each by its
+    generated name."""
 
-    def __init__(self, name: str, result_fields: tuple[str, ...], *contract_kinds: str, records: Optional[dict] = None) -> None:
+    def __init__(
+        self, name: str, result_fields: tuple[str, ...], *contract_kinds: str, records: Optional[dict] = None,
+        stages: tuple[str, ...] = (),
+    ) -> None:
         self.ACTION_NAME = name
         self.RESULT_FIELDS = frozenset(result_fields)
+        self.FEEDBACK_FIELDS = frozenset(FEEDBACK_FIELDS) if stages else frozenset()
+        self.FEEDBACK_STAGES = frozenset(stages)
         self.FailureKind, self.Failure = failure_types(name, *contract_kinds)
         for record_name, record_type in (records or {}).items():
             setattr(self, record_name, record_type)
@@ -141,19 +161,19 @@ IMAGE_FIELDS = ("camera", "image_width", "image_height", "action_time")
 # identify_item lists.
 scan_items = FakeAction(
     "scan_items", ("item_ids", "labels", "frame", "timestamp", "points", "confidences", "regions", *IMAGE_FIELDS),
-    records={"ResultPointsItem": PositionRecord},
+    records={"ResultPointsItem": PositionRecord}, stages=SEARCH_STAGES,
 )
 identify_item = FakeAction(
     "identify_item", ("item_id", "label", "item_point", "item_pose", "confidence", "region", *IMAGE_FIELDS), "not_found",
-    records={"ResultItemPoint": PointRecord, "ResultItemPose": PoseRecord},
+    records={"ResultItemPoint": PointRecord, "ResultItemPose": PoseRecord}, stages=SEARCH_STAGES,
 )
 
 # item_manipulation:v1: success and message in each result.
-grab_item = FakeAction("grab_item", ("success", "message", "gripper_name", "item_id", "action_time"), *LOOKUP_KINDS)
-drop_item = FakeAction("drop_item", ("success", "message", "gripper_name", "item_id", "action_time"))
+grab_item = FakeAction("grab_item", ("success", "message", "gripper_name", "item_id", "action_time"), *LOOKUP_KINDS, stages=GRAB_STAGES)
+drop_item = FakeAction("drop_item", ("success", "message", "gripper_name", "item_id", "action_time"), stages=DROP_STAGES)
 place_item = FakeAction(
     "place_item", ("success", "message", "gripper_name", "item_id", "final_point", "action_time"), *LOOKUP_KINDS,
-    records={"ResultFinalPoint": PointRecord},
+    records={"ResultFinalPoint": PointRecord}, stages=PLACE_STAGES,
 )
 abort = FakeAction("abort", ("success", "message", "aborted_action", "action_time"))
 

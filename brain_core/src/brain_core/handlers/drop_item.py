@@ -3,12 +3,16 @@ stands or, with `target_item_id`, above that item: the brain carries the
 held item over it and opens there with no descent. An absent or empty id
 names no target. The brain forgets the dropped item
 (`Brain.release_dropped`). The result names the item the gripper held when
-the drop started, also when a forget ran during the drop."""
+the drop started, also when a forget ran during the drop. The manipulator
+publishes the stages of the drop through the reports of the goal, which
+name the held item and the target item by their labels
+(`stages.CarryReports`)."""
 
 from __future__ import annotations
 
 from ..brain import RESULT_ENDS
 from ..ports import ExpectedFailure, FailureKind, Role
+from ..stages import CarryReports, reporter_of
 
 ZERO = dict(gripper_name="", item_id="")
 
@@ -24,7 +28,8 @@ async def run(brain, ctx, goal) -> None:
             # A drop above a target plans a carry: the scene equal to the
             # held flags first, so the held item rides attached to the arm.
             await brain.make_scene_follow_holds()
-        outcome = await manipulator.drop(gripper, job.cancel, above=target)
+        reports = CarryReports(reporter_of(ctx), brain.state.label_of(item_id), target)
+        outcome = await manipulator.drop(gripper, job.cancel, reports, above=target)
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the release failed")

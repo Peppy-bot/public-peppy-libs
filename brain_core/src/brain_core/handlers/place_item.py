@@ -8,7 +8,9 @@ frame or of the lookup's answer is refused in the result. The result names
 the item the gripper held when the place started, also when a forget ran
 during the place, and where the measured grasp point stood when the jaws
 opened, in the robot frame at the time of that measurement, absent when
-the manipulator measured none."""
+the manipulator measured none. The manipulator publishes the stages of the
+place through the reports of the goal, which name the held item and the
+target item by their labels (`stages.CarryReports`)."""
 
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from typing import Optional
 
 from ..brain import RESULT_ENDS, GoalTarget, placed_target
 from ..ports import ExpectedFailure, FailureKind, Role
+from ..stages import CarryReports, reporter_of
 
 ZERO = dict(gripper_name="", item_id="", final_point=None)
 
@@ -52,7 +55,8 @@ async def run(brain, ctx, goal: Goal) -> None:
         # The scene equal to the held flags before the manipulator plans, so
         # the held item rides attached to the arm.
         await brain.make_scene_follow_holds()
-        outcome = await manipulator.place(gripper, into if into is not None else pose, job.cancel)
+        reports = CarryReports(reporter_of(ctx), brain.state.label_of(item_id), into)
+        outcome = await manipulator.place(gripper, into if into is not None else pose, job.cancel, reports)
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the placement failed")

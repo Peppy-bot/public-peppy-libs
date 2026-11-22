@@ -279,6 +279,13 @@ class State:
 
     # Items
 
+    def label_of(self, item_id: str) -> str:
+        """The label of the known item `item_id`, or "" for an item the
+        brain no longer knows, such as the item of a grab that ended after a
+        forget."""
+        item = self.items.get(item_id)
+        return item.label if item is not None else ""
+
     def item(self, item_id: str) -> Item:
         item = self.items.get(item_id)
         if item is None:

@@ -24,6 +24,7 @@ from brain_core.perception.geometry import NOT_DESCRIBED, LookupFailure
 from brain_core.perception.perceiver import SourceReason
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role, TargetItem
+from brain_core.stages import CarryReports, GrabReports, Report
 
 from fake_peppygen import ROBOT_FRAME
 
@@ -139,15 +140,46 @@ class FakeDetector:
         return self.coverage
 
 
+class Reports:
+    """A reporter that keeps each report it is given, in order, and, given
+    `calls`, the list of a fake robot's calls, also puts each one there as
+    ("report", stage, number, maximum), so a test reads the reports in order
+    with the moves."""
+
+    def __init__(self, calls: Optional[list] = None) -> None:
+        self.reports: list[Report] = []
+        self.calls = calls
+
+    async def __call__(self, report: Report) -> None:
+        self.reports.append(report)
+        if self.calls is not None:
+            self.calls.append(("report", report.stage.value, report.number, report.maximum))
+
+    @property
+    def stages(self) -> list[tuple[str, int, int]]:
+        return [(report.stage.value, report.number, report.maximum) for report in self.reports]
+
+
+async def not_followed(report: Report) -> None:
+    """The reporter of a test that does not read the feedback."""
+
+
+# The reports of a grab of the cup and of a place or a drop of it, for the
+# tests that do not read the feedback.
+QUIET_GRAB = GrabReports(not_followed, "cup")
+QUIET_CARRY = CarryReports(not_followed, "cup")
+
+
 # When the fake manipulator's backbone measured the grasp point of a place.
 PLACE_MEASURED_AT = 2.5
 
 
 class FakeManipulator:
     """Succeeds at once unless told to fail, to wait for a stop or to wait
-    for `release` to be set. `begun` resolves when a sequence has reached
-    it, so a test knows the sequence is running without waiting on the
-    clock."""
+    for `release` to be set, and publishes no report: it keeps the reports
+    of the last sequence in `reports`. `begun` resolves when a sequence has
+    reached it, so a test knows the sequence is running without waiting on
+    the clock."""
 
     name = "fake"
 
@@ -160,6 +192,7 @@ class FakeManipulator:
         self.wait_for_stop = wait_for_stop
         self.release = release
         self.calls: list[tuple] = []
+        self.reports: Optional[Union[GrabReports, CarryReports]] = None
         self.stopped = 0
         self.senses = None
         self.robot = None
@@ -192,18 +225,23 @@ class FakeManipulator:
             return Outcome(False, self.fail)
         return Outcome(True, "", final_position, PLACE_MEASURED_AT if final_position is not None else 0.0, closed_at)
 
-    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
+    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, reports: GrabReports) -> Outcome:
         self.calls.append(("grab", item.item_id, gripper.name, max_effort))
+        self.reports = reports
         return await self._run(cancel, closed_at=self.closed_at)
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+    async def drop(
+        self, gripper: Gripper, cancel: CancelToken, reports: CarryReports, above: Optional[TargetItem] = None
+    ) -> Outcome:
         self.calls.append(("drop", gripper.name) if above is None else ("drop", gripper.name, above.item_id))
+        self.reports = reports
         return await self._run(cancel)
 
-    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken, reports: CarryReports) -> Outcome:
         """A place at a pose reports the jaws opened 1 cm above it; a place
         into a target item, 1 cm above the item's top at its centre; each
         measured at PLACE_MEASURED_AT."""
+        self.reports = reports
         if isinstance(to, TargetItem):
             self.calls.append(("place", gripper.name, to.item_id))
             return await self._run(cancel, final_position=(to.centre[0], to.centre[1], to.top_z + 0.01))
@@ -222,10 +260,13 @@ class FakeCtx:
     """Stands in for the generated GoalContext of `action`, a fake
     generated module: holds the goal, records how it ended, once, after
     checking that a result's fields are the ones the action's result
-    carries and that a failure's kind is one the action declares, and lets
-    a test send the goal its cancel signal, with the cause a caller's
-    cancel or a sender that is gone gives and the reason peppy gives for
-    that cause."""
+    carries and that a failure's kind is one the action declares, records
+    each feedback message in `feedback`, after checking that its fields are
+    the ones the action's feedback carries, that its stage is one the
+    action's contract lists and that the goal has not ended, and lets a
+    test send the goal its cancel signal, with the cause a caller's cancel
+    or a sender that is gone gives and the reason peppy gives for that
+    cause."""
 
     def __init__(self, action, **data) -> None:
         self.action = action
@@ -236,6 +277,7 @@ class FakeCtx:
         self.cancelled: Optional[dict] = None
         self.cancelled_reason: Optional[str] = None
         self.failed = None
+        self.feedback: list[dict] = []
 
     def request(self):
         return self._request
@@ -262,6 +304,28 @@ class FakeCtx:
     @property
     def ended(self) -> bool:
         return self.completed is not None or self.cancelled is not None or self.failed is not None
+
+    async def publish_feedback(self, **fields) -> None:
+        action = self.action
+        assert action.FEEDBACK_FIELDS, f"{action.ACTION_NAME} has no feedback topic"
+        assert not self.ended, f"{action.ACTION_NAME} published feedback after its goal ended"
+        assert set(fields) == action.FEEDBACK_FIELDS, (
+            f"{action.ACTION_NAME} published {sorted(fields)}, its feedback carries {sorted(action.FEEDBACK_FIELDS)}"
+        )
+        assert fields["stage"] in action.FEEDBACK_STAGES, f"{action.ACTION_NAME} lists no stage {fields['stage']!r}"
+        assert isinstance(fields["activity"], str) and fields["activity"]
+        assert all(isinstance(fields[name], int) and fields[name] >= 0 for name in ("number", "maximum"))
+        self.feedback.append(fields)
+
+    @property
+    def stages(self) -> list[tuple[str, int, int]]:
+        """Each feedback message's stage, number and maximum, in order."""
+        return [(fields["stage"], fields["number"], fields["maximum"]) for fields in self.feedback]
+
+    @property
+    def activities(self) -> list[str]:
+        """Each feedback message's sentence, in order."""
+        return [fields["activity"] for fields in self.feedback]
 
     async def complete(self, **fields) -> None:
         self._check_end(fields)

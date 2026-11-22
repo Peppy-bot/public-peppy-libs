@@ -8,6 +8,12 @@ lanes, the failure kinds and the result rules), the robot proxy, the camera
 frames and geometry, and the loop of each exposed member. A node brings its
 generated peppygen modules and its backends, and calls `node.setup`.
 
+Each action with a feedback topic (grab_item, drop_item, place_item,
+scan_items and identify_item) publishes one feedback message at the start of
+each stage of a goal: the stage, one sentence for the person who looks at
+the robot, and the number and the maximum of a stage that repeats (see "The
+feedback of a goal" below).
+
 item_perception and brain_model report a refusal or a failure by the status
 of the goal: a refused goal and a failed goal carry a failure kind and a
 message, and a failed goal gives no result. item_manipulation reports both in
@@ -96,6 +102,7 @@ the starting model of each role, `perception_model` and
 |---|---|
 | `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `ItemShape`, `TargetItem`, the item a place or a drop puts the held item in or on, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the place of the frame a picture names at its capture time), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
+| `stages` | The feedback of a goal: the `Stage` of each action, the `Report` (the stage, its sentence, its number and maximum), `reporter_of`, the `Reporter` of a goal context, and the one place that writes every sentence: `scan_look` and `identify_look` for a search, `GrabReports` and `CarryReports`, the reports of a manipulation goal bound to the labels of its items, which a manipulator and its aligner (`AlignReports`) call by stage |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, `target_item`, the target value of a place or a drop or its refusal, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
@@ -106,7 +113,7 @@ the starting model of each role, `perception_model` and
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
 | `perception` | The `Perceiver` (frames in, world detections out, each with its shape for the motion planner, which the look's log line names), `item_points` (the depth readings inside a box, less the surface under the item, the group that holds the reading nearest the box's centre) and `item_box` (the upright box around them, turned to the smallest rectangle from above, from the surface to the highest point: an `ItemShape`), the frame store, the camera model, the intrinsics learner and the `Placer` (the robot frame from sensor_mounts; the frame a picture names at its capture time, and a goal's target at its timestamp, placed in it by transform_lookup), `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
-| `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
+| `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, each given the reports of its goal, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent, given the reports of the goal |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
 ## Tests
@@ -117,6 +124,8 @@ uv sync --frozen && uv run --frozen pytest
 
 The tests run every core rule against fakes of the generated modules
 (`tests/fake_peppygen.py`): no peppygen, no router, no robot and no model.
+The fake goal context (`tests/conftest.py`, `FakeCtx`) checks each feedback
+message against the feedback fields and the stages of its action.
 
 ## How it works
 
@@ -177,7 +186,7 @@ classDiagram
         shutdown()
         check_search()
         run_guarded(ctx, lane, action, body, zero, ends, asked)
-        look(job, detector, phrases, timeout_s) Look
+        look(job, detector, phrases, timeout_s, publish, report) Look
         manipulator_or_refuse(manipulator)
         hold(gripper, item_id, closed_at)
         release_placed(gripper, item_id, position, orientation)
@@ -241,9 +250,9 @@ classDiagram
         <<interface>>
         why_unavailable()
         start(robot, limb_states)
-        grab()
-        drop()
-        place()
+        grab(reports)
+        drop(reports)
+        place(reports)
         stop()
     }
     class Robot {
@@ -332,10 +341,12 @@ sequenceDiagram
             B->>T: body(job)
             T->>M: current(PERCEPTION), once, at the start of the body
             M-->>T: the perception model
-            T->>B: look(job, detector, phrases, timeout_s)
+            T->>B: look(job, detector, phrases, timeout_s, publish, report)
             B->>D: why_unavailable(): checked again
+            B->>P: refuse_unless_ready(): the frames and the camera model, checked again
+            B-->>C: feedback: look, "The robot looks for the cup"
             B->>P: scan(detector, phrases, job.cancel, timeout_s)
-            P->>P: the frames and the camera model, checked again
+            P->>P: the frames and the camera model, checked once more
             P->>P: the frame the picture names, at its time, from transform_lookup
             P->>D: await detect(image, phrases, deadline)
             D-->>P: boxes, or SearchTimeout, or an ExpectedFailure
@@ -360,6 +371,76 @@ A Refusal or an ExpectedFailure raised in the body goes up to
 result, `RESULT_ENDS` completes it with success false and the message. A
 search past its bound fails with `timeout`, and any other exception with
 `attempt_failed`. `action_time` is the elapsed time whatever the outcome.
+
+### The feedback of a goal
+
+grab_item, drop_item and place_item of item_manipulation, and scan_items
+and identify_item of item_perception, publish one feedback message at the
+start of each stage of a goal (`stages.Report`): `stage`, `activity`, the
+sentence, which has the mark `activity` that the workflow director reads,
+and `number` and `maximum`. A stage that repeats, a question to the
+aligning model or a correction it gives, has its number from 1 and how many
+times it can repeat in the goal, and its sentence ends with " (N of M)", so
+the sentence alone tells one repeat from the next. Any other stage has 0
+and 0. No sentence ends with a full stop.
+
+Each sentence is for a person who looks at the robot and is not technical:
+it names the robot, its arm, its hand and each item by its label, in lower
+case with an underscore as a space (`stages.the_item`), and "the item" for
+an item with no label, such as one a goal addressed by pose. It names no
+link, joint, contract or model, and no term of the motion planner.
+
+| Goal | Stage | Sentence, for an apple and a bowl |
+|---|---|---|
+| grab_item | `plan` | The robot opens its hand for the apple and finds a way to reach it |
+| | `move_above` | The robot moves its hand above the apple |
+| | `align_look` | The robot looks at the apple and decides how to correct its hand (2 of 5) |
+| | `align_move` | The robot corrects the position of its hand above the apple (2 of 5) |
+| | `grasp` | The robot lowers its hand, closes it on the apple and lifts it |
+| place_item into the bowl | `plan` | The robot finds a way to carry the apple above the bowl |
+| | `move_above` | The robot carries the apple above the bowl |
+| | `align_look` | The robot looks at the bowl and decides where to put the apple (1 of 2) |
+| | `align_move` | The robot corrects the position of the apple above the bowl (1 of 2) |
+| | `set_down` | The robot lowers the apple into the bowl, opens its hand and moves its arm back up |
+| place_item at a pose | `plan` | The robot finds a way to carry the apple above the spot where it puts it down |
+| | `move_above` | The robot carries the apple above the spot where it puts it down |
+| | `align_look` | The robot looks down and decides where to put the apple (1 of 2) |
+| | `align_move` | The robot corrects the position of the apple above the spot where it puts it down (1 of 2) |
+| | `set_down` | The robot puts the apple down, opens its hand and moves its arm back up |
+| drop_item above the bowl | `plan`, `move_above`, `align_look`, `align_move` | As place_item into the bowl |
+| | `release` | The robot opens its hand and lets the apple fall into the bowl |
+| drop_item with no target item, or with jaws closed on air | `release` | The robot opens its hand and lets go of the apple |
+| scan_items | `look` | The robot looks for each item that it can see |
+| identify_item, "a red cup" | `look` | The robot looks for the red cup |
+| identify_item, "" | `look` | The robot looks for an item that it can take |
+
+A search publishes `look` in `Brain.look`, once the detector, the frames and
+the camera model can serve it, before the detector looks; identify_item
+replaces the first article of its description with "the". A manipulation
+handler makes the reports of its goal once the rules of its names passed
+(`GrabReports` with the label of the item, `CarryReports` with the label of
+the held item, from `State.label_of`, and the target item), and hands them
+to the manipulator, which publishes each stage as it starts and hands them
+to its aligner. The scripted manipulator publishes, for a grab, `plan`
+before the jaws open for the item, `move_above` once an orientation
+reaches and before the transit runs, and `grasp` before the descent; for a
+place, `plan` once its checks before any move passed, `move_above` as a
+grab's, and `set_down` before the line down; for a drop above a target
+item, `plan` and `move_above` as a place's, then `release` before the jaws
+open; for any other drop, and a drop whose jaws stand closed on air,
+`release` alone. The second path of a grab's transit stays in `plan` (the
+close of the jaws, the plans with the hand closed) and in `move_above` (the
+run of the plan, the open at the pre-grasp point). An aligner publishes
+`align_look` at the start of each question to its model and `align_move`
+before each correction that it moves, with the number of the step and the
+steps of its alignment.
+
+A goal refused before its first stage publishes nothing: a refusal of its
+decision, a refusal of its names or its source when it starts, and a
+sequence that the manipulator ends before its first stage, such as a place
+whose jaws stand closed on air. abort, get_state, forget and switch_model
+publish nothing. A report that the goal context cannot publish is logged,
+and the goal goes on: what the robot does never depends on its feedback.
 
 ### A scripted grab
 
@@ -417,15 +498,18 @@ sequenceDiagram
     participant P as GraspProposer
     participant R as Robot
     participant L as LimbStateStore
-    H->>SM: grab(item, gripper, max_effort, cancel)
+    H->>SM: grab(item, gripper, max_effort, cancel, reports)
     SM->>P: propose(item)
     P-->>SM: Grasp: the point, the orientations to try
+    Note over SM: feedback: plan
     SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
     loop each orientation, until one plans
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
     Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>", the jaws go back to their opening before the grab
+    Note over SM: feedback: move_above
     SM->>R: move_arm(pre-grasp): settles, or fails
+    Note over SM: feedback: grasp
     SM->>R: move_arm(grasp point), a line down: settles or ends on contact, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"

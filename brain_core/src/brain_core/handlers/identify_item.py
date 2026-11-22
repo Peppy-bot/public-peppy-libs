@@ -2,12 +2,15 @@
 the manipulation actions accept and its region in the picture the search
 looked at, its point, and its pose where the detector resolved how it is
 turned, each in the robot frame at the capture time of that picture. A
-search that finds no such item fails with `not_found`."""
+search that finds no such item fails with `not_found`. The feedback gives
+the one stage, look, once the checks of the search passed (`Brain.look`),
+in a sentence that names the description."""
 
 from __future__ import annotations
 
 from ..brain import STATUS_ENDS
 from ..ports import Coverage, ExpectedFailure, FailureKind, Role
+from ..stages import identify_look, reporter_of
 from ..state import best_match
 
 ZERO = dict(
@@ -28,7 +31,7 @@ async def run(brain, ctx, goal) -> None:
     async def body(job) -> dict:
         detector = brain.models.current(Role.PERCEPTION)
         phrases = [description] if description else []
-        look = await brain.look(job, detector, phrases, goal.timeout_s)
+        look = await brain.look(job, detector, phrases, goal.timeout_s, publish=reporter_of(ctx), report=identify_look(description))
         best = best_match(look.detections, description)
         if best is None:
             if description:
