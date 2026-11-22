@@ -88,14 +88,19 @@ of a run that ended, the `Suspension` of a suspended run, each
 empty optional one, and its read refuses any other missing field. A `RunEvent`
 is one event of a run, of an `EventKind`, as the feedback of `run`, `resume`
 and `abort` and the topic `run_events` give it, and reads the result, the
-suspension or the assumptions that wait from its details. A run result gives
+suspension or the assumptions that wait from its details. The event
+`step_reports` gives a new sentence of the work of the call of a step: the
+sentence of the field with the mark `activity` of the feedback of its goal is
+its message, and that feedback message its details. A run result gives
 the work cell block of the run, each watch value that the director read, and
 each of these values that no test covered (`Uncovered`); the event
 `uncovered` gives these values, and the event `checks_to_judge` gives each
 check of a run of a trial with its value (`CheckToJudge`).
 
 The marks (`marks`) are the marks of fields and members that the director
-reads: `item_id`, `reaches_for_item`, `checks_reach` and `location`.
+reads: `item_id`, `reaches_for_item`, `checks_reach` and `location`, which its
+checker reads, and `activity`, whose sentence its run gives as the event
+`step_reports`.
 `Workflow::names_before_calls` gives, for each call of a role, the results
 and the loop elements named before it on every path, which the director
 reads to find the reach checks before a reaching call.

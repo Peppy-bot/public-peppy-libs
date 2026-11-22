@@ -23,6 +23,10 @@ pub enum EventKind {
     InitializationStarts,
     ActionsStart,
     StepStarts,
+    /// A new sentence of the work of the call of a step, from the field
+    /// with the mark `activity` of the feedback of its goal: the sentence
+    /// is the message, and the feedback message the details.
+    StepReports,
     StepEnds,
     LaneSuspends,
     LaneResumes,
@@ -35,7 +39,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [EventKind; 16] = [
+    pub const ALL: [EventKind; 17] = [
         EventKind::RunStarts,
         EventKind::ToConfirm,
         EventKind::Differences,
@@ -44,6 +48,7 @@ impl EventKind {
         EventKind::InitializationStarts,
         EventKind::ActionsStart,
         EventKind::StepStarts,
+        EventKind::StepReports,
         EventKind::StepEnds,
         EventKind::LaneSuspends,
         EventKind::LaneResumes,
@@ -70,6 +75,7 @@ impl EventKind {
             EventKind::InitializationStarts => "initialization_starts",
             EventKind::ActionsStart => "actions_start",
             EventKind::StepStarts => "step_starts",
+            EventKind::StepReports => "step_reports",
             EventKind::StepEnds => "step_ends",
             EventKind::LaneSuspends => "lane_suspends",
             EventKind::LaneResumes => "lane_resumes",
