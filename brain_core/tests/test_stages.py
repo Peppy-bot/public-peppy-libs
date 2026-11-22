@@ -168,8 +168,12 @@ async def test_the_release_of_a_drop_names_the_target_only_above_it():
     ("apple", "the apple"),
     ("coffee_can", "the coffee can"),
     (" Red  Cup ", "the red cup"),
+    # A model can give a label with its own article.
+    ("the cup", "the cup"),
+    ("A red_cup", "the red cup"),
     # An item a goal addressed by pose, or one a forget dropped.
     ("", "the item"),
+    ("the", "the item"),
 ])
 def test_an_item_is_its_label_in_lower_case_with_spaces_or_the_item(label, words):
     assert the_item(label) == words

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # The words of an item with no label.
 NO_LABEL = "item"
-# The articles a description can start with, which the sentence of a search
+# The articles a label or a description can start with, which a sentence
 # replaces with its own.
 ARTICLES = frozenset({"a", "an", "the"})
 
@@ -115,8 +115,12 @@ def reporter_of(ctx) -> Reporter:
 
 def the_item(label: str) -> str:
     """An item as a sentence names it: "the" and its label, in lower case,
-    an underscore as a space, or "the item" for an item with no label."""
-    return f"the {normalised(label) or NO_LABEL}"
+    an underscore as a space, the first article of the label replaced (a
+    model can label an item "the cup"), or "the item" for an item with no
+    label."""
+    first, _, rest = normalised(label).partition(" ")
+    words = rest if first in ARTICLES else normalised(label)
+    return f"the {words or NO_LABEL}"
 
 
 def scan_look() -> Report:
@@ -126,14 +130,12 @@ def scan_look() -> Report:
 
 def identify_look(description: str) -> Report:
     """The look of identify_item for `description`, the caller's words, its
-    first article replaced: "a red cup" gives "the red cup". An empty
-    description asks for the item the brain judges most prominent."""
-    words = normalised(description).split()
-    if not words:
+    first article replaced as `the_item` replaces it: "a red cup" gives "the
+    red cup". An empty description asks for the item the brain judges most
+    prominent."""
+    if not normalised(description):
         return Report(Stage.LOOK, "The robot looks for an item that it can take")
-    if words[0] in ARTICLES:
-        words = words[1:]
-    return Report(Stage.LOOK, f"The robot looks for {the_item(' '.join(words))}")
+    return Report(Stage.LOOK, f"The robot looks for {the_item(description)}")
 
 
 class AlignReports(Protocol):

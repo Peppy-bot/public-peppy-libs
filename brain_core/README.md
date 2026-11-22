@@ -386,8 +386,9 @@ and 0. No sentence ends with a full stop.
 
 Each sentence is for a person who looks at the robot and is not technical:
 it names the robot, its arm, its hand and each item by its label, in lower
-case with an underscore as a space (`stages.the_item`), and "the item" for
-an item with no label, such as one a goal addressed by pose. It names no
+case with an underscore as a space and its first article replaced by "the"
+(a model can label an item "the cup") (`stages.the_item`), and "the item"
+for an item with no label, such as one a goal addressed by pose. It names no
 link, joint, contract or model, and no term of the motion planner.
 
 | Goal | Stage | Sentence, for an apple and a bowl |
