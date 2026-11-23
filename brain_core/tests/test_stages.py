@@ -4,9 +4,11 @@ stage of a sequence among the robot's calls, and the stages each handler
 publishes, none for a goal refused before it starts."""
 
 import asyncio
+import re
 
 import pytest
 from conftest import UNREAD_TARGET, FakeCtx, FakeDetector, Reports, make_brain, records_of, run_goal, target, with_frames
+from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
 from fake_peppygen import grab_item as grab_action
 from fake_peppygen import identify_item as identify_action
@@ -53,11 +55,14 @@ class ScriptedAligningModel:
     answer per step of `max_steps`: each step publishes its question, a move
     (dx, dy, in metres) publishes its correction and moves the gripper
     sideways through the manipulator, and READY ends Aligned where the
-    gripper stands. Steps that run out end OutOfSteps."""
+    gripper stands. Steps that run out end OutOfSteps. It numbers its steps
+    from `first_step`: 1, as the reports take them, unless a test gives a
+    model that counts wrong."""
 
-    def __init__(self, *answers, max_steps: int = 3) -> None:
+    def __init__(self, *answers, max_steps: int = 3, first_step: int = 1) -> None:
         self.answers = answers
         self.max_steps = max_steps
+        self.first_step = first_step
 
     def start(self, senses) -> None:
         return None
@@ -68,13 +73,14 @@ class ScriptedAligningModel:
     async def align(self, request, moves, cancel, reports):
         pre, point = request.pre, request.point
         for step, answer in enumerate(self.answers[: self.max_steps], start=1):
-            await reports.align_look(step, self.max_steps)
+            number = step - 1 + self.first_step
+            await reports.align_look(number, self.max_steps)
             if answer == READY:
                 return Aligned(pre, point, lifted(point, request.lift_m), request.orientation, steps=step)
             dx, dy = answer
             pre = (pre[0] + dx, pre[1] + dy, pre[2])
             point = (point[0] + dx, point[1] + dy, point[2])
-            await reports.align_move(step, self.max_steps)
+            await reports.align_move(number, self.max_steps)
             await moves.move_to(request.gripper.arm, pre, request.orientation)
         return OutOfSteps(self.max_steps)
 
@@ -207,6 +213,37 @@ def test_a_report_is_number_0_of_0_or_a_number_from_1_to_its_maximum(number, max
         Report(Stage.ALIGN_LOOK, "The robot looks", number, maximum)
 
 
+@pytest.mark.parametrize("number, maximum", [(6, 5), (0, 5), (1, 0), (-1, 5)])
+@pytest.mark.parametrize("stage, sentence", [
+    ("align_look", "The robot looks at the cup and decides how to correct its hand"),
+    ("align_move", "The robot corrects the position of its hand above the cup"),
+])
+async def test_a_repeat_of_a_grab_with_numbers_no_report_takes_is_logged_and_publishes_nothing(caplog, stage, sentence, number, maximum):
+    reports = Reports()
+    with records_of(caplog, "brain_core.stages") as log:
+        await getattr(GrabReports(reports, "cup"), stage)(number, maximum)
+    assert reports.reports == []
+    refusal = f"a report is number 0 of 0, or number 1 to its maximum: got {number} of {maximum}"
+    assert [record.getMessage() for record in log.records if record.name == "brain_core.stages"] == [
+        f"the feedback '{sentence}' was not published: ValueError('{refusal}')"
+    ]
+
+
+@pytest.mark.parametrize("stage, sentence", [
+    ("align_look", "The robot looks down and decides where to put the cup"),
+    ("align_move", "The robot corrects the position of the cup above the spot where it puts it down"),
+])
+async def test_a_repeat_of_a_carry_with_numbers_no_report_takes_is_logged_and_publishes_nothing(caplog, stage, sentence):
+    reports = Reports()
+    with records_of(caplog, "brain_core.stages") as log:
+        await getattr(CarryReports(reports, "cup"), stage)(3, 2)
+    assert reports.reports == []
+    assert [record.getMessage() for record in log.records if record.name == "brain_core.stages"] == [
+        f"the feedback '{sentence}' was not published: "
+        "ValueError('a report is number 0 of 0, or number 1 to its maximum: got 3 of 2')"
+    ]
+
+
 # The reporter of a goal context.
 
 
@@ -216,6 +253,45 @@ async def test_the_reporter_of_a_goal_publishes_each_report_as_the_fields_of_the
     assert ctx.feedback == [
         dict(stage="align_look", activity="The robot looks at the cup and decides how to correct its hand (1 of 5)", number=1, maximum=5),
     ]
+
+
+# A sentence of a grab, whose action gives the stages of a grab alone.
+OPENS = "The robot opens its hand for the cup and finds a way to reach it"
+
+
+@pytest.mark.parametrize("fields, fault", [
+    (dict(stage="set_down", activity=OPENS, number=0, maximum=0), "grab_item lists no stage 'set_down'"),
+    (dict(stage="plan", activity="", number=0, maximum=0), "grab_item published the activity '', which is no sentence"),
+    (dict(stage="plan", activity=OPENS, number=-1, maximum=0), "grab_item published the number -1, which is no count"),
+    (dict(stage="plan", activity=OPENS, number=0, maximum=None), "grab_item published the maximum None, which is no count"),
+    (
+        dict(stage="plan", activity=OPENS),
+        "grab_item published ['activity', 'stage'], its feedback carries ['activity', 'maximum', 'number', 'stage']",
+    ),
+])
+async def test_a_goal_context_keeps_what_is_wrong_in_a_feedback_message_its_action_cannot_give(fields, fault):
+    ctx = FakeCtx(grab_action)
+    with pytest.raises(AssertionError, match=f"^{re.escape(fault)}$"):
+        await ctx.publish_feedback(**fields)
+    assert ctx.feedback == []
+    assert ctx.take_feedback_faults() == [fault]
+
+
+async def test_a_goal_context_keeps_the_feedback_that_its_goal_publishes_after_its_end():
+    """The reporter of the goal logs the raise of the goal context, so the
+    fault that the context keeps is what fails the test."""
+    ctx = FakeCtx(grab_action)
+    await ctx.fail("attempt_failed", "the jaws closed on nothing")
+    await reporter_of(ctx)(Report(Stage.GRASP, "The robot lowers its hand, closes it on the cup and lifts it"))
+    assert ctx.feedback == []
+    assert ctx.take_feedback_faults() == ["grab_item published feedback after its goal ended"]
+
+
+async def test_a_goal_context_of_an_action_with_no_feedback_topic_takes_no_feedback():
+    ctx = FakeCtx(abort_action)
+    with pytest.raises(AssertionError, match="^abort has no feedback topic$"):
+        await ctx.publish_feedback(stage="look")
+    assert ctx.take_feedback_faults() == ["abort has no feedback topic"]
 
 
 class UnpublishedCtx(FakeCtx):
@@ -267,6 +343,30 @@ async def test_a_grab_reports_each_stage_as_it_starts_and_the_number_of_each_que
         ("move", aligned_point, q),
         ("grip", "left_gripper", 0.0, 12.0),
         ("move", aligned_lift, q),
+    ]
+
+
+async def test_a_grab_whose_aligner_numbers_its_steps_wrong_goes_on_and_reports_its_other_stages():
+    """An aligning model that counts its steps from 0 gives a number no
+    report takes for its first question and its first correction: neither
+    is published, the correction moves the gripper, and the grab holds the
+    item."""
+    manipulator, robot, store = await started(aligner=ScriptedAligningModel((0.01, 0.0), READY, first_step=0))
+    q = DOWN[0]
+    aligned_pre, aligned_point = shifted(PRE, 0.01), shifted(GRASP, 0.01)
+    holding_after_the_lift(robot, store)
+    reports = Reports(robot.calls)
+    assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken(), GrabReports(reports, "cup")) == HELD
+    assert robot.calls[robot.calls.index(("report", "move_above", 0, 0)):] == [
+        ("report", "move_above", 0, 0),
+        ("move", PRE, q),
+        # The question and the correction of step 0 publish nothing.
+        ("move", aligned_pre, q),
+        ("report", "align_look", 1, 3),
+        ("report", "grasp", 0, 0),
+        ("move", aligned_point, q),
+        ("grip", "left_gripper", 0.0, 12.0),
+        ("move", lifted(aligned_point, LIFT_M), q),
     ]
 
 

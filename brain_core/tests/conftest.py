@@ -255,18 +255,38 @@ class FakeManipulator:
 # The reason peppy's goal context gives for each cause of a cancel signal.
 PEPPY_CANCEL_REASONS = {"caller": "cancelled by its caller", "sender_gone": "its sender is gone"}
 
+# Each goal context the running test made.
+_GOAL_CONTEXTS: list["FakeCtx"] = []
+
+
+@pytest.fixture(autouse=True)
+def no_feedback_fault() -> Iterator[None]:
+    """Fails a test in which a goal context took a feedback message its
+    action cannot give (`FakeCtx.feedback_faults`). The reporter of a goal
+    logs what `publish_feedback` raises and the goal goes on, so the raise
+    alone fails no test."""
+    _GOAL_CONTEXTS.clear()
+    yield
+    faults = [fault for ctx in _GOAL_CONTEXTS for fault in ctx.feedback_faults]
+    assert not faults, f"a goal published feedback its action cannot give: {faults}"
+
 
 class FakeCtx:
     """Stands in for the generated GoalContext of `action`, a fake
     generated module: holds the goal, records how it ended, once, after
     checking that a result's fields are the ones the action's result
     carries and that a failure's kind is one the action declares, records
-    each feedback message in `feedback`, after checking that its fields are
-    the ones the action's feedback carries, that its stage is one the
-    action's contract lists and that the goal has not ended, and lets a
-    test send the goal its cancel signal, with the cause a caller's cancel
-    or a sender that is gone gives and the reason peppy gives for that
-    cause."""
+    each feedback message in `feedback`, and lets a test send the goal its
+    cancel signal, with the cause a caller's cancel or a sender that is
+    gone gives and the reason peppy gives for that cause.
+
+    A feedback message is one the action can give when its action has a
+    feedback topic, its goal has not ended, its fields are the ones the
+    action's feedback carries, its stage is one the action's contract
+    lists, its activity is a sentence, and its number and its maximum are
+    counts. Any other message is not recorded: `publish_feedback` raises,
+    and keeps what is wrong in `feedback_faults`, which fails the test at
+    its end (`no_feedback_fault`)."""
 
     def __init__(self, action, **data) -> None:
         self.action = action
@@ -278,6 +298,8 @@ class FakeCtx:
         self.cancelled_reason: Optional[str] = None
         self.failed = None
         self.feedback: list[dict] = []
+        self.feedback_faults: list[str] = []
+        _GOAL_CONTEXTS.append(self)
 
     def request(self):
         return self._request
@@ -306,16 +328,38 @@ class FakeCtx:
         return self.completed is not None or self.cancelled is not None or self.failed is not None
 
     async def publish_feedback(self, **fields) -> None:
-        action = self.action
-        assert action.FEEDBACK_FIELDS, f"{action.ACTION_NAME} has no feedback topic"
-        assert not self.ended, f"{action.ACTION_NAME} published feedback after its goal ended"
-        assert set(fields) == action.FEEDBACK_FIELDS, (
-            f"{action.ACTION_NAME} published {sorted(fields)}, its feedback carries {sorted(action.FEEDBACK_FIELDS)}"
-        )
-        assert fields["stage"] in action.FEEDBACK_STAGES, f"{action.ACTION_NAME} lists no stage {fields['stage']!r}"
-        assert isinstance(fields["activity"], str) and fields["activity"]
-        assert all(isinstance(fields[name], int) and fields[name] >= 0 for name in ("number", "maximum"))
+        faults = self._faults_of_feedback(fields)
+        if faults:
+            self.feedback_faults.extend(faults)
+            raise AssertionError("; ".join(faults))
         self.feedback.append(fields)
+
+    def _faults_of_feedback(self, fields: dict) -> list[str]:
+        """What makes `fields` a feedback message the action cannot give
+        now: nothing for a message it can give."""
+        action = self.action
+        name = action.ACTION_NAME
+        if not action.FEEDBACK_FIELDS:
+            return [f"{name} has no feedback topic"]
+        if set(fields) != action.FEEDBACK_FIELDS:
+            return [f"{name} published {sorted(fields)}, its feedback carries {sorted(action.FEEDBACK_FIELDS)}"]
+        faults = []
+        if self.ended:
+            faults.append(f"{name} published feedback after its goal ended")
+        if fields["stage"] not in action.FEEDBACK_STAGES:
+            faults.append(f"{name} lists no stage {fields['stage']!r}")
+        if not (isinstance(fields["activity"], str) and fields["activity"]):
+            faults.append(f"{name} published the activity {fields['activity']!r}, which is no sentence")
+        for count in ("number", "maximum"):
+            if not (isinstance(fields[count], int) and fields[count] >= 0):
+                faults.append(f"{name} published the {count} {fields[count]!r}, which is no count")
+        return faults
+
+    def take_feedback_faults(self) -> list[str]:
+        """The faults so far, which the test takes over: the check at the
+        end of the test sees none of them."""
+        faults, self.feedback_faults = self.feedback_faults, []
+        return faults
 
     @property
     def stages(self) -> list[tuple[str, int, int]]:

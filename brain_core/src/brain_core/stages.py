@@ -24,7 +24,8 @@ aligner name a stage and its numbers, and every word of every sentence is
 written here.
 
 A report that the goal context cannot publish is logged, and the goal goes
-on: what the robot does never depends on its feedback.
+on, and so is a repeat whose numbers its aligner gives wrong
+(`publish_repeat`): what the robot does never depends on its feedback.
 """
 
 from __future__ import annotations
@@ -113,6 +114,18 @@ def reporter_of(ctx) -> Reporter:
     return publish
 
 
+async def publish_repeat(publish: Reporter, stage: Stage, sentence: str, number: int, maximum: int) -> None:
+    """Publishes repeat `number` of `maximum` of the stage `stage` through
+    `publish` (`Report.repeat`). An aligner gives the two numbers: a pair
+    that no report takes is logged, and nothing is published."""
+    try:
+        report = Report.repeat(stage, sentence, number, maximum)
+    except ValueError as error:
+        logger.warning("the feedback '%s' was not published: %r", sentence, error)
+        return
+    await publish(report)
+
+
 def the_item(label: str) -> str:
     """An item as a sentence names it: "the" and its label, in lower case,
     an underscore as a space, the first article of the label replaced (a
@@ -141,7 +154,9 @@ def identify_look(description: str) -> Report:
 class AlignReports(Protocol):
     """What the aligner of a grab, a place or a drop publishes: each
     question to its model and each correction an answer gives, with the
-    number of the step of the alignment and how many steps it can take."""
+    number of the step of the alignment, from 1, and how many steps it can
+    take. Numbers that no report takes publish nothing, and the alignment
+    goes on."""
 
     async def align_look(self, number: int, maximum: int) -> None: ...
 
@@ -168,11 +183,11 @@ class GrabReports:
 
     async def align_look(self, number: int, maximum: int) -> None:
         sentence = f"The robot looks at {self._item} and decides how to correct its hand"
-        await self.publish(Report.repeat(Stage.ALIGN_LOOK, sentence, number, maximum))
+        await publish_repeat(self.publish, Stage.ALIGN_LOOK, sentence, number, maximum)
 
     async def align_move(self, number: int, maximum: int) -> None:
         sentence = f"The robot corrects the position of its hand above {self._item}"
-        await self.publish(Report.repeat(Stage.ALIGN_MOVE, sentence, number, maximum))
+        await publish_repeat(self.publish, Stage.ALIGN_MOVE, sentence, number, maximum)
 
     async def grasp(self) -> None:
         await self.publish(Report(Stage.GRASP, f"The robot lowers its hand, closes it on {self._item} and lifts it"))
@@ -214,11 +229,11 @@ class CarryReports:
     async def align_look(self, number: int, maximum: int) -> None:
         looked_at = "down" if self.target is None else f"at {self._target}"
         sentence = f"The robot looks {looked_at} and decides where to put {self._held}"
-        await self.publish(Report.repeat(Stage.ALIGN_LOOK, sentence, number, maximum))
+        await publish_repeat(self.publish, Stage.ALIGN_LOOK, sentence, number, maximum)
 
     async def align_move(self, number: int, maximum: int) -> None:
         sentence = f"The robot corrects the position of {self._held} {self._above}"
-        await self.publish(Report.repeat(Stage.ALIGN_MOVE, sentence, number, maximum))
+        await publish_repeat(self.publish, Stage.ALIGN_MOVE, sentence, number, maximum)
 
     async def set_down(self) -> None:
         if self.target is None:

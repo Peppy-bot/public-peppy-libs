@@ -441,7 +441,9 @@ decision, a refusal of its names or its source when it starts, and a
 sequence that the manipulator ends before its first stage, such as a place
 whose jaws stand closed on air. abort, get_state, forget and switch_model
 publish nothing. A report that the goal context cannot publish is logged,
-and the goal goes on: what the robot does never depends on its feedback.
+and the goal goes on, and so is a step of an aligner whose number is not
+from 1 to the steps of its alignment: what the robot does never depends on
+its feedback.
 
 ### A scripted grab
 
