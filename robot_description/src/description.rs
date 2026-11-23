@@ -243,6 +243,8 @@ pub struct RobotDescription {
     arms: Vec<Arm>,
     /// Each group that holds other groups and nothing else, with them, in the SRDF's order.
     group_sets: Vec<(String, Vec<String>)>,
+    /// The name of each joint a group of the SRDF holds.
+    pub(crate) grouped_joints: HashSet<String>,
     states: Vec<State>,
     disabled_pairs: Vec<DisabledPair>,
     cameras: Vec<CameraFrame>,
@@ -284,6 +286,11 @@ impl RobotDescription {
         };
         mesh_names(&robot)?;
         let groups = Groups::resolve(&semantics.groups, &model)?;
+        let grouped_joints = groups
+            .resolved
+            .iter()
+            .flat_map(|(_, joints)| joints.iter().map(|joint| joint.name.clone()))
+            .collect();
         let states = states(&semantics.states, &groups, &model)?;
         let arms = arms(&semantics, &groups, &states, &model)?;
         for joint in &semantics.passive_joints {
@@ -309,6 +316,7 @@ impl RobotDescription {
             tree,
             arms,
             group_sets,
+            grouped_joints,
             states,
             disabled_pairs,
             cameras,
@@ -398,6 +406,18 @@ impl RobotDescription {
     /// The URDF's root link, the one link that hangs on no joint: the robot frame.
     pub fn root_link(&self) -> &str {
         &self.tree.link(self.tree.root()).name
+    }
+
+    /// The joint the link `link` hangs on, as the URDF gives it: none for the root link. A
+    /// link the URDF lacks is refused ([`UnknownLink`]).
+    pub fn parent_joint(&self, link: &str) -> Result<Option<&Joint>, UnknownLink> {
+        let index = self.tree.link_index(link).ok_or_else(|| UnknownLink {
+            link: link.to_string(),
+        })?;
+        Ok(self
+            .tree
+            .parent_joint(index)
+            .map(|joint| &self.robot.joints[joint]))
     }
 
     /// The arm whose chain carries the link `link`: of the joints of every arm
@@ -1195,10 +1215,11 @@ mod tests {
         assert_eq!(description.cameras()[0].depth_range, None);
     }
 
-    // The OpenArm v2's chest camera measures depth; its wrist cameras and the SO-101's
+    // The OpenArm v2's chest camera and the botshare base's Gemini 336L measure depth, the
+    // Gemini over its vendor's range; the OpenArm v2's wrist cameras and the SO-101's
     // camera give color alone.
     #[test]
-    fn of_the_bundled_cameras_the_v2_chest_camera_alone_measures_depth() {
+    fn of_the_bundled_cameras_the_v2_chest_camera_and_the_bases_camera_measure_depth() {
         let depth_cameras = |id: &str| {
             crate::model(id)
                 .expect("a bundled model")
@@ -1212,6 +1233,10 @@ mod tests {
         assert_eq!(
             depth_cameras("openarm_v2"),
             [("chest".to_string(), 0.1, 15.0)]
+        );
+        assert_eq!(
+            depth_cameras("botshare_base"),
+            [("base_camera".to_string(), 0.17, 20.0)]
         );
         for id in ["openarm_v1", "so101"] {
             assert_eq!(depth_cameras(id), [], "{id}");

@@ -71,15 +71,18 @@ class RateMeter:
 
 
 class Latch:
-    """Log a recurring condition once, re-arming once it clears."""
+    """Log a recurring condition once, re-arming once it clears. `log_line`
+    takes each line it logs: the node's log line unless the caller gives its
+    own, such as a logging.Logger's warning."""
 
-    def __init__(self) -> None:
+    def __init__(self, log_line: Callable[[str], None] = log) -> None:
         self._tripped = False
+        self._log_line = log_line
 
     def trip(self, message: str) -> None:
         if not self._tripped:
             self._tripped = True
-            log(f"{message}; suppressing repeats")
+            self._log_line(f"{message}; suppressing repeats")
 
     def clear(self) -> None:
         self._tripped = False
@@ -131,11 +134,13 @@ async def _next_message(subscription, token: CancellationToken) -> Any:
 
 
 async def messages(
-    subscription, token: CancellationToken, label: str
+    subscription, token: CancellationToken, label: str, log_line: Callable[[str], None] = log
 ) -> AsyncIterator[Any]:
     """Every (producer, message) until the token cancels or the subscription
-    closes; a failed receive logs and backs off instead of ending the stream."""
-    failing = Latch()
+    closes; a failed receive logs and backs off instead of ending the stream,
+    once a run of failures, to `log_line`: the node's log line unless the
+    caller gives its own, such as a logging.Logger's warning."""
+    failing = Latch(log_line)
     while not token.is_cancelled():
         try:
             received = await _next_message(subscription, token)

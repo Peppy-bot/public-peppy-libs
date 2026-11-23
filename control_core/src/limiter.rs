@@ -170,6 +170,16 @@ pub struct AxisLimits {
 }
 
 impl AxisLimits {
+    /// An axis the base does not move along: a range of 0 to 0 and each limit
+    /// 0, as [`AxisLimits::parse`] takes it.
+    pub const STILL: AxisLimits = AxisLimits {
+        min_velocity: 0.0,
+        max_velocity: 0.0,
+        max_acceleration: 0.0,
+        max_deceleration: 0.0,
+        deadband: 0.0,
+    };
+
     /// The limits of `params`: a range that holds 0 and has a finite width;
     /// an axis of range 0 to 0 takes 0 for each limit; any other axis takes a
     /// `max_acceleration` and a `max_deceleration` above 0 and a deadband
@@ -207,13 +217,7 @@ impl AxisLimits {
                     deadband,
                 });
             }
-            return Ok(Self {
-                min_velocity: 0.0,
-                max_velocity: 0.0,
-                max_acceleration: 0.0,
-                max_deceleration: 0.0,
-                deadband: 0.0,
-            });
+            return Ok(Self::STILL);
         }
         let positive = |name, value| {
             PositiveFinite::parse(value)
@@ -368,6 +372,11 @@ impl Limiter {
         self.setpoint = setpoint;
         self.setpoint_time_ns = received_ns;
         self.received_a_setpoint = true;
+    }
+
+    /// The period of the steps, in nanoseconds: one step of the timer's grid.
+    pub fn period_ns(&self) -> i64 {
+        self.period_ns
     }
 
     /// The velocity of the last step, before the deadband: where the next

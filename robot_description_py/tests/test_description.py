@@ -13,6 +13,7 @@ from robot_description_py import (
     START,
     FingerSpan,
     Mimic,
+    NoDifferentialBase,
     RobotDescription,
     model,
 )
@@ -195,3 +196,108 @@ def test_joint_limits_are_the_urdfs():
             assert limits.effort == float(limit.get("effort"))
     with pytest.raises(KeyError, match='the URDF has no joint named "no_such_joint"'):
         description.joint_limits("no_such_joint")
+
+
+def test_a_base_gives_its_two_wheels_and_an_arm_gives_none():
+    base = model("botshare_base").description().differential_base()
+    assert (base.left.joint, base.right.joint) == ("left_wheel_joint", "right_wheel_joint")
+    assert (base.left.radius_m, base.right.radius_m, base.separation_m) == pytest.approx((0.1, 0.1, 0.4))
+    assert (base.left.width_m, base.right.width_m) == pytest.approx((0.046, 0.046))
+    with pytest.raises(ValueError) as refusal:
+        model("so101").description().differential_base()
+    assert str(refusal.value).startswith("its wheels are the two continuous joints that no group")
+
+
+_BASE = """<robot name="base">
+  <link name="base_link"><collision><geometry><box size="0.4 0.3 0.1"/></geometry></collision></link>
+  {wheels}
+</robot>"""
+
+
+def _wheel(
+    name: str, y: float, axis: str = "0 1 0", x: float = 0.0, radius: float = 0.05, offset: float = 0.0
+) -> str:
+    """A wheel `name` on a continuous joint at `x` and `y` m along the base link's x and y,
+    turning about `axis`, its link a cylinder of `radius` about the joint's axis, standing
+    `offset` m off it along x."""
+    return f"""<link name="{name}_link"><collision><origin rpy="1.5707963267948966 0 0" xyz="{offset} 0 0"/>
+      <geometry><cylinder length="0.04" radius="{radius}"/></geometry></collision></link>
+    <joint name="{name}" type="continuous"><origin rpy="0 0 0" xyz="{x} {y} 0.05"/>
+      <parent link="base_link"/><child link="{name}_link"/><axis xyz="{axis}"/></joint>"""
+
+
+def _refusal(wheels: str, groups: str = "") -> NoDifferentialBase:
+    with pytest.raises(NoDifferentialBase) as refused:
+        RobotDescription.parse(
+            _BASE.format(wheels=wheels), f'<robot name="base">{groups}</robot>'
+        ).differential_base()
+    return refused.value
+
+
+def test_a_refusal_of_a_differential_base_names_its_kind_and_the_joints_it_counted():
+    """An arm counts no wheel, one wheel counts itself, a wheel that a group of the SRDF holds
+    is set aside apart from the ones counted, and a wheel turned backward breaks the rule of
+    the axis, which counts no joint; each is a ValueError with robot_description's message."""
+    with pytest.raises(NoDifferentialBase) as arm:
+        model("so101").description().differential_base()
+    assert (arm.value.kind, arm.value.found, arm.value.grouped) == ("wheel_count", (), ())
+    assert isinstance(arm.value, ValueError)
+    one = _refusal(_wheel("left", 0.2))
+    assert (one.kind, one.found, one.grouped) == ("wheel_count", ("left",), ())
+    grouped = _refusal(
+        _wheel("left", 0.2) + _wheel("right", -0.2), '<group name="wheels"><joint name="left"/></group>'
+    )
+    assert (grouped.kind, grouped.found, grouped.grouped) == ("wheel_count", ("right",), ("left",))
+    backward = _refusal(_wheel("left", 0.2) + _wheel("right", -0.2, axis="0 -1 0"))
+    assert (backward.kind, backward.found, backward.grouped) == ("wheel_axis", (), ())
+    assert str(backward).startswith("wheel joint right turns about")
+
+
+_HUB_CAP_ON_LEFT = """<link name="hub_cap"/>
+    <joint name="hub_cap_joint" type="fixed"><origin rpy="0 0 0" xyz="0 0.03 0"/>
+      <parent link="left_link"/><child link="hub_cap"/></joint>"""
+
+
+def test_each_kind_of_a_refusal_is_a_class_attribute_of_the_exception():
+    """Each class attribute names the kind that a description breaking its rule raises, and
+    the class holds one attribute for each kind."""
+    left, right = _wheel("left", 0.2), _wheel("right", -0.2)
+    breaking = {
+        NoDifferentialBase.WHEEL_COUNT: left,
+        NoDifferentialBase.WHEEL_AXIS: left + _wheel("right", -0.2, axis="0 -1 0"),
+        NoDifferentialBase.NO_AXLE: left + _wheel("right", -0.2, x=0.1),
+        NoDifferentialBase.NO_TRACK: left + _wheel("right", 0.2),
+        NoDifferentialBase.AXLE_OFF_ORIGIN: _wheel("left", 0.2, x=0.1) + _wheel("right", -0.2, x=0.1),
+        NoDifferentialBase.WHEEL_SHAPE: left + _wheel("right", -0.2, radius=0.0),
+        NoDifferentialBase.WHEEL_OFF_AXIS: left + _wheel("right", -0.2, offset=0.01),
+        NoDifferentialBase.WHEEL_CARRIES: left + right + _HUB_CAP_ON_LEFT,
+    }
+    for kind, wheels in breaking.items():
+        assert _refusal(wheels).kind == kind
+    attributes = {name: value for name, value in vars(NoDifferentialBase).items() if name.isupper()}
+    assert sorted(attributes.values()) == sorted(breaking)
+    assert attributes["WHEEL_COUNT"] == "wheel_count"
+
+
+def test_each_link_stands_in_the_root_link_as_the_joints_above_it_at_zero_place_it():
+    """The root link first, at the identity; base_link level, where its fixed joint holds it
+    0.098 m above the root; and each link fixed to base_link where its joint places it there."""
+    description = model("botshare_base").description()
+    frames = description.link_frames_at_zero()
+    assert len(frames) == len(ET.fromstring(description.urdf).findall("link"))
+    root = frames[0]
+    assert (root.parent, root.child) == (description.root_link, description.root_link)
+    assert (root.position, root.orientation) == ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    assert {frame.parent for frame in frames} == {description.root_link}
+    placed = {frame.child: frame for frame in frames}
+    base_link = placed["base_link"]
+    assert base_link.position == pytest.approx((0.0, 0.0, 0.098))
+    assert base_link.orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
+    on_base_link = [t for t in description.fixed_transforms() if t.parent == "base_link"]
+    assert on_base_link, "the base's casters, lidar and sensors stand on base_link"
+    for joint in on_base_link:
+        link = placed[joint.child]
+        assert link.position == pytest.approx(
+            tuple(a + b for a, b in zip(base_link.position, joint.position))
+        ), joint.child
+        assert link.orientation == pytest.approx(joint.orientation), joint.child

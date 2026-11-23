@@ -1,6 +1,7 @@
 """Tests for world, the one frame of a simulation: a command in another frame is refused with
 unknown_frame and a value no contract takes with rejected, a robot base's target turns about +z
-alone, and an attach places its robot at a pose in world or leaves the spot to the engine."""
+alone, an attach places its robot at a pose in world or leaves the spot to the engine, and a
+robot that rolls stands where its wheels carried it."""
 
 import math
 from dataclasses import dataclass
@@ -13,6 +14,9 @@ from control_core_py.geometry import (
     Pose,
     PoseTarget,
     UnitQuaternion,
+    product,
+    quaternion_of_yaw,
+    yaw_of_quaternion,
 )
 
 from sim_robot_core.world import (
@@ -21,6 +25,7 @@ from sim_robot_core.world import (
     base_target,
     failure_kind_of,
     in_world,
+    rolled_placement,
 )
 
 # A turn of 90 degrees about +z, as a caller types it: its squared norm lies within the
@@ -143,3 +148,13 @@ class TestAttachPlacement:
     def test_a_placement_in_another_frame_is_refused_with_unknown_frame(self):
         with pytest.raises(UnknownFrame, match="'map'"):
             attach_placement(Placement("map", None, [0.0, 0.0, 0.0], list(QUARTER_TURN)))
+
+
+def test_a_rolled_placement_faces_the_heading_its_wheels_turned_it_to():
+    # A base turned 0.6 rad and pitched 0.05 rad by a step of the floor, half a centimetre up.
+    pitched = (0.0, math.sin(0.025), 0.0, math.cos(0.025))
+    tilted = product(quaternion_of_yaw(0.6), pitched)
+    placement = rolled_placement((1.25, -0.5, 0.005), tilted)
+    assert placement.position.position == (1.25, -0.5, 0.005)
+    assert yaw_of_quaternion(placement.orientation.quaternion) == pytest.approx(0.6)
+    assert placement.orientation.quaternion[:2] == (0.0, 0.0), "it turns about +z alone"

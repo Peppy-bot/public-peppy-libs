@@ -1,19 +1,22 @@
-"""The four pairing slots of a simulation engine, and what each pair names.
+"""The five pairing slots of a simulation engine, and what each pair names.
 
 An engine declares one slot per kind of pair, each holding any number of
-pairs: `arms` and `grippers` for the limbs it follows, `rgb_cameras` and
-`rgbd_cameras` for the cameras it renders. Nothing in a slot's name says
-which robot, limb or camera a pair is, so every pair is read for it:
+pairs: `arms` and `grippers` for the limbs it follows, `bases` for the wheels
+of the robots' bases it follows, `rgb_cameras` and `rgbd_cameras` for the
+cameras it renders. Nothing in a slot's name says which robot, limb, base or
+camera a pair is, so every pair is read for it:
 
 - its robot is the copy the pair carries, the name the robot attached under.
   A pair with no copy belongs to a robot launched outside one, and outside a
   copy there is one robot in the scene for it to belong to;
 - a limb pair's limb is the link the pair comes from on the robot's side, so
-  a backbone names its downstream links after its limbs (`left_arm`, `arm`);
+  a backbone names its downstream links after its limbs (`left_arm`, `arm`),
+  and a base pair's base is named the same way, by the link its base node
+  pairs it from, `base` (BASE_NAME);
 - a camera pair's camera is its relay's name in the copy (`wrist_left`,
   `wrist`): the relay's instance id without the copy's prefix.
 
-A new robot, limb or camera therefore changes no engine's interface.
+A new robot, limb, base or camera therefore changes no engine's interface.
 """
 
 from __future__ import annotations
@@ -23,16 +26,22 @@ from typing import Callable, Iterable, Optional
 
 ARMS = "arms"
 GRIPPERS = "grippers"
+BASES = "bases"
 RGB_CAMERAS = "rgb_cameras"
 RGBD_CAMERAS = "rgbd_cameras"
-LIMB_SLOTS = (ARMS, GRIPPERS)
+# The slots a driven part of a robot pairs on: its limbs and its base.
+DRIVEN_SLOTS = (ARMS, GRIPPERS, BASES)
 CAMERA_SLOTS = (RGB_CAMERAS, RGBD_CAMERAS)
-SLOTS = (*LIMB_SLOTS, *CAMERA_SLOTS)
+SLOTS = (*DRIVEN_SLOTS, *CAMERA_SLOTS)
+
+# The name a robot answers to for its base, in base_state and on its base
+# pair: the link its base node pairs its wheels from.
+BASE_NAME = "base"
 
 
 def limb_of(member) -> str:
-    """The limb a limb pair drives: the link it comes from on the robot's
-    side."""
+    """The limb a limb pair drives, or the base a base pair drives: the link
+    it comes from on the robot's side."""
     return member.info.peer_link_id
 
 
@@ -54,6 +63,7 @@ def camera_of(member) -> str:
 _NAME_OF = {
     ARMS: limb_of,
     GRIPPERS: limb_of,
+    BASES: limb_of,
     RGB_CAMERAS: camera_of,
     RGBD_CAMERAS: camera_of,
 }
@@ -61,19 +71,22 @@ _NAME_OF = {
 
 @dataclass(frozen=True)
 class Held:
-    """What one robot holds, or what one model can hold, on the four slots:
-    the limb and camera names, by slot."""
+    """What one robot holds, or what one model can hold, on the five slots:
+    the limb, base and camera names, by slot."""
 
     arms: frozenset = frozenset()
     grippers: frozenset = frozenset()
+    bases: frozenset = frozenset()
     rgb_cameras: frozenset = frozenset()
     rgbd_cameras: frozenset = frozenset()
 
     def of_slot(self, slot: str) -> frozenset:
         return getattr(self, slot)
 
-    def holds_a_limb(self) -> bool:
-        return bool(self.arms or self.grippers)
+    def holds_a_driven_part(self) -> bool:
+        """Whether an arm, a gripper or a base is paired: the pairs that
+        drive."""
+        return any(self.of_slot(slot) for slot in DRIVEN_SLOTS)
 
     def is_empty(self) -> bool:
         return not any(self.of_slot(slot) for slot in SLOTS)
@@ -84,7 +97,8 @@ class Held:
 
 
 class PairTable:
-    """Reads the members of the four slots into robots, limbs and cameras.
+    """Reads the members of the five slots into robots, limbs, bases and
+    cameras.
 
     `members` gives, per slot, the callable that returns the slot's live
     members (a generated `peers(node_runner)` bound to the runner), and

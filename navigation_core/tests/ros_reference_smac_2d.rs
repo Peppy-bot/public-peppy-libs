@@ -29,6 +29,7 @@ use common::footprints::padded;
 use common::poses::planar;
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
+use frame_tree::arithmetic::normalize_angle;
 use navigation_core::grid::{Cell, CostGrid, GridGeometry};
 use navigation_core::planner::{
     PlanError, PlannerParams, SearchParams, SmootherParams, plan, search,
@@ -100,8 +101,7 @@ fn cell_of(grid: &CostGrid, pose: PlanarPose) -> Cell {
 
 /// The difference of two headings, on the circle.
 fn heading_difference(a: f64, b: f64) -> f64 {
-    let difference = (a - b).rem_euclid(std::f64::consts::TAU);
-    difference.min(std::f64::consts::TAU - difference)
+    normalize_angle(a - b).abs()
 }
 
 /// The cell whose corner Smac puts a pose of its unsmoothed path at: the pose less the

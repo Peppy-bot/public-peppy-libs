@@ -277,11 +277,11 @@ pub fn least_distance_within_the_limits<const N: usize, const K: usize>(
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Runs the check `check` makes of each model id on every model robot_description
-/// bundles, at the shape of its self model ([`on_shape`]): a model of a shape no code is
-/// compiled for fails, naming it.
+/// Runs the check `check` makes of each model id on every model with arms that
+/// robot_description bundles, at the shape of its self model ([`on_shape`]): a model of a
+/// shape no code is compiled for fails, naming it.
 pub fn check_every_model<C: OnShape<Output = ()>>(check: impl Fn(&'static str) -> C) {
-    for bundled in robot_description::models() {
+    for bundled in robot_description::models_with_arms() {
         let id = bundled.id();
         on_shape(&bundled.description(), check(id)).unwrap_or_else(|error| panic!("{id}: {error}"));
     }

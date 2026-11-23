@@ -2,6 +2,11 @@
 
 use std::time::{Duration, Instant};
 
+/// The window of a node's throttled failure log: at most one line per failing
+/// stream or publisher in it, so a misrouted producer or a stalled clock is
+/// visible in the log without flooding it at the stream rate.
+pub const LOG_WINDOW: Duration = Duration::from_secs(1);
+
 /// Admits at most one event per window, so a condition that persists at loop
 /// or producer rate stays visible without burying everything else.
 ///

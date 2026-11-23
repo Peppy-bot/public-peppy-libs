@@ -5,7 +5,12 @@
 //! at a time ([`RobotTree::lookup_within`]) or at one time in another at another through the
 //! root of its chain ([`RobotTree::lookup_within_through`]), and a value of the geometry types
 //! placed in a frame ([`RobotTree::place`]) or in the root of its frame's chain
-//! ([`RobotTree::place_in_root`]), refused with a [`PlaceError`].
+//! ([`RobotTree::place_in_root`]), refused with a [`PlaceError`]; the failure of a command its
+//! tree cannot place, in a node's own failure kinds ([`TargetFailure`]), each generated member
+//! given the node's kinds by [`member_failure_kinds!`](crate::member_failure_kinds) and those of
+//! a placement, every one of which [`PlaceKind::ALL`] lists, by its own parse
+//! ([`PlaceKind::of_member`]); and the [`Placer`] of a node's commands in its robot frame or
+//! another.
 //!
 //! Each message and each lookup looks at the node's clock first, so a clock that went back
 //! since the look before drops every moving stamp before the tree changes or answers, as
@@ -27,11 +32,11 @@ use frame_tree::{
 use tokio::sync::watch;
 use tracing::warn;
 
-use crate::geometry::{GeometryError, Placed, Stamped};
+use crate::geometry::{GeometryError, Placed, Stamped, Twist};
 use crate::latched_log::LatchedLog;
 use crate::node_clock::{BackSteps, NodeClock};
 use crate::receiving;
-use crate::sync::lock_ignoring_poison;
+use crate::sync::{lock_ignoring_poison, wait_for};
 
 /// A value placed in a target frame, and the time of that frame's place it is in: none for a
 /// value that holds at every time, as a lookup through static transforms alone places it.
@@ -64,6 +69,139 @@ impl PlaceError {
             PlaceError::Value(_) => "rejected",
         }
     }
+}
+
+/// The failure kind of a placement in the robot's tree, as [`PlaceError::failure_kind`] names
+/// it: the kind of the lookup, as transform_lookup names the failures of a lookup, or `rejected`
+/// for a placed value no contract takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaceKind(&'static str);
+
+impl PlaceKind {
+    /// Every failure kind of a placement: the kind of each failure of a lookup, as
+    /// transform_lookup names them, and `rejected`. A member that places a frame lists each.
+    pub const ALL: [PlaceKind; 5] = [
+        PlaceKind("unknown_frame"),
+        PlaceKind("no_chain"),
+        PlaceKind("extrapolation"),
+        PlaceKind("broken_tree"),
+        PlaceKind("rejected"),
+    ];
+
+    pub fn of(error: &PlaceError) -> Self {
+        Self(error.failure_kind())
+    }
+
+    /// The kind's name, as the contracts give it.
+    pub fn name(self) -> &'static str {
+        self.0
+    }
+
+    /// The generated failure kind of the same name of a member that places a frame, which
+    /// lists the kinds of a lookup and `rejected`: `parse` is the member's parse of a kind's
+    /// name.
+    pub fn of_member<Member>(self, parse: impl FnOnce(&str) -> Option<Member>) -> Member {
+        parse(self.0).expect("a member that places a frame lists each failure kind of a placement")
+    }
+}
+
+/// Why a node refuses or fails a goal: a failure kind `K` of the node's, one that peppy or a
+/// contract declares, and a message for a person. A node keeps one kind for every member and
+/// gives each generated member its own with [`member_failure_kinds!`](crate::member_failure_kinds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure<K> {
+    pub kind: K,
+    pub message: String,
+}
+
+impl<K> Failure<K> {
+    pub fn new(kind: K, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// The same failure with `label` before its message, such as the name of the part whose
+    /// share of a goal failed.
+    pub fn labelled(self, label: impl Display) -> Self {
+        Self {
+            message: format!("{label}: {}", self.message),
+            ..self
+        }
+    }
+}
+
+/// Why the robot's tree cannot place a command: the kind of the placement, and a message that
+/// names the command, then the cause as transform_lookup's message does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unplaced {
+    pub kind: PlaceKind,
+    pub message: String,
+}
+
+impl Unplaced {
+    /// The failure of the placement `error` of the command `what` names.
+    pub fn of(what: impl Display, error: &PlaceError) -> Self {
+        Self {
+            kind: PlaceKind::of(error),
+            message: format!("{what}: {error}"),
+        }
+    }
+}
+
+/// Why a node refuses a command that places a target: a [`Failure`] of the node's kinds `K`, or a
+/// target the robot's tree cannot place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetFailure<K> {
+    Failed(Failure<K>),
+    Unplaced(Unplaced),
+}
+
+impl<K> From<Failure<K>> for TargetFailure<K> {
+    fn from(failure: Failure<K>) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl<K> From<Unplaced> for TargetFailure<K> {
+    fn from(unplaced: Unplaced) -> Self {
+        Self::Unplaced(unplaced)
+    }
+}
+
+impl<K> TargetFailure<K> {
+    /// The kind `Member`, the generated kind of a member that places a target, gives this
+    /// failure, and its message: a failure's own kind, and the kind of a placement by its name
+    /// through `parse`, the member's parse of a kind's name ([`PlaceKind::of_member`]).
+    pub fn for_member<Member: From<K>>(
+        self,
+        parse: impl FnOnce(&str) -> Option<Member>,
+    ) -> (Member, String) {
+        match self {
+            Self::Failed(failure) => (failure.kind.into(), failure.message),
+            Self::Unplaced(unplaced) => (unplaced.kind.of_member(parse), unplaced.message),
+        }
+    }
+}
+
+/// Gives each generated `FailureKind` of a member the variant of the same name of a node's own
+/// kind: `member_failure_kinds!(FailureKind { Rejected, Timeout } => a::FailureKind,
+/// b::FailureKind)`.
+#[macro_export]
+macro_rules! member_failure_kinds {
+    (@member $kind:ident { $($variant:ident),+ $(,)? } $member:ty) => {
+        impl From<$kind> for $member {
+            fn from(kind: $kind) -> Self {
+                match kind {
+                    $($kind::$variant => Self::$variant,)+
+                }
+            }
+        }
+    };
+    ($kind:ident $variants:tt => $($member:ty),+ $(,)?) => {
+        $($crate::member_failure_kinds!(@member $kind $variants $member);)+
+    };
 }
 
 /// A robot's tree of frames, shared by the followers that fill it and the lookups that
@@ -334,6 +472,91 @@ impl RobotTree {
     }
 }
 
+/// The placer of a node's commands by the robot's tree: in the node's robot frame, or in another
+/// frame of the tree, each placement waiting up to `wait` on the node's clock for the tree to
+/// answer, as [`RobotTree::place`] and [`RobotTree::lookup_within`] wait. A placement that fails
+/// gives the failure of the lookup, or the refusal of a placed value no contract takes.
+pub struct Placer {
+    tree: Arc<RobotTree>,
+    robot_frame: FrameName,
+    wait: Duration,
+}
+
+impl Placer {
+    pub fn new(tree: Arc<RobotTree>, robot_frame: FrameName, wait: Duration) -> Self {
+        Self {
+            tree,
+            robot_frame,
+            wait,
+        }
+    }
+
+    /// The robot frame, the root link of the robot's URDF, which every report names.
+    pub fn robot_frame(&self) -> &FrameName {
+        &self.robot_frame
+    }
+
+    /// The frame a command names: `frame`, or the robot frame for a command that names none, as
+    /// the contracts read a command with no frame.
+    pub fn frame_of<'a>(&'a self, frame: Option<&'a str>) -> &'a str {
+        frame.unwrap_or(self.robot_frame.as_str())
+    }
+
+    /// `stamped` in the robot frame at the latest time, with the time of the robot frame's place
+    /// ([`RobotTree::place`]).
+    pub async fn place<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        self.place_in(stamped, &self.robot_frame).await
+    }
+
+    /// [`Placer::place`] from a handler the generated code calls synchronously: the wait blocks
+    /// in place on the runtime.
+    pub fn place_now<T: Placed>(&self, stamped: &Stamped<T>) -> Result<PlacedValue<T>, PlaceError> {
+        wait_for(self.place(stamped))
+    }
+
+    /// `stamped` in `target` at the latest time, as [`Placer::place`] places in the robot frame.
+    async fn place_in<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        target: &FrameName,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        self.tree.place(stamped, target, self.wait).await
+    }
+
+    /// [`Placer::place_in`] from a handler the generated code calls synchronously.
+    pub fn place_in_now<T: Placed>(
+        &self,
+        stamped: &Stamped<T>,
+        target: &FrameName,
+    ) -> Result<PlacedValue<T>, PlaceError> {
+        wait_for(self.place_in(stamped, target))
+    }
+
+    /// The velocity `stamped` in the robot frame at its own time: its vectors turned by the place
+    /// of its frame in the robot frame then, so a velocity in the robot frame stands in it at any
+    /// time, as transforms looks a frame up in itself.
+    pub async fn place_velocity(&self, stamped: &Stamped<Twist>) -> Result<Twist, PlaceError> {
+        let found = self
+            .tree
+            .lookup_within(
+                &self.robot_frame,
+                stamped.frame(),
+                stamped.time(),
+                self.wait,
+            )
+            .await?;
+        Ok(stamped.value().placed_by(&found.placement)?)
+    }
+
+    /// [`Placer::place_velocity`] from a handler the generated code calls synchronously.
+    pub fn place_velocity_now(&self, stamped: &Stamped<Twist>) -> Result<Twist, PlaceError> {
+        wait_for(self.place_velocity(stamped))
+    }
+}
+
 /// Takes into `tree` each message of `transforms` that `next` receives with its publisher,
 /// until `cancelled` resolves or the subscription closes, as [`receiving::receive`]
 /// receives a subscription. A message the tree refuses, whole or in part, is logged once
@@ -396,7 +619,7 @@ mod tests {
 
     use frame_tree::{TransformErrorReason, TransformRecord};
 
-    use crate::geometry::{Point, Pose};
+    use crate::geometry::{Point, Pose, Twist};
 
     use crate::node_clock::TickFeed;
     use crate::test_support::Logged;
@@ -815,9 +1038,10 @@ mod tests {
         );
     }
 
-    // A pose's orientation turns by the place of its frame.
+    // A pose's orientation and a twist's vectors turn by the place of their frame; a twist does
+    // not move with the place's origin.
     #[tokio::test(start_paused = true)]
-    async fn a_pose_turns_with_its_frame() {
+    async fn a_pose_turns_with_its_frame_and_a_twist_turns_alone() {
         let (tree, _ticks) = tree_at(21);
         let half = std::f64::consts::FRAC_PI_4;
         let quarter_turn = [0.0, 0.0, half.sin(), half.cos()];
@@ -854,6 +1078,23 @@ mod tests {
         assert!(
             qx.abs() < 1e-12 && qy.abs() < 1e-12 && (qz - 1.0).abs() < 1e-12 && qw.abs() < 1e-12
         );
+        let twist = Stamped::parse(
+            "turned",
+            None,
+            Twist::parse([1.0, 0.0, 0.0], [0.0, 0.0, 0.5]).unwrap(),
+        )
+        .unwrap();
+        let turned = tree
+            .place(&twist, &base, Duration::ZERO)
+            .await
+            .expect("placed")
+            .value;
+        let [vx, vy, vz] = turned.linear_velocity();
+        assert!(
+            vx.abs() < 1e-12 && (vy - 1.0).abs() < 1e-12 && vz == 0.0,
+            "{vx} {vy} {vz}"
+        );
+        assert_eq!(turned.angular_velocity(), [0.0, 0.0, 0.5]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1227,6 +1468,217 @@ mod tests {
         spawnable(follow_static(tree, std::future::pending(), async || {
             Ok::<_, String>(None)
         }));
+    }
+
+    /// A node's own failure kinds.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum NodeKind {
+        Rejected,
+        Timeout,
+    }
+
+    /// A generated member's failure kinds: the node's, and those of a placement.
+    #[derive(Debug, PartialEq)]
+    enum MemberKind {
+        Rejected,
+        Timeout,
+        UnknownFrame,
+        NoChain,
+        Extrapolation,
+        BrokenTree,
+    }
+
+    impl MemberKind {
+        fn parse(name: &str) -> Option<Self> {
+            Some(match name {
+                "rejected" => Self::Rejected,
+                "timeout" => Self::Timeout,
+                "unknown_frame" => Self::UnknownFrame,
+                "no_chain" => Self::NoChain,
+                "extrapolation" => Self::Extrapolation,
+                "broken_tree" => Self::BrokenTree,
+                _ => return None,
+            })
+        }
+    }
+
+    crate::member_failure_kinds!(NodeKind { Rejected, Timeout } => MemberKind);
+
+    // A failure of the node reaches a member with the kind of the same name, and a target the
+    // tree cannot place with the kind of the placement and a message that names the target, then
+    // the cause; a labelled failure keeps its kind and names the label first.
+    #[test]
+    fn a_failure_reaches_a_member_by_the_kind_of_its_name() {
+        let failed = TargetFailure::from(Failure::new(NodeKind::Timeout, "unsettled"));
+        assert_eq!(
+            failed.for_member(MemberKind::parse),
+            (MemberKind::Timeout, "unsettled".to_string())
+        );
+        let unknown = PlaceError::Lookup(LookupError::UnknownFrame {
+            frame: frame("gripper"),
+            held: Vec::new(),
+        });
+        let unplaced = TargetFailure::<NodeKind>::from(Unplaced::of("the target", &unknown));
+        assert_eq!(
+            unplaced.for_member(MemberKind::parse),
+            (MemberKind::UnknownFrame, format!("the target: {unknown}"))
+        );
+        let refused = PlaceError::Value(GeometryError::NoFrame);
+        assert_eq!(
+            PlaceKind::of(&refused).of_member(MemberKind::parse),
+            MemberKind::Rejected
+        );
+        assert_eq!(
+            Failure::new(NodeKind::Rejected, "too far").labelled("left_arm"),
+            Failure::new(NodeKind::Rejected, "left_arm: too far")
+        );
+    }
+
+    // Each failure of a placement has a kind that PlaceKind::ALL lists, and ALL lists no other:
+    // one failure of each kind of a lookup, then a placed value no contract takes.
+    #[test]
+    fn every_kind_of_a_placement_is_listed_once() {
+        use frame_tree::{BrokenTree, HeldStamps, TransformName};
+        let transform = TransformName {
+            parent: frame("odom"),
+            child: frame("base_footprint"),
+        };
+        let lookups = [
+            LookupError::UnknownFrame {
+                frame: frame("gripper"),
+                held: Vec::new(),
+            },
+            LookupError::NoChain {
+                target_frame: frame("base_link"),
+                source_frame: frame("odom"),
+            },
+            LookupError::Extrapolation {
+                transform: transform.clone(),
+                requested: LookupTime::At(Stamp::from_nanos(5)),
+                held: HeldStamps::Empty,
+            },
+            LookupError::BrokenTree(BrokenTree::Cycle {
+                transforms: vec![transform],
+            }),
+        ];
+        // One failure of each kind of a lookup: a kind the list lacks fails to compile here.
+        for lookup in &lookups {
+            match lookup {
+                LookupError::UnknownFrame { .. }
+                | LookupError::NoChain { .. }
+                | LookupError::Extrapolation { .. }
+                | LookupError::BrokenTree(_) => {}
+            }
+        }
+        let kinds: Vec<PlaceKind> = lookups
+            .into_iter()
+            .map(PlaceError::Lookup)
+            .chain([PlaceError::Value(GeometryError::NoFrame)])
+            .map(|error| PlaceKind::of(&error))
+            .collect();
+        assert_eq!(kinds, PlaceKind::ALL);
+        assert_eq!(
+            PlaceKind::ALL.map(PlaceKind::name),
+            [
+                "unknown_frame",
+                "no_chain",
+                "extrapolation",
+                "broken_tree",
+                "rejected"
+            ]
+        );
+    }
+
+    // A placer reads a command with no frame in the robot frame, places a value in the robot
+    // frame or in another, and a velocity in the robot frame by the place of its frame there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_placer_places_commands_in_the_robot_frame_or_another() {
+        let (tree, _ticks) = tree_at(20);
+        tree.take_static(&initializer(), &camera_on_the_arm())
+            .expect("the camera's transform");
+        tree.take_moving(&backbone(), &arm_at(20, 0.5))
+            .expect("the arm's transform");
+        let placer = Placer::new(Arc::clone(&tree), frame("base_link"), WAIT);
+        assert_eq!(placer.frame_of(None), "base_link");
+        assert_eq!(placer.frame_of(Some("camera")), "camera");
+        let placed = placer.place(&camera_origin(None)).await.expect("placed");
+        assert_eq!(placed.value.position(), [0.5, 0.0, 1.0]);
+        let in_arm = placer
+            .place_in(&camera_origin(None), &frame("arm"))
+            .await
+            .expect("placed in the arm");
+        assert_eq!(in_arm.value.position(), [0.0, 0.0, 1.0]);
+        let turning = Stamped::parse(
+            "camera",
+            None,
+            Twist::parse([1.0, 0.0, 0.0], [0.0, 0.0, 0.5]).unwrap(),
+        )
+        .unwrap();
+        let velocity = placer.place_velocity(&turning).await.expect("placed");
+        assert_eq!(velocity, *turning.value());
+    }
+
+    // A placed velocity turns by the place of its frame in the robot frame: one in odom, where
+    // the base faces a half turn from odom's +x, drives the base backward, and one in a
+    // camera's optical frame turns the view's axis, the frame's +z, onto the base's +x, and the
+    // frame's +y, down the picture, onto the base's -z.
+    #[tokio::test(start_paused = true)]
+    async fn a_placed_velocity_turns_by_the_place_of_its_frame_in_the_robot_frame() {
+        async fn placed(
+            placer: &Placer,
+            frame: &str,
+            linear: [f64; 3],
+            angular: [f64; 3],
+        ) -> Twist {
+            let velocity = Stamped::parse(frame, None, Twist::parse(linear, angular).unwrap())
+                .expect("a stamped twist");
+            placer.place_velocity(&velocity).await.expect("placed")
+        }
+        let assert_near = |found: [f64; 3], expected: [f64; 3]| {
+            assert!(
+                found
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| (a - b).abs() < 1e-12),
+                "{found:?} != {expected:?}"
+            );
+        };
+        let (tree, _ticks) = tree_at(20);
+        let half_turn = [0.0, 0.0, 1.0, 0.0];
+        tree.take_moving(
+            &backbone(),
+            &MovingMessage {
+                timestamp: time(20),
+                transforms: vec![TransformRecord::new(
+                    "odom",
+                    "base_link",
+                    [3.0, 0.0, 0.0],
+                    half_turn,
+                )],
+                start_timestamp: time(1),
+            },
+        )
+        .expect("the base's place in odom");
+        let optical = [-0.5, 0.5, -0.5, 0.5];
+        tree.take_static(
+            &initializer(),
+            &StaticMessage {
+                transforms: vec![TransformRecord::new(
+                    "base_link",
+                    "camera_optical",
+                    [0.2, 0.0, 0.5],
+                    optical,
+                )],
+            },
+        )
+        .expect("the camera's optical frame");
+        let placer = Placer::new(Arc::clone(&tree), frame("base_link"), WAIT);
+        let backward = placed(&placer, "odom", [0.3, 0.0, 0.0], [0.0, 0.0, 0.5]).await;
+        assert_near(backward.linear_velocity(), [-0.3, 0.0, 0.0]);
+        assert_near(backward.angular_velocity(), [0.0, 0.0, 0.5]);
+        let viewed = placed(&placer, "camera_optical", [0.0, 0.0, 0.3], [0.0, 0.5, 0.0]).await;
+        assert_near(viewed.linear_velocity(), [0.3, 0.0, 0.0]);
+        assert_near(viewed.angular_velocity(), [0.0, 0.0, -0.5]);
     }
 
     #[test]

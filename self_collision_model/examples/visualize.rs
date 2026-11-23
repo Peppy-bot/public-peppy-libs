@@ -105,7 +105,7 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     if args.model.is_empty() {
-        let ids: Vec<&str> = robot_description::models()
+        let ids: Vec<&str> = robot_description::models_with_arms()
             .map(|model| model.id())
             .collect();
         return Err(format!("required: --model <id>, one of {}", ids.join(", ")));

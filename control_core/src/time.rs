@@ -44,6 +44,30 @@ pub enum DurationError {
     Underflow(f64),
 }
 
+/// A parameter of seconds a node cannot run on: its name, and why.
+#[derive(Debug, Clone, Copy, Error)]
+#[error("parameter {name}")]
+pub struct SecondsParameterError {
+    pub name: &'static str,
+    #[source]
+    pub source: DurationError,
+}
+
+/// The duration of the parameter `name`, `secs` seconds, as [`duration_from_secs`] takes
+/// it, or the refusal naming the parameter.
+pub fn duration_parameter(
+    name: &'static str,
+    secs: f64,
+) -> Result<Duration, SecondsParameterError> {
+    duration_from_secs(secs).map_err(|source| SecondsParameterError { name, source })
+}
+
+/// The wait of the parameter `name`, `secs` seconds, as [`wait_from_secs`] takes it, or
+/// the refusal naming the parameter.
+pub fn wait_parameter(name: &'static str, secs: f64) -> Result<Duration, SecondsParameterError> {
+    wait_from_secs(secs).map_err(|source| SecondsParameterError { name, source })
+}
+
 /// The tick period for a whole-hertz rate, refused above `max_hz`.
 ///
 /// `max_hz` is the caller's ceiling: the fastest the thing being paced can
@@ -358,6 +382,30 @@ mod tests {
         assert_eq!(
             duration_from_secs(0.25).unwrap(),
             Duration::from_millis(250)
+        );
+    }
+
+    // A parameter of seconds is a duration or a wait as its parse takes it, and a refusal
+    // names the parameter, then why.
+    #[test]
+    fn a_seconds_parameter_names_itself_when_refused() {
+        assert_eq!(
+            duration_parameter("cache_window_s", 1.5).unwrap(),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            wait_parameter("lookup_timeout_s", 0.0).unwrap(),
+            Duration::ZERO
+        );
+        let refused = duration_parameter("stop_answer_timeout_s", 0.0).unwrap_err();
+        assert_eq!(refused.to_string(), "parameter stop_answer_timeout_s");
+        assert_eq!(
+            std::error::Error::source(&refused).map(ToString::to_string),
+            Some("must be a positive finite number of seconds, got 0".to_string())
+        );
+        assert_eq!(
+            wait_parameter("lookup_timeout_s", -1.0).unwrap_err().name,
+            "lookup_timeout_s"
         );
     }
 }

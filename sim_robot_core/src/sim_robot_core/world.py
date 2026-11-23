@@ -5,14 +5,24 @@ leaves its frame out: a command in another frame is refused with `unknown_frame`
 and its timestamp, given or left out, places its value in world at any time, since world does
 not move. A value no contract takes is refused with `rejected` by control_core_py's parse
 (GeometryError). `failure_kind_of` gives the failure kind of each such refusal, and
-`attach_placement` reads where an attach of simulation_robot places its robot.
+`attach_placement` reads where an attach of simulation_robot places its robot. A robot that
+rolls stands at the placement its wheels carried it to (`rolled_placement`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from control_core_py.geometry import WORLD, Point, Pose, PoseTarget, Stamped
+from control_core_py.geometry import (
+    WORLD,
+    Point,
+    Pose,
+    PoseTarget,
+    Stamped,
+    UnitQuaternion,
+    quaternion_of_yaw,
+    yaw_of_quaternion,
+)
 
 # The failure kinds that refuse a command given in world, by their name on the wire: a frame
 # other than world, and a value no contract takes.
@@ -73,3 +83,12 @@ def attach_placement(placement) -> Pose | None:
     return base_target(
         placement.frame, placement.timestamp, placement.position, placement.orientation
     ).pose()
+
+
+def rolled_placement(position: Sequence[float], orientation: Sequence[float]) -> Pose:
+    """The placement of a robot that rolls, whose robot frame stands at `position` turned by
+    `orientation`, a unit quaternion (x, y, z, w), in world: that position, facing the heading
+    its wheels turned it to, an orientation that turns about +z alone. A placement is where a
+    robot stands, so the tilt a step of the floor gives its body is left out."""
+    heading = quaternion_of_yaw(yaw_of_quaternion(tuple(orientation)))
+    return Pose(Point.parse(position), UnitQuaternion(heading))
