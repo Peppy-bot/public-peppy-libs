@@ -8,12 +8,16 @@ from __future__ import annotations
 from typing import Optional, Protocol, Union
 
 from ..ports import CancelToken, Gripper, Item, Outcome, Pose, Senses, TargetItem
+from ..stages import CarryReports, GrabReports
 
 
 class Manipulator(Protocol):
     """The swappable piece of manipulation. Every move it makes goes
     through the `Robot` it is started with, so a stop can cancel the move
-    in flight whatever the backend is."""
+    in flight whatever the backend is. Each sequence gets the reports of its
+    goal (`stages.GrabReports`, `stages.CarryReports`) and publishes each
+    stage through them as it starts; a sequence that ends before its first
+    stage publishes nothing."""
 
     name: str
 
@@ -34,14 +38,18 @@ class Manipulator(Protocol):
         runs."""
         ...
 
-    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome: ...
+    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, reports: GrabReports) -> Outcome:
+        """Closes `gripper` on `item` and lifts it."""
+        ...
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+    async def drop(
+        self, gripper: Gripper, cancel: CancelToken, reports: CarryReports, above: Optional[TargetItem] = None
+    ) -> Outcome:
         """Opens `gripper` and lets the held item go: where the arm stands,
         or, `above` an item, over it."""
         ...
 
-    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken, reports: CarryReports) -> Outcome:
         """Sets the held item down: at a pose in the robot frame, or in or
         on a target item. A successful place reports where the measured
         grasp point stood when the jaws opened, and the time of that

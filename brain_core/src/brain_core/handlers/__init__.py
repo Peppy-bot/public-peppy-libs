@@ -2,7 +2,11 @@
 contract's name and lane rules through the brain's core, looks through the
 brain (`Brain.look`) or calls the manipulator, and returns the result
 fields; the brain ends the goal and logs its end. A handler reads its
-backend once, at the start of its body, and uses that one to the end.
+backend once, at the start of its body, and uses that one to the end. The
+handler of an action with a feedback topic makes the reporter of its goal
+context (`stages.reporter_of`) and hands it to the look or, bound to the
+labels of the goal's items, to the manipulator, so the goal publishes each
+stage as it starts once the rules of its names passed.
 
 A member that refuses a goal before it accepts it has an `admit` too: the
 checks the brain makes at once, and the goal the handler then runs

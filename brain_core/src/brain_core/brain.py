@@ -62,6 +62,7 @@ from .models import Models
 from .ports import Cancelled, Detector, ExpectedFailure, FailureKind, GoalFailure, Gripper, ModelSource, Pose, Quat, Refusal, Role, Senses, Vec3
 from .robot import ObjectOperation, PlannerModules, Robot, brain_object_id, item_object, item_of_object
 from .sequencer import SHUTTING_DOWN, Job, Sequencer
+from .stages import Report, Reporter
 from .state import State, new_run_token
 
 logger = logging.getLogger(__name__)
@@ -307,12 +308,18 @@ class Brain:
         kind = FailureKind.PRECONDITION_FAILED if isinstance(detector, NoneDetector) else FailureKind.RESOURCE_UNAVAILABLE
         raise Refusal(kind, f"no perception source: {reason}")
 
-    async def look(self, job: Job, detector: Detector, phrases: Sequence[str], timeout_s: float) -> Look:
+    async def look(
+        self, job: Job, detector: Detector, phrases: Sequence[str], timeout_s: float, *, publish: Reporter, report: Report
+    ) -> Look:
         """One look at the camera through `detector` for the search `job`
         runs, as `Perceiver.scan` gives it. The detector says first whether
         it can search, then the perceiver whether its frames and camera
-        can; what the look saw goes on the job's notes for the log."""
+        can; once both can, `publish` publishes `report`, the search's one
+        stage, and the detector looks. What the look saw goes on the job's
+        notes for the log."""
         self.refuse_unless_searchable(detector)
+        self.perceiver.refuse_unless_ready()
+        await publish(report)
         seen = await self.perceiver.scan(detector, phrases, job.cancel, timeout_s)
         job.notes.append(seen.describe(job.started_ns))
         return seen

@@ -327,13 +327,13 @@ class SceneWatchingManipulator(FakeManipulator):
         self.planner = planner
         self.writes_before: list = []
 
-    async def grab(self, item, gripper, max_effort, cancel):
+    async def grab(self, item, gripper, max_effort, cancel, reports):
         self.writes_before.append(writes(self.planner))
-        return await super().grab(item, gripper, max_effort, cancel)
+        return await super().grab(item, gripper, max_effort, cancel, reports)
 
-    async def place(self, gripper, pose, cancel):
+    async def place(self, gripper, pose, cancel, reports):
         self.writes_before.append(writes(self.planner))
-        return await super().place(gripper, pose, cancel)
+        return await super().place(gripper, pose, cancel, reports)
 
 
 async def test_a_grab_first_removes_the_objects_of_a_brain_that_restarted():

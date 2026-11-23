@@ -12,7 +12,11 @@ manipulator (`ArmMoves`: whether the backbone has a plan for points at an
 orientation, and the move itself, so every move carries the bars of every
 arm move). It ends `Aligned` with the points the sequence goes on with,
 `GaveUp`, `OutOfSteps`, or `Stopped` when a stop ended a move, and raises
-`AlignmentFailed` for what a step could not get. A node brings the aligner
+`AlignmentFailed` for what a step could not get. The manipulator also
+hands it the reports of the goal (`stages.AlignReports`): the aligner
+publishes `align_look` at the start of each question to its model and
+`align_move` before each correction it moves, each with the number of the
+step and how many steps the alignment can take. A node brings the aligner
 (vlm_router_brain's `ModelAligner`); the manipulator with none skips the
 step.
 """
@@ -24,6 +28,7 @@ from typing import Optional, Protocol, Union
 
 from ...ports import CancelToken, ExpectedFailure, FailureKind, Gripper, Item, Quat, Senses, TargetItem, Vec3
 from ...robot import MoveResult
+from ...stages import AlignReports
 
 
 class AlignmentFailed(ExpectedFailure):
@@ -139,4 +144,8 @@ class Aligner(Protocol):
         """Why `arm` cannot be aligned now, or the empty string."""
         ...
 
-    async def align(self, request: AlignRequest, moves: ArmMoves, cancel: CancelToken) -> Alignment: ...
+    async def align(self, request: AlignRequest, moves: ArmMoves, cancel: CancelToken, reports: AlignReports) -> Alignment:
+        """Corrects the gripper above the point of `request` through
+        `moves`, and publishes each question and each correction through
+        `reports`."""
+        ...

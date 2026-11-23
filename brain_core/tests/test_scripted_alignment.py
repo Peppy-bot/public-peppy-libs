@@ -5,7 +5,7 @@ each way an alignment ends ends the grab."""
 from types import SimpleNamespace
 
 import pytest
-from conftest import records_of
+from conftest import QUIET_CARRY, QUIET_GRAB, records_of
 from fake_peppygen import limb_states_message
 from test_scripted import DOWN, GRASP, HELD, LIFT, LIFT_MOVE, PRE, FakeClock, FakeRobot, cup, gripped, holding
 
@@ -25,7 +25,8 @@ TURNED = DOWN[1]
 
 
 class FakeAligner:
-    """Ends the way the test says, and records what it was asked."""
+    """Ends the way the test says, publishes no report, and records what it
+    was asked and the reports it was given."""
 
     def __init__(self, ending=None, *, unavailable: str = "", failure: str = "") -> None:
         self.ending = ending
@@ -34,6 +35,7 @@ class FakeAligner:
         self.senses = None
         self.requests: list = []
         self.moves = None
+        self.reports = None
 
     def start(self, senses) -> None:
         self.senses = senses
@@ -41,9 +43,10 @@ class FakeAligner:
     def why_unavailable(self, arm: str) -> str:
         return self.unavailable
 
-    async def align(self, request, moves, cancel):
+    async def align(self, request, moves, cancel, reports):
         self.requests.append(request)
         self.moves = moves
+        self.reports = reports
         if self.failure:
             raise AlignmentFailed(self.failure)
         return self.ending
@@ -70,7 +73,7 @@ async def test_the_alignment_runs_above_the_item_and_the_descent_lift_and_hold_u
     manipulator, robot, store, _ = await started(aligner)
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == HELD
     (request,) = aligner.requests
     assert (request.pre, request.point, request.orientation) == (PRE, GRASP, DOWN[0])
@@ -90,7 +93,7 @@ async def test_a_failure_after_the_descent_retreats_to_the_aligned_pre_grasp_poi
     aligner = FakeAligner(Aligned(ALIGNED_PRE, ALIGNED_POINT, ALIGNED_LIFT, TURNED))
     manipulator, robot, _, _ = await started(aligner)
     robot.grips.extend([gripped(1.0), gripped(0.0)])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB)
     assert outcome == Outcome(False, "gripper 'left_gripper' closed on nothing")
     assert robot.calls[-1] == ("move", ALIGNED_PRE, TURNED)
 
@@ -102,7 +105,7 @@ async def test_a_failure_after_the_descent_retreats_to_the_aligned_pre_grasp_poi
 ])
 async def test_a_model_that_gives_up_or_runs_out_ends_the_grab_before_the_descent_with_no_retreat(ending, message):
     manipulator, robot, _, _ = await started(FakeAligner(ending))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB)
     assert outcome == Outcome(False, message)
     # The open, the checks and the move to the pre-grasp point; the jaws
     # stand open as wide as before the grab, so they stay, and the arm stays
@@ -112,21 +115,21 @@ async def test_a_model_that_gives_up_or_runs_out_ends_the_grab_before_the_descen
 
 async def test_a_stopped_alignment_ends_the_grab_with_the_stops_words_and_nothing_more():
     manipulator, robot, _, _ = await started(FakeAligner(Stopped("stopped: operator", steps=1)))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB)
     assert outcome == Outcome(False, "stopped: operator")
     assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_an_alignment_that_fails_names_what_it_could_not_get():
     manipulator, robot, _, _ = await started(FakeAligner(failure="no frame from wrist camera 'wrist_left' after the move"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB)
     assert outcome == Outcome(False, "the alignment failed: no frame from wrist camera 'wrist_left' after the move")
     assert robot.kinds() == ["grip", "check", "check", "check", "move"]
 
 
 async def test_an_unavailable_alignment_fails_the_grab_before_any_move():
     manipulator, robot, _, _ = await started(FakeAligner(unavailable="no wrist camera for left_arm: the wrist_cameras parameter names none"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB)
     assert outcome == Outcome(False, "no alignment: no wrist camera for left_arm: the wrist_cameras parameter names none")
     assert robot.calls == []
 
@@ -149,7 +152,7 @@ async def test_the_aligners_moves_go_through_the_manipulator_with_its_bars():
 async def test_without_an_aligner_the_grab_is_the_stage_1_sequence():
     manipulator, robot, store, _ = await started(None)
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 0.0, _token()) == HELD
+    assert await manipulator.grab(cup(), LEFT, 0.0, _token(), QUIET_GRAB) == HELD
     assert robot.kinds().count("move") == LIFT_MOVE
 
 
@@ -172,7 +175,7 @@ async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(c
     aligner = FakeAligner(Aligned(ALIGNED_PLACE_ABOVE, ALIGNED_PLACE_POINT, ALIGNED_PLACE_ABOVE, PLACE_Q, steps=2))
     manipulator, robot, _, _ = await started(aligner)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token())
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token(), QUIET_CARRY)
     assert outcome == Outcome(True, "", ALIGNED_PLACE_POINT)
     (request,) = aligner.requests
     assert request.item is None and request.target == PLACE_POINT and request.is_place
@@ -190,13 +193,13 @@ async def test_a_place_aligns_above_the_spot_and_releases_at_the_aligned_point(c
 
 async def test_a_place_whose_model_gives_up_fails_before_the_descent_and_keeps_the_item():
     manipulator, robot, _, _ = await started(FakeAligner(GaveUp(steps=1)))
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token(), QUIET_CARRY)
     assert outcome == Outcome(False, "the model gave up after 1 step")
     assert robot.kinds() == ["check", "check", "move"]
 
 
 async def test_an_unavailable_alignment_fails_the_place_before_any_move():
     manipulator, robot, _, _ = await started(FakeAligner(unavailable="no frame from wrist camera 'wrist_left' yet"))
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), _token(), QUIET_CARRY)
     assert outcome == Outcome(False, "no alignment: no frame from wrist camera 'wrist_left' yet")
     assert robot.calls == []

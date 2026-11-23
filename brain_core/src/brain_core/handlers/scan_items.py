@@ -2,12 +2,14 @@
 picture the scan looked at, in one result. Every point is in the robot
 frame at the capture time of that picture, an item the scan did not see
 and reports from an earlier look included. A cancelled scan gives empty
-arrays in the robot frame at the time of the cancel."""
+arrays in the robot frame at the time of the cancel. The feedback gives the
+one stage, look, once the checks of the search passed (`Brain.look`)."""
 
 from __future__ import annotations
 
 from ..brain import STATUS_ENDS
 from ..ports import Role
+from ..stages import reporter_of, scan_look
 
 ZERO = dict(item_ids=[], labels=[], points=[], confidences=[], regions=[], camera="", image_width=0, image_height=0)
 
@@ -26,7 +28,7 @@ async def run(brain, ctx, goal) -> None:
         # One detector for the whole scan: the look and the coverage that
         # says which unseen items it drops.
         detector = brain.models.current(Role.PERCEPTION)
-        look = await brain.look(job, detector, [], goal.timeout_s)
+        look = await brain.look(job, detector, [], goal.timeout_s, publish=reporter_of(ctx), report=scan_look())
         items = brain.state.remember(look.detections, brain.now(), coverage=detector.scan_coverage())
         module = brain.bindings.scan_items
         return dict(

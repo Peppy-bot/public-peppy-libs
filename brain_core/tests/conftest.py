@@ -24,6 +24,7 @@ from brain_core.perception.geometry import NOT_DESCRIBED, LookupFailure
 from brain_core.perception.perceiver import SourceReason
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role, TargetItem
+from brain_core.stages import CarryReports, GrabReports, Report
 
 from fake_peppygen import ROBOT_FRAME
 
@@ -139,15 +140,46 @@ class FakeDetector:
         return self.coverage
 
 
+class Reports:
+    """A reporter that keeps each report it is given, in order, and, given
+    `calls`, the list of a fake robot's calls, also puts each one there as
+    ("report", stage, number, maximum), so a test reads the reports in order
+    with the moves."""
+
+    def __init__(self, calls: Optional[list] = None) -> None:
+        self.reports: list[Report] = []
+        self.calls = calls
+
+    async def __call__(self, report: Report) -> None:
+        self.reports.append(report)
+        if self.calls is not None:
+            self.calls.append(("report", report.stage.value, report.number, report.maximum))
+
+    @property
+    def stages(self) -> list[tuple[str, int, int]]:
+        return [(report.stage.value, report.number, report.maximum) for report in self.reports]
+
+
+async def not_followed(report: Report) -> None:
+    """The reporter of a test that does not read the feedback."""
+
+
+# The reports of a grab of the cup and of a place or a drop of it, for the
+# tests that do not read the feedback.
+QUIET_GRAB = GrabReports(not_followed, "cup")
+QUIET_CARRY = CarryReports(not_followed, "cup")
+
+
 # When the fake manipulator's backbone measured the grasp point of a place.
 PLACE_MEASURED_AT = 2.5
 
 
 class FakeManipulator:
     """Succeeds at once unless told to fail, to wait for a stop or to wait
-    for `release` to be set. `begun` resolves when a sequence has reached
-    it, so a test knows the sequence is running without waiting on the
-    clock."""
+    for `release` to be set, and publishes no report: it keeps the reports
+    of the last sequence in `reports`. `begun` resolves when a sequence has
+    reached it, so a test knows the sequence is running without waiting on
+    the clock."""
 
     name = "fake"
 
@@ -160,6 +192,7 @@ class FakeManipulator:
         self.wait_for_stop = wait_for_stop
         self.release = release
         self.calls: list[tuple] = []
+        self.reports: Optional[Union[GrabReports, CarryReports]] = None
         self.stopped = 0
         self.senses = None
         self.robot = None
@@ -192,18 +225,23 @@ class FakeManipulator:
             return Outcome(False, self.fail)
         return Outcome(True, "", final_position, PLACE_MEASURED_AT if final_position is not None else 0.0, closed_at)
 
-    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
+    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, reports: GrabReports) -> Outcome:
         self.calls.append(("grab", item.item_id, gripper.name, max_effort))
+        self.reports = reports
         return await self._run(cancel, closed_at=self.closed_at)
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+    async def drop(
+        self, gripper: Gripper, cancel: CancelToken, reports: CarryReports, above: Optional[TargetItem] = None
+    ) -> Outcome:
         self.calls.append(("drop", gripper.name) if above is None else ("drop", gripper.name, above.item_id))
+        self.reports = reports
         return await self._run(cancel)
 
-    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken, reports: CarryReports) -> Outcome:
         """A place at a pose reports the jaws opened 1 cm above it; a place
         into a target item, 1 cm above the item's top at its centre; each
         measured at PLACE_MEASURED_AT."""
+        self.reports = reports
         if isinstance(to, TargetItem):
             self.calls.append(("place", gripper.name, to.item_id))
             return await self._run(cancel, final_position=(to.centre[0], to.centre[1], to.top_z + 0.01))
@@ -217,15 +255,38 @@ class FakeManipulator:
 # The reason peppy's goal context gives for each cause of a cancel signal.
 PEPPY_CANCEL_REASONS = {"caller": "cancelled by its caller", "sender_gone": "its sender is gone"}
 
+# Each goal context the running test made.
+_GOAL_CONTEXTS: list["FakeCtx"] = []
+
+
+@pytest.fixture(autouse=True)
+def no_feedback_fault() -> Iterator[None]:
+    """Fails a test in which a goal context took a feedback message its
+    action cannot give (`FakeCtx.feedback_faults`). The reporter of a goal
+    logs what `publish_feedback` raises and the goal goes on, so the raise
+    alone fails no test."""
+    _GOAL_CONTEXTS.clear()
+    yield
+    faults = [fault for ctx in _GOAL_CONTEXTS for fault in ctx.feedback_faults]
+    assert not faults, f"a goal published feedback its action cannot give: {faults}"
+
 
 class FakeCtx:
     """Stands in for the generated GoalContext of `action`, a fake
     generated module: holds the goal, records how it ended, once, after
     checking that a result's fields are the ones the action's result
-    carries and that a failure's kind is one the action declares, and lets
-    a test send the goal its cancel signal, with the cause a caller's
-    cancel or a sender that is gone gives and the reason peppy gives for
-    that cause."""
+    carries and that a failure's kind is one the action declares, records
+    each feedback message in `feedback`, and lets a test send the goal its
+    cancel signal, with the cause a caller's cancel or a sender that is
+    gone gives and the reason peppy gives for that cause.
+
+    A feedback message is one the action can give when its action has a
+    feedback topic, its goal has not ended, its fields are the ones the
+    action's feedback carries, its stage is one the action's contract
+    lists, its activity is a sentence, and its number and its maximum are
+    counts. Any other message is not recorded: `publish_feedback` raises,
+    and keeps what is wrong in `feedback_faults`, which fails the test at
+    its end (`no_feedback_fault`)."""
 
     def __init__(self, action, **data) -> None:
         self.action = action
@@ -236,6 +297,9 @@ class FakeCtx:
         self.cancelled: Optional[dict] = None
         self.cancelled_reason: Optional[str] = None
         self.failed = None
+        self.feedback: list[dict] = []
+        self.feedback_faults: list[str] = []
+        _GOAL_CONTEXTS.append(self)
 
     def request(self):
         return self._request
@@ -262,6 +326,50 @@ class FakeCtx:
     @property
     def ended(self) -> bool:
         return self.completed is not None or self.cancelled is not None or self.failed is not None
+
+    async def publish_feedback(self, **fields) -> None:
+        faults = self._faults_of_feedback(fields)
+        if faults:
+            self.feedback_faults.extend(faults)
+            raise AssertionError("; ".join(faults))
+        self.feedback.append(fields)
+
+    def _faults_of_feedback(self, fields: dict) -> list[str]:
+        """What makes `fields` a feedback message the action cannot give
+        now: nothing for a message it can give."""
+        action = self.action
+        name = action.ACTION_NAME
+        if not action.FEEDBACK_FIELDS:
+            return [f"{name} has no feedback topic"]
+        if set(fields) != action.FEEDBACK_FIELDS:
+            return [f"{name} published {sorted(fields)}, its feedback carries {sorted(action.FEEDBACK_FIELDS)}"]
+        faults = []
+        if self.ended:
+            faults.append(f"{name} published feedback after its goal ended")
+        if fields["stage"] not in action.FEEDBACK_STAGES:
+            faults.append(f"{name} lists no stage {fields['stage']!r}")
+        if not (isinstance(fields["activity"], str) and fields["activity"]):
+            faults.append(f"{name} published the activity {fields['activity']!r}, which is no sentence")
+        for count in ("number", "maximum"):
+            if not (isinstance(fields[count], int) and fields[count] >= 0):
+                faults.append(f"{name} published the {count} {fields[count]!r}, which is no count")
+        return faults
+
+    def take_feedback_faults(self) -> list[str]:
+        """The faults so far, which the test takes over: the check at the
+        end of the test sees none of them."""
+        faults, self.feedback_faults = self.feedback_faults, []
+        return faults
+
+    @property
+    def stages(self) -> list[tuple[str, int, int]]:
+        """Each feedback message's stage, number and maximum, in order."""
+        return [(fields["stage"], fields["number"], fields["maximum"]) for fields in self.feedback]
+
+    @property
+    def activities(self) -> list[str]:
+        """Each feedback message's sentence, in order."""
+        return [fields["activity"] for fields in self.feedback]
 
     async def complete(self, **fields) -> None:
         self._check_end(fields)

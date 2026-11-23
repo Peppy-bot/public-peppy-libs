@@ -271,7 +271,7 @@ async def test_a_place_by_pose_runs_at_the_target_its_decision_placed_and_no_ori
 
 async def test_a_place_whose_manipulator_measured_no_grasp_point_gives_no_final_point_and_the_item_takes_the_target():
     class Unmeasured(FakeManipulator):
-        async def place(self, gripper, to, cancel):
+        async def place(self, gripper, to, cancel, reports):
             self.calls.append(("place", gripper.name, to.position))
             return Outcome(True)
 

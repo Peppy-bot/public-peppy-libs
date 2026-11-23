@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import fake_peppygen
 import pytest
 from conftest import (
-    LOOKUP_TIMEOUT_S, PARAMS, FakeCtx, FakeDetector, FakeManipulator, FakeSource, FakeToken, Ticks, failed_with,
+    LOOKUP_TIMEOUT_S, PARAMS, QUIET_GRAB, FakeCtx, FakeDetector, Reports, FakeManipulator, FakeSource, FakeToken, Ticks, failed_with,
     lookup_answer, make_brain, records_of, sensors_described, with_frames, run_goal,
 )
 from fake_peppygen import (
@@ -25,6 +25,7 @@ from brain_core.perception.none import NoneDetector
 from brain_core.handlers import abort, scan_items
 from brain_core.perception.frames import FrameStore
 from brain_core.ports import ExpectedFailure, FailureKind, Refusal, Role
+from brain_core.stages import scan_look
 
 
 async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the_robot_frame():
@@ -136,7 +137,7 @@ async def test_a_cancelled_or_aborted_goal_reports_its_elapsed_time():
     brain = await make_brain(ticks=ticks, manipulator=manipulator)
 
     async def grab(job) -> dict:
-        outcome = await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel)
+        outcome = await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel, QUIET_GRAB)
         return dict(gripper_name="left_gripper", item_id="cup") if outcome.success else GRAB_ZERO
 
     cancelled = grab_ctx()
@@ -224,7 +225,7 @@ async def test_a_goals_own_cancel_ends_it_cancelled_with_the_reason_of_its_cause
     brain = await make_brain(manipulator=manipulator)
 
     async def grab(job) -> dict:
-        await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel)
+        await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel, QUIET_GRAB)
         return dict(GRAB_ZERO)
 
     async def wait_for_a_stop(job) -> dict:
@@ -260,21 +261,23 @@ class CountingFrames(FrameStore):
         return super().latest()
 
 
-async def test_the_detectors_reason_comes_before_any_frame_is_read_then_the_perceivers():
+async def test_the_detectors_reason_comes_before_any_frame_is_read_then_the_perceivers_and_a_refused_look_reports_nothing():
     detector = FakeDetector(unavailable="perception_model 'sam3_siglip' is still loading")
     brain = await make_brain(detector=detector)
     frames = CountingFrames()
     brain.perceiver.frames = frames
     job = brain.sequencer.start(Role.PERCEPTION, "scan_items", 0)
+    reports = Reports()
     with pytest.raises(Refusal, match="^no perception source: perception_model 'sam3_siglip' is still loading$") as raised:
-        await brain.look(job, detector, [], 0.0)
+        await brain.look(job, detector, [], 0.0, publish=reports, report=scan_look())
     assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
     assert frames.reads == 0 and detector.phrases == []
     detector.unavailable = ""
     with pytest.raises(Refusal, match="^no perception source: no camera frame received$") as raised:
-        await brain.look(job, detector, [], 0.0)
+        await brain.look(job, detector, [], 0.0, publish=reports, report=scan_look())
     assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
     assert frames.reads == 1 and detector.phrases == []
+    assert reports.reports == []
 
 
 async def test_a_search_is_checked_at_once_for_the_shutdown_the_lane_the_model_and_the_source():
@@ -395,7 +398,7 @@ async def test_a_shutdown_ends_a_search_cancelled_and_a_manipulation_aborted():
         return {}
 
     async def grab(job) -> dict:
-        await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel)
+        await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel, QUIET_GRAB)
         return dict(GRAB_ZERO)
 
     scan = FakeCtx(fake_peppygen.scan_items, timeout_s=0.0)

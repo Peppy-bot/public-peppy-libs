@@ -8,7 +8,7 @@ import asyncio
 from collections import deque
 
 import pytest
-from conftest import records_of
+from conftest import QUIET_CARRY, QUIET_GRAB, records_of
 from fake_peppygen import limb_states_message
 from test_scripted import DOWN, GRASP, HELD, LIFT, PRE, FakeClock, FakeRobot, cup, gripped, holding, snapshot_after_the_lift
 
@@ -154,7 +154,7 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
     manipulator, robot, store = await started()
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(cup(), LEFT, 12.0, CancelToken())
+        outcome = await manipulator.grab(cup(), LEFT, 12.0, CancelToken(), QUIET_GRAB)
     assert outcome == HELD
     q = DOWN[0]
     assert robot.calls == [
@@ -201,7 +201,7 @@ async def test_a_planned_grab_opens_plans_the_transit_tests_the_descent_and_lift
 async def test_the_planning_time_is_a_setting():
     manipulator, robot, store = await started(allowed_planning_time_s=1.5)
     holding(robot, store)
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB) == HELD
     [plan_bars] = [bars for kind, bars in robot.bars if kind == "plan"]
     assert plan_bars["allowed_planning_time_s"] == 1.5
 
@@ -210,7 +210,7 @@ async def test_an_orientation_with_no_plan_gives_way_to_the_next():
     manipulator, robot, store = await started()
     holding(robot, store)
     robot.plans.append(no_plan("unreachable", "no joint positions meet the goal without a collision in 0.5 s"))
-    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB) == HELD
     plans = [call for call in robot.calls if call[0] == "plan"]
     assert [call[2] for call in plans] == [DOWN[0], DOWN[1]]
     assert {call[2] for call in robot.calls if call[0] == "move"} == {DOWN[1]}
@@ -219,7 +219,7 @@ async def test_an_orientation_with_no_plan_gives_way_to_the_next():
 async def test_no_orientation_with_a_plan_fails_with_the_planners_kind_and_words_before_the_arm_moves():
     manipulator, robot, store = await started(jaws=0.0)
     robot.plans.extend([no_plan("no_path", NO_PATH)] * len(DOWN))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(
         False,
         "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 8 of 8, "
@@ -234,7 +234,7 @@ async def test_no_orientation_with_a_plan_fails_with_the_planners_kind_and_words
 async def test_an_orientation_whose_descent_or_lift_does_not_reach_gives_way_and_names_that_point():
     manipulator, robot, store = await started()
     robot.lines.extend([reached(0.38), reached(0.6)] * (len(DOWN) // 2))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     # Half of the first line: the grasp point; past the first line: the lifted point.
     assert outcome.message.endswith(
         "has no plan to its lifted point [0.500, 0.100, 0.770]: plan_cartesian_path reaches 0.60 of the lines from the end of the plan"
@@ -243,7 +243,7 @@ async def test_an_orientation_whose_descent_or_lift_does_not_reach_gives_way_and
     robot.calls.clear()
     robot.lines.append(CartesianPath(MoveEnd.FAILED, "the start stands in collision", "start_in_collision"))
     robot.lines.extend([reached(0.38)] * (len(DOWN) - 1))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome.message.endswith(
         "has no plan to its grasp point [0.500, 0.100, 0.695]: plan_cartesian_path reaches 0.38 of the lines from the end of the plan"
     )
@@ -252,7 +252,7 @@ async def test_an_orientation_whose_descent_or_lift_does_not_reach_gives_way_and
 async def test_a_run_of_the_plan_that_fails_ends_the_grab_with_its_words_and_puts_the_jaws_back():
     manipulator, robot, store = await started(jaws=0.0)
     robot.runs.append(PathResult(MoveEnd.FAILED, "left_arm stands 0.08 rad from the expected start at joint 2", "precondition_failed"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "left_arm stands 0.08 rad from the expected start at joint 2")
     assert robot.calls[-3:] == [THE_RUN, ("remove", "brain/cup_1-t0"), ("grip", "left_gripper", 0.0, 0.0)]
 
@@ -264,7 +264,7 @@ async def test_a_grab_that_fails_after_the_arm_moved_does_not_open_the_jaws_wide
     manipulator, robot, store = await started(jaws=1.0)
     robot.runs.append(PathResult(MoveEnd.FAILED, "left_arm stands 0.08 rad from the expected start at joint 2", "precondition_failed"))
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken())
+        outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "left_arm stands 0.08 rad from the expected start at joint 2")
     assert [call for call in robot.calls if call[0] == "grip"] == [("grip", "left_gripper", OPEN_FOR_THE_CUP, 0.0)]
     assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/cup_1-t0")]
@@ -277,7 +277,7 @@ async def test_a_grab_that_fails_after_the_arm_moved_does_not_open_the_jaws_wide
 async def test_a_run_a_stop_ended_retreats_from_nothing():
     manipulator, robot, store = await started()
     robot.runs.append(PathResult(MoveEnd.CANCELLED, "stopped: the operator asked"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "stopped: the operator asked")
     assert robot.calls[-2:] == [THE_RUN, ("remove", "brain/cup_1-t0")]
 
@@ -288,14 +288,14 @@ async def test_a_cancel_during_a_plan_raises_cancelled_before_the_arm_moves():
     robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "plan" else None
     robot.plans.append(JointPlan(MoveEnd.CANCELLED, "aborted: operator"))
     with pytest.raises(Cancelled):
-        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+        await manipulator.grab(cup(), LEFT, 0.0, cancel, QUIET_GRAB)
     assert robot.kinds() == ["grip", "describe", "add", "allow", "plan", "remove"]
 
 
 async def test_a_plan_the_brain_did_not_cancel_that_ends_cancelled_ends_the_grab_as_stopped():
     manipulator, robot, store = await started()
     robot.plans.append(JointPlan(MoveEnd.CANCELLED, "the planner shuts down"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "the planner shuts down")
     assert robot.kinds() == ["grip", "describe", "add", "allow", "plan", "remove"]
 
@@ -303,11 +303,11 @@ async def test_a_plan_the_brain_did_not_cancel_that_ends_cancelled_ends_the_grab
 async def test_a_planner_that_does_not_describe_the_arm_fails_the_grab_before_any_plan():
     manipulator, robot, store = await started()
     robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "the motion planner does not describe arm 'left_arm': describe_arms gave no answer: TimeoutError('no reply')")
     assert robot.kinds() == ["grip", "describe", "grip"]
     robot.described = ArmDescriptions((ArmDescription("right_arm", "right_gripper", (), "openarm_right_tcp", ()),))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "the motion planner does not describe arm 'left_arm': it names no such arm")
 
 
@@ -330,7 +330,7 @@ async def test_a_grab_whose_start_is_clear_with_the_jaws_open_takes_the_first_pa
     manipulator, robot, store = await started(jaws=0.0)
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
+        assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken(), QUIET_GRAB) == HELD
     # The jaws open once before the plan and close once on the item: they do
     # not close for the transit.
     assert [call for call in robot.calls if call[0] == "grip"] == [("grip", "left_gripper", 1.0, 0.0), ("grip", "left_gripper", 0.0, 12.0)]
@@ -344,7 +344,7 @@ async def test_a_refused_start_ends_the_search_at_the_first_orientation():
     planner refuses it."""
     manipulator, robot, store = await started()
     robot.plans.extend([start_refused()] * 2)
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT), CancelToken())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT), CancelToken(), QUIET_CARRY)
     assert outcome.message.endswith(f"start_in_collision: {STARTS_IN_COLLISION}")
     assert [call[2] for call in robot.calls if call[0] == "plan"] == [DOWN[0], DOWN[0]]
 
@@ -355,7 +355,7 @@ async def test_a_start_clear_with_the_jaws_closed_alone_plans_with_them_closed_a
     robot.grips.extend([gripped(OPEN_FOR_THE_CUP), gripped(0.0), gripped(OPEN_FOR_THE_CUP), gripped(0.3)])
     snapshot_after_the_lift(robot, store, limb_states_message(2.0, left_gripper=0.3))
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 12.0, CancelToken())
+        outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 12.0, CancelToken(), QUIET_GRAB)
     assert outcome == HELD
     q = DOWN[0]
     assert robot.calls == [
@@ -395,7 +395,7 @@ async def test_a_start_clear_with_the_jaws_closed_alone_plans_with_them_closed_a
 
 async def test_a_grab_after_a_place_left_the_jaws_open_closes_them_and_takes_the_second_path():
     manipulator, robot, store = await started(jaws=0.3)
-    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
+    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)).success
     # The place opened the jaws, and they stand open.
     assert robot.calls[-2] == ("grip", "left_gripper", 1.0, 0.0)
     store.add(limb_states_message(1.5, left_gripper=1.0))
@@ -403,7 +403,7 @@ async def test_a_grab_after_a_place_left_the_jaws_open_closes_them_and_takes_the
     robot.plans.append(start_refused())
     robot.grips.extend([gripped(1.0), gripped(0.0), gripped(1.0), gripped(0.3)])
     snapshot_after_the_lift(robot, store, limb_states_message(2.0, left_gripper=0.3))
-    assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == HELD
+    assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken(), QUIET_GRAB) == HELD
     assert robot.kinds() == (
         ["grip", "describe", "add", "allow", "plan"]
         + ["grip", "plan", "line", "run", "grip", "line", "move", "grip", "move"]
@@ -434,7 +434,7 @@ async def test_open_jaws_not_clear_at_the_pre_grasp_point_fail_with_the_planners
     manipulator, robot, store = await started(jaws=0.0)
     robot.plans.append(start_refused())
     robot.lines.extend([reached(), answer])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(
         False, f"the planner {verdict} at the pre-grasp point [0.500, 0.100, 0.770] with the jaws of gripper 'left_gripper' open: {words}",
     )
@@ -457,7 +457,7 @@ async def test_open_jaws_not_clear_at_the_pre_grasp_point_stay_when_they_stood_w
     manipulator, robot, store = await started(jaws=1.0)
     robot.plans.append(start_refused())
     robot.lines.extend([reached(), CartesianPath(MoveEnd.FAILED, NOT_CLEAR_AT_PRE, "start_in_collision")])
-    outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome.message.startswith("the planner does not find the arm clear at the pre-grasp point")
     assert robot.calls[-3:] == [
         ("grip", "left_gripper", OPEN_FOR_THE_CUP, 0.0),
@@ -470,7 +470,7 @@ async def test_a_start_refused_with_the_jaws_closed_too_fails_with_the_planners_
     manipulator, robot, store = await started(jaws=0.4)
     robot.plans.extend([start_refused()] * 2)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+        outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(
         False,
         "the planner refuses the start where the arm stands with the jaws open, and with the jaws closed no plan reaches item 'cup_1-t0' "
@@ -486,7 +486,7 @@ async def test_a_check_at_the_pre_grasp_point_that_a_stop_ended_puts_nothing_bac
     manipulator, robot, store = await started(jaws=0.0)
     robot.plans.append(start_refused())
     robot.lines.extend([reached(), CartesianPath(MoveEnd.CANCELLED, "stopped: the operator asked")])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "stopped: the operator asked")
     assert robot.calls[-2:] == [("line", (GRASP, LIFT), DOWN[0], True, ()), ("remove", "brain/cup_1-t0")]
 
@@ -504,7 +504,7 @@ LOW = (0.6, 0.0, 0.75 + CLEARANCE_M)
 async def test_a_planned_place_plans_to_the_high_pre_place_point_tests_the_line_down_runs_the_plan_and_moves_by_lines(caplog):
     manipulator, robot, _ = await started()
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(True, "", PLACE_POINT)
     assert robot.calls == [
         ("describe",),
@@ -525,7 +525,7 @@ async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplo
     manipulator, robot, _ = await started()
     robot.plans.append(no_plan("no_path", "no path joined the goal in 0.5 s"))
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+        outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(True, "", PLACE_POINT)
     assert [call for call in robot.calls if call[0] in ("plan", "move")] == [
         ("plan", HIGH, PLACE_Q), ("plan", LOW, PLACE_Q), ("move", PLACE_POINT, PLACE_Q), ("move", LOW, PLACE_Q),
@@ -541,7 +541,7 @@ async def test_a_place_with_no_plan_to_the_high_point_plans_to_the_low_one(caplo
 async def test_a_place_whose_line_down_does_not_reach_from_the_high_point_tries_the_low_one():
     manipulator, robot, _ = await started()
     robot.lines.append(reached(0.4))
-    assert await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken()) == Outcome(True, "", PLACE_POINT)
+    assert await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY) == Outcome(True, "", PLACE_POINT)
     assert [call[1] for call in robot.calls if call[0] == "plan"] == [HIGH, LOW]
 
 
@@ -550,7 +550,7 @@ async def test_a_place_with_no_plan_at_either_height_fails_with_the_planners_wor
     refuses takes no second path."""
     manipulator, robot, _ = await started()
     robot.plans.extend([no_plan("start_in_collision", STARTS_IN_COLLISION)] * 2)
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(
         False,
         "no plan reaches the pose [0.600, 0.000, 0.750] with gripper 'left_gripper': orientation 1 of 1, "
@@ -562,7 +562,7 @@ async def test_a_place_with_no_plan_at_either_height_fails_with_the_planners_wor
 async def test_a_place_without_an_orientation_plans_each_roll_high_then_each_roll_low():
     manipulator, robot, _ = await started()
     robot.plans.extend([no_plan("no_path", "no path")] * (2 * len(DOWN)))
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT), CancelToken())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT), CancelToken(), QUIET_CARRY)
     assert not outcome.success
     plans = [call for call in robot.calls if call[0] == "plan"]
     assert [call[2] for call in plans] == list(DOWN) + list(DOWN)
@@ -572,7 +572,7 @@ async def test_a_place_without_an_orientation_plans_each_roll_high_then_each_rol
 async def test_a_place_the_planner_cannot_describe_fails_at_once_with_no_try_of_the_low_point():
     manipulator, robot, _ = await started()
     robot.described = ArmDescriptions(reason="describe_arms gave no answer: TimeoutError('no reply')")
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(False, "the motion planner does not describe arm 'left_arm': describe_arms gave no answer: TimeoutError('no reply')")
     assert robot.kinds() == ["describe"]
 
@@ -580,7 +580,7 @@ async def test_a_place_the_planner_cannot_describe_fails_at_once_with_no_try_of_
 async def test_a_place_whose_run_fails_fails_with_its_words_and_the_jaws_stay_closed():
     manipulator, robot, _ = await started()
     robot.runs.append(PathResult(MoveEnd.FAILED, "the guard would hold the path short at waypoint 1", "unreachable"))
-    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(False, "the guard would hold the path short at waypoint 1")
     assert robot.calls[-1] == THE_RUN and "grip" not in robot.kinds()
 
@@ -599,7 +599,7 @@ async def test_a_grab_adds_the_box_its_look_measured_and_leaves_it_when_it_holds
     manipulator, robot, store = await started()
     holding(robot, store)
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken()) == HELD
+        assert await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken(), QUIET_GRAB) == HELD
     assert robot.calls[2:4] == [("add", "brain/lime_1-t0", LIME_SHAPE.centre, "box", LIME_SHAPE.sides), ("allow", "brain/lime_1-t0", GRIPPER_LINKS)]
     assert "remove" not in robot.kinds()
     lines = [record.getMessage() for record in log.records]
@@ -612,7 +612,7 @@ async def test_a_grab_adds_the_box_its_look_measured_and_leaves_it_when_it_holds
 async def test_a_grab_that_closes_on_nothing_retreats_then_removes_the_object():
     manipulator, robot, store = await started()
     holding(robot, store, closed=0.01)
-    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "gripper 'left_gripper' closed on nothing")
     assert robot.calls[-3:] == [("grip", "left_gripper", 1.0, 0.0), ("move", PRE, DOWN[0]), ("remove", "brain/lime_1-t0")]
 
@@ -622,7 +622,7 @@ async def test_a_grab_stopped_during_its_descent_removes_the_object_and_retreats
     cancel = CancelToken()
     robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "move" else None
     with pytest.raises(Cancelled):
-        await manipulator.grab(a_lime(), LEFT, 0.0, cancel)
+        await manipulator.grab(a_lime(), LEFT, 0.0, cancel, QUIET_GRAB)
     assert robot.calls[-2:] == [("move", GRASP, DOWN[0]), ("remove", "brain/lime_1-t0")]
 
 
@@ -632,7 +632,7 @@ async def test_a_grab_whose_alignment_gives_up_removes_the_object():
     from brain_core.manipulators.scripted.aligning import GaveUp
 
     manipulator, robot, store = await started(jaws=0.0, aligner=FakeAligner(GaveUp(steps=2)))
-    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, "the model gave up after 2 steps")
     # The model gave up before the descent: no checked descent is asked.
     assert robot.calls[-3:] == [THE_RUN, ("remove", "brain/lime_1-t0"), ("grip", "left_gripper", 0.0, 0.0)]
@@ -643,7 +643,7 @@ async def test_an_add_that_fails_is_logged_and_the_grab_goes_on_with_nothing_to_
     robot.scene_failures.append("apply_collision_objects gave no answer: TimeoutError('no reply')")
     robot.plans.extend([no_plan("no_path", "no path")] * len(DOWN))
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken())
+        outcome = await manipulator.grab(a_lime(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert not outcome.success
     assert robot.kinds() == ["grip", "describe", "add"] + ["plan"] * len(DOWN) + ["grip"]
     assert log.records[0].getMessage() == (
@@ -653,7 +653,7 @@ async def test_an_add_that_fails_is_logged_and_the_grab_goes_on_with_nothing_to_
 
 async def test_a_place_adds_no_object():
     manipulator, robot, _ = await started()
-    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())).success
+    assert (await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)).success
     assert not {"add", "allow", "remove"} & set(robot.kinds())
 
 
@@ -671,7 +671,7 @@ async def test_the_checked_descent_is_asked_after_the_alignment_with_the_aligned
     holding(robot, store)
     robot.lines.extend([reached(), CartesianPath(MoveEnd.COMPLETED, fraction=0.38)])
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB) == HELD
     lines = [call for call in robot.calls if call[0] == "line"]
     assert lines[1] == ("line", (ALIGNED_POINT, ALIGNED_LIFT), TURNED, True, ())
     assert robot.calls.index(lines[1]) == robot.calls.index(("move", ALIGNED_POINT, TURNED)) - 1
@@ -683,7 +683,7 @@ async def test_a_checked_descent_with_no_answer_is_logged_and_the_grab_goes_on(c
     holding(robot, store)
     robot.lines.extend([reached(), CartesianPath(MoveEnd.FAILED, "openarm_left_ee_link2 stands 0.0239 m from the map", "start_in_collision")])
     with records_of(caplog, "brain_core.manipulators.scripted.manipulator") as log:
-        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == HELD
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB) == HELD
     assert any(
         record.getMessage().endswith("have no answer: start_in_collision: openarm_left_ee_link2 stands 0.0239 m from the map")
         for record in log.records
@@ -695,5 +695,5 @@ async def test_a_cancel_during_the_checked_descent_stops_the_grab_before_it_desc
     cancel = CancelToken()
     robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "line" and call[3] else None
     with pytest.raises(Cancelled):
-        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+        await manipulator.grab(cup(), LEFT, 0.0, cancel, QUIET_GRAB)
     assert robot.calls[-2:] == [("line", (GRASP, LIFT), DOWN[0], True, ()), ("remove", "brain/cup_1-t0")]

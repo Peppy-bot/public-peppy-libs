@@ -163,6 +163,21 @@ and stops at the first one with a failure, whose message ends the
 outcome; the outcome keeps the records in `steps`. A cancel raises
 `Cancelled`, as in every step.
 
+Each sequence publishes its stages as they start, through the reports of
+its goal (`stages.GrabReports`, `stages.CarryReports`). A grab: `plan`
+before the jaws open for the item, `move_above` once an orientation reaches
+and before the transit runs, `grasp` before the descent. A place: `plan`
+once the checks before any move passed, `move_above` as a grab's, `set_down`
+before the line down. A drop above a target item: `plan` and `move_above`
+as a place's, then `release` before the jaws open; any other drop, and a
+drop whose jaws stand closed on air, `release` alone. With an aligner, the
+aligner publishes `align_look` and `align_move` between `move_above` and
+the next stage. The second path of a grab's transit stays in its stages:
+the close of the jaws and the plans with the hand closed in `plan`, the run
+of the plan and the open at the pre-grasp point in `move_above`. A sequence
+that fails before its first stage, such as a place whose jaws stand closed
+on air, publishes nothing.
+
 The manipulator keeps nothing between goals: ids and held flags live in
 `State`.
 """
@@ -179,6 +194,7 @@ from typing import Awaitable, Callable, Generic, Mapping, Optional, Sequence, Ty
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, TargetItem, Vec3
 from ...robot import ArmDescription, CartesianPath, JointPlan, MoveResult, ObjectOperation, brain_object_id, item_object
+from ...stages import AlignReports, CarryReports, GrabReports
 from ...waiting import until
 from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps, Stopped
 from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
@@ -512,11 +528,11 @@ class ScriptedManipulator:
         if self.aligner is not None:
             self.aligner.start(senses)
 
-    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
+    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, reports: GrabReports) -> Outcome:
         notes: list[str] = []
         steps: list[StepRecord] = []
         try:
-            outcome = await self._grab(item, gripper, max_effort, cancel, notes, steps)
+            outcome = await self._grab(item, gripper, max_effort, cancel, reports, notes, steps)
         except _Failed as failure:
             notes.append(f"failed: {failure.message}")
             outcome = Outcome(False, failure.message, steps=tuple(steps))
@@ -527,12 +543,17 @@ class ScriptedManipulator:
             logger.info("grab of item '%s' with gripper '%s': %s", item.item_id, gripper.name, "; ".join(notes))
         return outcome
 
-    async def drop(self, gripper: Gripper, cancel: CancelToken, above: Optional[TargetItem] = None) -> Outcome:
+    async def drop(
+        self, gripper: Gripper, cancel: CancelToken, reports: CarryReports, above: Optional[TargetItem] = None
+    ) -> Outcome:
         steps: list[StepRecord] = []
         try:
             self._require_started()
-            if above is not None and not self._closed_on_air(gripper):
-                await self._carry_above_and_align(gripper, above, cancel, steps)
+            # Jaws closed on air carry nothing: they open where the arm stands.
+            above_target = above is not None and not self._closed_on_air(gripper)
+            if above_target:
+                await self._carry_above_and_align(gripper, above, cancel, reports, steps)
+            await reports.release(above_target=above_target)
             _passed(await self._release(gripper, cancel), steps)
         except _Failed as failure:
             return Outcome(False, failure.message, steps=tuple(steps))
@@ -544,7 +565,9 @@ class ScriptedManipulator:
         opening = self._limb_states.latest.opening(gripper.name)
         return opening is not None and opening < self.hold_opening_min
 
-    async def _carry_above_and_align(self, gripper: Gripper, target: TargetItem, cancel: CancelToken, steps: list[StepRecord]) -> None:
+    async def _carry_above_and_align(
+        self, gripper: Gripper, target: TargetItem, cancel: CancelToken, reports: CarryReports, steps: list[StepRecord]
+    ) -> None:
         """The carry and the alignment of a drop above `target`: to the
         pre-place point `above_target_m` over its top (`clearance_m` where
         that has no plan), from above at each roll, the pre-place point alone
@@ -557,26 +580,27 @@ class ScriptedManipulator:
                 raise _Failed(f"no alignment: {reason}")
         notes: list[str] = []
         top = (target.centre[0], target.centre[1], target.top_z)
+        await reports.plan()
         carried = _passed(
             await self._carry(
                 gripper, Grasp(top, orientations_for(None)), f"item '{target.item_id}'", cancel, notes,
                 heights_m=(self.above_target_m, self.clearance_m), height_words=f"the top of item '{target.item_id}'",
-                after=_After.DROP,
+                after=_After.DROP, move_above=reports.move_above,
             ),
             steps,
         )
         orientation, (pre,) = carried.orientation, carried.points
         if self.aligner is not None:
             request = AlignRequest(None, gripper, pre, pre, orientation, self.lift_m, target=top, into=target, descends=False)
-            _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            _passed(await self._align(self.aligner, request, cancel, reports, notes), steps)
         logger.info("drop with gripper '%s' above item '%s': %s", gripper.name, target.item_id, "; ".join(notes))
 
-    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken) -> Outcome:
+    async def place(self, gripper: Gripper, to: Union[Pose, TargetItem], cancel: CancelToken, reports: CarryReports) -> Outcome:
         steps: list[StepRecord] = []
         try:
             if isinstance(to, TargetItem):
-                return await self._place_into(gripper, to, cancel, steps)
-            return await self._place(gripper, to, cancel, steps)
+                return await self._place_into(gripper, to, cancel, reports, steps)
+            return await self._place(gripper, to, cancel, reports, steps)
         except _Failed as failure:
             return Outcome(False, failure.message, steps=tuple(steps))
 
@@ -586,7 +610,8 @@ class ScriptedManipulator:
         return None
 
     async def _grab(
-        self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, notes: list[str], steps: list[StepRecord]
+        self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken, reports: GrabReports,
+        notes: list[str], steps: list[StepRecord],
     ) -> Outcome:
         self._require_started()
         # Before any move: a gripper limb_states does not name could never
@@ -603,12 +628,13 @@ class ScriptedManipulator:
         opening = self._approach_opening(item)
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
+        await reports.plan()
         await self._grip(gripper.name, opening, 0.0, cancel)
         try:
             carried = _passed(
                 await self._carry(
                     gripper, grasp, f"item '{item.item_id}'", cancel, notes,
-                    heights_m=(self.clearance_m,), after=_After.GRAB, item=item, opening=opening,
+                    heights_m=(self.clearance_m,), after=_After.GRAB, item=item, opening=opening, move_above=reports.move_above,
                 ),
                 steps,
             )
@@ -619,7 +645,7 @@ class ScriptedManipulator:
                 raise await self._put_jaws_back_where_moved(failure, gripper, opening_before, cancel, notes) from None
             raise await self._put_jaws_back(failure, gripper, opening_before, cancel, notes) from None
         try:
-            orientation, pre, point, lift = await self._align_above_item(item, gripper, carried, cancel, notes, steps)
+            orientation, pre, point, lift = await self._align_above_item(item, gripper, carried, cancel, reports, notes, steps)
         except _Failed as failure:
             await carried.abandon()
             raise await self._put_jaws_back_where_moved(failure, gripper, opening_before, cancel, notes) from None
@@ -627,13 +653,15 @@ class ScriptedManipulator:
             await carried.abandon()
             raise
         try:
+            await reports.grasp()
             return await self._descend_or_retreat(item, gripper, max_effort, orientation, pre, point, lift, cancel, notes, steps)
         except (_Failed, Cancelled):
             await carried.abandon()
             raise
 
     async def _align_above_item(
-        self, item: Item, gripper: Gripper, carried: Carried, cancel: CancelToken, notes: list[str], steps: list[StepRecord],
+        self, item: Item, gripper: Gripper, carried: Carried, cancel: CancelToken, reports: GrabReports, notes: list[str],
+        steps: list[StepRecord],
     ) -> tuple[Quat, Vec3, Vec3, Vec3]:
         """The grab from its pre-grasp point to its descent: with an aligner,
         the align step above the item, then the log of the checked descent.
@@ -642,7 +670,7 @@ class ScriptedManipulator:
         orientation, (pre, point, lift), checked = carried.orientation, carried.points, carried.checked
         if self.aligner is not None:
             request = AlignRequest(item, gripper, pre, point, orientation, self.lift_m)
-            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            aligned = _passed(await self._align(self.aligner, request, cancel, reports, notes), steps)
             pre, point, lift, orientation = aligned.pre, aligned.point, aligned.lift, aligned.orientation
             # The aligner moved the arm: an answer of the carry is for another
             # start.
@@ -731,9 +759,12 @@ class ScriptedManipulator:
         notes.append("held")
         return Outcome(True, closed_at=closed_at, steps=tuple(steps))
 
-    async def _align(self, aligner: Aligner, request: AlignRequest, cancel: CancelToken, notes: list[str]) -> StepRecord[Aligned]:
+    async def _align(
+        self, aligner: Aligner, request: AlignRequest, cancel: CancelToken, reports: AlignReports, notes: list[str]
+    ) -> StepRecord[Aligned]:
         """The align step: `aligner` corrects the gripper above the point of
-        `request`, through this manipulator's moves, and `notes` says how
+        `request`, through this manipulator's moves, and publishes each of
+        its questions and corrections through `reports`; `notes` says how
         far the grasp point moved and along which line the jaws close. It
         goes through with the points and the orientation the sequence goes
         on with. A model that gives up, runs out of steps or cannot observe
@@ -741,7 +772,7 @@ class ScriptedManipulator:
         the sequence here, before the descent, so nothing retreats."""
         inputs = {"request": request}
         try:
-            alignment = await aligner.align(request, self, cancel)
+            alignment = await aligner.align(request, self, cancel, reports)
         except AlignmentFailed as failure:
             return StepRecord("align", inputs, failure=StepFailure.ALIGNMENT, message=f"the alignment failed: {failure.message}")
         if isinstance(alignment, GaveUp):
@@ -815,7 +846,9 @@ class ScriptedManipulator:
             if reason:
                 raise _Failed(f"no alignment: {reason}")
 
-    async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
+    async def _place(
+        self, gripper: Gripper, pose: Pose, cancel: CancelToken, reports: CarryReports, steps: list[StepRecord]
+    ) -> Outcome:
         self._refuse_a_place_before_any_move(gripper)
         try:
             orientations = orientations_for(pose.orientation)
@@ -823,20 +856,22 @@ class ScriptedManipulator:
             raise _Failed(str(error)) from None
         target = f"the pose {_numbers(pose.position)}"
         notes: list[str] = []
+        await reports.plan()
         carried = _passed(
             await self._carry(
                 gripper, Grasp(pose.position, orientations), target, cancel, notes,
-                heights_m=(self.clearance_m + self.held_item_depth_m, self.clearance_m),
+                heights_m=(self.clearance_m + self.held_item_depth_m, self.clearance_m), move_above=reports.move_above,
             ),
             steps,
         )
         orientation, (pre, point) = carried.orientation, carried.points
         if self.aligner is not None:
             request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=pose.position)
-            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            aligned = _passed(await self._align(self.aligner, request, cancel, reports, notes), steps)
             pre, point, orientation = aligned.pre, aligned.point, aligned.orientation
         if notes:
             logger.info("place with gripper '%s': %s", gripper.name, "; ".join(notes))
+        await reports.set_down()
         landed = _passed(await self._descend(gripper.arm, pre, point, orientation, cancel), steps)
         if landed.on_contact:
             logger.info(
@@ -846,7 +881,9 @@ class ScriptedManipulator:
         _passed(await self._release(gripper, cancel, climb=(pre, orientation)), steps)
         return Outcome(True, "", landed.position, landed.timestamp, steps=tuple(steps))
 
-    async def _place_into(self, gripper: Gripper, target: TargetItem, cancel: CancelToken, steps: list[StepRecord]) -> Outcome:
+    async def _place_into(
+        self, gripper: Gripper, target: TargetItem, cancel: CancelToken, reports: CarryReports, steps: list[StepRecord]
+    ) -> Outcome:
         """A place into or onto `target`: the carry to the pre-place point
         `above_target_m` over the target's top (`clearance_m` where that has
         no plan), from above at each roll, with the line down to the
@@ -857,11 +894,12 @@ class ScriptedManipulator:
         self._refuse_a_place_before_any_move(gripper)
         notes: list[str] = []
         end = (target.centre[0], target.centre[1], target.bottom_z)
+        await reports.plan()
         carried = _passed(
             await self._carry(
                 gripper, Grasp(end, orientations_for(None)), f"item '{target.item_id}'", cancel, notes,
                 heights_m=(self.above_target_m, self.clearance_m), rise_m=max(0.0, target.top_z - target.bottom_z),
-                height_words=f"the top of item '{target.item_id}'",
+                height_words=f"the top of item '{target.item_id}'", move_above=reports.move_above,
             ),
             steps,
         )
@@ -869,9 +907,10 @@ class ScriptedManipulator:
         if self.aligner is not None:
             top = (target.centre[0], target.centre[1], target.top_z)
             request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=top, into=target)
-            aligned = _passed(await self._align(self.aligner, request, cancel, notes), steps)
+            aligned = _passed(await self._align(self.aligner, request, cancel, reports, notes), steps)
             pre, point, orientation = aligned.pre, aligned.point, aligned.orientation
         logger.info("place with gripper '%s' into item '%s': %s", gripper.name, target.item_id, "; ".join(notes))
+        await reports.set_down()
         landed = _passed(await self._descend(gripper.arm, pre, point, orientation, cancel), steps)
         if landed.on_contact:
             logger.info(
@@ -926,8 +965,8 @@ class ScriptedManipulator:
 
     async def _carry(
         self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
-        heights_m: tuple[float, ...], rise_m: float = 0.0, height_words: str = "the pose", after: _After = _After.PLACE,
-        item: Optional[Item] = None, opening: Optional[float] = None,
+        heights_m: tuple[float, ...], move_above: Callable[[], Awaitable[None]], rise_m: float = 0.0,
+        height_words: str = "the pose", after: _After = _After.PLACE, item: Optional[Item] = None, opening: Optional[float] = None,
     ) -> StepRecord[Carried]:
         """The carry step: the transit to the pre point `rise_m` and the
         first of `heights_m` back along the approach from the grasp point of
@@ -939,9 +978,11 @@ class ScriptedManipulator:
         its bottom. Its points: the pre point, then the points of `after`. `notes` gets the orientation that planned and the calls it
         took. A grab gives the `opening` of its jaws above the item, for the
         second path of its transit (`_planned_transit`). No orientation that
-        reaches at any height fails the step before the arm moves; a transit
-        that does not complete fails it and undoes what it added for `item`,
-        and so does a cancel before it raises."""
+        reaches at any height fails the step before the arm moves. Once an
+        orientation reaches, `move_above` reports the move above, and the
+        transit runs; a transit that does not complete fails the step and
+        undoes what it added for `item`, and so does a cancel before it
+        raises."""
         inputs = {"reference": grasp.point, "orientations": grasp.orientations, "heights_m": heights_m, "rise_m": rise_m}
         checks = _Checks()
         for index, height in enumerate(heights_m):
@@ -960,6 +1001,7 @@ class ScriptedManipulator:
             except _Failed as failure:
                 return _failed_step("carry", inputs, failure, StepFailure.PLAN)
         try:
+            await move_above()
             checked = await reach.go(cancel)
         except _Failed as failure:
             await reach.abandon()

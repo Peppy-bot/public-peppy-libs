@@ -3,6 +3,7 @@ outcome's `steps`: what each step was asked, what it gave the next one,
 why it failed and its numbers."""
 
 import pytest
+from conftest import QUIET_CARRY, QUIET_GRAB
 from test_planned_transit import started as started_with_planner
 from test_scripted import (
     DOWN,
@@ -48,7 +49,7 @@ PLACE_RELEASE_INPUTS = {"gripper": "left_gripper", "climb_to": PLACE_ABOVE}
 
 
 async def place(manipulator) -> Outcome:
-    return await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    return await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken(), QUIET_CARRY)
 
 
 def names(outcome: Outcome) -> list[str]:
@@ -64,7 +65,7 @@ def record_of(outcome: Outcome, step: str) -> StepRecord:
 async def test_a_drop_records_its_release_with_the_opening_the_jaws_stood_at():
     manipulator, robot, _ = await started()
     robot.grips.append(gripped(0.97))
-    outcome = await manipulator.drop(LEFT, CancelToken())
+    outcome = await manipulator.drop(LEFT, CancelToken(), QUIET_CARRY)
     assert outcome == Outcome(True)
     assert outcome.steps == (StepRecord("release", DROP_INPUTS, Released(0.97), measured={"opening": 0.97}),)
 
@@ -72,17 +73,17 @@ async def test_a_drop_records_its_release_with_the_opening_the_jaws_stood_at():
 async def test_a_drop_whose_jaws_do_not_open_records_a_failed_move_and_a_stopped_one_a_stop():
     manipulator, robot, _ = await started()
     robot.grips.append(grip_failed("the follower stopped reporting"))
-    failed = await manipulator.drop(LEFT, CancelToken())
+    failed = await manipulator.drop(LEFT, CancelToken(), QUIET_CARRY)
     assert failed.steps == (StepRecord("release", DROP_INPUTS, failure=StepFailure.MOVE, message="the follower stopped reporting"),)
     robot.grips.append(GripResult(MoveEnd.CANCELLED, "stopped: the operator asked"))
-    stopped = await manipulator.drop(LEFT, CancelToken())
+    stopped = await manipulator.drop(LEFT, CancelToken(), QUIET_CARRY)
     assert stopped == Outcome(False, "stopped: the operator asked")
     assert stopped.steps == (StepRecord("release", DROP_INPUTS, failure=StepFailure.STOPPED, message="stopped: the operator asked"),)
 
 
 async def test_a_drop_that_cannot_start_runs_no_step():
     manipulator, robot, _ = await started(opening=None)
-    outcome = await manipulator.drop(LEFT, CancelToken())
+    outcome = await manipulator.drop(LEFT, CancelToken(), QUIET_CARRY)
     assert not outcome.success and outcome.steps == ()
     assert robot.calls == []
 
@@ -170,7 +171,7 @@ async def test_a_grab_records_its_line_down_and_closes_where_it_ended():
     manipulator, robot, store = await started()
     holding(robot, store)
     robot.moves.extend([arrived(), touched((GRASP[0], GRASP[1], GRASP[2] + 0.012), DOWN[0])])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == HELD
     assert outcome.steps[-1] == StepRecord(
         "descend", GRAB_DESCEND_INPUTS, Landed((GRASP[0], GRASP[1], GRASP[2] + 0.012), None, on_contact=True),
@@ -181,7 +182,7 @@ async def test_a_grab_records_its_line_down_and_closes_where_it_ended():
 async def test_a_grab_whose_line_down_times_out_ends_with_its_failed_descend_after_the_retreat():
     manipulator, robot, _ = await started()
     robot.moves.extend([arrived(), move_failed(SHORT, "timeout")])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, SHORT)
     assert outcome.steps[-1] == StepRecord("descend", GRAB_DESCEND_INPUTS, failure=StepFailure.MOVE, message=SHORT)
     # The retreat is no step: the gripper opens and the arm climbs back.
@@ -243,7 +244,7 @@ async def test_a_place_whose_transit_does_not_complete_ends_with_its_failed_carr
 async def test_a_grab_carries_the_gripper_to_the_pre_grasp_point_with_the_grasp_and_lifted_points_after_it():
     manipulator, robot, store = await started()
     holding(robot, store)
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert names(outcome) == ["carry", "descend"]
     carry = record_of(outcome, "carry")
     assert carry.inputs == {"reference": GRASP, "orientations": DOWN, "heights_m": (0.075,), "rise_m": 0.0}
@@ -254,7 +255,7 @@ async def test_a_grab_carries_the_gripper_to_the_pre_grasp_point_with_the_grasp_
 async def test_a_grab_that_no_orientation_reaches_records_no_reach():
     manipulator, robot, _ = await started()
     robot.checks.extend([MoveCheck(False, f"refusal {i}") for i in range(len(DOWN))])
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert [(record.step, record.failure) for record in outcome.steps] == [("carry", StepFailure.NO_REACH)]
 
 
@@ -267,7 +268,7 @@ async def test_a_planned_carry_counts_its_plans_and_reach_tests():
 async def test_a_planned_grab_whose_transit_run_fails_records_the_failed_carry_and_removes_the_object():
     manipulator, robot, _ = await started_with_planner()
     robot.runs.append(PathResult(MoveEnd.FAILED, "the guard would hold the path short at waypoint 1", "unreachable"))
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert [(record.step, record.failure, record.message) for record in outcome.steps] == [
         ("carry", StepFailure.MOVE, "the guard would hold the path short at waypoint 1"),
     ]
@@ -287,7 +288,7 @@ async def test_a_cancel_during_a_planned_grabs_transit_run_removes_the_object_an
     cancel = CancelToken()
     robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call[0] == "run" else None
     with pytest.raises(Cancelled):
-        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+        await manipulator.grab(cup(), LEFT, 0.0, cancel, QUIET_GRAB)
     assert [call[0] for call in robot.calls[-2:]] == ["run", "remove"]
 
 
@@ -306,7 +307,7 @@ async def aligned_started(ending=None, **kwargs):
 async def test_a_grab_with_an_aligner_runs_carry_align_descend_and_records_how_the_model_moved_the_gripper():
     aligner, manipulator, robot, store = await aligned_started(Aligned(ALIGNED_PRE, ALIGNED_POINT, ALIGNED_LIFT, TURNED, steps=2))
     holding(robot, store)
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == HELD and names(outcome) == ["carry", "align", "descend"]
     align = record_of(outcome, "align")
     [request] = aligner.requests
@@ -337,7 +338,7 @@ async def test_a_place_with_an_aligner_reads_as_its_four_steps():
 ])
 async def test_an_alignment_that_does_not_end_ready_ends_the_grab_with_its_failed_align_record(ending, failure, message, measured):
     aligner, manipulator, robot, _ = await aligned_started(ending)
-    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken(), QUIET_GRAB)
     assert outcome == Outcome(False, message)
     assert names(outcome) == ["carry", "align"]
     assert outcome.steps[-1] == StepRecord("align", {"request": aligner.requests[0]}, failure=failure, message=message, measured=measured)
@@ -358,5 +359,5 @@ BOWL = TargetItem("wooden_bowl_1-t0", "wooden bowl", (0.337, 0.0), 0.531, 0.443,
 
 async def test_the_none_manipulator_refuses_a_target_item_as_any_sequence():
     none = NoneManipulator()
-    assert await none.place(LEFT, BOWL, CancelToken()) == Outcome(False, none.why_unavailable())
-    assert await none.drop(LEFT, CancelToken(), above=BOWL) == Outcome(False, none.why_unavailable())
+    assert await none.place(LEFT, BOWL, CancelToken(), QUIET_CARRY) == Outcome(False, none.why_unavailable())
+    assert await none.drop(LEFT, CancelToken(), QUIET_CARRY, above=BOWL) == Outcome(False, none.why_unavailable())

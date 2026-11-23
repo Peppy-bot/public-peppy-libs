@@ -2,7 +2,9 @@
 names no item_id takes its target, which its decision parses and places in
 the robot frame (`Brain.place_target`); a goal that names one sends a target
 that is not read. A target the decision could not place for want of the
-robot frame or of the lookup's answer is refused in the result."""
+robot frame or of the lookup's answer is refused in the result. The
+manipulator publishes the stages of the grab through the reports of the
+goal, which name the item by its label (`stages.GrabReports`)."""
 
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from typing import Optional
 
 from ..brain import RESULT_ENDS, GoalTarget, placed_target
 from ..ports import ExpectedFailure, FailureKind, Role
+from ..stages import GrabReports, reporter_of
 
 ZERO = dict(gripper_name="", item_id="")
 
@@ -50,7 +53,8 @@ async def run(brain, ctx, goal: Goal) -> None:
         # brain or a planner that restarted, a failed scene call or a forget
         # left it otherwise.
         await brain.make_scene_follow_holds()
-        outcome = await manipulator.grab(item, gripper, goal.max_effort, job.cancel)
+        reports = GrabReports(reporter_of(ctx), item.label)
+        outcome = await manipulator.grab(item, gripper, goal.max_effort, job.cancel, reports)
         job.cancel.check()
         if not outcome.success:
             raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the grasp failed")

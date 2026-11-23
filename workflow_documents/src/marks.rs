@@ -1,7 +1,7 @@
 //! The marks of the workflow side: names that a contract gives a field
-//! (`$marks`) or a member (`marks`), which the checker of the workflow
-//! director reads. The mark list of contracts-hub names each with the owner
-//! `workflow`.
+//! (`$marks`) or a member (`marks`), which the workflow director reads: its
+//! checker, and its run for `activity`. The mark list of contracts-hub names
+//! each with the owner `workflow`.
 
 /// A field that holds an item id, valid only on the node instance that gives
 /// it: a workflow gives it only a `$ref` to a field with this mark of a call
@@ -26,3 +26,9 @@ pub const CHECKS_REACH: &str = "checks_reach";
 /// declared location, and the instance that serves the member implements
 /// locations:v1.
 pub const LOCATION: &str = "location";
+
+/// The string field at the top of the feedback message of an action that
+/// holds one sentence of what the robot does now: the director gives an
+/// event `step_reports` with that sentence each time it changes during the
+/// call of a step.
+pub const ACTIVITY: &str = "activity";
