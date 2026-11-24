@@ -5,8 +5,8 @@
 
 use std::fmt;
 
-use frame_tree::Transform;
 use frame_tree::arithmetic::{self, kdl, normalize_angle, quaternion_of_yaw, yaw_of_quaternion};
+use frame_tree::{Transform, UnitQuaternion};
 
 /// Where one frame sits in another on the floor plane: a position in meters,
 /// and a heading in radians, counterclockwise about +Z from +X.
@@ -86,10 +86,12 @@ impl PlanarPose {
 
     /// The transform in space: the position on the floor plane, at height 0, and
     /// the heading as a turn about +Z, its quaternion made as tf2's
-    /// `setRPY(0, 0, yaw)` makes it ([`arithmetic::quaternion_of_yaw`]).
+    /// `setRPY(0, 0, yaw)` makes it ([`UnitQuaternion::from_yaw`]).
     pub fn to_transform(self) -> Transform {
-        Transform::new([self.x, self.y, 0.0], quaternion_of_yaw(self.yaw))
-            .expect("a finite position and the quaternion of a finite heading make a transform")
+        let heading =
+            UnitQuaternion::from_yaw(self.yaw).expect("a planar pose's heading is finite");
+        Transform::new([self.x, self.y, 0.0], heading)
+            .expect("a planar pose's position is finite, so it makes a transform")
     }
 
     /// A point of the placed frame in the frame the pose places it in: turned
@@ -214,8 +216,8 @@ mod tests {
     #[test]
     fn a_planar_pose_in_space_stands_on_the_floor_turned_about_z() {
         let pose = planar(1.0, -2.0, 2.5).to_transform();
-        assert_eq!(pose.origin(), [1.0, -2.0, 0.0]);
-        assert_eq!(pose.orientation(), quaternion_of_yaw(2.5));
+        assert_eq!(pose.position(), [1.0, -2.0, 0.0]);
+        assert_eq!(pose.orientation().to_xyzw(), quaternion_of_yaw(2.5));
         let [x, y] = planar(1.0, -2.0, 2.5).apply([0.3, 0.4]);
         assert!(close(pose.apply([0.3, 0.4, 0.7]), [x, y, 0.7], 1e-12));
     }

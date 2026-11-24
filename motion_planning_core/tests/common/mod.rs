@@ -162,7 +162,7 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
     map.insert(
         &Scan {
             frame: &root_frame(),
-            sensor: Transform::new(origin, [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+            sensor: Transform::new(origin, frame_tree::UnitQuaternion::IDENTITY).expect("a pose"),
             points: &relative,
             max_range_m: PositiveFinite::parse(10.0).expect("positive"),
         },

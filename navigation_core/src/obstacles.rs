@@ -752,7 +752,7 @@ impl LiveObstacles {
     /// The columns the votes of `scan`'s readings show a drop in
     /// ([`FloorVotes`]).
     fn drops_shown(&self, scan: &Scan) -> BTreeSet<Cell> {
-        let origin = scan.sensor.origin();
+        let origin = scan.sensor.position();
         let step_z = self.heights.step_plane_z();
         let mut votes: HashMap<Cell, FloorVotes> = HashMap::new();
         for reading in scan.readings() {
@@ -974,6 +974,7 @@ mod tests {
     use super::*;
     use control_core::footprint::Footprint;
     use control_core::non_negative_finite::NonNegativeFinite;
+    use frame_tree::UnitQuaternion;
 
     fn odom() -> FrameName {
         FrameName::parse("odom").unwrap()
@@ -1015,7 +1016,7 @@ mod tests {
         let mut live =
             LiveObstacles::new(odom(), bounds(), heights(), square(), NonZeroUsize::MIN).unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let sensor_on_base = Transform::new([5.025, 0.025, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let sensor_on_base = Transform::new([5.025, 0.025, 1.0], UnitQuaternion::IDENTITY).unwrap();
         live.insert_depth_frame(
             0,
             &[[0.0, 0.0, -0.7]],
@@ -1184,7 +1185,7 @@ mod tests {
             .unwrap();
         assert!(at_the_column(&seen(&moved)), "{:?}", seen(&moved));
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let elsewhere = Transform::new([5.5, 0.5, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let elsewhere = Transform::new([5.5, 0.5, 1.0], UnitQuaternion::IDENTITY).unwrap();
         let refused = live
             .insert_depth_frame(
                 1,

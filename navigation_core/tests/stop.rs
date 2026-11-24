@@ -32,7 +32,7 @@ use common::poses::{moved, on_base, planar};
 use control_core::planar_pose::PlanarPose;
 use control_core::twist::PlanarTwist;
 use frame_tree::FrameName;
-use frame_tree::Transform;
+use frame_tree::{Transform, UnitQuaternion};
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
@@ -221,7 +221,7 @@ const EDGE_M: f64 = 1.41;
 /// points every 2 cm.
 fn ledge() -> LiveObstacles {
     let mut live = live_obstacles(footprint(), 1);
-    let sensor = Transform::new([1.0, 0.0, 1.2], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor = Transform::new([1.0, 0.0, 1.2], UnitQuaternion::IDENTITY).expect("a pose");
     let points: Vec<[f32; 3]> = (0..150)
         .flat_map(|i| (0..50).map(move |j| (i, j)))
         .map(|(i, j)| {
@@ -323,7 +323,7 @@ fn occupied_of(live: &LiveObstacles, base: PlanarPose) -> Vec<[f64; 2]> {
 
 /// A sensor `height_m` up over the base's center, facing along +X.
 fn sensor_on_base(height_m: f64) -> Transform {
-    Transform::new([0.0, 0.0, height_m], [0.0, 0.0, 0.0, 1.0]).expect("a pose")
+    Transform::new([0.0, 0.0, height_m], UnitQuaternion::IDENTITY).expect("a pose")
 }
 
 /// `points`, in the map's frame, seen from the sensor `sensor_on_base` of a base at `base`.

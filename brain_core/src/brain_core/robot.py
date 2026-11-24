@@ -731,4 +731,4 @@ def _pose(record) -> tuple[Vec3, Quat]:
     through control_core_py's geometry; a ValueError names one that is no
     pose."""
     pose = Pose.parse(record.position, record.orientation)
-    return pose.position.position, pose.orientation.quaternion
+    return pose.position.position, pose.orientation.xyzw

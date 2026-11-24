@@ -203,7 +203,7 @@ pub fn insert_cut_out<const N: usize>(
     scan: &Scan,
     robot: &RobotMask<N>,
 ) -> Result<(), InsertError> {
-    let root = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity is a pose");
+    let root = Transform::IDENTITY;
     let body = RobotCutout::new(scan.frame, root, robot.placed());
     let objects: Vec<ShapeCutout> = robot
         .objects
@@ -229,7 +229,9 @@ mod tests {
     }
 
     fn pose(position: [f64; 3], orientation: [f64; 4]) -> Transform {
-        Transform::new(position, orientation).expect("a position and a unit quaternion")
+        let orientation =
+            frame_tree::UnitQuaternion::parse(orientation).expect("a unit quaternion");
+        Transform::new(position, orientation).expect("a finite position")
     }
 
     // A depth frame 6 cm left of and 2 cm below a color frame that looks straight down

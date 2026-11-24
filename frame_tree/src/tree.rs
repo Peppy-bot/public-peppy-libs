@@ -47,6 +47,7 @@ use crate::transforms::{
     FrameTransform, MessageError, MovingMessage, Parsed, Placement, StaticMessage, TransformError,
     TransformErrorReason,
 };
+use crate::unit_quaternion::UnitQuaternion;
 
 /// The place of the source frame in the target frame, and the time it holds at: the
 /// lookup's own time, the latest time common to the chain, or none where every transform
@@ -388,7 +389,7 @@ impl FrameTree {
             .transform()
             .compose(&in_fixed.placement.transform());
         Ok(Found {
-            placement: Placement::of_transform(&composed),
+            placement: Placement::from_transform(&composed),
             time: fixed_in_target.time,
         })
     }
@@ -799,16 +800,16 @@ impl Chain {
     /// `accum` (buffer_core.cpp:547-556): the chain carried up one transform.
     fn up(&mut self, transform: Placement) {
         self.position = arithmetic::sum(
-            arithmetic::rotate(transform.orientation(), self.position),
+            transform.orientation().rotate(self.position),
             transform.position(),
         );
-        self.rotation = arithmetic::product(transform.orientation(), self.rotation);
+        self.rotation = arithmetic::product(transform.orientation().to_xyzw(), self.rotation);
     }
 
     /// The chain as composed, `finalize(TargetParentOfSource)` of the source's chain
     /// (buffer_core.cpp:563-566).
     fn placement(&self) -> Placement {
-        Placement::new(self.position, self.rotation)
+        Placement::new(self.position, UnitQuaternion::from_computed(self.rotation))
     }
 
     /// The chain's inverse, `inv_target_quat` and `inv_target_vec`, which is
@@ -817,7 +818,7 @@ impl Chain {
         let rotation = arithmetic::inverse(self.rotation);
         Placement::new(
             arithmetic::rotate(rotation, arithmetic::negated(self.position)),
-            rotation,
+            UnitQuaternion::from_computed(rotation),
         )
     }
 }
@@ -835,10 +836,13 @@ impl Accumulated {
         let inverse = self.target.inverse();
         Placement::new(
             arithmetic::sum(
-                arithmetic::rotate(inverse.orientation(), self.source.position),
+                inverse.orientation().rotate(self.source.position),
                 inverse.position(),
             ),
-            arithmetic::product(inverse.orientation(), self.source.rotation),
+            UnitQuaternion::from_computed(arithmetic::product(
+                inverse.orientation().to_xyzw(),
+                self.source.rotation,
+            )),
         )
     }
 }

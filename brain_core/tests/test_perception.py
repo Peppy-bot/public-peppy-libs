@@ -29,7 +29,7 @@ from conftest import (
     sensors_described,
 )
 from fake_peppygen import FakeConsumedService, LookupTransformRequest, VacantSlot, consumed_service
-from control_core_py.geometry import Placement, PoseTarget, Stamped, product, rotate
+from control_core_py.geometry import Placement, PoseTarget, Stamped, UnitQuaternion, normalized, product
 
 from brain_core.perception.camera import (
     INVERSE_PLUMB_BOB,
@@ -74,7 +74,7 @@ def perceiver_of(frames: FrameStore, camera: CameraModel) -> Perceiver:
 
 
 def test_a_camera_model_places_a_pixel_once_it_holds_its_intrinsics_and_a_pose():
-    placed = CameraModel().with_pose(Placement((1, 2, 3), (0, 0, 0, 1)))
+    placed = CameraModel().with_pose(Placement((1, 2, 3), UnitQuaternion.IDENTITY))
     with pytest.raises(ValueError, match="intrinsics are not known yet"):
         placed.deproject(1.0, 1.0, 1.0, 16, 12)
     unplaced = CameraModel().with_intrinsics(CAMERA_16X12)
@@ -211,10 +211,10 @@ def test_the_chest_pose_of_the_robots_tree_looks_ahead_and_down():
     # horizon, and the image's +Y (down the picture) leans forward and down.
     # Its colour intrinsics: a 52 degree vertical field of view over 720
     # rows is a focal length of 360 / tan(26 degrees), and no lens.
-    chest = CameraModel().with_pose(Placement(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(Intrinsics(1280, 720, 738.1, 738.1, 640.0, 360.0))
+    chest = CameraModel().with_pose(Placement(CHEST_POSITION, UnitQuaternion.parse(CHEST_ORIENTATION))).with_intrinsics(Intrinsics(1280, 720, 738.1, 738.1, 640.0, 360.0))
     forward = chest.forward()
     assert close(forward, (math.cos(math.radians(62)), 0.0, -math.sin(math.radians(62))), 1e-3)
-    assert close(rotate(chest.pose.orientation, (0.0, 1.0, 0.0)), (-math.sin(math.radians(62)), 0.0, -math.cos(math.radians(62))), 1e-3)
+    assert close(chest.pose.orientation.rotate((0.0, 1.0, 0.0)), (-math.sin(math.radians(62)), 0.0, -math.cos(math.radians(62))), 1e-3)
     # One meter along the axis from the chest lands on the table in front.
     point = chest.deproject(640.0, 360.0, 1.0, 1280, 720)
     assert close(point, (0.0792 + forward[0], 0.0315, 0.7941 + forward[2]), 1e-3)
@@ -372,7 +372,7 @@ async def test_a_vacant_camera_slot_leaves_the_store_empty():
 
 # 1 m over the table top, looking straight down: the optical +Z is the
 # robot's -Z, so a reading of depth d stands 1 - d above the top.
-LOOKING_DOWN = CameraModel().with_pose(Placement((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0))).with_intrinsics(CAMERA_16X12)
+LOOKING_DOWN = CameraModel().with_pose(Placement((0.0, 0.0, 1.0), UnitQuaternion((1.0, 0.0, 0.0, 0.0)))).with_intrinsics(CAMERA_16X12)
 
 
 def open_item_depths(width: int = 64, height: int = 48, *, rim_m: float = 0.08, bottom_m: float = 0.005):
@@ -403,7 +403,7 @@ def test_the_top_of_an_open_item_is_its_rim_and_its_seen_point_its_inside_bottom
 # larger than the one its intrinsics were given for.
 LENS_CAMERA = (
     CameraModel()
-    .with_pose(Placement((0.1, -0.2, 0.9), (0.9, 0.1, -0.05, 0.4)))
+    .with_pose(Placement((0.1, -0.2, 0.9), UnitQuaternion(normalized((0.9, 0.1, -0.05, 0.4)))))
     .with_intrinsics(Intrinsics(64, 48, 40.0, 41.0, 31.5, 23.5, PLUMB_BOB, LENS))
 )
 
@@ -824,7 +824,7 @@ async def test_a_picture_is_placed_by_a_lookup_of_the_frame_it_names_in_the_robo
             target_timestamp=12.5, timeout_s=LOOKUP_TIMEOUT_S,
         )
     ]
-    assert pose == Placement((0.1, 0.2, 0.3), (0.0, 0.0, 0.0, 1.0))
+    assert pose == Placement((0.1, 0.2, 0.3), UnitQuaternion.IDENTITY)
 
 
 async def test_a_picture_whose_frame_the_tree_does_not_place_is_dropped_and_logged_with_the_lookups_kind(caplog):

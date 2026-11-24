@@ -293,7 +293,7 @@ class Placer:
         past the finite numbers."""
         placement = await self._look_up(target.frame, target.timestamp, None, "the target")
         placed = placement.place(target.value)
-        orientation = placed.orientation.quaternion if placed.orientation is not None else None
+        orientation = placed.orientation.xyzw if placed.orientation is not None else None
         return Pose(placed.position.position, orientation)
 
     async def _look_up(
@@ -323,6 +323,6 @@ class Placer:
         except Exception as error:
             raise _not_there(f"{what}: the robot's transform lookup is not answered ({error!r})") from error
         try:
-            return Placement(Point.parse(answer.data.position).position, UnitQuaternion.parse(answer.data.orientation).quaternion)
+            return Placement(Point.parse(answer.data.position).position, UnitQuaternion.parse(answer.data.orientation))
         except ValueError as error:
             raise _not_there(f"{what}: the robot's transform lookup gave no pose: {error}") from error

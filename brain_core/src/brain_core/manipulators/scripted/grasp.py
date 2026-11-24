@@ -65,7 +65,7 @@ def orientations_for(chosen: Optional[Quat]) -> tuple[Quat, ...]:
     chosen quaternion that control_core_py's parse refuses."""
     if chosen is None:
         return candidates(GraspDirection.DOWN)
-    return (UnitQuaternion.parse(chosen).quaternion,)
+    return (UnitQuaternion.parse(chosen).xyzw,)
 
 
 def approach(q: Quat) -> Vec3:

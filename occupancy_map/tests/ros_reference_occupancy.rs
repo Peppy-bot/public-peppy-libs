@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use control_core::positive_finite::PositiveFinite;
 use frame_tree::FrameName;
-use frame_tree::Transform;
+use frame_tree::{Transform, UnitQuaternion};
 use occupancy_map::{Bounds, Scan, Voxel, VoxelMap};
 use ros_reference::Outputs;
 use ros_reference::occupancy::{Cases, Cloud};
@@ -58,7 +58,11 @@ const MAX_DIFFERING_SHARE: f64 = 0.01;
 
 /// Where the sensor of `cloud` stands in the map's frame.
 fn sensor_of(cloud: &Cloud) -> Transform {
-    Transform::new(cloud.sensor.position, cloud.sensor.orientation).expect("a sensor pose")
+    Transform::new(
+        cloud.sensor.position,
+        UnitQuaternion::parse(cloud.sensor.orientation).expect("tf2's sensor quaternion"),
+    )
+    .expect("a sensor pose")
 }
 
 /// How near the surface of `cases`'s sphere the nearest point of its clouds within the

@@ -97,12 +97,6 @@ fn camera_pose() -> Isometry3<f64> {
     Isometry3::from_parts(Translation3::from(eye), rotation)
 }
 
-fn pose_of(isometry: &Isometry3<f64>) -> Transform {
-    let q = isometry.rotation.quaternion();
-    Transform::new(isometry.translation.vector.into(), [q.i, q.j, q.k, q.w])
-        .expect("a unit quaternion")
-}
-
 /// The camera: its color optical frame at `camera_pose`, its depth frame there too.
 fn depth_camera() -> DepthCamera {
     let lens = Pinhole::parse(&Intrinsics {
@@ -116,9 +110,9 @@ fn depth_camera() -> DepthCamera {
         distortion: &[],
     })
     .expect("a pinhole model");
-    let identity = Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity");
+    let identity = Transform::IDENTITY;
     DepthCamera::new(
-        &pose_of(&camera_pose()),
+        &Transform::try_from(&camera_pose()).expect("a finite pose"),
         &identity,
         lens,
         DepthModel::Z,
@@ -369,10 +363,11 @@ fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
         .mask(&joints, &riders, padding)
         .with_objects(scene.standing_shapes());
     let robot_alone = OPENARM_V2.mask(&joints, &fingers, padding);
-    let sensor = Transform::new([0.4, 0.0, 1.5], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let sensor =
+        Transform::new([0.4, 0.0, 1.5], frame_tree::UnitQuaternion::IDENTITY).expect("a pose");
     let relative: Vec<[f32; 3]> = points
         .iter()
-        .map(|p| std::array::from_fn(|i| (p[i] - sensor.origin()[i]) as f32))
+        .map(|p| std::array::from_fn(|i| (p[i] - sensor.position()[i]) as f32))
         .collect();
     let root = root_frame();
     let scan = Scan {

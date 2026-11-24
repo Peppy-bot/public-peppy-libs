@@ -110,7 +110,7 @@ def test_the_two_orders_convert_one_into_the_other():
 
 def test_an_orientation_parses_within_tf2s_tolerance_and_comes_out_normalized():
     typed = g.UnitQuaternion.parse([0.0, 0.0, 0.7071, 0.7071])
-    assert abs(sum(c * c for c in typed.quaternion) - 1.0) < 1e-15
+    assert abs(sum(c * c for c in typed.xyzw) - 1.0) < 1e-15
     for refused in ([0.0, 0.0, 0.0, 1.006], [0.0, 0.0, 0.0, 0.0], [math.nan, 0.0, 0.0, 1.0]):
         with pytest.raises(g.GeometryError):
             g.UnitQuaternion.parse(refused)
@@ -120,7 +120,7 @@ def test_a_target_takes_an_orientation_or_none():
     assert g.PoseTarget.parse([1.0, 2.0, 0.0], None).orientation is None
     with pytest.raises(g.GeometryError, match="gives no orientation"):
         g.PoseTarget.parse([1.0, 2.0, 0.0], None).pose()
-    assert g.PoseTarget.parse([1.0, 2.0, 0.0], [0, 0, 0, 1]).orientation == g.UnitQuaternion(g.IDENTITY)
+    assert g.PoseTarget.parse([1.0, 2.0, 0.0], [0, 0, 0, 1]).orientation == g.UnitQuaternion.IDENTITY
     # A given orientation has four entries, and one of another count, an empty one among them,
     # is refused.
     for entries in ([], [0.0, 0.0, 1.0]):
@@ -179,7 +179,7 @@ def test_a_planar_pose_reads_its_heading_and_refuses_a_slight_tilt():
 
 def test_a_value_placed_past_the_finite_numbers_is_refused_as_its_parse_refuses_it():
     eighth = math.pi / 8.0
-    placement = g.Placement((1.7976931348623157e308, 0.0, 0.0), (0.0, 0.0, math.sin(eighth), math.cos(eighth)))
+    placement = g.Placement((1.7976931348623157e308, 0.0, 0.0), g.UnitQuaternion((0.0, 0.0, math.sin(eighth), math.cos(eighth))))
     with pytest.raises(g.GeometryError) as refused:
         placement.place(g.Point.parse([1.7976931348623157e308, 0.0, 0.0]))
     assert str(refused.value).startswith("a position must be finite: got x inf")
@@ -188,23 +188,23 @@ def test_a_value_placed_past_the_finite_numbers_is_refused_as_its_parse_refuses_
 
 def test_values_of_one_frame_and_one_time_are_placed_together_and_refused_whole():
     quarter = about_z(math.pi / 2.0)
-    placement = g.Placement((1.0, 0.0, 0.0), quarter)
+    placement = g.Placement((1.0, 0.0, 0.0), g.UnitQuaternion(quarter))
     near, ahead = g.Point.parse([0.0, 0.0, 0.0]), g.Point.parse([1.0, 0.0, 0.0])
     placed = placement.place((near, ahead))
     assert close(placed[0].position, (1.0, 0.0, 0.0)) and close(placed[1].position, (1.0, 1.0, 0.0))
     target = placement.place(g.PoseTarget.parse([1.0, 0.0, 0.0], None))
     assert close(target.position.position, (1.0, 1.0, 0.0)) and target.orientation is None
-    far = g.Placement((1.7976931348623157e308, 0.0, 0.0), g.IDENTITY)
+    far = g.Placement((1.7976931348623157e308, 0.0, 0.0), g.UnitQuaternion.IDENTITY)
     with pytest.raises(g.GeometryError, match="got x inf"):
         far.place((near, g.Point.parse([1.7976931348623157e308, 0.0, 0.0])))
 
 
 def test_a_placement_carries_a_pose():
     quarter = about_z(math.pi / 2.0)
-    placement = g.Placement((1.0, 0.0, 0.0), quarter)
+    placement = g.Placement((1.0, 0.0, 0.0), g.UnitQuaternion(quarter))
     pose = placement.place(g.Pose.parse([1.0, 0.0, 0.0], quarter))
     assert close(pose.position.position, (1.0, 1.0, 0.0))
-    assert close(pose.orientation.quaternion, (0.0, 0.0, 1.0, 0.0))
+    assert close(pose.orientation.xyzw, (0.0, 0.0, 1.0, 0.0))
 
 
 def about_x(angle: float) -> g.Quaternion:
@@ -219,7 +219,7 @@ def about_y(angle: float) -> g.Quaternion:
 def test_a_roll_a_pitch_and_a_yaw_turn_about_the_parents_x_then_its_y_then_its_z(roll: float, pitch: float, yaw: float):
     expected = g.product(about_z(yaw), g.product(about_y(pitch), about_x(roll)))
     origin = ET.fromstring(f'<origin rpy="{roll!r} {pitch!r} {yaw!r}"/>')
-    assert close(g.Placement.of_urdf_origin(origin).orientation, expected)
+    assert close(g.Placement.of_urdf_origin(origin).orientation.xyzw, expected)
 
 
 def test_a_urdf_origin_places_its_child_at_its_xyz_turned_by_its_rpy():
@@ -227,14 +227,14 @@ def test_a_urdf_origin_places_its_child_at_its_xyz_turned_by_its_rpy():
     placement = g.Placement.of_urdf_origin(origin)
     assert placement.position == (1.0, -2.0, 0.5)
     # A quarter roll takes the child's +y to the parent's +z.
-    assert close(g.rotate(placement.orientation, (0.0, 1.0, 0.0)), (0.0, 0.0, 1.0))
+    assert close(placement.orientation.rotate((0.0, 1.0, 0.0)), (0.0, 0.0, 1.0))
 
 
 def test_an_attribute_or_an_origin_left_out_is_zeros_or_the_frame_in_itself():
     moved = g.Placement.of_urdf_origin(ET.fromstring('<origin xyz="1 2 3"/>'))
-    assert moved == g.Placement((1.0, 2.0, 3.0), g.IDENTITY)
+    assert moved == g.Placement((1.0, 2.0, 3.0), g.UnitQuaternion.IDENTITY)
     assert g.Placement.of_urdf_origin(ET.fromstring('<origin rpy="0 0 0"/>')) == g.Placement.IDENTITY
-    assert g.Placement.of_urdf_origin(None) == g.Placement((0.0, 0.0, 0.0), g.IDENTITY)
+    assert g.Placement.of_urdf_origin(None) == g.Placement((0.0, 0.0, 0.0), g.UnitQuaternion.IDENTITY)
 
 
 @pytest.mark.parametrize(
@@ -254,14 +254,41 @@ def test_an_origin_attribute_of_other_than_three_numbers_is_refused_with_what_to
     assert str(refused.value) == message
 
 
+def test_an_orientation_turns_the_inner_one_first_and_its_inverse_undoes_it():
+    quarter = g.UnitQuaternion(about_z(math.pi / 2.0))
+    tilted = g.UnitQuaternion(about_x(0.4))
+    assert close(quarter.compose(quarter).xyzw, about_z(math.pi))
+    assert close(quarter.compose(tilted).xyzw, g.product(about_z(math.pi / 2.0), about_x(0.4)))
+    assert close(tilted.compose(tilted.inverse()).xyzw, g.IDENTITY)
+
+
+def test_an_orientation_gives_its_heading_its_tilt_its_turn_of_a_vector_and_both_orders():
+    quarter = g.UnitQuaternion(about_z(math.pi / 2.0))
+    assert quarter.yaw() == g.yaw_of_quaternion(about_z(math.pi / 2.0))
+    assert quarter.tilt() == 0.0
+    assert abs(g.UnitQuaternion(about_x(0.4)).tilt() - 0.4) < 1e-15
+    assert close(quarter.rotate((1.0, 0.0, 0.5)), (0.0, 1.0, 0.5))
+    assert quarter.wxyz == g.wxyz_of_xyzw(quarter.xyzw)
+
+
+def test_a_placement_after_its_inverse_is_the_frame_in_itself():
+    placement = g.Placement((1.0, -2.0, 0.5), g.UnitQuaternion(g.product(about_z(0.7), about_x(0.4))))
+    back = placement.inverse()
+    point = g.Point.parse([0.2, -0.3, 0.7])
+    assert close(back.place(placement.place(point)).position, point.position)
+    undone = back.compose(placement)
+    assert close(undone.position, (0.0, 0.0, 0.0))
+    assert close(undone.orientation.xyzw, g.IDENTITY)
+
+
 def test_a_composed_placement_places_a_point_through_the_inner_placement_then_the_outer():
-    outer = g.Placement((1.0, 0.0, 0.0), about_z(math.pi / 2.0))
-    inner = g.Placement((1.0, 0.0, 0.5), about_x(0.4))
+    outer = g.Placement((1.0, 0.0, 0.0), g.UnitQuaternion(about_z(math.pi / 2.0)))
+    inner = g.Placement((1.0, 0.0, 0.5), g.UnitQuaternion(about_x(0.4)))
     composed = outer.compose(inner)
     assert close(composed.position, (1.0, 1.0, 0.5))
-    assert close(composed.orientation, g.product(about_z(math.pi / 2.0), about_x(0.4)))
+    assert close(composed.orientation.xyzw, g.product(about_z(math.pi / 2.0), about_x(0.4)))
     point = g.Point.parse([0.2, -0.3, 0.7])
     assert close(composed.place(point).position, outer.place(inner.place(point)).position)
     assert g.Placement.IDENTITY.compose(inner) == inner
     assert close(inner.compose(g.Placement.IDENTITY).position, inner.position)
-    assert close(inner.compose(g.Placement.IDENTITY).orientation, inner.orientation)
+    assert close(inner.compose(g.Placement.IDENTITY).orientation.xyzw, inner.orientation.xyzw)

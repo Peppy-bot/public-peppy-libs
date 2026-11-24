@@ -351,7 +351,7 @@ fn distortion_terms(k: &[f64; 5], x: f64, y: f64) -> (f64, f64, f64) {
 mod tests {
     use super::*;
     use crate::test_support::close;
-    use frame_tree::Transform;
+    use frame_tree::{Transform, UnitQuaternion};
 
     const IDEAL: Intrinsics<'static> = Intrinsics {
         width: 640,
@@ -682,9 +682,12 @@ mod tests {
         };
         let color = Pinhole::parse(&color_intrinsics).expect("a valid model");
         let (angle, offset) = (0.02_f64, [-0.063, 0.001, 0.002]);
-        let depth_to_color =
-            Transform::new(offset, [0.0, (angle / 2.0).sin(), 0.0, (angle / 2.0).cos()])
-                .expect("a unit quaternion");
+        let depth_to_color = Transform::new(
+            offset,
+            UnitQuaternion::parse([0.0, (angle / 2.0).sin(), 0.0, (angle / 2.0).cos()])
+                .expect("a turn about +Y"),
+        )
+        .expect("a finite offset");
         // A point the color camera sees, and the same point in the depth
         // frame, turned back about +Y by hand.
         let seen = [0.21, -0.13, 1.4];

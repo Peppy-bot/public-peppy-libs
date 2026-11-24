@@ -1,10 +1,9 @@
 //! The refusal of values of which one or more is not finite, each named.
 
-use std::fmt;
-
 /// Values of which one or more is not finite: what they make, each value by
 /// its name, and what to give.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("{what} must be finite: got {}; give {give}", named(.values))]
 pub struct NotFinite<const N: usize> {
     pub what: &'static str,
     pub values: [(&'static str, f64); N],
@@ -26,24 +25,14 @@ impl<const N: usize> NotFinite<N> {
     }
 }
 
-impl<const N: usize> fmt::Display for NotFinite<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let named: Vec<String> = self
-            .values
-            .iter()
-            .map(|(name, value)| format!("{name} {value}"))
-            .collect();
-        write!(
-            f,
-            "{} must be finite: got {}; give {}",
-            self.what,
-            named.join(", "),
-            self.give
-        )
-    }
+/// Each value as its name and its number, as a refusal lists them: `x 1, y NaN`.
+fn named(values: &[(&'static str, f64)]) -> String {
+    let named: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{name} {value}"))
+        .collect();
+    named.join(", ")
 }
-
-impl<const N: usize> std::error::Error for NotFinite<N> {}
 
 #[cfg(test)]
 mod tests {

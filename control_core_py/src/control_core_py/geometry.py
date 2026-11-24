@@ -39,6 +39,9 @@ IDENTITY: Quaternion = (0.0, 0.0, 0.0, 1.0)
 # How far the squared norm of an orientation may lie from 1: the tolerance of tf2's buffer
 # (buffer_core.cpp:66), which the transforms contract names.
 _QUATERNION_NORMALIZATION_TOLERANCE = 10e-3
+# How far from 1 a UnitQuaternion's length may lie: the rounding of a product or a normalization
+# of unit values, far inside the tolerance of a caller's quaternion.
+_UNIT_LENGTH_TOLERANCE = 1e-6
 
 # How far a planar pose's height and its tilt may lie from 0, in m and rad: base_motion's bound on
 # a planar target, control_core's PLANAR_TOLERANCE.
@@ -272,9 +275,25 @@ class Point:
 
 @dataclass(frozen=True)
 class UnitQuaternion:
-    """An orientation, a unit quaternion (x, y, z, w), normalized from the one a caller gave."""
+    """An orientation, a unit quaternion. A caller's quaternion comes in through `parse`,
+    normalized; a quaternion built of unit values comes in directly as its coordinates in the
+    contracts' order, and one that is not of unit length is refused with ValueError. It composes,
+    gives its heading and its tilt and turns a vector as frame_tree's `UnitQuaternion` does,
+    inverts by its conjugate, and gives its coordinates in the contracts' order (`xyzw`) or in
+    MuJoCo's and Isaac's (`wxyz`)."""
 
-    quaternion: Quaternion
+    xyzw: Quaternion
+
+    # The orientation that turns nothing, (0, 0, 0, 1).
+    IDENTITY: ClassVar[UnitQuaternion]
+
+    def __post_init__(self) -> None:
+        length = math.sqrt(sum(c * c for c in self.xyzw))
+        if not math.isfinite(length) or abs(length - 1.0) > _UNIT_LENGTH_TOLERANCE:
+            raise ValueError(
+                f"{self.xyzw} is not a unit quaternion: parse a caller's orientation with "
+                "UnitQuaternion.parse"
+            )
 
     @classmethod
     def parse(cls, orientation: Sequence[float]) -> UnitQuaternion:
@@ -295,6 +314,37 @@ class UnitQuaternion:
             )
         return cls(normalized((x, y, z, w)))
 
+    def compose(self, inner: UnitQuaternion) -> UnitQuaternion:
+        """The orientation `inner` turned by this one: `inner` first, then this, their product
+        normalized, as frame_tree's `UnitQuaternion::compose` composes two orientations."""
+        return UnitQuaternion(normalized(product(self.xyzw, inner.xyzw)))
+
+    def inverse(self) -> UnitQuaternion:
+        """The turn that undoes this one: its conjugate."""
+        return UnitQuaternion(inverse(self.xyzw))
+
+    def yaw(self) -> float:
+        """The heading of this orientation, its turn about +Z, as tf2's `getYaw` reads it."""
+        return yaw_of_quaternion(self.xyzw)
+
+    def tilt(self) -> float:
+        """The angle (rad) between +Z and +Z turned by this orientation, its turn about a
+        horizontal axis: `2 asin(sqrt(x^2 + y^2))`."""
+        x, y, _, _ = self.xyzw
+        return 2.0 * math.asin(min(1.0, math.sqrt(x * x + y * y)))
+
+    def rotate(self, vector: Vector) -> Vector:
+        """`vector` turned by this orientation, as tf2's `quatRotate` turns it."""
+        return rotate(self.xyzw, vector)
+
+    @property
+    def wxyz(self) -> Quaternion:
+        """The coordinates in MuJoCo's and Isaac's order, (w, x, y, z)."""
+        return wxyz_of_xyzw(self.xyzw)
+
+
+UnitQuaternion.IDENTITY = UnitQuaternion(IDENTITY)
+
 
 @dataclass(frozen=True)
 class PlanarPose:
@@ -303,12 +353,6 @@ class PlanarPose:
     x: float
     y: float
     yaw: float
-
-
-def _tilt_of(q: Quaternion) -> float:
-    """The angle (rad) between the frame's +Z and its parent's: `2 asin(sqrt(x^2 + y^2))`."""
-    x, y, _, _ = q
-    return 2.0 * math.asin(min(1.0, math.sqrt(x * x + y * y)))
 
 
 @dataclass(frozen=True)
@@ -331,14 +375,13 @@ class Pose:
                 f"the position lies {_display(z)} m above the floor plane: send a position "
                 "[x, y, 0] on the floor"
             )
-        q = self.orientation.quaternion
-        tilt = _tilt_of(q)
+        tilt = self.orientation.tilt()
         if tilt > _PLANAR_TOLERANCE:
             raise GeometryError(
-                f"the orientation {_listed(q)} tilts {_display(tilt)} rad off the vertical: send a "
-                "turn about +z alone, [0, 0, sin(yaw/2), cos(yaw/2)]"
+                f"the orientation {_listed(self.orientation.xyzw)} tilts {_display(tilt)} rad off the "
+                "vertical: send a turn about +z alone, [0, 0, sin(yaw/2), cos(yaw/2)]"
             )
-        return PlanarPose(x, y, yaw_of_quaternion(q))
+        return PlanarPose(x, y, self.orientation.yaw())
 
 
 @dataclass(frozen=True)
@@ -411,7 +454,11 @@ class Placement:
     finite numbers is refused with GeometryError, as its parse refuses one."""
 
     position: Vector
-    orientation: Quaternion
+    orientation: UnitQuaternion
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.orientation, UnitQuaternion):
+            raise TypeError(f"a placement's orientation is a UnitQuaternion, not {self.orientation!r}")
 
     # A frame in itself.
     IDENTITY: ClassVar[Placement]
@@ -425,7 +472,7 @@ class Placement:
         if origin is None:
             return cls.IDENTITY
         roll, pitch, yaw = _urdf_triple(origin, "rpy", "roll pitch yaw, in rad")
-        return cls(_urdf_triple(origin, "xyz", "x y z, in m"), _quaternion_of_rpy(roll, pitch, yaw))
+        return cls(_urdf_triple(origin, "xyz", "x y z, in m"), UnitQuaternion(_quaternion_of_rpy(roll, pitch, yaw)))
 
     def compose(self, inner: Placement) -> Placement:
         """Where the frame `inner` places in this placement's placed frame sits in the frame this
@@ -433,9 +480,17 @@ class Placement:
         `TransformAccum::accum` (buffer_core.cpp:547-556), as frame_tree's lookup composes a chain:
         `inner`'s position turned by `rotate` and moved by this one's, and the product of the two
         orientations."""
-        x, y, z = rotate(self.orientation, inner.position)
+        x, y, z = self.orientation.rotate(inner.position)
         px, py, pz = self.position
-        return Placement((x + px, y + py, z + pz), product(self.orientation, inner.orientation))
+        orientation = UnitQuaternion(product(self.orientation.xyzw, inner.orientation.xyzw))
+        return Placement((x + px, y + py, z + pz), orientation)
+
+    def inverse(self) -> Placement:
+        """Where the other frame sits in the placed one: a point goes back through this
+        placement, and `inverse().compose(self)` is the frame in itself."""
+        turn = self.orientation.inverse()
+        x, y, z = turn.rotate(self.position)
+        return Placement((-x, -y, -z), turn)
 
     def place[V: (Point, Pose, PoseTarget, tuple)](self, value: V) -> V:
         """`value` in the other frame, as control_core places it: a point through tf2's rotation
@@ -448,23 +503,19 @@ class Placement:
             case Point():
                 return self._place_point(value)
             case Pose():
-                return Pose(self._place_point(value.position), self._turned(value.orientation))
+                return Pose(self._place_point(value.position), self.orientation.compose(value.orientation))
             case PoseTarget():
-                orientation = None if value.orientation is None else self._turned(value.orientation)
+                orientation = None if value.orientation is None else self.orientation.compose(value.orientation)
                 return PoseTarget(self._place_point(value.position), orientation)
         raise TypeError(f"a placement places a point, a pose, a target or a tuple of them, not {value!r}")
 
     def _place_point(self, point: Point) -> Point:
         """The point in the other frame, through tf2's rotation matrix."""
-        turned = _rotated(rotation_of(self.orientation), point.position)
+        turned = _rotated(rotation_of(self.orientation.xyzw), point.position)
         return Point.parse([t + o for t, o in zip(turned, self.position)])
 
-    def _turned(self, orientation: UnitQuaternion) -> UnitQuaternion:
-        """The orientation turned by this placement's."""
-        return UnitQuaternion(normalized(product(self.orientation, orientation.quaternion)))
 
-
-Placement.IDENTITY = Placement((0.0, 0.0, 0.0), IDENTITY)
+Placement.IDENTITY = Placement((0.0, 0.0, 0.0), UnitQuaternion.IDENTITY)
 
 
 def _urdf_triple(origin: ET.Element, attribute: str, give: str) -> Vector:

@@ -16,7 +16,6 @@ from control_core_py.geometry import (
     UnitQuaternion,
     product,
     quaternion_of_yaw,
-    yaw_of_quaternion,
 )
 
 from sim_robot_core.world import (
@@ -75,7 +74,7 @@ class TestBaseTarget:
         target = base_target(WORLD, 0.0, [1.0, -2.0, 0.25], QUARTER_TURN)
         assert target.position == Point((1.0, -2.0, 0.25))
         assert target.orientation == UnitQuaternion.parse(QUARTER_TURN)
-        assert math.isclose(sum(c * c for c in target.orientation.quaternion), 1.0)
+        assert math.isclose(sum(c * c for c in target.orientation.xyzw), 1.0)
 
     def test_a_target_with_no_orientation_has_none(self):
         assert base_target(None, None, [1.0, 2.0, 0.0], None) == PoseTarget(
@@ -156,5 +155,5 @@ def test_a_rolled_placement_faces_the_heading_its_wheels_turned_it_to():
     tilted = product(quaternion_of_yaw(0.6), pitched)
     placement = rolled_placement((1.25, -0.5, 0.005), tilted)
     assert placement.position.position == (1.25, -0.5, 0.005)
-    assert yaw_of_quaternion(placement.orientation.quaternion) == pytest.approx(0.6)
-    assert placement.orientation.quaternion[:2] == (0.0, 0.0), "it turns about +z alone"
+    assert placement.orientation.yaw() == pytest.approx(0.6)
+    assert placement.orientation.xyzw[:2] == (0.0, 0.0), "it turns about +z alone"

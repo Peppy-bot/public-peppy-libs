@@ -87,7 +87,7 @@ class LimbSnapshot:
             arms[name] = ArmState(
                 joint_positions=tuple(float(value) for value in message.joint_positions[start : start + count]),
                 position=pose.position.position,
-                orientation=pose.orientation.quaternion,
+                orientation=pose.orientation.xyzw,
             )
             start += count
         openings = {name: float(opening) for name, opening in zip(message.gripper_names, message.gripper_openings)}

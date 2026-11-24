@@ -209,11 +209,10 @@ fn interpolate(older: &Sample, newer: &Sample, time: Stamp) -> Placement {
             newer.placement.position(),
             ratio,
         ),
-        arithmetic::slerp(
-            older.placement.orientation(),
-            newer.placement.orientation(),
-            ratio,
-        ),
+        older
+            .placement
+            .orientation()
+            .slerp(newer.placement.orientation(), ratio),
     )
 }
 
@@ -222,6 +221,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+    use crate::unit_quaternion::UnitQuaternion;
 
     const WINDOW: u64 = 10;
 
@@ -237,7 +237,7 @@ mod tests {
         Sample {
             stamp: Stamp::from_nanos(stamp),
             parent: frame(parent),
-            placement: Placement::new([x, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+            placement: Placement::new([x, 0.0, 0.0], UnitQuaternion::IDENTITY),
         }
     }
 

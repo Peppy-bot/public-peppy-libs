@@ -1,7 +1,7 @@
 //! A body velocity on the floor plane in the robot frame: a twist with no vertical and no
 //! tilting part, as the limiter and Nav2's controller read one.
 
-use crate::not_finite::NotFinite;
+use frame_tree::NotFinite;
 
 /// A body velocity in the robot frame: m/s along +X (forward) and +Y (left),
 /// rad/s about +Z, counterclockwise seen from above. Every value is finite.

@@ -315,7 +315,7 @@ class TestPinhole:
         # depth_to_color, in the camera's frame with no timestamp, are the
         # identity's and parse back to it.
         position = list(DEPTH_TO_COLOR.position.position)
-        orientation = list(DEPTH_TO_COLOR.orientation.quaternion)
+        orientation = list(DEPTH_TO_COLOR.orientation.xyzw)
         assert (position, orientation) == ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
         assert Pose.parse(position, orientation) == DEPTH_TO_COLOR
 

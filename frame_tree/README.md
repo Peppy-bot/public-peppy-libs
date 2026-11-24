@@ -3,10 +3,13 @@
 tf2's buffer in Rust. A node that reads the transforms contract takes each message of
 `transforms` and of `static_transforms` into a `FrameTree`, and asks it for the place of
 any frame in any other, at a time or at the latest time common to the chain. The crate
-also holds tf2's `Transform`, a rotation matrix and an origin that places a point and
-composes on tf2's bits, and `arithmetic`, the rotation arithmetic of tf2 and KDL operation
-for operation and the angles library's `normalize_angle`, which the libraries' geometry runs
-on. Pure Rust; no hardware or messaging dependencies.
+also holds tf2's `Transform`, a rotation matrix and a position that places a point and
+composes on tf2's bits; `UnitQuaternion`, the orientation of a transform and of the
+contracts' geometry types, parsed from a caller's quaternion as tf2's buffer takes one,
+which the `nalgebra` feature converts to and from nalgebra's; and `arithmetic`, the
+rotation arithmetic of tf2 and KDL operation for operation and the angles library's
+`normalize_angle`, which the libraries' geometry runs on. Pure Rust; no hardware or
+messaging dependencies.
 
 ## Quick start
 

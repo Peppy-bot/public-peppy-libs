@@ -22,8 +22,13 @@
 //! - [`LookupError`]: an unknown frame, no chain between the frames, a transform with no
 //!   value at the time, and transforms that two publishers hold or that form a cycle, each
 //!   naming its frames.
-//! - [`Transform`]: tf2's transform, a rotation matrix and an origin, which places a point,
-//!   composes, inverts and interpolates in tf2's arithmetic, bit for bit.
+//! - [`Transform`]: tf2's transform, a rotation matrix and a position, which places a point,
+//!   composes, inverts and interpolates in tf2's arithmetic, bit for bit, made from a finite
+//!   position ([`finite_position`]) and a [`UnitQuaternion`] or, behind the `nalgebra` feature,
+//!   from nalgebra's isometry.
+//! - [`UnitQuaternion`]: the orientation of a transform and of the contracts' geometry types,
+//!   parsed from a caller's quaternion as tf2's buffer takes one ([`OrientationError`]) or made
+//!   by a typed constructor; [`NotFinite`], the refusal of values that are not finite.
 //! - [`arithmetic`]: the rotation arithmetic of tf2 and KDL, operation for operation: the
 //!   quaternion products, rotations and interpolation a lookup takes, tf2's rotation matrix,
 //!   `setRPY` and `getYaw`, and KDL's matrices, and the angles library's `normalize_angle`.
@@ -36,17 +41,22 @@ pub mod arithmetic;
 mod cache;
 mod error;
 mod frame;
+mod not_finite;
 mod transform;
 mod transforms;
 mod tree;
+mod unit_quaternion;
 
 pub use cache::HeldStamps;
 pub use error::{BrokenTree, LookupError, TransformName};
 pub use frame::{FrameName, FrameNameError, LookupTime, Publisher, Stamp, TimeError};
-pub use transform::{NotATransform, Transform};
+pub use not_finite::NotFinite;
+#[cfg(feature = "nalgebra")]
+pub use transform::NotATransform;
+pub use transform::{Transform, finite_position};
 pub use transforms::{
-    DenormalizedQuaternion, FrameTransform, MessageError, MovingMessage, Placement,
-    QUATERNION_NORMALIZATION_TOLERANCE, StaticMessage, TransformError, TransformErrorReason,
-    TransformRecord, check_quaternion,
+    FrameTransform, MessageError, MovingMessage, Placement, StaticMessage, TransformError,
+    TransformErrorReason, TransformRecord,
 };
 pub use tree::{Found, FrameTree, ZeroWindow};
+pub use unit_quaternion::{OrientationError, QUATERNION_NORMALIZATION_TOLERANCE, UnitQuaternion};

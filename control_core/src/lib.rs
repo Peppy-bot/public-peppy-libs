@@ -67,8 +67,6 @@
 //! - [`move_seconds`]: the seconds a move goal asks for, within the bound
 //!   limb_motion and base_motion state
 //!   ([`MAX_MOVE_DURATION_S`](move_seconds::MAX_MOVE_DURATION_S)), parsed off the wire.
-//! - [`not_finite`]: the refusal of values of which one or more is not finite,
-//!   each named, as a body velocity and a base's wheel angles refuse them.
 //! - [`footprint`]: a mobile base's footprint, the outline it covers about its
 //!   center.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked,
@@ -122,7 +120,6 @@ pub mod move_seconds;
 pub mod move_slot;
 pub mod node_clock;
 pub mod non_negative_finite;
-pub mod not_finite;
 pub mod odometry;
 pub mod pacer;
 pub mod path_timing;

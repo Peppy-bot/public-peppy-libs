@@ -10,7 +10,7 @@ description = "Shared control-loop and runtime primitives for the robot nodes an
 [workspace]
 
 [features]
-nalgebra = ["dep:nalgebra"]
+nalgebra = ["dep:nalgebra", "frame_tree/nalgebra"]
 
 [dependencies]
 frame_tree = { path = "../frame_tree" }

@@ -2372,7 +2372,7 @@ pub(crate) mod tests {
         map.insert(
             &Scan {
                 frame: &frame,
-                sensor: Transform::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("a pose"),
+                sensor: Transform::IDENTITY,
                 points: &relative,
                 max_range_m: PositiveFinite::parse(10.0).expect("positive"),
             },

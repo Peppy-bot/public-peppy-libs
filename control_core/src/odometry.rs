@@ -23,7 +23,8 @@
 
 use std::num::NonZeroUsize;
 
-use crate::not_finite::NotFinite;
+use frame_tree::NotFinite;
+
 use crate::positive_finite::{NotPositiveFinite, PositiveFinite};
 use crate::twist::PlanarTwist;
 

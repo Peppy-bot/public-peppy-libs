@@ -415,7 +415,9 @@ impl Episode {
         let depth_model = DepthModel::parse(&camera.intrinsics.depth_model)
             .unwrap_or_else(|e| panic!("{what}: the depth model: {e}"));
         let pose = |p: &PoseFile, name: &str| {
-            Transform::new(p.position, p.orientation)
+            let orientation = frame_tree::UnitQuaternion::parse(p.orientation)
+                .unwrap_or_else(|e| panic!("{what}: {name}: {e}"));
+            Transform::new(p.position, orientation)
                 .unwrap_or_else(|e| panic!("{what}: {name}: {e}"))
         };
         let depth = DepthCamera::new(

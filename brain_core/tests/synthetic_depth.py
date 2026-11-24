@@ -18,7 +18,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from control_core_py.geometry import Placement, product
+from control_core_py.geometry import Placement, UnitQuaternion, product
 
 from brain_core.perception.camera import CameraModel, Intrinsics
 from brain_core.ports import Box
@@ -31,7 +31,7 @@ TABLE_Z = 0.370
 # test_perception.py), and its intrinsics at a quarter of their resolution.
 CHEST_POSITION = (0.0792, 0.0315, 0.7941)
 CHEST_ORIENTATION = product((0.1710647, -0.1710647, -0.6861027, 0.6861027), (1.0, 0.0, 0.0, 0.0))
-CHEST = CameraModel().with_pose(Placement(CHEST_POSITION, CHEST_ORIENTATION)).with_intrinsics(
+CHEST = CameraModel().with_pose(Placement(CHEST_POSITION, UnitQuaternion.parse(CHEST_ORIENTATION))).with_intrinsics(
     Intrinsics(WIDTH, HEIGHT, 738.1 / 4, 738.1 / 4, WIDTH / 2, HEIGHT / 2)
 )
 

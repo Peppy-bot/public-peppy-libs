@@ -18,7 +18,7 @@ from fake_peppygen import (
 )
 from brain_core.brain import RESULT_ENDS, STATUS_ENDS, Brain, Decider
 from brain_core.manipulators.none import NoneManipulator
-from control_core_py.geometry import Placement
+from control_core_py.geometry import Placement, UnitQuaternion
 
 from brain_core.perception.geometry import NOT_DESCRIBED
 from brain_core.perception.none import NoneDetector
@@ -53,7 +53,7 @@ async def test_the_learners_give_the_perceiver_its_intrinsics_and_the_placer_the
     # A manipulator asks where the frame a picture names stood when the
     # picture was taken.
     header = SimpleNamespace(frame="wrist_left_color_optical_frame", timestamp=3.25, capture_index=7)
-    assert await brain.senses.camera_pose(header) == Placement((0.3, 0.0, 0.5), (0.0, 0.0, 0.0, 1.0))
+    assert await brain.senses.camera_pose(header) == Placement((0.3, 0.0, 0.5), UnitQuaternion.IDENTITY)
     assert lookup.polled == [
         LookupTransformRequest("base_link", "wrist_left_color_optical_frame", 3.25, 3.25, LOOKUP_TIMEOUT_S)
     ]

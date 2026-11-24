@@ -156,7 +156,7 @@ fn a_bundled_model_s_transforms_are_the_contract_s(tc: TestCase) {
             let actual: Vec<f64> = placement
                 .position()
                 .into_iter()
-                .chain(placement.orientation())
+                .chain(placement.orientation().to_xyzw())
                 .collect();
             assert!(
                 actual

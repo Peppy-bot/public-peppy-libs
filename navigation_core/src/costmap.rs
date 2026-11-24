@@ -77,6 +77,7 @@ mod tests {
     use crate::obstacles::{LiveObstacles, ObstacleHeights, ObstacleHeightsParams};
     use crate::saved_grid::MapThresholds;
     use control_core::footprint::Footprint;
+    use frame_tree::UnitQuaternion;
 
     fn tenth() -> PositiveFinite {
         PositiveFinite::parse(0.1).unwrap()
@@ -122,7 +123,7 @@ mod tests {
         )
         .unwrap();
         let away = PlanarPose::new(-5.0, 0.0, 0.0).unwrap();
-        let sensor_on_base = Transform::new([5.05, 0.05, 1.05], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        let sensor_on_base = Transform::new([5.05, 0.05, 1.05], UnitQuaternion::IDENTITY).unwrap();
         live.insert_depth_frame(
             0,
             &[[0.2, 0.0, -0.7]],
