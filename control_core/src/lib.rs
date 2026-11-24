@@ -71,7 +71,8 @@
 //! - [`footprint`]: a mobile base's footprint, the outline it covers about its
 //!   center.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked,
-//!   and a field of a request parsed into one ([`PositiveFinite::parse_field`](positive_finite::PositiveFinite::parse_field)).
+//!   and a field of a request parsed into one
+//!   ([`PositiveFinite::parse_field`](positive_finite::PositiveFinite::parse_field)).
 //! - [`receiving`]: the loop that receives one subscription for the life of
 //!   a node, with the pause after a receive error.
 //! - [`serving`]: the loop that serves one service for the life of a node,

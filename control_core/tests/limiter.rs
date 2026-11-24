@@ -7,12 +7,12 @@
 //! scale together, a setpoint stream that stops comes to rest by 0.5 s after
 //! its last setpoint plus its deceleration time in whole steps and then gives
 //! nothing, an axis of range 0 to 0 stays at rest, and the deadband zeroes a
-//! smaller output and keeps one equal to it. The limiter takes only a frequency whose period is a whole
-//! number of milliseconds, and its steps fall on the grid of the timer Nav2
-//! makes for its smoother: one step in each period of the grid at the first
-//! tick within it, each by at most a limit times the period, the grid kept
-//! after a late tick, and started again a period after a tick of a clock that
-//! went back.
+//! smaller output and keeps one equal to it. The limiter takes only a
+//! frequency whose period is a whole number of milliseconds, and its steps
+//! fall on the grid of the timer Nav2 makes for its smoother: one step in each
+//! period of the grid at the first tick within it, each by at most a limit
+//! times the period, the grid kept after a late tick, and started again a
+//! period after a tick of a clock that went back.
 
 mod common;
 
