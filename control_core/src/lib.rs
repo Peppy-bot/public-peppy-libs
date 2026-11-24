@@ -7,8 +7,8 @@
 //! configured for, latched failure logging, a node's wall or simulation clock,
 //! a robot's tree of frames with the lookups that wait on that clock, waiting
 //! and locking from synchronous code, the reason a robot stop gives each move
-//! it ends, and the arms a request names, for robot nodes and the kinematics
-//! crates that plan their moves.
+//! it ends, drive_link's window and follow_state, and the arms a request
+//! names, for robot nodes and the kinematics crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
@@ -97,6 +97,8 @@
 //!   stop and the reason of the stop request.
 //! - [`stream_window`]: whether a leader's stream of commands is live, its
 //!   newest command within the window its link's contract states.
+//! - [`drive_link`]: drive_link's window of the leader's stream and the
+//!   follow_state of each drive_states, shared by its leaders and its follower.
 //! - [`requested_arms`]: the arms a request names, their places among the robot's arms in
 //!   the request's order, the place of an arm or a gripper it names by name, the limb a
 //!   node's parameter names by its place, and the waypoints every arm of a joint path
@@ -108,6 +110,7 @@
 pub mod asking;
 pub mod chase;
 pub mod component_model;
+pub mod drive_link;
 pub mod fault;
 pub mod filters;
 pub mod footprint;

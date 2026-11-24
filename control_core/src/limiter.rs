@@ -142,7 +142,7 @@ pub enum LimiterError {
 }
 
 /// The limits of one axis of a body velocity, by the names of an axis of
-/// describe_base's `linear_limits` (its `yaw_limits` names the range
+/// describe_base's `linear_limits` (its `angular_limits` names the range
 /// `min_rate` and `max_rate`): an axis the base does not move along, of range
 /// 0 to 0 and 0 limits, or one it moves along.
 #[derive(Debug, Clone, Copy, PartialEq)]
