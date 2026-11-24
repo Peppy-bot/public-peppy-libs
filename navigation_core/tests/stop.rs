@@ -113,6 +113,7 @@ fn live_obstacles(padded_footprint: PaddedFootprint, sources: usize) -> LiveObst
             max: [3.5, 1.5, 1.5],
         },
         heights,
+        positive(5.0),
         padded_footprint,
         NonZeroUsize::new(sources).expect("a source or more"),
     )

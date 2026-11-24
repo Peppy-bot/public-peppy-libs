@@ -70,11 +70,13 @@ pub fn heights_of(
 }
 
 /// The live obstacles of `padded_footprint` over `grid`, of voxels `voxel_m` on a side,
-/// one column a cell of the grid, judged by `heights`.
+/// one column a cell of the grid, judged by `heights`, a return marking within
+/// `obstacle_max_range_m` of its sensor in the plane.
 pub fn live_obstacles_over(
     grid: &Grid,
     voxel_m: f64,
     heights: ObstacleHeights,
+    obstacle_max_range_m: f64,
     padded_footprint: PaddedFootprint,
 ) -> LiveObstacles {
     assert_on_step(grid.origin[0], voxel_m, "the grid's origin");
@@ -92,6 +94,7 @@ pub fn live_obstacles_over(
         FrameName::parse("map").expect("a frame name"),
         bounds,
         heights,
+        PositiveFinite::parse(obstacle_max_range_m).expect("a positive range"),
         padded_footprint,
         NonZeroUsize::MIN,
     )

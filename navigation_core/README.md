@@ -162,21 +162,28 @@ observation buffer traces a scan from the origin at its stamp. Nav2's obstacle l
 places every hit of a scan where the sensor stood at the scan's stamp; here a sensor that
 moves while it sweeps places each hit where it measured it. Two more departures follow
 from `occupancy_map`'s insert: every frame goes into the voxel map, where Nav2 skips an
-observation whose sensor origin lies off its grid, and a point's range is its distance
-from the sensor in 3-D, where Nav2's marking measures it in the plane, so a point beyond
-the range in 3-D and within it in the plane clears to the range here. A depth sample of 0
-and a ray that carries a mark of lidar_2d:v1 make no point: a ray that met nothing frees
-and marks nothing, as Nav2's obstacle layer leaves it with `inf_is_valid` false. After
-each frame, every voxel of the map's columns under the padded footprint, at the base's
-pose at the frame's time, takes one miss's log-odds, as the obstacle layer writes
-`FREE_SPACE` under its footprint, the columns found as Nav2's `convexFillCells` finds the
-cells under a polygon, and none of them is a drop: the base stands on floor there. A voxel
-the base stood on reads free, and the next frame that sees an obstacle there marks it
-again, as the obstacle layer marks a cleared cell. `clear` empties the map and forgets the
-drops, as base_navigation:v1's clear_grid empties the grid, and keeps each source's newest
-points, which the stop reads beside the grid, until the source's next frame replaces them,
-as Nav2's collision monitor reads its sources' newest points from their topics, which a
-clear of the cost map leaves as they are.
+observation whose sensor origin lies off its grid, and a point farther from the sensor
+than the sensor's range in 3-D reads no return at the range, which clears its ray to the
+range and marks nothing, where Nav2 marks each point within `obstacle_max_range` in the
+plane, however far it lies in 3-D. A return farther from its sensor's origin than the
+obstacle range, `obstacle_max_range_m`, by their distance in the plane, marks nothing, as
+Nav2's obstacle layer marks no point farther than `obstacle_max_range` from the
+observation's origin in the plane: its ray clears as a return's ray does, its voxel takes
+nothing from it, and it takes no part in the votes of a drop. One range holds for every
+source, given to `LiveObstacles::new`, and a source's newest points hold such a return as
+any other, as Nav2's collision monitor keeps a point of its source at any distance past
+its `min_range`. A depth sample of 0 and a ray that carries a mark of lidar_2d:v1 make no
+point: a ray that met nothing frees and marks nothing, as Nav2's obstacle layer leaves it
+with `inf_is_valid` false. After each frame, every voxel of the map's columns under the
+padded footprint, at the base's pose at the frame's time, takes one miss's log-odds, as
+the obstacle layer writes `FREE_SPACE` under its footprint, the columns found as Nav2's
+`convexFillCells` finds the cells under a polygon, and none of them is a drop: the base
+stands on floor there. A voxel the base stood on reads free, and the next frame that sees
+an obstacle there marks it again, as the obstacle layer marks a cleared cell. `clear`
+empties the map and forgets the drops, as base_navigation:v1's clear_grid empties the
+grid, and keeps each source's newest points, which the stop reads beside the grid, until
+the source's next frame replaces them, as Nav2's collision monitor reads its sources'
+newest points from their topics, which a clear of the cost map leaves as they are.
 
 A return inside the base's unpadded outline is the robot's own body, judged in the base's
 frame at the return's own time, where the sensor's pose on the base places it: its ray
@@ -189,12 +196,13 @@ measured late in the sweep of a moving base lies past the footprint at the sweep
 ray, where the clearing runs.
 
 A drop is a column whose floor lies more than `max_step_down_m` down, the step's plane,
-which each frame's rays find through the floor's plane. Each ray that points down from
-above the floor reads the floor's plane in the column where its line crosses it: past,
-when its reading lies below the step's plane (a return there, or no return with its range
-reaching there, as `occupancy_map`'s `Scan::readings` reads it), and short, when it
-returns above the floor's plane, before the crossing. A column where at least three rays
-of one frame read past, more than the rays that read short and the returns of that frame
+which each frame's rays find through the floor's plane, each ray whose reading lies within
+the obstacle range. Each such ray that points down from above the floor reads the floor's
+plane in the column where its line crosses it: past, when its reading lies below the
+step's plane (a return there, or no return with its range reaching there, as
+`occupancy_map`'s `Scan::readings` reads it), and short, when it returns above the floor's
+plane, before the crossing. A column where at least three rays of one frame read past,
+more than the rays that read short and the returns of that frame within the obstacle range
 that stand in it at or above the step's plane together, is a drop until the footprint
 clears it: one or two wrong far readings through a column mark none, and wrong far
 readings among rays that see an obstacle before the floor, or through a column whose floor
@@ -234,11 +242,12 @@ whole values, so a voxel's center judges as its points do, but for a point exact
 Nav2 keeps it, and the floor's own voxels, either side of the floor, are no obstacle;
 `max_step_down_m` takes any height above the floor. `LiveObstacles::new` makes its voxel
 map in a frame and over bounds, of the voxels the heights judge and of no more columns on
-an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), and `recentered` takes bounds of
-no more. `columns` is the grid of the voxel map's columns, one cell a column: the grid a
-navigator plans on in the voxel map's frame. `recentered` moves the map and the drops over
-other bounds, keeping what it knows of the columns both hold, for a grid that moves with
-the base, and keeps each source's newest points as they are.
+an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), with the obstacle range, a
+`PositiveFinite` distance in the plane, and `recentered` takes bounds of no more.
+`columns` is the grid of the voxel map's columns, one cell a column: the grid a navigator
+plans on in the voxel map's frame. `recentered` moves the map and the drops over other
+bounds, keeping what it knows of the columns both hold, for a grid that moves with the
+base, and keeps each source's newest points as they are.
 
 For each source, `LiveObstacles` keeps the points its newest frame saw, in the map's frame
 on the floor's plane, as the frame saw them before the clearing under the footprint: each

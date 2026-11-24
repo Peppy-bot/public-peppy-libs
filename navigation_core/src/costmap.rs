@@ -118,6 +118,7 @@ mod tests {
             FrameName::parse("map").unwrap(),
             bounds,
             heights,
+            PositiveFinite::parse(5.0).unwrap(),
             footprint,
             NonZeroUsize::MIN,
         )

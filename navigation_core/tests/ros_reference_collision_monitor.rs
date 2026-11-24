@@ -97,6 +97,7 @@ fn live_of(cases: &Cases) -> LiveObstacles {
             max: [3.0, 1.5, 1.5],
         },
         heights,
+        positive(5.0),
         monitor_footprint(cases),
         NonZeroUsize::MIN,
     )
