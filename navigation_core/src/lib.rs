@@ -39,6 +39,9 @@
 //!   outline meets no lethal cell of the cost grid and stays on it, as Nav2's
 //!   controller checks a pose; and a stop while a source's readings stop
 //!   arriving.
+//! - [`behaviors`]: the command of a cycle of Nav2's Spin and DriveOnHeading:
+//!   a turn in place and a drive ahead or back along the heading, each slowed
+//!   into its end.
 //!
 //! Poses on the floor are `control_core::planar_pose::PlanarPose`s, and a body velocity
 //! is a `control_core::twist::PlanarTwist`.
@@ -48,6 +51,7 @@
 //! harness compare bits.
 #![forbid(unsafe_code)]
 
+pub mod behaviors;
 pub mod controller;
 pub mod costmap;
 mod footprint;

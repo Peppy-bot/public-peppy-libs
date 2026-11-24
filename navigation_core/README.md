@@ -62,6 +62,10 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   at most the source timeout from the first decision that reads it, after a step back the
   stop finds and after one it does not; Nav2's monitor holds a stamp after now valid until
   the clock passes the stamp plus its source timeout.
+- `behaviors` gives the command of one cycle of Nav2's Spin and DriveOnHeading, which
+  BackUp drives backward (`SpinParams::rate`, `DriveOnHeadingParams::speed`): the turn
+  rate of a turn in place and the speed of a drive along the heading, each slowed into
+  its end, and none once the goal is reached.
 
 Poses on the floor are `control_core::planar_pose::PlanarPose`s, a laser scan is
 `camera_core::laser_scan::LaserScan`, and a body velocity is
@@ -348,4 +352,4 @@ amd64 build, so it runs with no ROS on the machine.
 `cargo test` runs the parity tests above and the properties and cases of each module on
 drawn grids, maps, scenes and plans (`tests/planner.rs`, `tests/inflation.rs`,
 `tests/obstacles.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
-`tests/progress_checker.rs`, `tests/stop.rs`).
+`tests/progress_checker.rs`, `tests/stop.rs`, `tests/behaviors.rs`).
