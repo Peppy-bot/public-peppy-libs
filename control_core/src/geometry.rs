@@ -8,7 +8,8 @@
 //! at the latest time, which tf2 names `TimePointZero`, and a given timestamp is a time like any
 //! other, 0 the Unix epoch; a target with no orientation gives none ([`PoseTarget`]). A
 //! planar member reads a pose or a twist on the floor plane through [`Pose::planar`] and
-//! [`Twist::planar`], which refuse a part off the plane by more than [`PLANAR_TOLERANCE`]. Every
+//! [`Twist::planar`], which refuse a part off the plane by more than [`PLANAR_TOLERANCE`], and
+//! [`target_off_the_floor`] words such a refusal of a goal's target placed in a frame. Every
 //! refusal says what to send instead, each number in it printed as Rust's `Display` prints it,
 //! and control_core_py's geometry gives the same text for each refusal it also gives
 //! (`tests/fixtures/geometry_refusals.tsv`).
@@ -367,6 +368,31 @@ pub enum GeometryError {
     TiltingTurn { x: f64, y: f64 },
 }
 
+/// What to send in place of a goal's target off the floor plane, as base_motion and
+/// base_navigation say.
+const FLOOR_TARGET: &str = "send a target in odom or the robot frame with a position [x, y, 0] \
+                            and an orientation [0, 0, sin(yaw/2), cos(yaw/2)]";
+
+/// The refusal of a goal's target that, placed in `frame`, lies off the floor plane, from
+/// [`Pose::planar`]'s `refusal`: the part, its value placed in `frame`, and what to send, as
+/// base_motion and base_navigation say.
+pub fn target_off_the_floor(refusal: &GeometryError, frame: &str) -> String {
+    match refusal {
+        GeometryError::OffFloor { z } => format!(
+            "the target's position, placed in {frame}, lies {z} m above the floor plane: \
+             {FLOOR_TARGET}"
+        ),
+        GeometryError::Tilted {
+            orientation,
+            tilt_rad,
+        } => format!(
+            "the target's orientation, placed in {frame}, {orientation} tilts {tilt_rad} rad off \
+             the vertical: {FLOOR_TARGET}"
+        ),
+        other => format!("the target, placed in {frame}: {other}"),
+    }
+}
+
 impl<const N: usize> From<NotFinite<N>> for GeometryError {
     fn from(refusal: NotFinite<N>) -> Self {
         Self::NotFinite(refusal.to_string())
@@ -572,6 +598,30 @@ mod tests {
         let half = 0.05_f64;
         let rolled = Pose::parse([1.0, 0.0, 0.0], [half.sin(), 0.0, 0.0, half.cos()]).unwrap();
         assert!(matches!(rolled.planar(), Err(GeometryError::Tilted { .. })));
+    }
+
+    // A target off the floor plane is refused naming its part and that part's value in the frame
+    // it was placed in, an orientation as [x, y, z, w], and what to send.
+    #[test]
+    fn a_target_off_the_floor_is_refused_naming_the_part_placed_in_its_frame() {
+        let refusal = |position: [f64; 3], orientation: [f64; 4]| {
+            Pose::parse(position, orientation)
+                .unwrap()
+                .planar()
+                .unwrap_err()
+        };
+        assert_eq!(
+            target_off_the_floor(&refusal([1.0, 0.0, -0.1], [0.0, 0.0, 0.0, 1.0]), "odom"),
+            "the target's position, placed in odom, lies -0.1 m above the floor plane: send a \
+             target in odom or the robot frame with a position [x, y, 0] and an orientation \
+             [0, 0, sin(yaw/2), cos(yaw/2)]"
+        );
+        assert_eq!(
+            target_off_the_floor(&refusal([1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]), "map"),
+            "the target's orientation, placed in map, [1, 0, 0, 0] tilts 3.141592653589793 rad \
+             off the vertical: send a target in odom or the robot frame with a position [x, y, 0] \
+             and an orientation [0, 0, sin(yaw/2), cos(yaw/2)]"
+        );
     }
 
     #[test]
