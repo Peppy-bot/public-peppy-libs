@@ -1,10 +1,11 @@
-"""The five pairing slots of a simulation engine, and what each pair names.
+"""The six pairing slots of a simulation engine, and what each pair names.
 
 An engine declares one slot per kind of pair, each holding any number of
 pairs: `arms` and `grippers` for the limbs it follows, `bases` for the wheels
 of the robots' bases it follows, `rgb_cameras` and `rgbd_cameras` for the
-cameras it renders. Nothing in a slot's name says which robot, limb, base or
-camera a pair is, so every pair is read for it:
+cameras it renders and `lidars` for the 2-D lidars it sweeps. Nothing in a
+slot's name says which robot, limb, base, camera or lidar a pair is, so every
+pair is read for it:
 
 - its robot is the copy the pair carries, the name the robot attached under.
   A pair with no copy belongs to a robot launched outside one, and outside a
@@ -13,10 +14,12 @@ camera a pair is, so every pair is read for it:
   a backbone names its downstream links after its limbs (`left_arm`, `arm`),
   and a base pair's base is named the same way, by the link its base node
   pairs it from, `base` (BASE_NAME);
-- a camera pair's camera is its relay's name in the copy (`wrist_left`,
-  `wrist`): the relay's instance id without the copy's prefix.
+- a camera pair's camera and a lidar pair's lidar is its relay's name in the
+  copy (`wrist_left`, `wrist`, `lidar`): the relay's instance id without the
+  copy's prefix.
 
-A new robot, limb, base or camera therefore changes no engine's interface.
+A new robot, limb, base, camera or lidar therefore changes no engine's
+interface.
 """
 
 from __future__ import annotations
@@ -29,10 +32,11 @@ GRIPPERS = "grippers"
 BASES = "bases"
 RGB_CAMERAS = "rgb_cameras"
 RGBD_CAMERAS = "rgbd_cameras"
+LIDARS = "lidars"
 # The slots a driven part of a robot pairs on: its limbs and its base.
 DRIVEN_SLOTS = (ARMS, GRIPPERS, BASES)
 CAMERA_SLOTS = (RGB_CAMERAS, RGBD_CAMERAS)
-SLOTS = (*DRIVEN_SLOTS, *CAMERA_SLOTS)
+SLOTS = (*DRIVEN_SLOTS, *CAMERA_SLOTS, LIDARS)
 
 # The name a robot answers to for its base, in base_state and on its base
 # pair: the link its base node pairs its wheels from.
@@ -45,13 +49,13 @@ def limb_of(member) -> str:
     return member.info.peer_link_id
 
 
-def camera_of(member) -> str:
-    """The camera a camera pair streams: its relay's name in the copy. A
-    launch mints a copy's instance ids as `<copy>_<id>`, so the name is the
-    id the launcher wrote; a relay outside a copy runs under that id as it
-    is. An id that does not carry its copy's prefix is read as it is too:
-    it names no camera of any model, so the match refuses the robot naming
-    it, where raising here would stop the reading of every other pair."""
+def relay_of(member) -> str:
+    """The camera a camera pair streams or the lidar a lidar pair streams:
+    its relay's name in the copy. A launch mints a copy's instance ids as
+    `<copy>_<id>`, so the name is the id the launcher wrote; a relay outside
+    a copy runs under that id as it is. An id that does not carry its copy's
+    prefix is read as it is too: it names no camera or lidar of any model,
+    so the match refuses the robot naming it, and every other pair is read."""
     instance_id = member.info.producer.instance_id
     if member.copy is None:
         return instance_id
@@ -64,21 +68,23 @@ _NAME_OF = {
     ARMS: limb_of,
     GRIPPERS: limb_of,
     BASES: limb_of,
-    RGB_CAMERAS: camera_of,
-    RGBD_CAMERAS: camera_of,
+    RGB_CAMERAS: relay_of,
+    RGBD_CAMERAS: relay_of,
+    LIDARS: relay_of,
 }
 
 
 @dataclass(frozen=True)
 class Held:
-    """What one robot holds, or what one model can hold, on the five slots:
-    the limb, base and camera names, by slot."""
+    """What one robot holds, or what one model can hold, on the six slots:
+    the limb, base, camera and lidar names, by slot."""
 
     arms: frozenset = frozenset()
     grippers: frozenset = frozenset()
     bases: frozenset = frozenset()
     rgb_cameras: frozenset = frozenset()
     rgbd_cameras: frozenset = frozenset()
+    lidars: frozenset = frozenset()
 
     def of_slot(self, slot: str) -> frozenset:
         return getattr(self, slot)
@@ -97,8 +103,8 @@ class Held:
 
 
 class PairTable:
-    """Reads the members of the five slots into robots, limbs, bases and
-    cameras.
+    """Reads the members of the six slots into robots, limbs, bases,
+    cameras and lidars.
 
     `members` gives, per slot, the callable that returns the slot's live
     members (a generated `peers(node_runner)` bound to the runner), and

@@ -1,21 +1,23 @@
 """One entry per robot model: what a robot of that model is made of, whatever
 engine stands it.
 
-A robot's limbs, base and cameras come from its description, the URDF and
+A robot's limbs, base, cameras and lidars come from its description, the URDF and
 SRDF its attach goal carries, as robot_description_py reads them: each arm
 group with the joints it moves, each gripper group with where its closed and
 open states put each finger and the finger each mimic finger follows, the
 wheels of the differential base the description gives, the optical frame of
-each camera with the depths a depth camera measures, and the posture the
+each camera with the depths a depth camera measures, the frame of each lidar
+with the ranges it measures, and the posture the
 robot starts in, every arm at its home state and every gripper closed. The
 limbs have the names the robot answers to in limb_motion and limb_state
 (left_arm and left_gripper on an OpenArm, arm and gripper on an SO-101), and
 the base the name it answers to in base_state (base). A robot with a base
 rolls: it stands free on the floor and its wheels carry it.
 
-What the description does not hold, how the engines render each camera of a
-model, ships with this package under models/, one file per model that has a
-camera, so the engines agree on it by reading the same file. What an engine
+What the description does not hold, how the engines render each camera and
+sweep each lidar of a model, ships with this package under models/, one file
+per model that has a camera or a lidar, so the engines agree on it by reading
+the same file. What an engine
 alone knows about a model (the file it loads, its gains, its extras) is
 that engine's own entry, one file per model beside the
 engine's code. `Models.read` reads both once, as the engine starts: an engine
@@ -40,11 +42,12 @@ from sim_robot_core.cameras import (
     parse_renders,
 )
 from sim_robot_core.errors import ModelEntryError
+from sim_robot_core.lidars import LidarConfig, LidarSweep, lidar_configs, parse_sweeps
 from sim_robot_core.pairs import ARMS, BASE_NAME, BASES, DRIVEN_SLOTS, GRIPPERS, SLOTS, Held
 
 _ENTRIES_DIR = Path(__file__).parent / "models"
 _ENTRY_SUFFIX = ".json5"
-_ENTRY_KEYS = frozenset({"cameras"})
+_ENTRY_KEYS = frozenset({"cameras", "lidars"})
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,7 @@ class ModelEntry:
     arms: tuple[Arm, ...]
     grippers: tuple[Gripper, ...]
     cameras: tuple[CameraConfig, ...]
+    lidars: tuple[LidarConfig, ...]
     # Joint name to the position the robot starts in: every arm and finger
     # joint. A wheel starts where it stands.
     start_posture: dict[str, float]
@@ -151,6 +155,9 @@ class ModelEntry:
     def rgbd_camera_names(self) -> list[str]:
         return [camera.name for camera in self.cameras if camera.depth is not None]
 
+    def lidar_names(self) -> list[str]:
+        return [lidar.name for lidar in self.lidars]
+
     def has(self) -> Held:
         """Everything a robot of this model can hold a pair for."""
         return Held(
@@ -159,6 +166,7 @@ class ModelEntry:
             bases=frozenset(self.base_names()),
             rgb_cameras=frozenset(self.rgb_camera_names()),
             rgbd_cameras=frozenset(self.rgbd_camera_names()),
+            lidars=frozenset(self.lidar_names()),
         )
 
     def holds_every_driven_part(self, held: Held) -> bool:
@@ -169,8 +177,8 @@ class ModelEntry:
         return all(has.of_slot(slot) <= held.of_slot(slot) for slot in DRIVEN_SLOTS)
 
     def foreign(self, held: Held) -> Held:
-        """The pairs of `held` that name a limb, a base or a camera this model
-        lacks. Such a pair never drives or streams anything, so a robot
+        """The pairs of `held` that name a limb, a base, a camera or a lidar
+        this model lacks. Such a pair never drives or streams anything, so a robot
         holding one does not stay."""
         has = self.has()
         return Held(**{slot: held.of_slot(slot) - has.of_slot(slot) for slot in SLOTS})
@@ -191,8 +199,9 @@ class ModelEntry:
     def mismatch(self, held: Held) -> str | None:
         """Why `held` is not what a robot of this model pairs, naming both
         lists, or None when it is: every limb and the base of the model and
-        nothing the model lacks. A camera the model has may go unpaired, since
-        a camera nobody views is not rendered."""
+        nothing the model lacks. A camera or a lidar the model has may go
+        unpaired, since a camera nobody views is not rendered and a lidar
+        nobody views is not swept."""
         if self.holds_every_driven_part(held) and self.foreign(held).is_empty():
             return None
         return (
@@ -265,12 +274,15 @@ def _entry_of(
     source: str,
     description: RobotDescription,
     renders: dict[str, CameraRender] | None,
+    sweeps: dict[str, LidarSweep] | None,
 ) -> ModelEntry:
     """The entry of a robot of `model` that `description` describes, each of
-    its cameras rendered as `renders` gives the camera of the same name, the
-    renders of the entry at `source`, or None where no file is there. A
-    camera of the description with no render and a render of no camera of
-    the description are refused naming the entry; an arm with no home state,
+    its cameras rendered as `renders` gives the camera of the same name and
+    each of its lidars swept as `sweeps` gives the lidar of the same name,
+    the renders and the sweeps of the entry at `source`, each None where no
+    file is there. A camera or a lidar of the description with no render or
+    sweep, and a render or a sweep of no camera or lidar of the description,
+    are refused naming the entry; an arm with no home state,
     a description whose wheels make no differential base, and one that names
     no arm and gives no differential base,
     naming the model and why its wheels make no base."""
@@ -283,6 +295,7 @@ def _entry_of(
         arms=arms,
         grippers=grippers,
         cameras=camera_configs(source, description, renders),
+        lidars=lidar_configs(source, description, sweeps),
         start_posture=_start_posture(described, description),
         base=base,
     )
@@ -295,34 +308,47 @@ def _read_json5(path: Path):
         raise _fail(str(path), f"does not read as JSON5: {error}") from error
 
 
-def _parse_shipped(source: str, raw) -> dict[str, CameraRender]:
-    """How the engines render each camera of a model, by the camera's name,
-    from `raw`, the entry this package ships for the model, which `source`
-    names."""
+def _parse_shipped(
+    source: str, raw
+) -> tuple[dict[str, CameraRender], dict[str, LidarSweep]]:
+    """How the engines render each camera and sweep each lidar of a model,
+    each by its name, from `raw`, the entry this package ships for the model,
+    which `source` names. An entry holds cameras, lidars or both."""
     if not isinstance(raw, dict):
         raise _fail(source, f"a model entry must be an object, got {raw!r}")
     unknown = sorted(set(raw) - _ENTRY_KEYS)
     if unknown:
         raise _fail(source, f"model entry has unknown key(s) {unknown}; allowed: {sorted(_ENTRY_KEYS)}")
-    if "cameras" not in raw:
-        raise _fail(source, "model entry has no `cameras`: add `cameras: { <camera>: {...} }`, or delete the file")
-    return parse_renders(source, raw["cameras"])
+    if not raw:
+        raise _fail(
+            source,
+            "model entry renders no camera and sweeps no lidar: add `cameras: { <camera>: {...} }` "
+            "or `lidars: { <lidar>: {...} }`, or delete the file",
+        )
+    renders = parse_renders(source, raw["cameras"]) if "cameras" in raw else {}
+    sweeps = parse_sweeps(source, raw["lidars"]) if "lidars" in raw else {}
+    return renders, sweeps
 
 
-def _shipped(model: str) -> tuple[str, dict[str, CameraRender] | None]:
-    """The path of the entry this package ships for `model`, and how it
-    renders each camera, or None where no file is there."""
+def _shipped(
+    model: str,
+) -> tuple[str, dict[str, CameraRender] | None, dict[str, LidarSweep] | None]:
+    """The path of the entry this package ships for `model`, how it renders
+    each camera and how it sweeps each lidar, each None where no file is
+    there."""
     path = _ENTRIES_DIR / f"{model}{_ENTRY_SUFFIX}"
     if not path.is_file():
-        return str(path), None
-    return str(path), _parse_shipped(str(path), _read_json5(path))
+        return str(path), None, None
+    renders, sweeps = _parse_shipped(str(path), _read_json5(path))
+    return str(path), renders, sweeps
 
 
 def shipped_entry(model: str, description: RobotDescription) -> ModelEntry:
     """The entry of a robot of `model` that `description` describes, with
-    the cameras this package's entry for `model` renders."""
-    source, renders = _shipped(model)
-    return _entry_of(model, source, description, renders)
+    the cameras and the lidars this package's entry for `model` renders and
+    sweeps."""
+    source, renders, sweeps = _shipped(model)
+    return _entry_of(model, source, description, renders, sweeps)
 
 
 def hold_to_bundled(model: str, description: RobotDescription) -> None:
@@ -350,20 +376,22 @@ def hold_to_bundled(model: str, description: RobotDescription) -> None:
 @dataclass(frozen=True)
 class EngineModel:
     """One model an engine stands: how this package's entry renders its
-    cameras, and what this engine alone knows about it, as its own entry
-    wrote it."""
+    cameras and sweeps its lidars, and what this engine alone knows about
+    it, as its own entry wrote it."""
 
     model: str
     # The path of the entry this package ships for the model, which a
-    # refusal of a camera at an attach names, and how it renders each
-    # camera, by name, or None where no file is there.
+    # refusal of a camera or a lidar at an attach names, and how it renders
+    # each camera and sweeps each lidar, by name, each None where no file is
+    # there.
     source: str
     renders: dict[str, CameraRender] | None
+    sweeps: dict[str, LidarSweep] | None
     engine: dict
 
     def entry(self, description: RobotDescription) -> ModelEntry:
         """The entry of a robot of this model that `description` describes."""
-        return _entry_of(self.model, self.source, description, self.renders)
+        return _entry_of(self.model, self.source, description, self.renders, self.sweeps)
 
 
 class Models:
@@ -389,8 +417,10 @@ class Models:
             engine = _read_json5(path)
             if not isinstance(engine, dict):
                 raise _fail(str(path), f"an engine's model entry must be an object, got {engine!r}")
-            source, renders = _shipped(model)
-            models[model] = EngineModel(model=model, source=source, renders=renders, engine=engine)
+            source, renders, sweeps = _shipped(model)
+            models[model] = EngineModel(
+                model=model, source=source, renders=renders, sweeps=sweeps, engine=engine
+            )
         return Models(models)
 
     def names(self) -> list[str]:
