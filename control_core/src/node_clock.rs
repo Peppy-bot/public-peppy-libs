@@ -6,13 +6,15 @@
 //! in: [`NodeClock::simulation`] gives the clock and the [`TickFeed`] that sets it, and
 //! [`follow_ticks`] feeds it each tick a node's receive gives. Before its first tick a
 //! simulation clock reads 0. [`BackSteps`] tells whether a clock went back between two
-//! looks.
+//! looks, and [`wire_from_ns`] gives a time of a clock, in the signed nanoseconds a node
+//! compares times in, as a time on the wire.
 
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use frame_tree::Stamp;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -173,6 +175,12 @@ fn wall_now_ns() -> u64 {
         })
 }
 
+/// `time_ns`, nanoseconds of a node's clock, as a time on the wire: the time of their
+/// [`Stamp`], the Unix epoch for a time before it.
+pub fn wire_from_ns(time_ns: i64) -> SystemTime {
+    Stamp::from_nanos(time_ns.max(0).unsigned_abs()).time()
+}
+
 /// Feeds `feed` the time of each tick `next_tick` receives, in nanoseconds since the
 /// Unix epoch, until it gives `Ok(None)`, the end of the clock's ticks, and then calls
 /// `closed`. A tick that does not decode is left out, with a warning, and the ticks after
@@ -200,6 +208,15 @@ mod tests {
     use std::cell::Cell;
 
     use crate::test_support::Logged;
+
+    #[test]
+    fn a_time_of_the_clock_goes_on_the_wire_as_its_nanoseconds() {
+        assert_eq!(
+            wire_from_ns(1_500_000_000),
+            UNIX_EPOCH + Duration::from_millis(1_500)
+        );
+        assert_eq!(wire_from_ns(-1), UNIX_EPOCH);
+    }
 
     #[test]
     fn a_simulation_clock_reads_0_then_its_newest_tick() {

@@ -29,7 +29,8 @@
 //!   of it.
 //! - [`node_clock`]: the clock a node reads, the wall clock or a simulation
 //!   clock fed the ticks the node receives, the time now, a wait until a
-//!   deadline on it, and whether it went back between two looks.
+//!   deadline on it, whether it went back between two looks, and a time of it
+//!   on the wire.
 //! - [`robot_tree`]: a robot's tree of frames as a node holds it, its followers
 //!   that fill it from the messages of transforms, the lookups in it that wait
 //!   on the node's clock until the tree answers them
