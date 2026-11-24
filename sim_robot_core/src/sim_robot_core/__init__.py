@@ -5,6 +5,6 @@ checks (models), the setpoints an engine takes on a pair (setpoints), each
 object's and robot's record on object_state and a snapshot of both
 (object_state), the rule a MuJoCo model of a base's wheel is held to
 (rate_loop), the camera configuration (cameras), the lidar configuration
-(lidars), the one frame of a
+and its sweep (lidars), the one frame of a
 simulation and the commands given in it (world), and the error of an entry
 that does not read or fit (errors)."""

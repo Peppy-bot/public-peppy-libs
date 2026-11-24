@@ -2,22 +2,37 @@
 
 Reads how a model's entry sweeps each lidar, builds the configs of a robot's
 lidars from the lidars of its description, with the ranges each measures, and
-those sweeps, and gives when each ray of a scan is due, the way it points in
-the lidar's frame and its range in lidar_2d's marks; casting a ray stays in
-the engine.
+those sweeps, gives when each ray of a scan is due, the way it points in the
+lidar's frame and its range in lidar_2d's marks, and sweeps a lidar on the
+engine's clock (`LidarSweeper`): which rays each step casts, from where the
+lidar's frame stands at each ray's time, and the scans they complete. Casting
+a ray, and where the lidar's frame stands at each step, stay in the engine.
 
 A lidar turns once per scan, counterclockwise about its frame's +Z: scan `k`
 starts at `k / scan_rate_hz` seconds of the engine's clock, and ray `i` points
 `min_angle_rad + i x angle_increment_rad` from the frame's +X in its x-y plane
 and is due `round(i x time_increment_s x 1e9)` nanoseconds after its scan
 starts, as Waldo sweeps its lidars.
+
+After each step of the engine every ray due since the step before is cast
+from the frame's pose at the ray's own time, between the frame's poses at the
+two steps: linear in position, spherical in orientation. A scan starts only
+while a pair views the lidar. A step that does not move the engine's clock
+forward drops the scan in progress, and so does an interruption, which an
+engine makes at each rebuild or edit of its scene: the sweep starts again at
+the next scan. The capture index counts the scans a sweep completes, across
+its interruptions.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
+from control_core_py.geometry import Placement, UnitQuaternion, normalized, slerp
+
+from sim_robot_core.cameras import CaptureIndexCounter
 from sim_robot_core.entry_values import is_number, positive_int, reject_unknown_keys
 from sim_robot_core.errors import ModelEntryError
 
@@ -98,6 +113,136 @@ class LidarConfig:
         if distance < self.min_range_m:
             return UNMEASURED_MARK_M
         return distance
+
+
+Vector = tuple[float, float, float]
+# How an engine casts a ray: from an origin along a unit direction, both in
+# world, as far as a range (m), to the distance of the first surface the ray
+# meets (m), or None where it meets none.
+Cast = Callable[[Vector, Vector, float], float | None]
+
+
+@dataclass(frozen=True)
+class Scan:
+    """One scan a sweep completes: when its ray 0 was due on the engine's
+    clock (ns), its capture index, and the range of each ray in ray order,
+    in lidar_2d's marks (m)."""
+
+    start_ns: int
+    capture_index: int
+    ranges: tuple[float, ...]
+
+    @property
+    def start_s(self) -> float:
+        """When its ray 0 was due on the engine's clock (s)."""
+        return self.start_ns / 1e9
+
+
+@dataclass(frozen=True)
+class _FramePose:
+    """Where a lidar's frame stands in world at an instant of the engine's
+    clock (ns)."""
+
+    at_ns: int
+    placement: Placement
+
+    def toward(self, later: _FramePose, at_ns: int) -> Placement:
+        """The frame's placement at `at_ns`, between this pose and `later`:
+        linear in position, spherical in orientation."""
+        share = (at_ns - self.at_ns) / (later.at_ns - self.at_ns)
+        start, end = self.placement, later.placement
+        position = tuple(
+            a + share * (b - a) for a, b in zip(start.position, end.position, strict=True)
+        )
+        turn = slerp(start.orientation.xyzw, end.orientation.xyzw, share)
+        return Placement(position, UnitQuaternion(normalized(turn)))
+
+
+@dataclass
+class _ScanInProgress:
+    """A scan the sweep is measuring: when its ray 0 is due on the engine's
+    clock (ns), and the range of each ray cast so far, in ray order."""
+
+    start_ns: int
+    ranges: list[float] = field(default_factory=list)
+
+
+class LidarSweeper:
+    """Sweeps one lidar of one robot on the engine's clock: `step` after
+    each step of the engine, with the step's engine time, where the lidar's
+    frame stands then and how the engine casts a ray, gives the scans the
+    step completes, and `interrupt` drops the scan in progress. `viewed`
+    says whether a pair views the lidar, which a scan starts only while it
+    does."""
+
+    def __init__(self, lidar: LidarConfig, viewed: Callable[[], bool]) -> None:
+        self._lidar = lidar
+        self._viewed = viewed
+        # Each ray: when it is due after its scan starts (ns), and the unit
+        # vector it points along in the lidar's frame.
+        self._rays = tuple(
+            (lidar.ray_due_ns(ray), lidar.ray_direction(ray)) for ray in range(lidar.sweep.rays)
+        )
+        self._capture_indices = CaptureIndexCounter()
+        self._previous: _FramePose | None = None
+        self._scan: _ScanInProgress | None = None
+
+    def step(self, now_s: float, frame: Placement, cast: Cast) -> list[Scan]:
+        """Casts every ray due since the step before with `cast`, from the
+        frame's pose at the ray's time between where it stood then and
+        `frame`, where it stands in world at `now_s`, the engine time of this
+        step, and gives each scan that completes, in order. The first step
+        after the sweeper is made or interrupted casts nothing: it takes
+        where the frame stands."""
+        now = _FramePose(round(now_s * 1e9), frame)
+        previous, self._previous = self._previous, now
+        if previous is None:
+            return []
+        if now.at_ns <= previous.at_ns:
+            self._scan = None
+            return []
+        scans: list[Scan] = []
+        scan = self._scan
+        start_ns = self._first_start_after(previous.at_ns) if scan is None else scan.start_ns
+        while start_ns <= now.at_ns:
+            if scan is None and not self._viewed():
+                start_ns += self._lidar.period_ns
+                continue
+            scan = scan or _ScanInProgress(start_ns)
+            if not self._cast_due(scan, previous, now, cast):
+                break
+            scans.append(Scan(scan.start_ns, self._capture_indices.next(), tuple(scan.ranges)))
+            scan = None
+            start_ns += self._lidar.period_ns
+        self._scan = scan
+        return scans
+
+    def interrupt(self) -> None:
+        """Drops the scan in progress and where the frame stood: the next
+        step only takes where it stands."""
+        self._previous = None
+        self._scan = None
+
+    def _first_start_after(self, at_ns: int) -> int:
+        """The first scan start after `at_ns`: a whole number of periods of
+        the engine's clock."""
+        period_ns = self._lidar.period_ns
+        return (at_ns // period_ns + 1) * period_ns
+
+    def _cast_due(
+        self, scan: _ScanInProgress, previous: _FramePose, now: _FramePose, cast: Cast
+    ) -> bool:
+        """Casts each ray of `scan` due by `now`, from the frame's pose at the
+        ray's time. True once every ray of the scan is cast."""
+        lidar = self._lidar
+        for due_ns, direction in self._rays[len(scan.ranges) :]:
+            at_ns = scan.start_ns + due_ns
+            if at_ns > now.at_ns:
+                return False
+            frame = previous.toward(now, at_ns)
+            distance = cast(frame.position, frame.orientation.rotate(direction), lidar.max_range_m)
+            scan.ranges.append(lidar.range_of(distance))
+        return True
 
 
 def parse_sweeps(source: str, entries) -> dict[str, LidarSweep]:
