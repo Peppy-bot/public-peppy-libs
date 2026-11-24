@@ -47,8 +47,8 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
 - `stop` slows the commanded velocity so that no occupied point lies inside the padded
   footprint at any step of the projection the slowed velocity covers within a time, as
   Nav2's collision monitor slows it in its approach mode, one point a contact, and stops
-  the base while a source's readings stop arriving, which source it gives back
-  (`Stop::reading_arrived`, `Stop::silent_source`, `Stop::decide`), each reading the
+  the base while a source's readings stop arriving, each such source it gives back
+  (`Stop::reading_arrived`, `Stop::silent_sources`, `Stop::decide`), each reading the
   padded footprint and the sources of the `LiveObstacles` it is given. Its points are
   those `LiveObstacles::occupied_seen_from` gives, the base and the map placed in the
   grid's frame by `GridPoses`: the centers of the cost grid's lethal cells and of the

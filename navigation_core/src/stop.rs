@@ -26,9 +26,9 @@
 //! stop reads its polygon, the padded footprint, and its count of sources
 //! from those live obstacles at each call, and holds neither. It keeps the
 //! arrival of each source's newest reading, which [`Stop::reading_arrived`]
-//! gives it, and [`Stop::silent_source`] gives back the first source with no
-//! reading, or whose newest reading arrived more than `source_timeout_s`
-//! before now.
+//! gives it, and [`Stop::silent_sources`] gives back, in the order of the
+//! sources, each source with no reading, or whose newest reading arrived more
+//! than `source_timeout_s` before now.
 //!
 //! The stop's clock is the caller's, and the stop keeps the time of its
 //! previous decision. A decision whose now lies before that time comes from a
@@ -43,12 +43,12 @@
 //! arrived after the slot's start, and they read live. [`Stop::decide`]
 //! applies the rule to what the stop keeps: it forgets every reading at a
 //! clock gone back, gives each arrival after its now that now, and keeps its
-//! now as the previous decision's time; [`Stop::silent_source`] answers by the
-//! same rule and changes nothing. The limiter finds a clock that went back by
-//! the same rule, a tick before its last call, and gives a setpoint whose time
-//! lies after a tick's time that tick's time (`control_core::limiter`); where
-//! the limiter then holds its setpoint for its timeout from that tick, the
-//! stop reads every source silent until its next reading.
+//! now as the previous decision's time; [`Stop::silent_sources`] answers by
+//! the same rule and changes nothing. The limiter finds a clock that went back
+//! by the same rule, a tick before its last call, and gives a setpoint whose
+//! time lies after a tick's time that tick's time (`control_core::limiter`);
+//! where the limiter then holds its setpoint for its timeout from that tick,
+//! the stop reads every source silent until its next reading.
 //!
 //! The stop departs from the monitor's `sourceValid` (src/source.cpp:185-186)
 //! twice. The monitor ages a source's newest data from its stamp
@@ -253,9 +253,9 @@ impl Stop {
     /// base's frame
     /// ([`LiveObstacles::occupied_seen_from`](crate::obstacles::LiveObstacles::occupied_seen_from)),
     /// at `now_ns` on the caller's clock, the polygon and the sources those of
-    /// `live`: [`Stop::silent_source`]'s cause first, then the projection. A
-    /// decision before the previous one forgets every reading, and each
-    /// arrival after `now_ns` takes `now_ns` as its time.
+    /// `live`: the cause of the first of [`Stop::silent_sources`] first, then
+    /// the projection. A decision before the previous one forgets every
+    /// reading, and each arrival after `now_ns` takes `now_ns` as its time.
     pub fn decide(
         &mut self,
         live: &LiveObstacles,
@@ -263,7 +263,7 @@ impl Stop {
         occupied: &[[f64; 2]],
         now_ns: i64,
     ) -> StopDecision {
-        let silent = self.silent_source(live, now_ns);
+        let silent = self.silent_sources(live, now_ns).into_iter().next();
         if self.clock_went_back(now_ns) {
             self.newest_readings_ns.clear();
         }
@@ -295,25 +295,27 @@ impl Stop {
         StopDecision::Continue { velocity }
     }
 
-    /// `sourceValid` of each source of `live`, in order, at `now_ns` on the
-    /// caller's clock, by the module's rule: the first source with no reading,
-    /// as every source has at a now before the previous decision's, or whose
-    /// newest reading arrived more than the source timeout before `now_ns`;
-    /// none while every source's newest reading arrived within the source
-    /// timeout before `now_ns`, or after it.
-    pub fn silent_source(&self, live: &LiveObstacles, now_ns: i64) -> Option<StopCause> {
+    /// `sourceValid` of each source of `live` at `now_ns` on the caller's
+    /// clock, by the module's rule: each source with no reading, as every
+    /// source has at a now before the previous decision's, or whose newest
+    /// reading arrived more than the source timeout before `now_ns`, in the
+    /// order of the sources; none while every source's newest reading arrived
+    /// within the source timeout before `now_ns`, or after it.
+    pub fn silent_sources(&self, live: &LiveObstacles, now_ns: i64) -> Vec<StopCause> {
         let went_back = self.clock_went_back(now_ns);
-        (0..live.sources()).find_map(|source| {
-            let newest = self.newest_readings_ns.get(&source).filter(|_| !went_back);
-            let Some(&arrived_ns) = newest else {
-                return Some(StopCause::NoReading { source });
-            };
-            let age_ns = elapsed_ns(arrived_ns, now_ns);
-            (age_ns > self.source_timeout_ns).then_some(StopCause::StaleSource {
-                source,
-                age_s: seconds(age_ns),
+        (0..live.sources())
+            .filter_map(|source| {
+                let newest = self.newest_readings_ns.get(&source).filter(|_| !went_back);
+                let Some(&arrived_ns) = newest else {
+                    return Some(StopCause::NoReading { source });
+                };
+                let age_ns = elapsed_ns(arrived_ns, now_ns);
+                (age_ns > self.source_timeout_ns).then_some(StopCause::StaleSource {
+                    source,
+                    age_s: seconds(age_ns),
+                })
             })
-        })
+            .collect()
     }
 
     /// Whether `now_ns` lies before the previous decision's time: a clock

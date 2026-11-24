@@ -11,13 +11,13 @@
 //! depth sensor, or by a lidar while the base drives or turns, which marks no cell, and a
 //! body drawn on its outline holds it; a source whose readings stop arriving stops the
 //! base, as does every source from a decision that finds the clock gone back until its next
-//! reading, a dead source among them, and the stop gives that source back; a frame that
-//! arrived after the now of the decision that reads it is live, and a reading that arrived
-//! after a decision's now holds for the timeout from the first decision that reads it,
-//! before any decision and when given after a decision that finds the clock gone back; a
-//! reading of a source the live obstacles do not read is refused; and a simulation step
-//! past the time before collision, or too short to advance every time of the projection,
-//! makes no stop.
+//! reading, a dead source among them, and the stop gives back each such source in the order
+//! of the sources, the first the one a decision stops for; a frame that arrived after the
+//! now of the decision that reads it is live, and a reading that arrived after a decision's
+//! now holds for the timeout from the first decision that reads it, before any decision and
+//! when given after a decision that finds the clock gone back; a reading of a source the
+//! live obstacles do not read is refused; and a simulation step past the time before
+//! collision, or too short to advance every time of the projection, makes no stop.
 
 mod common;
 
@@ -806,7 +806,7 @@ fn a_dead_source_stays_silent_when_the_clock_goes_back_within_its_timeout() {
     let (mut stop, live) = stop_read_at(99_200_000_000);
     assert_stale(stop.decide(&live, forward(0.5), &[], 100_000_000_000), 0);
     let silent = StopCause::NoReading { source: 0 };
-    assert_eq!(stop.silent_source(&live, 99_500_000_000), Some(silent));
+    assert_eq!(stop.silent_sources(&live, 99_500_000_000), [silent]);
     for now in [99_500_000_000, 99_600_000_000, 99_700_000_000] {
         assert_eq!(
             stop.decide(&live, forward(0.5), &[], now),
@@ -894,7 +894,7 @@ fn a_frame_that_arrived_after_its_decision_began_reads_live() {
     let moving = StopDecision::Continue {
         velocity: forward(0.5),
     };
-    assert_eq!(stop.silent_source(&live, NOW_NS), None);
+    assert!(stop.silent_sources(&live, NOW_NS).is_empty());
     assert_eq!(stop.decide(&live, forward(0.5), &[], NOW_NS), moving);
     assert_eq!(
         stop.decide(&live, forward(0.5), &[], NOW_NS + PERIOD_NS),
@@ -996,31 +996,106 @@ fn a_source_whose_readings_stop_arriving_stops_the_base() {
     assert_eq!(stale.velocity(), PlanarTwist::ZERO);
 }
 
-// The stop gives back the source whose readings stopped arriving, the one a decision stops
-// for, so a caller keeps no copy of the arrivals: the first with no reading, then one whose
-// newest reading is older than the timeout, and none while each is within it, a reading
-// exactly the timeout old among them.
+// The stop gives back each source whose readings stopped arriving, in the order of the
+// sources, so a caller keeps no copy of the arrivals: both sources with no reading, then the
+// one with none, then none while each is within the timeout, a reading exactly the timeout
+// old among them, then the one whose newest reading is older than the timeout.
 #[test]
-fn the_stop_gives_back_its_silent_source() {
+fn the_stop_gives_back_each_silent_source() {
     let live = live_obstacles(footprint(), 2);
     let mut stop = fresh_stop();
     assert_eq!(
-        stop.silent_source(&live, NOW_NS),
-        Some(StopCause::NoReading { source: 0 })
+        stop.silent_sources(&live, NOW_NS),
+        [
+            StopCause::NoReading { source: 0 },
+            StopCause::NoReading { source: 1 }
+        ]
     );
     stop.reading_arrived(&live, 0, NOW_NS)
         .expect("source 0 of 2");
     assert_eq!(
-        stop.silent_source(&live, NOW_NS),
-        Some(StopCause::NoReading { source: 1 })
+        stop.silent_sources(&live, NOW_NS),
+        [StopCause::NoReading { source: 1 }]
     );
     stop.reading_arrived(&live, 1, NOW_NS - TIMEOUT_NS)
         .expect("source 1 of 2");
-    assert_eq!(stop.silent_source(&live, NOW_NS), None);
-    let stale = stop.silent_source(&live, NOW_NS + 1);
+    let none = stop.silent_sources(&live, NOW_NS);
+    assert!(none.is_empty(), "{none:?}");
+    let stale = stop.silent_sources(&live, NOW_NS + 1);
     assert!(
-        matches!(stale, Some(StopCause::StaleSource { source: 1, .. })),
+        matches!(stale.as_slice(), [StopCause::StaleSource { source: 1, .. }]),
         "{stale:?}"
+    );
+}
+
+// Of four sources, source 0's newest reading 1 s old, source 1's just arrived, source 2 with
+// no reading and source 3's 0.6 s old: the stop gives back sources 0, 2 and 3 with their
+// ages, and a decision stops for the first of them.
+#[test]
+fn the_stop_gives_back_three_silent_sources_of_four_and_stops_for_the_first() {
+    let live = live_obstacles(footprint(), 4);
+    let mut stop = fresh_stop();
+    for (source, arrived_ns) in [
+        (0, NOW_NS - 1_000_000_000),
+        (1, NOW_NS),
+        (3, NOW_NS - 600_000_000),
+    ] {
+        stop.reading_arrived(&live, source, arrived_ns)
+            .expect("a source of 4");
+    }
+    let stale_0 = StopCause::StaleSource {
+        source: 0,
+        age_s: 1.0,
+    };
+    assert_eq!(
+        stop.silent_sources(&live, NOW_NS),
+        [
+            stale_0,
+            StopCause::NoReading { source: 2 },
+            StopCause::StaleSource {
+                source: 3,
+                age_s: 0.6
+            }
+        ]
+    );
+    assert_eq!(
+        stop.decide(&live, forward(0.5), &[], NOW_NS),
+        StopDecision::Stop(stale_0)
+    );
+}
+
+// Three sources read live at a decision at 100 s; the clock then goes back to 99.9 s: the
+// stop gives back all three as having no reading, and once two read again, the third alone.
+#[test]
+fn a_clock_that_goes_back_gives_back_every_source_until_each_reads_again() {
+    let live = live_obstacles(footprint(), 3);
+    let mut stop = fresh_stop();
+    for source in 0..3 {
+        stop.reading_arrived(&live, source, 100_000_000_000)
+            .expect("a source of 3");
+    }
+    assert_eq!(
+        stop.decide(&live, forward(0.5), &[], 100_000_000_000),
+        StopDecision::Continue {
+            velocity: forward(0.5)
+        }
+    );
+    let back_ns = 99_900_000_000;
+    assert_eq!(
+        stop.silent_sources(&live, back_ns),
+        [0, 1, 2].map(|source| StopCause::NoReading { source })
+    );
+    assert_eq!(
+        stop.decide(&live, forward(0.5), &[], back_ns),
+        StopDecision::Stop(StopCause::NoReading { source: 0 })
+    );
+    for source in [0, 2] {
+        stop.reading_arrived(&live, source, back_ns + 10_000_000)
+            .expect("a source of 3");
+    }
+    assert_eq!(
+        stop.silent_sources(&live, back_ns + 20_000_000),
+        [StopCause::NoReading { source: 1 }]
     );
 }
 
