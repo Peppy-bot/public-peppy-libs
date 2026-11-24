@@ -291,7 +291,7 @@ impl Stop {
     }
 
     /// What to do with `velocity`, by what `occupied` holds
-    /// ([`LiveObstacles::occupied_seen_from`](crate::obstacles::LiveObstacles::occupied_seen_from)),
+    /// ([`LiveObstacles::occupied_seen_from`]),
     /// at `now_ns` on the caller's clock, the polygon and the sources those of
     /// `live`: the cause of the first of [`Stop::silent_sources`] first, then
     /// the projection, each pose checked against the points and the grid. A
