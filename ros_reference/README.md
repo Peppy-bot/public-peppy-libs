@@ -37,7 +37,7 @@ change of the reference, which `run.sh --check` proves.
 | `global_costmap` | A Nav2 global cost map of a static, an obstacle and an inflation layer: the costs after one update at a base pose, with a saved map that map_io reads as a trinary map, the points of a depth frame and a padded footprint the obstacle layer clears under, and the map and the points as the layers read them | `navigation_core/tests/ros_reference_global_costmap.rs` |
 | `velocity_smoother` | Nav2's velocity smoother in open loop with the axes scaled together: the velocity each cycle of its timer publishes, or that it publishes none, for setpoints and cycles at their own times on the node's clock | `control_core/tests/ros_reference_velocity_smoother.rs` |
 | `pure_pursuit` | Nav2's regulated pure pursuit as its controller server runs it with the feasible path handler, the simple goal checker and the simple progress checker: at each step of a base along a plan on a cost grid, the pruned plan, the checkers' verdicts, and the command or the exception that ended the step | `navigation_core/tests/ros_reference_pure_pursuit.rs` |
-| `collision_monitor` | Nav2's collision monitor with the base's footprint in approach mode, a contact at one point, and one point cloud source stamped at its arrival: the action it takes and the velocity it allows for a velocity and the newest cloud, points the stop under test reads as it reads the centers of a cost grid's occupied cells, or a depth frame's points, or for no cloud or a stale one | `navigation_core/tests/ros_reference_collision_monitor.rs` |
+| `collision_monitor` | Nav2's collision monitor with the base's footprint in approach mode, a contact at one point, and one point cloud source stamped at its arrival: the action it takes and the velocity it allows for a velocity and the newest cloud, points at the centers of a grid's cells, which the stop under test reads as a source's newest points, or a depth frame's points, or for no cloud or a stale one | `navigation_core/tests/ros_reference_collision_monitor.rs` |
 | `diff_drive_odometry` | The odometry of ros2_controllers' diff drive controller: the pose and the velocity after each update from the wheel positions at a fixed period | `control_core/tests/ros_reference_diff_drive_odometry.rs` |
 
 ## Layout
@@ -477,11 +477,11 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    and a lethal wall across it; and with a lookahead scaled by the speed and a minimum
    distance to obstacles, a base slowing to rest, a base off the grid and a plan that
    leaves it, with four steps drawn on each plan; for the collision
-   monitor, the cases of `tools/draw_collision_monitor.py`, points the stop reads as
-   occupied cells' centers: no cloud, a stale one and one as old as the timeout, a wall
-   within and beyond reach ahead, points inside the footprint, a turn, a turn in place and
-   a sideways drive at a point or a wall, a short wall of three points, one point ahead and
-   three drawn sets of points; and a depth frame's points from a sensor 1 m over the
+   monitor, the cases of `tools/draw_collision_monitor.py`, points at the centers of a
+   grid's cells, which the stop reads as a source's newest points: no cloud, a stale one
+   and one as old as the timeout, a wall within and beyond reach ahead, points inside the
+   footprint, a turn, a turn in place and a sideways drive at a point or a wall, a short
+   wall of three points, one point ahead and three drawn sets of points; and a depth frame's points from a sensor 1 m over the
    base's center, each step over the columns of the test's 5 cm voxels that the footprint
    crosses, in each a floor point before the edge, the floor the frame sees there, and the
    three lower floor points whose rays cross the floor's plane in the column past it: a

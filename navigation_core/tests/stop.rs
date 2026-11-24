@@ -1,28 +1,34 @@
-//! The stop on drawn scenes: a base driving at a wall of occupied cells slows so that no
-//! cell's center lies inside the footprint at any step of the projection the slowed
-//! velocity covers within the time before collision, and goes on at full speed when the
-//! wall lies beyond what that time covers; one occupied cell is a contact, and one inside
-//! the footprint now brings the base to rest; a drop that `LiveObstacles` marks ahead stops
-//! the base before its footprint reaches it; a post and a drop at the padded front edge,
-//! seen by a frame at every step, stop the base before contact on the newest frame's
-//! columns, which the footprint's clearing leaves, as does a post in the padding, each
-//! source's newest frame kept apart, and kept by a clear that empties the grid until the
-//! source's next frame; the base's own body inside its outline never slows it, seen by a
-//! depth sensor, or by a lidar while the base drives or turns, which marks no cell, and a
-//! body drawn on its outline holds it; a source whose readings stop arriving stops the
-//! base, as does every source from a decision that finds the clock gone back until its next
-//! reading, a dead source among them, and the stop gives back each such source in the order
-//! of the sources, the first the one a decision stops for; a frame that arrived after the
-//! now of the decision that reads it is live, and a reading that arrived after a decision's
-//! now holds for the timeout from the first decision that reads it, before any decision and
-//! when given after a decision that finds the clock gone back; a reading of a source the
-//! live obstacles do not read is refused; and a simulation step past the time before
-//! collision, or too short to advance every time of the projection, makes no stop.
+//! The stop on drawn scenes: a base driving at a wall of points slows so that no point lies
+//! inside the footprint at any step of the projection the slowed velocity covers within the
+//! time before collision, and goes on at full speed when the wall lies beyond what that
+//! time covers; one point is a contact, and one inside the footprint now brings the base to
+//! rest; the grid's edge slows the base as a lethal cell does; a drop that `LiveObstacles`
+//! marks ahead stops the base before its footprint's outline reaches the drop's cells; a
+//! base turning beside a wall that only the grid holds, its face anywhere in its cells,
+//! rests before its padded footprint reaches the face, and turns on at full rate beside a
+//! wall past its corners' reach; a point of a source's newest frame inside the projected
+//! footprint slows the base, its column's center outside the footprint at every step; a
+//! post and a drop at the padded front edge, seen by a frame at every step, stop the base
+//! before contact on the newest frame's points, which the footprint's clearing leaves, as
+//! does a post in the padding, each source's newest points kept apart, and kept by a clear
+//! that empties the grid until the source's next frame; the base's own body inside its
+//! outline never slows it, seen by a depth sensor, or by a lidar while the base drives or
+//! turns, which marks no cell, and a body drawn on its outline holds it; a source whose
+//! readings stop arriving stops the base, as does every source from a decision that finds
+//! the clock gone back until its next reading, a dead source among them, and the stop gives
+//! back each such source in the order of the sources, the first the one a decision stops
+//! for; a frame that arrived after the now of the decision that reads it is live, and a
+//! reading that arrived after a decision's now holds for the timeout from the first
+//! decision that reads it, before any decision and when given after a decision that finds
+//! the clock gone back; a reading of a source the live obstacles do not read is refused;
+//! and a simulation step past the time before collision, or too short to advance every time
+//! of the projection, makes no stop.
 
 mod common;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
 use common::finite::positive;
@@ -36,10 +42,13 @@ use frame_tree::{Transform, UnitQuaternion};
 use hegel::TestCase;
 use hegel::generators as gs;
 use navigation_core::PaddedFootprint;
+use navigation_core::grid::{CostGrid, FREE, GridGeometry};
 use navigation_core::obstacles::{
     GridPoses, LiveObstacles, ObstacleHeights, ObstacleHeightsParams,
 };
-use navigation_core::stop::{Stop, StopCause, StopDecision, StopError, StopParams, UnknownSource};
+use navigation_core::stop::{
+    Occupied, Stop, StopCause, StopDecision, StopError, StopParams, UnknownSource,
+};
 use occupancy_map::Bounds;
 
 /// The front of the footprint, in meters ahead of the base's center.
@@ -85,7 +94,10 @@ fn params() -> StopParams {
 const VOXEL_M: f64 = 0.05;
 
 /// Empty live obstacles of `padded_footprint` whose `sources` sources give its frames, in
-/// cells of `VOXEL_M`.
+/// cells of `VOXEL_M`, over a map from -1.5 m to 3.5 m along x and from -1.5 m to 1.5 m
+/// along y, which holds the footprint at every pose of the suite's projections: the
+/// farthest, a lidar's base at 1.5 m projected 1.3 m ahead at 1 m/s, puts its front at
+/// 3.06 m.
 fn live_obstacles(padded_footprint: PaddedFootprint, sources: usize) -> LiveObstacles {
     let heights = ObstacleHeights::parse(ObstacleHeightsParams {
         min_obstacle_height_m: 0.1,
@@ -98,7 +110,7 @@ fn live_obstacles(padded_footprint: PaddedFootprint, sources: usize) -> LiveObst
         FrameName::parse("odom").expect("a frame name"),
         Bounds {
             min: [-1.5, -1.5, -0.5],
-            max: [3.0, 1.5, 1.5],
+            max: [3.5, 1.5, 1.5],
         },
         heights,
         padded_footprint,
@@ -122,7 +134,35 @@ fn stop_read_at(arrived_ns: i64) -> (Stop, LiveObstacles) {
     (stop, live)
 }
 
-/// The centers of a column of cells across the footprint's width, `gap` ahead of its front.
+/// A free grid of cells of `VOXEL_M` from -5 m to 5 m on each axis: every pose of every
+/// projection of the suite's decisions on drawn points stays on it, the base at its center.
+static OPEN_FLOOR: LazyLock<CostGrid> = LazyLock::new(|| {
+    let geometry =
+        GridGeometry::new(200, 200, positive(VOXEL_M), [-5.0, -5.0]).expect("a grid of the floor");
+    CostGrid::filled(geometry, FREE)
+});
+
+/// What the stop reads of `points`, in the base's frame, the base at `base` on `OPEN_FLOOR`.
+fn on_the_open_floor_at(base: PlanarPose, points: &[[f64; 2]]) -> Occupied<'static> {
+    Occupied {
+        points: points.to_vec(),
+        grid: &OPEN_FLOOR,
+        base,
+    }
+}
+
+/// What the stop reads of `points`, in the base's frame, the base at the center of
+/// `OPEN_FLOOR`.
+fn on_the_open_floor(points: &[[f64; 2]]) -> Occupied<'static> {
+    on_the_open_floor_at(PlanarPose::IDENTITY, points)
+}
+
+/// What the stop reads of a base at the center of `OPEN_FLOOR` that sees nothing.
+fn nothing_seen() -> Occupied<'static> {
+    on_the_open_floor(&[])
+}
+
+/// A row of points across the footprint's width, `gap` ahead of its front.
 fn wall(gap: f64) -> Vec<[f64; 2]> {
     (0..9)
         .map(|i| [FRONT + gap, -0.16 + f64::from(i) * 0.04])
@@ -133,10 +173,11 @@ fn forward(speed: f64) -> PlanarTwist {
     PlanarTwist::new(speed, 0.0, 0.0).expect("finite")
 }
 
-/// The decision for `occupied` at `velocity`, one source's reading just arrived.
-fn decide(occupied: &[[f64; 2]], velocity: PlanarTwist) -> StopDecision {
+/// The decision for `points`, in the base's frame, at `velocity`, one source's reading just
+/// arrived, the base at the center of `OPEN_FLOOR`.
+fn decide(points: &[[f64; 2]], velocity: PlanarTwist) -> StopDecision {
     let (mut stop, live) = stop_read_at(NOW_NS);
-    stop.decide(&live, velocity, occupied, NOW_NS)
+    stop.decide(&live, velocity, &on_the_open_floor(points), NOW_NS)
 }
 
 // A wall the projection reaches slows the base so that, at the slowed speed, the time
@@ -182,10 +223,10 @@ fn the_stop_slows_so_no_step_of_the_slowed_projection_holds_a_contact(tc: TestCa
     assert_eq!((velocity.linear_y(), velocity.angular_z()), (0.0, 0.0));
 }
 
-// One occupied cell's center the footprint reaches is a contact: no occupied cell's center
-// may lie inside the padded footprint at any step of the projection.
+// One point the footprint reaches is a contact: no point may lie inside the padded footprint
+// at any step of the projection.
 #[test]
-fn one_occupied_cell_is_a_contact() {
+fn one_point_is_a_contact() {
     assert!(matches!(
         decide(&[[FRONT + 0.3, 0.0]], forward(0.5)),
         StopDecision::Slow { .. }
@@ -198,8 +239,8 @@ fn one_occupied_cell_is_a_contact() {
     );
 }
 
-// An occupied cell already inside the footprint, or reached at the first step, brings the
-// base to rest.
+// A point already inside the footprint, or reached at the first step, brings the base to
+// rest.
 #[test]
 fn a_contact_now_scales_the_velocity_to_rest() {
     for gap in [-0.1, 0.02] {
@@ -212,6 +253,47 @@ fn a_contact_now_scales_the_velocity_to_rest() {
             "a wall {gap} m ahead"
         );
     }
+}
+
+// The grid's edge holds the base as a lethal cell does, as `footprintCost` reads a vertex
+// off the grid lethal: a base 0.31 m short of `OPEN_FLOOR`'s edge at 5 m, driving at it at
+// 0.5 m/s, puts its front vertices off the grid at the seventh step of the projection and
+// slows to cover 0.6 s of it; a base whose front stands past the edge rests.
+#[test]
+fn the_grid_edge_slows_the_base_as_a_lethal_cell_does() {
+    let (mut stop, live) = stop_read_at(NOW_NS);
+    let short_of_the_edge = planar(5.0 - FRONT - 0.31, 0.0, 0.0);
+    let decision = stop.decide(
+        &live,
+        forward(0.5),
+        &on_the_open_floor_at(short_of_the_edge, &[]),
+        NOW_NS,
+    );
+    let StopDecision::Slow {
+        velocity,
+        collision_time_s,
+    } = decision
+    else {
+        panic!("{decision:?}");
+    };
+    assert!(
+        (collision_time_s - 0.6).abs() < TOLERANCE
+            && (velocity.linear_x() - 0.5 * 0.6 / TIME_BEFORE_COLLISION).abs() < TOLERANCE,
+        "{decision:?}"
+    );
+    let past_the_edge = planar(5.0 - FRONT + 0.01, 0.0, 0.0);
+    assert_eq!(
+        stop.decide(
+            &live,
+            forward(0.5),
+            &on_the_open_floor_at(past_the_edge, &[]),
+            NOW_NS
+        ),
+        StopDecision::Slow {
+            velocity: PlanarTwist::ZERO,
+            collision_time_s: 0.0
+        }
+    );
 }
 
 /// Where the floor drops away, along x, in meters: a fifth of a cell into a cell.
@@ -238,8 +320,8 @@ fn ledge() -> LiveObstacles {
 }
 
 // A base drives at 0.5 m/s toward a step down 0.3 m deep, deeper than the 0.1 m limit, that
-// the live obstacles mark: the stop slows it as the drop's cells come within the projected
-// footprint and brings it to rest before its footprint reaches them.
+// the live obstacles mark: the stop slows it as the drop's cells come under the projected
+// footprint's outline and brings it to rest before its outline reaches them.
 #[test]
 fn a_drop_cell_within_the_projected_footprint_stops_the_base() {
     let live = ledge();
@@ -252,9 +334,13 @@ fn a_drop_cell_within_the_projected_footprint_stops_the_base() {
     for step in 0..400 {
         let now = i64::from(step) * dt_ns;
         let occupied = live.occupied_seen_from(&grid, standing_on_the_map(base));
-        assert!(!occupied.is_empty(), "the drop's cells are lethal");
         assert!(
-            occupied.iter().all(|center| center[0] > FRONT),
+            !occupied.points.is_empty(),
+            "the frame's points mark the drop's columns"
+        );
+        assert!(
+            occupied.points.iter().all(|center| center[0] > FRONT)
+                && !footprint().collides_at(&grid, base),
             "the footprint at {base:?} reaches a drop cell"
         );
         stop.reading_arrived(&live, 0, now)
@@ -315,10 +401,24 @@ fn standing_on_the_map(base: PlanarPose) -> GridPoses {
     }
 }
 
-/// The points the stop reads of `live`, projected onto the grid of its columns, the base at
-/// `base`.
-fn occupied_of(live: &LiveObstacles, base: PlanarPose) -> Vec<[f64; 2]> {
+/// The points the stop reads of `live`, in the frame of the base at `base`.
+fn points_of(live: &LiveObstacles, base: PlanarPose) -> Vec<[f64; 2]> {
     live.occupied_seen_from(layer(live).grid(), standing_on_the_map(base))
+        .points
+}
+
+/// What `stop` decides for `commanded` at `now_ns`, the base at `base` on the map of `live`,
+/// reading `LiveObstacles::occupied_seen_from` of the grid the map projects to.
+fn decide_on_the_map(
+    stop: &mut Stop,
+    live: &LiveObstacles,
+    commanded: PlanarTwist,
+    base: PlanarPose,
+    now_ns: i64,
+) -> StopDecision {
+    let layer = layer(live);
+    let occupied = live.occupied_seen_from(layer.grid(), standing_on_the_map(base));
+    stop.decide(live, commanded, &occupied, now_ns)
 }
 
 /// A sensor `height_m` up over the base's center, facing along +X.
@@ -346,7 +446,25 @@ fn drive(
     sensor_height_m: f64,
     scene: impl Fn(PlanarPose) -> Vec<[f64; 3]>,
 ) -> Vec<(PlanarPose, PlanarTwist)> {
-    let mut live = live_obstacles(padded_footprint(), 1);
+    drive_from(
+        live_obstacles(padded_footprint(), 1),
+        start,
+        commanded,
+        frames,
+        sensor_height_m,
+        scene,
+    )
+}
+
+/// The decisions of `drive`, the stop reading `live` as it stands before the first frame.
+fn drive_from(
+    mut live: LiveObstacles,
+    start: PlanarPose,
+    commanded: PlanarTwist,
+    frames: i64,
+    sensor_height_m: f64,
+    scene: impl Fn(PlanarPose) -> Vec<[f64; 3]>,
+) -> Vec<(PlanarPose, PlanarTwist)> {
     let mut stop = approach_stop();
     let mount = sensor_on_base(sensor_height_m);
     let mut base = start;
@@ -358,14 +476,9 @@ fn drive(
                 .expect("the live obstacles' one source");
             stop.reading_arrived(&live, 0, now)
                 .expect("the live obstacles' one source");
-            let occupied = occupied_of(&live, base);
-            let executed = stop.decide(&live, commanded, &occupied, now).velocity();
+            let executed = decide_on_the_map(&mut stop, &live, commanded, base, now).velocity();
             let here = base;
-            base = planar(
-                base.x() + executed.linear_x() * FRAME_S,
-                base.y(),
-                base.yaw(),
-            );
+            base = moved(base, executed.axes(), FRAME_S);
             (here, executed)
         })
         .collect()
@@ -475,7 +588,7 @@ fn a_drop_column_under_the_base_gives_no_point() {
         positive(5.0),
     )
     .expect("the live obstacles' one source");
-    let occupied = occupied_of(&live, base);
+    let occupied = points_of(&live, base);
     assert!(
         occupied
             .iter()
@@ -485,6 +598,144 @@ fn a_drop_column_under_the_base_gives_no_point() {
     assert!(
         occupied.iter().any(|&[x, _]| x > FRONT),
         "no drop ahead: {occupied:?}"
+    );
+}
+
+/// The near side of the row of cells that holds the wall a turning base meets, in meters left
+/// of the base's center: the padded footprint's corners reach 0.334 m, inside the row, and
+/// stand 0.21 m left of the center at rest, short of it.
+const WALL_ROW_M: f64 = 0.3;
+
+/// How far inside its row of cells a drawn wall's face stands, in meters: a millimeter.
+const FACE_INSET_M: f64 = 0.001;
+
+/// A wall along x, its face `face_y_m` left of the base's center, 1.2 m long, from the
+/// floor's band to 0.5 m, its points every 2 cm.
+fn wall_beside(face_y_m: f64) -> Vec<[f64; 3]> {
+    (0..61)
+        .flat_map(|i| (0..10).map(move |k| (i, k)))
+        .map(|(i, k)| {
+            [
+                -0.6 + f64::from(i) * 0.02,
+                face_y_m,
+                0.12 + f64::from(k) * 0.04,
+            ]
+        })
+        .collect()
+}
+
+/// The decisions of a base at the origin turning in place at `rate` for `frames` frames,
+/// whose one source first saw `wall` from the origin and then sees nothing, a frame of
+/// nothing inserted where the base stands before each decision, so the wall stands in the
+/// grid alone: each pose and the velocity the stop let the base execute there.
+fn turn_beside(wall: &[[f64; 3]], rate: f64, frames: i64) -> Vec<(PlanarPose, PlanarTwist)> {
+    let mut live = live_obstacles(padded_footprint(), 1);
+    let origin = PlanarPose::IDENTITY;
+    let mount = sensor_on_base(0.8);
+    live.insert_depth_frame(
+        0,
+        &frame_of(wall, origin, &mount),
+        origin,
+        mount,
+        positive(5.0),
+    )
+    .expect("the live obstacles' one source");
+    let turning = PlanarTwist::new(0.0, 0.0, rate).expect("finite");
+    drive_from(live, origin, turning, frames, 0.8, |_| Vec::new())
+}
+
+// A base turns in place at 0.2 to 1 rad/s either way beside a wall that its one source saw
+// once, its later frames seeing nothing. With the wall's face anywhere in the row of cells
+// from 0.3 m to 0.35 m left of the base's center, where the padded footprint's corners
+// reach, a millimeter or more from the row's sides, which single precision keeps it within,
+// the stop reads the wall's cells under the footprint's outline, as Nav2's controller reads
+// a pose, and brings the base to rest, its padded footprint short of the face at every pose,
+// a face 2.4 cm short of the cells' centers among them. With the face in the next row, past
+// the corners' reach, the base turns at the commanded rate at every frame.
+#[hegel::test]
+fn a_turn_beside_a_wall_the_grid_alone_holds_rests_short_of_its_face(tc: TestCase) {
+    let rate = tc.draw(gs::floats().min_value(0.2).max_value(1.0));
+    let rate = if tc.draw(gs::booleans()) { rate } else { -rate };
+    let within_reach = tc.draw(gs::booleans());
+    let row = if within_reach {
+        WALL_ROW_M
+    } else {
+        WALL_ROW_M + VOXEL_M
+    };
+    let face_y_m = tc.draw(
+        gs::floats()
+            .min_value(row + FACE_INSET_M)
+            .max_value(row + VOXEL_M - FACE_INSET_M),
+    );
+    let decisions = turn_beside(&wall_beside(face_y_m), rate, 200);
+    if !within_reach {
+        let turning = PlanarTwist::new(0.0, 0.0, rate).expect("finite");
+        for (base, executed) in &decisions {
+            assert_eq!(*executed, turning, "the base at {base:?} slows");
+        }
+        return;
+    }
+    for (base, executed) in &decisions {
+        let reach = padded_footprint()
+            .placed_at(*base)
+            .iter()
+            .map(|vertex| vertex[1])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            reach < face_y_m,
+            "the base at {base:?} reaches {reach} m, past the face at {face_y_m} m, \
+             executing {executed:?}"
+        );
+    }
+    let (rest, executed) = decisions.last().expect("a turn");
+    assert_eq!(
+        *executed,
+        PlanarTwist::ZERO,
+        "the base turns on, at {rest:?}"
+    );
+}
+
+// A post whose returns stand 5 mm inside the side of the padded footprint's path, 0.6 m
+// ahead, its column's center 1.5 cm outside that path: once a clear empties the grid, the
+// stop reads the post's own points, the first inside the footprint at the twelfth step of
+// the projection at 0.3 m/s, and slows the base to cover 1.1 s of it, as Nav2's monitor
+// slows it on the post's points.
+#[test]
+fn a_point_inside_the_projected_footprint_slows_the_base() {
+    let mut live = live_obstacles(padded_footprint(), 1);
+    let base = PlanarPose::IDENTITY;
+    let mount = sensor_on_base(0.8);
+    let path_side = HALF_WIDTH + PADDING_M;
+    let post_y = path_side - 0.005;
+    let column_center_y = ((post_y / VOXEL_M).floor() + 0.5) * VOXEL_M;
+    assert!(column_center_y > path_side, "{column_center_y}");
+    let post: Vec<[f64; 3]> = (0..10)
+        .map(|k| [0.6, post_y, 0.12 + f64::from(k) * 0.04])
+        .collect();
+    live.insert_depth_frame(
+        0,
+        &frame_of(&post, base, &mount),
+        base,
+        mount,
+        positive(5.0),
+    )
+    .expect("the live obstacles' one source");
+    live.clear();
+    let mut stop = approach_stop();
+    stop.reading_arrived(&live, 0, NOW_NS)
+        .expect("the live obstacles' one source");
+    let decision = decide_on_the_map(&mut stop, &live, forward(0.3), base, NOW_NS);
+    let StopDecision::Slow {
+        velocity,
+        collision_time_s,
+    } = decision
+    else {
+        panic!("{decision:?}");
+    };
+    assert!(
+        (collision_time_s - 1.1).abs() < TOLERANCE
+            && (velocity.linear_x() - 0.3 * 1.1 / APPROACH_HORIZON_S).abs() < TOLERANCE,
+        "{decision:?}"
     );
 }
 
@@ -573,12 +824,8 @@ fn by_the_post_in_the_padding() -> PlanarPose {
 }
 
 /// Inserts a frame of `source` that sees `points`, from a sensor 0.8 m up over the center of
-/// the base at `by_the_post_in_the_padding()`, and gives the points the stop then reads.
-fn insert_by_the_post(
-    live: &mut LiveObstacles,
-    source: usize,
-    points: &[[f64; 3]],
-) -> Vec<[f64; 2]> {
+/// the base at `by_the_post_in_the_padding()`.
+fn insert_by_the_post(live: &mut LiveObstacles, source: usize, points: &[[f64; 3]]) {
     let base = by_the_post_in_the_padding();
     let mount = sensor_on_base(0.8);
     live.insert_depth_frame(
@@ -589,34 +836,30 @@ fn insert_by_the_post(
         positive(5.0),
     )
     .expect("a source of the live obstacles");
-    occupied_of(live, base)
 }
 
 // Two sources feed the stop of a base at rest: source 0's frame sees the post in the
 // padding, and source 1's frame after it sees nothing. The live obstacles keep each source's
-// newest frame apart, so the post's column still holds the base; source 0's next frame,
-// empty too, forgets it, and the base drives on.
+// newest points apart, so the post's points still hold the base; source 0's next frame,
+// empty too, forgets them, and the base drives on.
 #[test]
 fn each_source_keeps_its_newest_frame() {
     let mut live = live_obstacles(padded_footprint(), 2);
     let mut stop = approach_stop();
-    let mut decide = |live: &LiveObstacles, occupied: &[[f64; 2]]| {
+    let mut decide = |live: &LiveObstacles| {
         for source in 0..2 {
             stop.reading_arrived(live, source, NOW_NS)
                 .expect("a source of the live obstacles");
         }
-        stop.decide(live, forward(0.3), occupied, NOW_NS)
+        let base = by_the_post_in_the_padding();
+        decide_on_the_map(&mut stop, live, forward(0.3), base, NOW_NS)
     };
     insert_by_the_post(&mut live, 0, &post_face(IN_THE_PADDING_X_M));
-    let occupied = insert_by_the_post(&mut live, 1, &[]);
+    insert_by_the_post(&mut live, 1, &[]);
+    assert_eq!(decide(&live).velocity(), PlanarTwist::ZERO);
+    insert_by_the_post(&mut live, 0, &[]);
     assert_eq!(
-        decide(&live, &occupied).velocity(),
-        PlanarTwist::ZERO,
-        "{occupied:?}"
-    );
-    let occupied = insert_by_the_post(&mut live, 0, &[]);
-    assert_eq!(
-        decide(&live, &occupied),
+        decide(&live),
         StopDecision::Continue {
             velocity: forward(0.3)
         }
@@ -630,18 +873,18 @@ const AHEAD_X_M: f64 = 1.525;
 // A base at rest, commanded at 0.3 m/s, whose sensor sees the post in the padding and a post
 // ahead of its padded footprint: the grid marks the post ahead lethal, and the footprint's
 // clearing frees the post in the padding. A clear empties the grid, which then holds no
-// lethal cell, and keeps the source's newest frame: the stop still reads the centers of both
-// posts' columns, either side of y = 0, and the post in the padding holds the base. The
-// source's next frame, which sees nothing there, replaces it, and the base drives on.
+// lethal cell, and keeps the source's newest points: the stop still reads the points of both
+// posts' faces, and the post in the padding holds the base. The source's next frame, which
+// sees nothing there, replaces them, and the base drives on.
 #[test]
 fn a_clear_empties_the_grid_and_keeps_the_source_newest_frame() {
     let mut live = live_obstacles(padded_footprint(), 1);
     let mut stop = approach_stop();
     let base = by_the_post_in_the_padding();
-    let mut decide_at = |live: &LiveObstacles, occupied: &[[f64; 2]], now_ns: i64| {
+    let mut decide_at = |live: &LiveObstacles, now_ns: i64| {
         stop.reading_arrived(live, 0, now_ns)
             .expect("the live obstacles' one source");
-        stop.decide(live, forward(0.3), occupied, now_ns)
+        decide_on_the_map(&mut stop, live, forward(0.3), base, now_ns)
     };
     let in_mm = |point: [f64; 2]| point.map(|c| (c * 1000.0).round() as i64);
     let posts: Vec<[f64; 3]> = post_face(IN_THE_PADDING_X_M)
@@ -658,24 +901,18 @@ fn a_clear_empties_the_grid_and_keeps_the_source_newest_frame() {
         lethal_cells(&layer(&live)).is_empty(),
         "the clear empties the grid"
     );
-    let occupied = occupied_of(&live, base);
-    let read: BTreeSet<[i64; 2]> = occupied
+    let read: BTreeSet<[i64; 2]> = points_of(&live, base)
         .iter()
         .map(|&point| in_mm(base.apply(point)))
         .collect();
-    let posts_columns: BTreeSet<[i64; 2]> = [IN_THE_PADDING_X_M, AHEAD_X_M]
-        .into_iter()
-        .flat_map(|x| [-0.5, 0.5].map(|side| in_mm([x, side * VOXEL_M])))
-        .collect();
-    assert_eq!(read, posts_columns);
-    assert_eq!(
-        decide_at(&live, &occupied, NOW_NS).velocity(),
-        PlanarTwist::ZERO
-    );
-    let occupied = insert_by_the_post(&mut live, 0, &[]);
+    let posts_faces: BTreeSet<[i64; 2]> = posts.iter().map(|&[x, y, _]| in_mm([x, y])).collect();
+    assert_eq!(read, posts_faces);
+    assert_eq!(decide_at(&live, NOW_NS).velocity(), PlanarTwist::ZERO);
+    insert_by_the_post(&mut live, 0, &[]);
+    let occupied = points_of(&live, base);
     assert!(occupied.is_empty(), "{occupied:?}");
     assert_eq!(
-        decide_at(&live, &occupied, NOW_NS + FRAME_NS),
+        decide_at(&live, NOW_NS + FRAME_NS),
         StopDecision::Continue {
             velocity: forward(0.3)
         }
@@ -734,10 +971,11 @@ fn lidar_drive(
             let now = sweep * LIDAR_SWEEP_NS;
             stop.reading_arrived(&live, 0, now)
                 .expect("the live obstacles' one source");
-            let occupied = occupied_of(&live, ended);
+            let layer = layer(&live);
+            let occupied = live.occupied_seen_from(layer.grid(), standing_on_the_map(ended));
             executed = stop.decide(&live, commanded, &occupied, now).velocity();
             base = ended;
-            (ended, executed, occupied)
+            (ended, executed, occupied.points)
         })
         .collect()
 }
@@ -804,12 +1042,15 @@ fn assert_stale(decision: StopDecision, source: usize) {
 #[test]
 fn a_dead_source_stays_silent_when_the_clock_goes_back_within_its_timeout() {
     let (mut stop, live) = stop_read_at(99_200_000_000);
-    assert_stale(stop.decide(&live, forward(0.5), &[], 100_000_000_000), 0);
+    assert_stale(
+        stop.decide(&live, forward(0.5), &nothing_seen(), 100_000_000_000),
+        0,
+    );
     let silent = StopCause::NoReading { source: 0 };
     assert_eq!(stop.silent_sources(&live, 99_500_000_000), [silent]);
     for now in [99_500_000_000, 99_600_000_000, 99_700_000_000] {
         assert_eq!(
-            stop.decide(&live, forward(0.5), &[], now),
+            stop.decide(&live, forward(0.5), &nothing_seen(), now),
             StopDecision::Stop(silent),
             "at {now} ns"
         );
@@ -817,7 +1058,7 @@ fn a_dead_source_stays_silent_when_the_clock_goes_back_within_its_timeout() {
     stop.reading_arrived(&live, 0, 99_750_000_000)
         .expect("the live obstacles' one source");
     assert_eq!(
-        stop.decide(&live, forward(0.5), &[], 99_800_000_000),
+        stop.decide(&live, forward(0.5), &nothing_seen(), 99_800_000_000),
         StopDecision::Continue {
             velocity: forward(0.5)
         }
@@ -835,8 +1076,9 @@ fn a_clock_that_goes_back_silences_a_source_until_its_next_reading() {
     let silent = StopDecision::Stop(StopCause::NoReading { source: 0 });
     for back_ns in [99_700_000_000, 40_000_000_000] {
         let (mut stop, live) = stop_read_at(100_000_000_000);
-        let decide_at =
-            |stop: &mut Stop, now_ns: i64| stop.decide(&live, forward(0.5), &[], now_ns);
+        let decide_at = |stop: &mut Stop, now_ns: i64| {
+            stop.decide(&live, forward(0.5), &nothing_seen(), now_ns)
+        };
         assert_eq!(decide_at(&mut stop, 100_000_000_000), moving);
         assert_eq!(
             decide_at(&mut stop, back_ns),
@@ -862,7 +1104,8 @@ fn a_clock_that_goes_back_silences_every_source_until_each_reads_again() {
         stop.reading_arrived(&live, source, arrived_ns)
             .expect("a source of the live obstacles")
     };
-    let decide_at = |stop: &mut Stop, now_ns: i64| stop.decide(&live, forward(0.5), &[], now_ns);
+    let decide_at =
+        |stop: &mut Stop, now_ns: i64| stop.decide(&live, forward(0.5), &nothing_seen(), now_ns);
     let moving = StopDecision::Continue {
         velocity: forward(0.5),
     };
@@ -895,9 +1138,12 @@ fn a_frame_that_arrived_after_its_decision_began_reads_live() {
         velocity: forward(0.5),
     };
     assert!(stop.silent_sources(&live, NOW_NS).is_empty());
-    assert_eq!(stop.decide(&live, forward(0.5), &[], NOW_NS), moving);
     assert_eq!(
-        stop.decide(&live, forward(0.5), &[], NOW_NS + PERIOD_NS),
+        stop.decide(&live, forward(0.5), &nothing_seen(), NOW_NS),
+        moving
+    );
+    assert_eq!(
+        stop.decide(&live, forward(0.5), &nothing_seen(), NOW_NS + PERIOD_NS),
         moving
     );
 
@@ -911,7 +1157,7 @@ fn a_frame_that_arrived_after_its_decision_began_reads_live() {
                 .expect("the live obstacles' one source");
         }
         assert_eq!(
-            stop.decide(&live, forward(0.5), &[], due_ns),
+            stop.decide(&live, forward(0.5), &nothing_seen(), due_ns),
             moving,
             "at the slot from {due_ns} ns"
         );
@@ -930,12 +1176,15 @@ fn a_reading_stamped_after_now_holds_for_the_timeout_from_the_decision_that_read
     let last_live_ns = 5_000_000_000 + TIMEOUT_NS;
     for now_ns in [5_000_000_000, last_live_ns] {
         assert_eq!(
-            stop.decide(&live, forward(0.5), &[], now_ns),
+            stop.decide(&live, forward(0.5), &nothing_seen(), now_ns),
             moving,
             "at {now_ns} ns"
         );
     }
-    assert_stale(stop.decide(&live, forward(0.5), &[], last_live_ns + 1), 0);
+    assert_stale(
+        stop.decide(&live, forward(0.5), &nothing_seen(), last_live_ns + 1),
+        0,
+    );
 }
 
 // A decision at 100 s, the clock then running on to 100.05 s and going back 0.5 s, and a
@@ -946,7 +1195,8 @@ fn a_reading_stamped_after_now_holds_for_the_timeout_from_the_decision_that_read
 #[test]
 fn a_reading_from_before_a_step_back_given_after_its_decision_holds_for_the_timeout() {
     let (mut stop, live) = stop_read_at(100_000_000_000);
-    let decide_at = |stop: &mut Stop, now_ns: i64| stop.decide(&live, forward(0.5), &[], now_ns);
+    let decide_at =
+        |stop: &mut Stop, now_ns: i64| stop.decide(&live, forward(0.5), &nothing_seen(), now_ns);
     let moving = StopDecision::Continue {
         velocity: forward(0.5),
     };
@@ -969,7 +1219,7 @@ fn a_reading_from_before_a_step_back_given_after_its_decision_holds_for_the_time
 // cells; a reading exactly the timeout old still counts, as Nav2 compares the age.
 #[test]
 fn a_source_whose_readings_stop_arriving_stops_the_base() {
-    let clear: [[f64; 2]; 0] = [];
+    let clear = nothing_seen();
     let moving = forward(0.5);
     let live = live_obstacles(footprint(), 2);
     let mut stop = fresh_stop();
@@ -1059,7 +1309,7 @@ fn the_stop_gives_back_three_silent_sources_of_four_and_stops_for_the_first() {
         ]
     );
     assert_eq!(
-        stop.decide(&live, forward(0.5), &[], NOW_NS),
+        stop.decide(&live, forward(0.5), &nothing_seen(), NOW_NS),
         StopDecision::Stop(stale_0)
     );
 }
@@ -1075,7 +1325,7 @@ fn a_clock_that_goes_back_gives_back_every_source_until_each_reads_again() {
             .expect("a source of 3");
     }
     assert_eq!(
-        stop.decide(&live, forward(0.5), &[], 100_000_000_000),
+        stop.decide(&live, forward(0.5), &nothing_seen(), 100_000_000_000),
         StopDecision::Continue {
             velocity: forward(0.5)
         }
@@ -1086,7 +1336,7 @@ fn a_clock_that_goes_back_gives_back_every_source_until_each_reads_again() {
         [0, 1, 2].map(|source| StopCause::NoReading { source })
     );
     assert_eq!(
-        stop.decide(&live, forward(0.5), &[], back_ns),
+        stop.decide(&live, forward(0.5), &nothing_seen(), back_ns),
         StopDecision::Stop(StopCause::NoReading { source: 0 })
     );
     for source in [0, 2] {

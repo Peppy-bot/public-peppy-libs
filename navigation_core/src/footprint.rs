@@ -34,12 +34,13 @@
 //! [`PaddedFootprint::collides_at`] checks one pose of base_navigation:v1's
 //! sweep, under which a turn and a straight drive fail "when its sweep meets
 //! an occupied cell", the padded footprint placed at each step of the
-//! controller: the pose collides when the cost under the outline is
-//! [`LETHAL`], so where a lethal cell lies under the outline, and where a
-//! vertex lies off the grid, which `footprintCost` reads as [`LETHAL`]
-//! (src/footprint_collision_checker.cpp:55-56, 66-67). A cell never seen
-//! counts as free, as base_navigation:v1 counts it, where Nav2's spin
-//! collides at or above [`LETHAL`] (nav2_behaviors plugins/spin.cpp:173,
+//! controller, and one pose of the stop's projection
+//! ([`Stop::decide`](crate::stop::Stop::decide)): the pose collides when the
+//! cost under the outline is [`LETHAL`], so where a lethal cell lies under the
+//! outline, and where a vertex lies off the grid, which `footprintCost` reads
+//! as [`LETHAL`] (src/footprint_collision_checker.cpp:55-56, 66-67). A cell
+//! never seen counts as free, as base_navigation:v1 counts it, where Nav2's
+//! spin collides at or above [`LETHAL`] (nav2_behaviors plugins/spin.cpp:173,
 //! `CostmapTopicCollisionChecker::isCollisionFree`,
 //! src/costmap_topic_collision_checker.cpp:66), so on an unknown cell too.
 
@@ -157,8 +158,9 @@ impl PaddedFootprint {
     }
 
     /// Whether the base at `pose` collides on `grid`, one pose of
-    /// base_navigation:v1's sweep: the cost under the footprint's outline, as
-    /// the module gives it, is [`LETHAL`], so a lethal cell under the outline
+    /// base_navigation:v1's sweep or of the stop's projection: the cost under
+    /// the footprint's outline, as the module gives it, is [`LETHAL`], so a
+    /// lethal cell under the outline
     /// or a vertex off the grid collides, and an unknown cell alone counts as
     /// free. The base's center lies inside its outline, so a center off the
     /// grid puts a vertex off it.

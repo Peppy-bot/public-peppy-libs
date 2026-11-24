@@ -9,8 +9,8 @@
 //! - [`obstacles`]: what the sensors see, depth frames and laser scans kept in
 //!   an occupancy map whose columns under the padded footprint are cleared
 //!   after each frame, projected to a grid as Nav2's obstacle layer marks
-//!   points, a drop below the floor marked too, and the columns each source's
-//!   newest frame marked, which the stop reads.
+//!   points, a drop below the floor marked too, and the points each source's
+//!   newest frame saw, which the stop reads.
 //! - [`saved_grid`]: a saved occupancy grid as Nav2's static layer takes a
 //!   trinary map.
 //! - [`inflation`]: a grid inflated around its lethal cells, as Nav2's
@@ -32,11 +32,13 @@
 //!   obstacles and on the approach to the goal, a turn in place towards a
 //!   heading far off the base's, and the footprint checked along the arc
 //!   ahead.
-//! - [`stop`]: the commanded velocity slowed so that no occupied point, a
-//!   lethal cell's center or a column of a source's newest frame, lies inside
-//!   the padded footprint at any step of the projection the slowed velocity
-//!   covers within a time, as Nav2's collision monitor slows it in its
-//!   approach mode, and a stop while a source's readings stop arriving.
+//! - [`stop`]: the commanded velocity slowed so that, at each step of the
+//!   projection the slowed velocity covers within a time, no point of a
+//!   source's newest frame lies inside the padded footprint, as Nav2's
+//!   collision monitor slows it in its approach mode, and the footprint's
+//!   outline meets no lethal cell of the cost grid and stays on it, as Nav2's
+//!   controller checks a pose; and a stop while a source's readings stop
+//!   arriving.
 //!
 //! Poses on the floor are `control_core::planar_pose::PlanarPose`s, and a body velocity
 //! is a `control_core::twist::PlanarTwist`.

@@ -15,13 +15,13 @@ arrival, or null when none came, the cloud's points in the base's frame, z up fr
 floor, and the velocity, linear x, linear y and angular z. The footprint is 0.5 m by
 0.375 m about the base's center, its vertices whole in single precision:
 
-- collision_monitor_approach: the points are the centers of a cost grid's occupied cells,
-  each at the height of an obstacle in the band, as the stop under test reads them: no
-  cloud, a cloud older than the source timeout and one just as old, a wall ahead within
-  what the time before collision covers and one beyond it, cells already inside the
-  footprint, a turn towards a wall at the side, a turn in place that sweeps a corner of
-  the footprint over a cell, a sideways drive at a wall, a short wall of three cells, one
-  cell ahead, and drawn cells at drawn velocities;
+- collision_monitor_approach: the points lie at the centers of a grid's cells, each at the
+  height of an obstacle in the band, and the stop under test reads them as a source's
+  newest points: no cloud, a cloud older than the source timeout and one just as old, a
+  wall ahead within what the time before collision covers and one beyond it, cells already
+  inside the footprint, a turn towards a wall at the side, a turn in place that sweeps a
+  corner of the footprint over a cell, a sideways drive at a wall, a short wall of three
+  cells, one cell ahead, and drawn cells at drawn velocities;
 - collision_monitor_step_down: the points are a depth frame's, which the stop under test
   reads through navigation_core's LiveObstacles, from a sensor 1 m over the base's center.
   Each step lies over the columns of the test's 5 cm voxels that the footprint crosses,
