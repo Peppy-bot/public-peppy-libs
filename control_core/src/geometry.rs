@@ -368,26 +368,32 @@ pub enum GeometryError {
     TiltingTurn { x: f64, y: f64 },
 }
 
-/// What to send in place of a goal's target off the floor plane, as base_motion and
-/// base_navigation say.
-const FLOOR_TARGET: &str = "send a target in odom or the robot frame with a position [x, y, 0] \
-                            and an orientation [0, 0, sin(yaw/2), cos(yaw/2)]";
+/// What to send in place of a goal's target off the floor plane in `frame`, the frame the goal
+/// runs in, as base_motion and base_navigation say: a target on the floor plane in `frame` or
+/// the robot frame.
+fn floor_target(frame: &str) -> String {
+    format!(
+        "send a target in {frame} or the robot frame with a position [x, y, 0] and an \
+         orientation [0, 0, sin(yaw/2), cos(yaw/2)]"
+    )
+}
 
-/// The refusal of a goal's target that, placed in `frame`, lies off the floor plane, from
-/// [`Pose::planar`]'s `refusal`: the part, its value placed in `frame`, and what to send, as
-/// base_motion and base_navigation say.
+/// The refusal of a goal's target that, placed in `frame`, the frame the goal runs in, lies off
+/// the floor plane, from [`Pose::planar`]'s `refusal`: the part, its value placed in `frame`, and
+/// what to send, a target on the floor plane in `frame` or the robot frame.
 pub fn target_off_the_floor(refusal: &GeometryError, frame: &str) -> String {
     match refusal {
         GeometryError::OffFloor { z } => format!(
-            "the target's position, placed in {frame}, lies {z} m above the floor plane: \
-             {FLOOR_TARGET}"
+            "the target's position, placed in {frame}, lies {z} m above the floor plane: {}",
+            floor_target(frame)
         ),
         GeometryError::Tilted {
             orientation,
             tilt_rad,
         } => format!(
             "the target's orientation, placed in {frame}, {orientation} tilts {tilt_rad} rad off \
-             the vertical: {FLOOR_TARGET}"
+             the vertical: {}",
+            floor_target(frame)
         ),
         other => format!("the target, placed in {frame}: {other}"),
     }
@@ -601,7 +607,8 @@ mod tests {
     }
 
     // A target off the floor plane is refused naming its part and that part's value in the frame
-    // it was placed in, an orientation as [x, y, z, w], and what to send.
+    // it was placed in, an orientation as [x, y, z, w], and what to send: a planar target in that
+    // frame or the robot frame.
     #[test]
     fn a_target_off_the_floor_is_refused_naming_the_part_placed_in_its_frame() {
         let refusal = |position: [f64; 3], orientation: [f64; 4]| {
@@ -619,7 +626,7 @@ mod tests {
         assert_eq!(
             target_off_the_floor(&refusal([1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]), "map"),
             "the target's orientation, placed in map, [1, 0, 0, 0] tilts 3.141592653589793 rad \
-             off the vertical: send a target in odom or the robot frame with a position [x, y, 0] \
+             off the vertical: send a target in map or the robot frame with a position [x, y, 0] \
              and an orientation [0, 0, sin(yaw/2), cos(yaw/2)]"
         );
     }
