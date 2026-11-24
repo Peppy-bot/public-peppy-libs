@@ -1,8 +1,8 @@
-//! What the camera nodes and the crates that read them share, free of peppy
-//! types: occupancy_map reads their depth frames, workspace_core sees a
-//! perception camera through their pinhole model, and navigation_core reads
-//! the scans of a 2-D lidar. Each node maps these onto its own generated
-//! contract members.
+//! What the camera nodes and the crates and nodes that read them share, free
+//! of peppy types: occupancy_map reads their depth frames, workspace_core sees
+//! a perception camera through their pinhole model, navigation_core reads the
+//! scans of a 2-D lidar, and a node that reads a depth camera reads its
+//! geometry. Each node maps these onto its own generated contract members.
 //!
 //! - [`controls`]: why a control write gave no value, by the failure kind of
 //!   peppy, the value a control answers when it has none, and the auto/manual
@@ -20,6 +20,12 @@
 //!   measure, and the arithmetic between its pixels and the points of its
 //!   optical frame: the ray of a pixel, the pixel that shows a point, the
 //!   point of a depth reading and the reading of a point.
+//! - [`depth_camera`]: a depth camera read from camera_geometry:v1's
+//!   `get_depth_intrinsics` and `get_depth_to_color_extrinsics` answers, which
+//!   a node fills from its generated responses: its lens and depth model, the
+//!   camera's frame, where its depth optical frame stands in that frame and in
+//!   the robot frame, and the check that admits a depth frame whose header
+//!   carries its alignment and names its frame.
 //! - [`laser_scan`]: the scans of a 2-D lidar as lidar_2d:v1 carries them,
 //!   each ray's hit placed where the sensor stood at the ray's time.
 //! - [`relay`]: the pieces of a simulated camera's relay: why a forwarded
@@ -33,6 +39,7 @@
 //!   that frame.
 
 pub mod controls;
+pub mod depth_camera;
 pub mod encoding;
 pub mod geometry;
 pub mod laser_scan;
