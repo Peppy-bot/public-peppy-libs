@@ -141,7 +141,13 @@ fn the_cost_grid_is_nav2s_global_cost_map() {
             &cases.padded_footprint,
             name,
         );
-        let mut live = live_obstacles_over(&cases.grid, voxel_m, heights, footprint.clone());
+        let mut live = live_obstacles_over(
+            &cases.grid,
+            voxel_m,
+            heights,
+            cases.obstacle.depth.obstacle_max_range,
+            footprint.clone(),
+        );
         insert_cloud(
             &mut live,
             &cases.sensor,

@@ -29,7 +29,8 @@
 //!   of it.
 //! - [`node_clock`]: the clock a node reads, the wall clock or a simulation
 //!   clock fed the ticks the node receives, the time now, a wait until a
-//!   deadline on it, and whether it went back between two looks.
+//!   deadline on it, whether it went back between two looks, and a time of it
+//!   on the wire.
 //! - [`robot_tree`]: a robot's tree of frames as a node holds it, its followers
 //!   that fill it from the messages of transforms, the lookups in it that wait
 //!   on the node's clock until the tree answers them
@@ -70,7 +71,8 @@
 //! - [`footprint`]: a mobile base's footprint, the outline it covers about its
 //!   center.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked,
-//!   and a field of a request parsed into one ([`PositiveFinite::parse_field`](positive_finite::PositiveFinite::parse_field)).
+//!   and a field of a request parsed into one
+//!   ([`PositiveFinite::parse_field`](positive_finite::PositiveFinite::parse_field)).
 //! - [`receiving`]: the loop that receives one subscription for the life of
 //!   a node, with the pause after a receive error.
 //! - [`serving`]: the loop that serves one service for the life of a node,

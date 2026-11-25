@@ -3,9 +3,9 @@
 //! of a scenario runs in a monitor of its own, at the case's time on the node's clock, with
 //! the case's cloud, if it has one, stamped at its arrival, the case's age before that
 //! time, in the base's frame, and gives the action the monitor takes for the case's
-//! velocity and the velocity it allows. A case's points are points the stop under test
-//! reads as it reads the centers of a cost grid's occupied cells, or the points of a depth
-//! frame, which it reads through navigation_core's `LiveObstacles`.
+//! velocity and the velocity it allows. A case's points are points at the centers of a
+//! grid's cells, which the stop under test reads as a source's newest points, or the points
+//! of a depth frame, which it reads through navigation_core's `LiveObstacles`.
 
 use crate::{Kind, read_reference, read_scenario, scenario_names};
 use serde::Deserialize;
@@ -82,9 +82,9 @@ pub struct SourceParameters {
     pub exclusion_zones: Vec<String>,
 }
 
-/// What a scenario's points are: points the stop under test reads as they are, as it
-/// reads the centers of a cost grid's occupied cells (`cell_centers`), or a depth frame's
-/// points, which it reads through navigation_core's `LiveObstacles`.
+/// What a scenario's points are: points at the centers of a grid's cells (`cell_centers`),
+/// which the stop under test reads as they are, as a source's newest points, or a depth
+/// frame's points, which it reads through navigation_core's `LiveObstacles`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PointsAre {

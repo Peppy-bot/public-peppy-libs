@@ -1,17 +1,18 @@
 //! Properties of the limiter on drawn limits, axes the base does not move
-//! along among them, and setpoint streams: every velocity lies within its
-//! axis's range, or past an end by at most the rounding of a step, and moves
-//! by no more than its acceleration or deceleration step per step, the axes
-//! keep the setpoint's direction as they scale together, a setpoint stream
-//! that stops comes to rest by 0.5 s after its last setpoint plus its
-//! deceleration time in whole steps and then gives nothing, an axis of range 0
-//! to 0 stays at rest, and the deadband zeroes a smaller output and keeps one
-//! equal to it. The limiter takes only a frequency whose period is a whole
-//! number of milliseconds, and its steps fall on the grid of the timer Nav2
-//! makes for its smoother: one step in each period of the grid at the first
-//! tick within it, each by at most a limit times the period, the grid kept
-//! after a late tick, and started again a period after a tick of a clock that
-//! went back.
+//! along among them, and setpoint streams: the limits of an axis give back the
+//! range, deadband, acceleration and deceleration they were parsed from, every
+//! velocity lies within its axis's range, or past an end by at most the
+//! rounding of a step, and moves by no more than its acceleration or
+//! deceleration step per step, the axes keep the setpoint's direction as they
+//! scale together, a setpoint stream that stops comes to rest by 0.5 s after
+//! its last setpoint plus its deceleration time in whole steps and then gives
+//! nothing, an axis of range 0 to 0 stays at rest, and the deadband zeroes a
+//! smaller output and keeps one equal to it. The limiter takes only a
+//! frequency whose period is a whole number of milliseconds, and its steps
+//! fall on the grid of the timer Nav2 makes for its smoother: one step in each
+//! period of the grid at the first tick within it, each by at most a limit
+//! times the period, the grid kept after a late tick, and started again a
+//! period after a tick of a clock that went back.
 
 mod common;
 
@@ -468,6 +469,39 @@ fn an_axis_of_no_range_and_no_limit_is_the_still_axis() {
         axis_limits([0.0, 0.0], [0.0, 0.0], 0.0).expect("an axis that does not move"),
         AxisLimits::STILL
     );
+}
+
+// The limits of a drawn axis, the still axis among them, give back the range, the
+// deadband, the acceleration and the deceleration they were parsed from.
+#[hegel::test]
+fn the_limits_of_an_axis_give_back_their_range_deadband_acceleration_and_deceleration(
+    tc: TestCase,
+) {
+    let params = axis(&tc);
+    let limits = AxisLimits::parse(params).expect("a drawn axis is valid");
+    assert_eq!(
+        limits.velocity_range(),
+        (params.min_velocity, params.max_velocity)
+    );
+    assert_eq!(limits.deadband(), params.deadband.get());
+    assert_eq!(limits.max_acceleration(), params.max_acceleration.get());
+    assert_eq!(limits.max_deceleration(), params.max_deceleration.get());
+}
+
+// An axis that speeds up at 1.0 per second gives 1.0, and the still axis gives 0.
+#[test]
+fn the_acceleration_of_an_axis_is_its_max_acceleration() {
+    let axis = axis_limits([-0.4, 0.6], [1.0, 2.5], 0.0).expect("valid limits");
+    assert_eq!(axis.max_acceleration(), 1.0);
+    assert_eq!(AxisLimits::STILL.max_acceleration(), 0.0);
+}
+
+// An axis that slows at 2.5 per second gives 2.5, and the still axis gives 0.
+#[test]
+fn the_deceleration_of_an_axis_is_its_max_deceleration() {
+    let axis = axis_limits([-0.4, 0.6], [1.0, 2.5], 0.0).expect("valid limits");
+    assert_eq!(axis.max_deceleration(), 2.5);
+    assert_eq!(AxisLimits::STILL.max_deceleration(), 0.0);
 }
 
 // A limiter steps once a period of whole milliseconds, 1 / its frequency.

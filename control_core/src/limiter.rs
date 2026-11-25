@@ -249,6 +249,18 @@ impl AxisLimits {
         self.deadband
     }
 
+    /// How fast the axis speeds up, a magnitude per second: above 0, or 0 on
+    /// an axis of range 0 to 0.
+    pub fn max_acceleration(&self) -> f64 {
+        self.max_acceleration
+    }
+
+    /// How fast the axis slows down, a magnitude per second: above 0, or 0 on
+    /// an axis of range 0 to 0.
+    pub fn max_deceleration(&self) -> f64 {
+        self.max_deceleration
+    }
+
     /// Nav2's `max_decel`, the deceleration limit as a number of at most 0.
     fn signed_deceleration(&self) -> f64 {
         -self.max_deceleration

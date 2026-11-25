@@ -2,14 +2,14 @@
 //! footprint polygon in approach mode and one point cloud source: `Stop::decide` ports
 //! `CollisionMonitor::process` and `processApproach`, `Polygon::getCollisionTime` with
 //! `projectState` and `transformPoints`, and the source's stale-source stop, so for the
-//! same points, read as it reads the centers of a cost grid's occupied cells, footprint,
-//! velocity and clock, the source's readings stamped at their arrival, the stop slows and
-//! stops where the collision monitor does, to the velocity it allows within 1e-12. Only
-//! `LiveObstacles` marks a drop: on a floor that drops more than the largest step down,
-//! where the collision monitor reading the depth points lets the base drive on with the
-//! drop within reach, the stop on the `LiveObstacles` occupied points of the same points
-//! drives the base to rest before the drop. The evidence: every case of every collision
-//! monitor scenario of the ROS reference harness.
+//! same points, read as a source's newest points on a free grid that holds the footprint at
+//! every pose of the projection, footprint, velocity and clock, the source's readings
+//! stamped at their arrival, the stop slows and stops where the collision monitor does, to
+//! the velocity it allows within 1e-12. Only `LiveObstacles` marks a drop: on a floor that
+//! drops more than the largest step down, where the collision monitor reading the depth
+//! points lets the base drive on with the drop within reach, the stop on what
+//! `LiveObstacles` gives of the same points drives the base to rest before the drop. The
+//! evidence: every case of every collision monitor scenario of the ROS reference harness.
 
 mod common;
 
@@ -24,10 +24,11 @@ use control_core::twist::PlanarTwist;
 use frame_tree::FrameName;
 use frame_tree::{Transform, UnitQuaternion};
 use navigation_core::PaddedFootprint;
+use navigation_core::grid::{CostGrid, FREE, GridGeometry};
 use navigation_core::obstacles::{
     GridPoses, LiveObstacles, ObstacleHeights, ObstacleHeightsParams,
 };
-use navigation_core::stop::{Stop, StopCause, StopDecision, StopParams};
+use navigation_core::stop::{Occupied, Stop, StopCause, StopDecision, StopParams};
 use occupancy_map::Bounds;
 use ros_reference::collision_monitor::{Action, Case, Cases, PointsAre, PolygonParameters};
 
@@ -96,6 +97,7 @@ fn live_of(cases: &Cases) -> LiveObstacles {
             max: [3.0, 1.5, 1.5],
         },
         heights,
+        positive(5.0),
         monitor_footprint(cases),
         NonZeroUsize::MIN,
     )
@@ -105,6 +107,22 @@ fn live_of(cases: &Cases) -> LiveObstacles {
 /// The monitor's polygon, the footprint the cost map publishes, padded: ours pads it by 0.
 fn monitor_footprint(cases: &Cases) -> PaddedFootprint {
     padded(&cases.polygon, 0.0)
+}
+
+/// A free grid of cells of `VOXEL_M` centered on the base, its half side the footprint's
+/// circumscribed radius, the distance the case's speed covers over the projection's steps,
+/// and a cell: the footprint at every pose of the case's projection stays on it, so the stop
+/// reads the case's points alone, as the monitor does.
+fn free_grid_for(cases: &Cases, case: &Case) -> CostGrid {
+    let polygon = &cases.monitor.footprint_approach;
+    let [x, y, _] = case.velocity;
+    let projected_m = x.hypot(y) * (polygon.time_before_collision + polygon.simulation_time_step);
+    let half_m = monitor_footprint(cases).circumscribed_radius_m() + projected_m + VOXEL_M;
+    let cells = (2.0 * half_m / VOXEL_M).ceil() as u32;
+    let origin = -f64::from(cells) * VOXEL_M / 2.0;
+    let geometry = GridGeometry::new(cells, cells, positive(VOXEL_M), [origin, origin])
+        .expect("a grid around the base");
+    CostGrid::filled(geometry, FREE)
 }
 
 fn velocity(case: &Case) -> PlanarTwist {
@@ -135,9 +153,8 @@ fn as_monitor(decision: StopDecision, case: &Case) -> (Action, &'static str, [f6
 }
 
 /// The `LiveObstacles` of `case`'s depth points, a sensor `SENSOR_HEIGHT_M` over the base's
-/// center, and their occupied points in the base's frame: the centers of its grid's lethal
-/// cells and of the frame's columns.
-fn grid_of_depth(cases: &Cases, case: &Case) -> (LiveObstacles, Vec<[f64; 2]>) {
+/// center, and the grid their map projects to.
+fn grid_of_depth(cases: &Cases, case: &Case) -> (LiveObstacles, CostGrid) {
     let mut live = live_of(cases);
     let sensor_on_base =
         Transform::new([0.0, 0.0, SENSOR_HEIGHT_M], UnitQuaternion::IDENTITY).expect("a pose");
@@ -154,14 +171,17 @@ fn grid_of_depth(cases: &Cases, case: &Case) -> (LiveObstacles, Vec<[f64; 2]>) {
         positive(5.0),
     )
     .expect("the live obstacles' one source");
-    let occupied = live.occupied_seen_from(
-        layer(&live).grid(),
-        GridPoses {
-            grid_from_map: PlanarPose::IDENTITY,
-            base: PlanarPose::IDENTITY,
-        },
-    );
-    (live, occupied)
+    let grid = layer(&live).grid().clone();
+    (live, grid)
+}
+
+/// The poses by which the stop reads `LiveObstacles` whose map is the grid's frame, the base
+/// at `base`.
+fn standing_on_the_map(base: PlanarPose) -> GridPoses {
+    GridPoses {
+        grid_from_map: PlanarPose::IDENTITY,
+        base,
+    }
 }
 
 fn load() -> Vec<Cases> {
@@ -173,8 +193,9 @@ fn load() -> Vec<Cases> {
     scenarios
 }
 
-// Each case of points the stop reads as occupied cells' centers, the stop slows or stops as
-// the collision monitor does, to the velocity the monitor allows within the bound.
+// Each case of points the stop reads as a source's newest points, on a free grid that holds
+// every pose of the case's projection, the stop slows or stops as the collision monitor
+// does, to the velocity the monitor allows within the bound.
 #[test]
 fn each_slow_and_stop_decision_is_the_collision_monitors() {
     for cases in load()
@@ -189,7 +210,12 @@ fn each_slow_and_stop_decision_is_the_collision_monitors() {
                 "{} case {index}: each point stands in the monitor's band",
                 cases.name
             );
-            let occupied: Vec<[f64; 2]> = case.points.iter().map(|p| [p[0], p[1]]).collect();
+            let grid = free_grid_for(cases, case);
+            let occupied = Occupied {
+                points: case.points.iter().map(|p| [p[0], p[1]]).collect(),
+                grid: &grid,
+                base: PlanarPose::IDENTITY,
+            };
             let decision = stop_of_case(cases, case, &live).decide(
                 &live,
                 velocity(case),
@@ -217,12 +243,11 @@ fn each_slow_and_stop_decision_is_the_collision_monitors() {
 // On a floor that drops more than the largest step down, the collision monitor reading the
 // depth points lets the base drive on at its velocity, and the `LiveObstacles` of the points
 // marks a column of the drop in every case whose points lie below the step. In each such
-// case whose drop lies
-// within reach (a cell of the `LiveObstacles` grid of the points inside the padded
-// footprint moved at the case's velocity for time_before_collision), the stop on that grid
-// drives the base, the case's velocity commanded each step of the monitor's simulation time
-// step, to rest, and no occupied cell's center lies inside the footprint before the step it
-// rests at.
+// case whose drop lies within reach (at a pose of the projection at the case's velocity, a
+// point the `LiveObstacles` give lies inside the padded footprint, or a lethal cell of their
+// grid under its outline), the stop on what they give drives the base, the case's velocity
+// commanded each step of the monitor's simulation time step, to rest, and before the step
+// it rests at no point lies inside the footprint and no lethal cell under its outline.
 // Every other case, a step down no deeper than the limit and a drop out of reach among
 // them, the stop decides as the monitor does.
 #[test]
@@ -233,20 +258,22 @@ fn a_step_down_nav2_drives_over_stops_ours() {
         let footprint = monitor_footprint(cases);
         for (index, case) in cases.cases.iter().enumerate() {
             let what = format!("{} case {index}", cases.name);
-            let (live, occupied) = grid_of_depth(cases, case);
+            let (live, grid) = grid_of_depth(cases, case);
+            let occupied =
+                live.occupied_seen_from(&grid, standing_on_the_map(PlanarPose::IDENTITY));
             let mut stop = stop_of_case(cases, case, &live);
             let nav2_drives_on = case.action == Action::DoNothing && case.allowed == case.velocity;
             let drop_ahead = case.points.iter().any(|p| p[2] < -cases.max_step_down);
             assert!(
-                !drop_ahead || !occupied.is_empty(),
+                !drop_ahead || !occupied.points.is_empty(),
                 "{what}: the drop past the step marks a column"
             );
-            let within_reach = projected(case.velocity, polygon)
-                .any(|pose| occupied.iter().any(|&p| inside(&footprint, pose, p)));
+            let within_reach = projected(case.velocity, polygon).any(|pose| {
+                occupied.points.iter().any(|&p| inside(&footprint, pose, p))
+                    || footprint.collides_at(&grid, pose)
+            });
             if nav2_drives_on && drop_ahead && within_reach {
-                drive_to_rest(
-                    &mut stop, &live, &footprint, &occupied, case, polygon, &what,
-                );
+                drive_to_rest(&mut stop, &live, &grid, &footprint, case, polygon, &what);
                 brought_to_rest += 1;
                 continue;
             }
@@ -267,37 +294,36 @@ fn a_step_down_nav2_drives_over_stops_ours() {
 /// How many steps of the simulation time step a drive to rest may take.
 const REST_STEPS: usize = 5000;
 
-/// Drives a base from the case's pose by the velocities of `stop`, deciding with `live`, the
-/// case's velocity commanded each step, `occupied` fixed in the case's base frame; panics
-/// unless it comes to rest within `REST_STEPS` with no occupied point inside its footprint
-/// before then.
+/// Drives a base from the case's pose by the velocities of `stop`, deciding with what `live`
+/// gives on `grid`, the case's velocity commanded each step; panics unless it comes to rest
+/// within `REST_STEPS` with no point inside its footprint and no lethal cell under its
+/// outline before then.
 fn drive_to_rest(
     stop: &mut Stop,
     live: &LiveObstacles,
+    grid: &CostGrid,
     footprint: &PaddedFootprint,
-    occupied: &[[f64; 2]],
     case: &Case,
     polygon: &PolygonParameters,
     what: &str,
 ) {
     let mut pose = PlanarPose::IDENTITY;
     for step in 0..REST_STEPS {
-        let seen: Vec<[f64; 2]> = occupied
-            .iter()
-            .map(|&point| pose.apply_inverse(point))
-            .collect();
+        let occupied = live.occupied_seen_from(grid, standing_on_the_map(pose));
         let allowed = stop
-            .decide(live, velocity(case), &seen, case.now_ns)
+            .decide(live, velocity(case), &occupied, case.now_ns)
             .velocity();
         if allowed == PlanarTwist::ZERO {
             return;
         }
         assert!(
-            !seen
+            !occupied
+                .points
                 .iter()
-                .any(|&p| inside(footprint, PlanarPose::IDENTITY, p)),
-            "{what}: at step {step} the footprint at {pose:?} holds an occupied cell and the \
-             base still moves at {allowed:?}"
+                .any(|&p| inside(footprint, PlanarPose::IDENTITY, p))
+                && !footprint.collides_at(grid, pose),
+            "{what}: at step {step} the footprint at {pose:?} meets a point or a lethal cell \
+             and the base still moves at {allowed:?}"
         );
         pose = moved(pose, allowed.axes(), polygon.simulation_time_step);
     }

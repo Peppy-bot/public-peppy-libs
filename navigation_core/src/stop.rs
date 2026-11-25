@@ -1,24 +1,47 @@
 //! A stop before obstacles, as Nav2 1.5.2's collision monitor stops a base in
-//! its approach mode, with the base's padded footprint as its polygon and the
-//! occupied points
+//! its approach mode, with the base's padded footprint as its polygon. Where
+//! the base stands and at each step of the projection, the stop makes two
+//! checks: each source's newest points against the footprint, as the monitor
+//! checks its sources' points, and the cost grid under the footprint's
+//! outline, as Nav2's controller checks a pose. [`Occupied`] holds what both
+//! read, as
 //! [`LiveObstacles::occupied_seen_from`](crate::obstacles::LiveObstacles::occupied_seen_from)
-//! gives as its points:
-//! the centers of the cost grid's lethal cells and of the columns each
-//! source's newest frame marked, an obstacle or a drop, before the clearing
-//! under the footprint
-//! (nav2_collision_monitor src/collision_monitor_node.cpp:
-//! `CollisionMonitor::process` and `processApproach`; src/polygon.cpp:
-//! `Polygon::getCollisionTime` and `getPointsInside`; src/kinematics.cpp:
-//! `projectState` and `transformPoints`; src/source.cpp: `Source::sourceValid`;
-//! and nav2_util's `isPointInsidePolygon`, include/nav2_util/geometry_utils.hpp).
-//! A return inside the base's unpadded outline counts as the robot's own body
-//! and gives no point, where the monitor reads every point: a real obstacle
-//! there does not hold the base, where the monitor stops the base for it. The
-//! stop reads a column at its center, so the padded footprint comes up to the
-//! center of a column whose obstacle's face stands nearer than the center by
-//! more than the padding, and that face then lies inside the unpadded outline.
-//! A body whose surface lies on the outline scatters returns across its edge,
-//! and those outside it hold the base, as they hold the monitor.
+//! gives it.
+//!
+//! The points are those of each source's newest frame, before the clearing
+//! under the footprint, in the base's frame: each return whose height lies in
+//! the band, as the monitor's point cloud source keeps a point
+//! (nav2_collision_monitor src/pointcloud.cpp:174), and the center of each
+//! column the frame shows a drop in, which the monitor has no counterpart of.
+//! The stop checks them as `CollisionMonitor::process` reads its sources
+//! (src/collision_monitor_node.cpp:449-465) and `processApproach` slows the
+//! base (:608-638), by `Polygon::getCollisionTime` (src/polygon.cpp:339-388)
+//! and `getPointsInside` (:293-319), with `transformPoints` and `projectState`
+//! (src/kinematics.cpp:22-68), `Source::sourceValid` (src/source.cpp:179-196)
+//! and nav2_util's `isPointInsidePolygon`
+//! (include/nav2_util/geometry_utils.hpp:200-233). A return inside the base's
+//! unpadded outline counts as the robot's own body and gives no point, where
+//! the monitor reads every point: a real obstacle there does not hold the
+//! base, where the monitor stops the base for it. A body whose surface lies on
+//! the outline scatters returns across its edge, and those outside it hold the
+//! base, as they hold the monitor.
+//!
+//! The grid holds what the sensors have seen, the obstacles and drops out of
+//! the newest frames' view among them. The stop reads it at each pose by
+//! `FootprintCollisionChecker::footprintCostAtPose` (nav2_costmap_2d
+//! src/footprint_collision_checker.cpp:129-144), which Nav2's regulated pure
+//! pursuit reads a pose by (nav2_regulated_pure_pursuit_controller
+//! src/collision_checker.cpp:168-177): the footprint's vertices placed at the
+//! pose, and the cells of each edge read by `lineCost` (:87-107) in
+//! `footprintCost` (:48-85), a vertex off the grid lethal (:55-56, :66-67).
+//! The footprint meets the grid where that cost is lethal
+//! ([`PaddedFootprint::collides_at`](crate::PaddedFootprint::collides_at),
+//! with its departure), and so at a pose whose center lies off the grid, which
+//! the regulated pure pursuit passes as clear (src/collision_checker.cpp:159-166).
+//! The check reads whole cells, so it reads an obstacle's cell as an edge's
+//! raster reaches it, wherever in the cell the obstacle's face stands. The
+//! obstacle layer clears the cells under the padded footprint at each frame's
+//! base pose, so what stood there is the newest points' alone.
 //!
 //! A source is what feeds the grid, as Nav2's collision monitor reads its
 //! sources, sources 0 to one fewer than the count of the live obstacles each
@@ -26,9 +49,9 @@
 //! stop reads its polygon, the padded footprint, and its count of sources
 //! from those live obstacles at each call, and holds neither. It keeps the
 //! arrival of each source's newest reading, which [`Stop::reading_arrived`]
-//! gives it, and [`Stop::silent_source`] gives back the first source with no
-//! reading, or whose newest reading arrived more than `source_timeout_s`
-//! before now.
+//! gives it, and [`Stop::silent_sources`] gives back, in the order of the
+//! sources, each source with no reading, or whose newest reading arrived more
+//! than `source_timeout_s` before now.
 //!
 //! The stop's clock is the caller's, and the stop keeps the time of its
 //! previous decision. A decision whose now lies before that time comes from a
@@ -43,12 +66,12 @@
 //! arrived after the slot's start, and they read live. [`Stop::decide`]
 //! applies the rule to what the stop keeps: it forgets every reading at a
 //! clock gone back, gives each arrival after its now that now, and keeps its
-//! now as the previous decision's time; [`Stop::silent_source`] answers by the
-//! same rule and changes nothing. The limiter finds a clock that went back by
-//! the same rule, a tick before its last call, and gives a setpoint whose time
-//! lies after a tick's time that tick's time (`control_core::limiter`); where
-//! the limiter then holds its setpoint for its timeout from that tick, the
-//! stop reads every source silent until its next reading.
+//! now as the previous decision's time; [`Stop::silent_sources`] answers by
+//! the same rule and changes nothing. The limiter finds a clock that went back
+//! by the same rule, a tick before its last call, and gives a setpoint whose
+//! time lies after a tick's time that tick's time (`control_core::limiter`);
+//! where the limiter then holds its setpoint for its timeout from that tick,
+//! the stop reads every source silent until its next reading.
 //!
 //! The stop departs from the monitor's `sourceValid` (src/source.cpp:185-186)
 //! twice. The monitor ages a source's newest data from its stamp
@@ -65,22 +88,26 @@
 //! its first decision, or shorter than the time since its previous decision.
 //!
 //! [`Stop::decide`] takes the live obstacles, the velocity the controller
-//! commands, the occupied points in the base's frame, and the time now, on the
-//! caller's clock. A source with no reading, or a silent one, stops the base,
-//! as the monitor stops on an invalid source. Otherwise the footprint is
-//! projected along the velocity, the velocity turning with the base, a
-//! simulation step at a time, while the step's time lies within
-//! `time_before_collision_s` (polygon.cpp:368): when a point falls inside the
-//! footprint where the base stands or at a step of the projection, the
-//! velocity is scaled by the share of that time the contact leaves, and a
-//! contact where the base stands scales it to rest. One point inside the
-//! footprint is a contact, the monitor's `min_points` at 1. Within
-//! `time_before_collision_s`, the scaled velocity covers the projection up to
-//! the step before the contact, so no occupied point lies inside the padded
-//! footprint at any step of the projection the scaled velocity covers. The
-//! footprint between two steps is not checked, as the monitor checks it at its
-//! steps alone. The footprint's vertices stay in double precision, where the
-//! monitor parses a polygon's points into single precision
+//! commands, what [`Occupied`] holds, and the time now, on the caller's clock.
+//! A source with no reading, or a silent one, stops the base, as the monitor
+//! stops on an invalid source. Otherwise the footprint is projected along the
+//! velocity, the velocity turning with the base, a simulation step at a time,
+//! while the step's time lies within `time_before_collision_s`
+//! (polygon.cpp:368). A pose of the projection, the base where it stands
+//! first, is a contact when a point lies inside the footprint there, one point
+//! a contact, the monitor's `min_points` at 1, or when the footprint there
+//! meets the grid. At the first contact the velocity is scaled by the share of
+//! that time the contact leaves, and a contact where the base stands scales it
+//! to rest. The first contact of either check times the slowing: the slower of
+//! the velocities the two checks allow apart, as the monitor keeps the slowest
+//! velocity its approach polygons allow (collision_monitor_node.cpp:498-523,
+//! 628). Within `time_before_collision_s`, the scaled velocity covers the
+//! projection up to the step before the contact, so at no step of the
+//! projection the scaled velocity covers does a point lie inside the padded
+//! footprint or the footprint meet the grid. The footprint between two steps
+//! is not checked, as the monitor checks it at its steps alone. The
+//! footprint's vertices stay in double precision, where the monitor parses a
+//! polygon's points into single precision
 //! (include/nav2_collision_monitor/polygon_utils.hpp:56). Times are integer
 //! nanoseconds, as ROS compares them.
 //!
@@ -95,11 +122,13 @@
 
 use std::collections::BTreeMap;
 
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 use control_core::time::{elapsed_ns, nanoseconds, seconds};
 use control_core::twist::PlanarTwist;
 
-use crate::footprint::is_point_inside_polygon;
+use crate::footprint::{PaddedFootprint, is_point_inside_polygon};
+use crate::grid::CostGrid;
 use crate::obstacles::LiveObstacles;
 
 /// The stop's settings, by the collision monitor's names.
@@ -151,15 +180,27 @@ pub struct UnknownSource {
     pub sources: usize,
 }
 
+/// What the stop reads at a decision, as the module gives it: each source's
+/// newest points, and the cost grid with the base's pose on it.
+#[derive(Debug)]
+pub struct Occupied<'a> {
+    /// Each source's newest points, in the base's frame.
+    pub points: Vec<[f64; 2]>,
+    /// The cost grid whose cells under the footprint's outline the stop reads.
+    pub grid: &'a CostGrid,
+    /// The base's pose in the grid's frame.
+    pub base: PlanarPose,
+}
+
 /// What the stop does with the commanded velocity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StopDecision {
     /// The commanded velocity stands: no step of the projection before
-    /// `time_before_collision_s` holds a point inside the footprint, or the
-    /// scaled velocity is no slower, as for a base at rest.
+    /// `time_before_collision_s` is a contact, or the scaled velocity is no
+    /// slower, as for a base at rest.
     Continue { velocity: PlanarTwist },
-    /// The first step of the projection that holds a point inside the
-    /// footprint lies at `collision_time_s`, as `getCollisionTime` times it,
+    /// The first step of the projection that is a contact lies at
+    /// `collision_time_s`, as `getCollisionTime` times it,
     /// 0 where the base stands: the velocity scaled by `collision_time_s /
     /// time_before_collision_s`, to rest for a contact where the base stands
     /// (the monitor's approach).
@@ -249,21 +290,21 @@ impl Stop {
         Ok(())
     }
 
-    /// What to do with `velocity`, the occupied points `occupied` in the
-    /// base's frame
-    /// ([`LiveObstacles::occupied_seen_from`](crate::obstacles::LiveObstacles::occupied_seen_from)),
+    /// What to do with `velocity`, by what `occupied` holds
+    /// ([`LiveObstacles::occupied_seen_from`]),
     /// at `now_ns` on the caller's clock, the polygon and the sources those of
-    /// `live`: [`Stop::silent_source`]'s cause first, then the projection. A
+    /// `live`: the cause of the first of [`Stop::silent_sources`] first, then
+    /// the projection, each pose checked against the points and the grid. A
     /// decision before the previous one forgets every reading, and each
     /// arrival after `now_ns` takes `now_ns` as its time.
     pub fn decide(
         &mut self,
         live: &LiveObstacles,
         velocity: PlanarTwist,
-        occupied: &[[f64; 2]],
+        occupied: &Occupied<'_>,
         now_ns: i64,
     ) -> StopDecision {
-        let silent = self.silent_source(live, now_ns);
+        let silent = self.silent_sources(live, now_ns).into_iter().next();
         if self.clock_went_back(now_ns) {
             self.newest_readings_ns.clear();
         }
@@ -274,10 +315,10 @@ impl Stop {
         if let Some(cause) = silent {
             return StopDecision::Stop(cause);
         }
-        let polygon = live.padded_footprint().points();
+        let footprint = live.padded_footprint();
         let Some(collision_time_s) = self
             .projection(velocity)
-            .find(|&pose| in_contact(polygon, occupied, pose))
+            .find(|&pose| in_contact(footprint, occupied, pose))
             .map(|pose| pose.time)
         else {
             return StopDecision::Continue { velocity };
@@ -295,25 +336,27 @@ impl Stop {
         StopDecision::Continue { velocity }
     }
 
-    /// `sourceValid` of each source of `live`, in order, at `now_ns` on the
-    /// caller's clock, by the module's rule: the first source with no reading,
-    /// as every source has at a now before the previous decision's, or whose
-    /// newest reading arrived more than the source timeout before `now_ns`;
-    /// none while every source's newest reading arrived within the source
-    /// timeout before `now_ns`, or after it.
-    pub fn silent_source(&self, live: &LiveObstacles, now_ns: i64) -> Option<StopCause> {
+    /// `sourceValid` of each source of `live` at `now_ns` on the caller's
+    /// clock, by the module's rule: each source with no reading, as every
+    /// source has at a now before the previous decision's, or whose newest
+    /// reading arrived more than the source timeout before `now_ns`, in the
+    /// order of the sources; none while every source's newest reading arrived
+    /// within the source timeout before `now_ns`, or after it.
+    pub fn silent_sources(&self, live: &LiveObstacles, now_ns: i64) -> Vec<StopCause> {
         let went_back = self.clock_went_back(now_ns);
-        (0..live.sources()).find_map(|source| {
-            let newest = self.newest_readings_ns.get(&source).filter(|_| !went_back);
-            let Some(&arrived_ns) = newest else {
-                return Some(StopCause::NoReading { source });
-            };
-            let age_ns = elapsed_ns(arrived_ns, now_ns);
-            (age_ns > self.source_timeout_ns).then_some(StopCause::StaleSource {
-                source,
-                age_s: seconds(age_ns),
+        (0..live.sources())
+            .filter_map(|source| {
+                let newest = self.newest_readings_ns.get(&source).filter(|_| !went_back);
+                let Some(&arrived_ns) = newest else {
+                    return Some(StopCause::NoReading { source });
+                };
+                let age_ns = elapsed_ns(arrived_ns, now_ns);
+                (age_ns > self.source_timeout_ns).then_some(StopCause::StaleSource {
+                    source,
+                    age_s: seconds(age_ns),
+                })
             })
-        })
+            .collect()
     }
 
     /// Whether `now_ns` lies before the previous decision's time: a clock
@@ -336,9 +379,31 @@ impl Stop {
     }
 }
 
+/// Whether `pose` of the projection is a contact: a point of `occupied` inside
+/// the footprint there ([`holds_a_point`]), or the footprint there meeting
+/// `occupied`'s grid ([`meets_the_grid`]).
+fn in_contact(footprint: &PaddedFootprint, occupied: &Occupied, pose: ProjectedPose) -> bool {
+    holds_a_point(footprint.points(), &occupied.points, pose)
+        || meets_the_grid(footprint, occupied, pose)
+}
+
+/// `footprintCostAtPose` at `pose` of the projection, placed in the grid's
+/// frame by the base's pose: whether the cost under the footprint's outline
+/// is lethal ([`PaddedFootprint::collides_at`]). A pose whose place in the
+/// grid's frame is not finite puts the footprint's vertices off the grid,
+/// which reads lethal.
+fn meets_the_grid(footprint: &PaddedFootprint, occupied: &Occupied, pose: ProjectedPose) -> bool {
+    let base = occupied.base;
+    let [x, y] = base.apply([pose.x, pose.y]);
+    let Ok(placed) = PlanarPose::new(x, y, base.yaw() + pose.theta) else {
+        return true;
+    };
+    footprint.collides_at(occupied.grid, placed)
+}
+
 /// `getPointsInside` after `transformPoints`: whether a point of `points` lies
 /// inside `polygon`, the footprint, at `pose`.
-fn in_contact(polygon: &[[f64; 2]], points: &[[f64; 2]], pose: ProjectedPose) -> bool {
+fn holds_a_point(polygon: &[[f64; 2]], points: &[[f64; 2]], pose: ProjectedPose) -> bool {
     let (sin_theta, cos_theta) = (pose.theta.sin(), pose.theta.cos());
     points.iter().any(|point| {
         let mul_x = point[0] - pose.x;
@@ -426,6 +491,35 @@ fn squared_magnitude(velocity: PlanarTwist) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::{FREE, GridGeometry};
+    use control_core::footprint::Footprint;
+    use control_core::non_negative_finite::NonNegativeFinite;
+
+    // A pose of the projection whose place in the grid's frame is not finite puts the
+    // footprint's vertices off the grid, so it meets the grid; the footprint at the grid's
+    // center meets nothing on a free grid.
+    #[test]
+    fn a_pose_past_double_precision_meets_the_grid() {
+        let footprint = PaddedFootprint::new(
+            &Footprint::parse(&[[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]]).unwrap(),
+            NonNegativeFinite::parse(0.0).unwrap(),
+        )
+        .unwrap();
+        let geometry =
+            GridGeometry::new(20, 20, PositiveFinite::parse(0.1).unwrap(), [-1.0, -1.0]).unwrap();
+        let grid = CostGrid::filled(geometry, FREE);
+        let occupied = Occupied {
+            points: Vec::new(),
+            grid: &grid,
+            base: PlanarPose::IDENTITY,
+        };
+        let at = |x: f64| ProjectedPose {
+            x,
+            ..ProjectedPose::default()
+        };
+        assert!(!meets_the_grid(&footprint, &occupied, at(0.0)));
+        assert!(meets_the_grid(&footprint, &occupied, at(f64::INFINITY)));
+    }
 
     // The projection starts where the base stands, at time 0, then steps
     // while the step's time lies within the horizon, a turning base's

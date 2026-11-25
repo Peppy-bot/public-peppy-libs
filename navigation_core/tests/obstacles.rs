@@ -216,8 +216,15 @@ fn a_table_above_the_band_marks_only_its_legs_and_the_floor_none(tc: TestCase) {
         .chain(surface(BOX[0], BOX[1], box_m))
         .chain(sides(BOX, box_m))
         .collect();
-    let mut live = LiveObstacles::new(odom(), bounds(), heights, small_square(), NonZeroUsize::MIN)
-        .expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights,
+        range(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let sensor = sensor_at(SENSOR, 0.0);
     live.insert_depth_frame(
         0,
@@ -308,8 +315,15 @@ fn a_step_down_deeper_than_the_limit_marks_where_the_rays_cross_the_floor_and_a_
         .into_iter()
         .chain(seen_lower.iter().copied())
         .collect();
-    let mut live = LiveObstacles::new(odom(), bounds(), heights, small_square(), NonZeroUsize::MIN)
-        .expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights,
+        range(),
+        small_square(),
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     let sensor = sensor_at(sensor_position, 0.0);
     live.insert_depth_frame(
         0,
@@ -377,6 +391,7 @@ fn a_box_before_a_drop() -> LiveObstacles {
         odom(),
         bounds(),
         heights(),
+        range(),
         small_square(),
         NonZeroUsize::MIN,
     )
@@ -496,6 +511,7 @@ fn a_turned_or_finer_grid_marks_every_cell_under_a_wall_and_knows_the_seen_floor
         odom(),
         bounds(),
         heights(),
+        range(),
         small_square(),
         NonZeroUsize::MIN,
     )
@@ -686,6 +702,7 @@ fn drive_toward(
         odom(),
         bounds(),
         heights,
+        range(),
         drive_footprint(),
         NonZeroUsize::MIN,
     )
@@ -874,6 +891,7 @@ fn a_lone_wrong_far_reading_in_each_frame_marks_no_cell(tc: TestCase) {
         odom(),
         bounds(),
         heights(),
+        range(),
         drive_footprint(),
         NonZeroUsize::MIN,
     )
@@ -974,6 +992,7 @@ fn wrong_far_readings_among_a_forward_cameras_rays_mark_no_drop() {
         odom(),
         bounds(),
         heights(),
+        range(),
         drive_footprint(),
         NonZeroUsize::MIN,
     )
@@ -1058,6 +1077,7 @@ fn drawn_wrong_far_readings_mark_a_drop_only_where_three_of_one_frame_cross(tc: 
         odom(),
         bounds(),
         heights(),
+        range(),
         drive_footprint(),
         NonZeroUsize::MIN,
     )
@@ -1131,6 +1151,7 @@ fn a_cleared_obstacle_is_marked_again_by_the_next_frame() {
         odom(),
         bounds(),
         heights(),
+        range(),
         small_square(),
         NonZeroUsize::MIN,
     )
@@ -1198,8 +1219,15 @@ fn a_base_that_sees_its_own_deck_as_it_drives_and_turns_marks_no_cell(tc: TestCa
             turn_rad * f64::from(k) / f64::from(turn_steps),
         )
     });
-    let mut live = LiveObstacles::new(odom(), bounds(), heights(), footprint, NonZeroUsize::MIN)
-        .expect("whole voxels");
+    let mut live = LiveObstacles::new(
+        odom(),
+        bounds(),
+        heights(),
+        range(),
+        footprint,
+        NonZeroUsize::MIN,
+    )
+    .expect("whole voxels");
     for base in driving.chain(turning) {
         let sensor = sensor_at([base.x(), base.y(), mount_m], base.yaw());
         let seen: Vec<[f64; 3]> = deck
@@ -1256,6 +1284,7 @@ fn the_footprint_clearing_leaves_no_occupied_cell_under_it_and_every_saved_cell(
         odom(),
         bounds(),
         heights(),
+        range(),
         footprint.clone(),
         NonZeroUsize::MIN,
     )
@@ -1328,6 +1357,7 @@ fn a_ray_that_met_nothing_frees_and_marks_nothing() {
         odom(),
         bounds(),
         heights(),
+        range(),
         small_square(),
         NonZeroUsize::MIN,
     )
@@ -1387,6 +1417,7 @@ fn each_ray_of_a_turning_scan_lands_where_the_sensor_stood_at_its_time() {
         odom(),
         bounds(),
         heights(),
+        range(),
         small_square(),
         NonZeroUsize::MIN,
     )

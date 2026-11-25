@@ -21,7 +21,7 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   of depth frames and the hits of laser scans, each placed where the sensor stood at its
   time, the map's columns under the padded footprint cleared after each frame, and the
   map projected to a grid as Nav2's obstacle layer marks points, a drop below the floor
-  marked too; and, for each source, the columns its newest frame marked, which the stop
+  marked too; and, for each source, the points its newest frame saw, which the stop
   reads beside the grid.
 - `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map.
 - `inflation` inflates a grid around its lethal cells, as Nav2's inflation layer does.
@@ -44,21 +44,28 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   checker judges it.
 - `controller` is Nav2's regulated pure pursuit (`PurePursuit::compute`): the forward
   speed and turn rate that follow the pruned plan.
-- `stop` slows the commanded velocity so that no occupied point lies inside the padded
-  footprint at any step of the projection the slowed velocity covers within a time, as
-  Nav2's collision monitor slows it in its approach mode, one point a contact, and stops
-  the base while a source's readings stop arriving, which source it gives back
-  (`Stop::reading_arrived`, `Stop::silent_source`, `Stop::decide`), each reading the
-  padded footprint and the sources of the `LiveObstacles` it is given. Its points are
-  those `LiveObstacles::occupied_seen_from` gives, the base and the map placed in the
-  grid's frame by `GridPoses`: the centers of the cost grid's lethal cells and of the
-  columns each source's newest frame marked. A decision before the stop's previous one
+- `stop` slows the commanded velocity so that, at each step of the projection the slowed
+  velocity covers within a time, no point of a source's newest frame lies inside the
+  padded footprint, as Nav2's collision monitor slows it in its approach mode, one point a
+  contact, and the footprint's outline meets no lethal cell of the cost grid and no vertex
+  lies off it, as Nav2's controller checks a pose (`footprintCostAtPose`); the first
+  contact of either check times the slowing. It stops the base while a source's readings
+  stop arriving, each such source it gives back (`Stop::reading_arrived`,
+  `Stop::silent_sources`, `Stop::decide`), each reading the padded footprint and the
+  sources of the `LiveObstacles` it is given. What it reads, `Occupied`, is what
+  `LiveObstacles::occupied_seen_from` gives, the base and the map placed in the grid's
+  frame by `GridPoses`: the points each source's newest frame saw, in the base's frame,
+  and the cost grid with the base's pose on it. A decision before the stop's previous one
   comes from a clock that went back: every source then reads silent until its next
   reading. A reading that arrived after a decision's now counts from that decision, as
   control_core's limiter gives a setpoint after its tick's time that time, so it holds for
   at most the source timeout from the first decision that reads it, after a step back the
   stop finds and after one it does not; Nav2's monitor holds a stamp after now valid until
   the clock passes the stamp plus its source timeout.
+- `behaviors` gives the command of one cycle of Nav2's Spin and DriveOnHeading, which
+  BackUp drives backward (`SpinParams::rate`, `DriveOnHeadingParams::speed`): the turn
+  rate of a turn in place and the speed of a drive along the heading, each slowed into
+  its end, and none once the goal is reached.
 
 Poses on the floor are `control_core::planar_pose::PlanarPose`s, a laser scan is
 `camera_core::laser_scan::LaserScan`, and a body velocity is
@@ -155,21 +162,28 @@ observation buffer traces a scan from the origin at its stamp. Nav2's obstacle l
 places every hit of a scan where the sensor stood at the scan's stamp; here a sensor that
 moves while it sweeps places each hit where it measured it. Two more departures follow
 from `occupancy_map`'s insert: every frame goes into the voxel map, where Nav2 skips an
-observation whose sensor origin lies off its grid, and a point's range is its distance
-from the sensor in 3-D, where Nav2's marking measures it in the plane, so a point beyond
-the range in 3-D and within it in the plane clears to the range here. A depth sample of 0
-and a ray that carries a mark of lidar_2d:v1 make no point: a ray that met nothing frees
-and marks nothing, as Nav2's obstacle layer leaves it with `inf_is_valid` false. After
-each frame, every voxel of the map's columns under the padded footprint, at the base's
-pose at the frame's time, takes one miss's log-odds, as the obstacle layer writes
-`FREE_SPACE` under its footprint, the columns found as Nav2's `convexFillCells` finds the
-cells under a polygon, and none of them is a drop: the base stands on floor there. A voxel
-the base stood on reads free, and the next frame that sees an obstacle there marks it
-again, as the obstacle layer marks a cleared cell. `clear` empties the map and forgets the
-drops, as base_navigation:v1's clear_grid empties the grid, and keeps each source's newest
-frame, whose obstacles and drops stay the stop's points beside the grid until the source's
-next frame replaces it, as Nav2's collision monitor reads its sources' newest points from
-their topics, which a clear of the cost map leaves as they are.
+observation whose sensor origin lies off its grid, and a point farther from the sensor
+than the sensor's range in 3-D reads no return at the range, which clears its ray to the
+range and marks nothing, where Nav2 marks each point within `obstacle_max_range` in the
+plane, however far it lies in 3-D. A return farther from its sensor's origin than the
+obstacle range, `obstacle_max_range_m`, by their distance in the plane, marks nothing, as
+Nav2's obstacle layer marks no point farther than `obstacle_max_range` from the
+observation's origin in the plane: its ray clears as a return's ray does, its voxel takes
+nothing from it, and it takes no part in the votes of a drop. One range holds for every
+source, given to `LiveObstacles::new`, and a source's newest points hold such a return as
+any other, as Nav2's collision monitor keeps a point of its source at any distance past
+its `min_range`. A depth sample of 0 and a ray that carries a mark of lidar_2d:v1 make no
+point: a ray that met nothing frees and marks nothing, as Nav2's obstacle layer leaves it
+with `inf_is_valid` false. After each frame, every voxel of the map's columns under the
+padded footprint, at the base's pose at the frame's time, takes one miss's log-odds, as
+the obstacle layer writes `FREE_SPACE` under its footprint, the columns found as Nav2's
+`convexFillCells` finds the cells under a polygon, and none of them is a drop: the base
+stands on floor there. A voxel the base stood on reads free, and the next frame that sees
+an obstacle there marks it again, as the obstacle layer marks a cleared cell. `clear`
+empties the map and forgets the drops, as base_navigation:v1's clear_grid empties the
+grid, and keeps each source's newest points, which the stop reads beside the grid, until
+the source's next frame replaces them, as Nav2's collision monitor reads its sources'
+newest points from their topics, which a clear of the cost map leaves as they are.
 
 A return inside the base's unpadded outline is the robot's own body, judged in the base's
 frame at the return's own time, where the sensor's pose on the base places it: its ray
@@ -182,12 +196,13 @@ measured late in the sweep of a moving base lies past the footprint at the sweep
 ray, where the clearing runs.
 
 A drop is a column whose floor lies more than `max_step_down_m` down, the step's plane,
-which each frame's rays find through the floor's plane. Each ray that points down from
-above the floor reads the floor's plane in the column where its line crosses it: past,
-when its reading lies below the step's plane (a return there, or no return with its range
-reaching there, as `occupancy_map`'s `Scan::readings` reads it), and short, when it
-returns above the floor's plane, before the crossing. A column where at least three rays
-of one frame read past, more than the rays that read short and the returns of that frame
+which each frame's rays find through the floor's plane, each ray whose reading lies within
+the obstacle range. Each such ray that points down from above the floor reads the floor's
+plane in the column where its line crosses it: past, when its reading lies below the
+step's plane (a return there, or no return with its range reaching there, as
+`occupancy_map`'s `Scan::readings` reads it), and short, when it returns above the floor's
+plane, before the crossing. A column where at least three rays of one frame read past,
+more than the rays that read short and the returns of that frame within the obstacle range
 that stand in it at or above the step's plane together, is a drop until the footprint
 clears it: one or two wrong far readings through a column mark none, and wrong far
 readings among rays that see an obstacle before the floor, or through a column whose floor
@@ -227,28 +242,28 @@ whole values, so a voxel's center judges as its points do, but for a point exact
 Nav2 keeps it, and the floor's own voxels, either side of the floor, are no obstacle;
 `max_step_down_m` takes any height above the floor. `LiveObstacles::new` makes its voxel
 map in a frame and over bounds, of the voxels the heights judge and of no more columns on
-an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), and `recentered` takes bounds of
-no more. `columns` is the grid of the voxel map's columns, one cell a column: the grid a
-navigator plans on in the voxel map's frame. `recentered` moves the map, the drops and
-each source's newest frame over other bounds, keeping what it knows of the columns both
-hold, for a grid that moves with the base.
+an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), with the obstacle range, a
+`PositiveFinite` distance in the plane, and `recentered` takes bounds of no more.
+`columns` is the grid of the voxel map's columns, one cell a column: the grid a navigator
+plans on in the voxel map's frame. `recentered` moves the map and the drops over other
+bounds, keeping what it knows of the columns both hold, for a grid that moves with the
+base, and keeps each source's newest points as they are.
 
-For each source, `LiveObstacles` keeps the columns its newest frame marked, as the frame
-marked them before the clearing under the footprint: the column of each return of the
-frame but the robot's own body whose voxel's center lies in the band, the returns the map
-marks; and each column the frame's rays show a drop in, but for one whose center lies
-inside the unpadded outline at the frame's base pose, floor the base stands on.
-`occupied_seen_from` gives the points the stop reads: the centers of a cost grid's lethal
-cells and of those columns. Nav2's collision monitor reads each source's newest points,
-which the obstacle layer's clearing under the footprint leaves as they are, so an obstacle
-in a column the padded footprint stands in, outside the unpadded outline, is a point the
+For each source, `LiveObstacles` keeps the points its newest frame saw, in the map's frame
+on the floor's plane, as the frame saw them before the clearing under the footprint: each
+return of the frame but the robot's own body whose height lies in the band, both ends
+included, as Nav2's collision monitor keeps a point of its point cloud source; and the
+center of each column the frame's rays show a drop in, but for one whose center lies
+inside the unpadded outline at the frame's base pose, floor the base stands on, which the
+monitor has no counterpart of. A source's newest points hold whatever bounds the map
+takes. `occupied_seen_from` gives what the stop reads: those points in the base's frame,
+and a cost grid with the base's pose on it. Nav2's collision monitor reads each source's
+newest points, which the obstacle layer's clearing under the footprint leaves as they are,
+so an obstacle the padded footprint stands on, outside the unpadded outline, is a point the
 stop reads, as it is one the monitor reads. A return inside the unpadded outline gives the
 stop no point, where the monitor reads it: a real obstacle there does not hold the base,
-where the monitor stops the base for it, and the stop reads a column at its center, so the
-padded footprint comes up to the center of a column whose obstacle's face stands nearer
-than the center by more than the padding, and that face then lies inside the unpadded
-outline. A body whose surface lies on the outline scatters returns across its edge, and
-those outside it hold the base, as they hold the monitor.
+where the monitor stops the base for it. A body whose surface lies on the outline scatters
+returns across its edge, and those outside it hold the base, as they hold the monitor.
 
 `PaddedFootprint::collides_at` checks one pose of base_navigation:v1's sweep, under which
 a turn and a straight drive fail when the padded footprint placed at a step of the
@@ -333,17 +348,17 @@ amd64 build, so it runs with no ROS on the machine.
   the plan pruned by the controller server's path handler, the command equals Nav2's
   regulated pure pursuit's within 1e-9, and the goal and progress checkers decide as
   Nav2's.
-- `tests/ros_reference_collision_monitor.rs`: for the same points, read as occupied cells'
-  centers, padded footprint, velocity and clock, the source's readings stamped at their
-  arrival, the stop slows and stops where Nav2's collision monitor in approach mode does,
-  a stale source included; and on each step down within reach where the monitor, reading
-  the depth points, lets the base go on, the stop on the `LiveObstacles` occupied points
-  of the same points drives the base to rest before any of them lies inside its
-  footprint.
+- `tests/ros_reference_collision_monitor.rs`: for the same points, read as a source's
+  newest points on a free grid that holds every pose of the projection, padded footprint,
+  velocity and clock, the source's readings stamped at their arrival, the stop slows and
+  stops where Nav2's collision monitor in approach mode does, a stale source included; and
+  on each step down within reach where the monitor, reading the depth points, lets the base
+  go on, the stop on what `LiveObstacles` gives of the same points drives the base to rest
+  before any of its points lies inside its footprint or its outline meets a lethal cell.
 
 ## Tests
 
 `cargo test` runs the parity tests above and the properties and cases of each module on
 drawn grids, maps, scenes and plans (`tests/planner.rs`, `tests/inflation.rs`,
 `tests/obstacles.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
-`tests/progress_checker.rs`, `tests/stop.rs`).
+`tests/progress_checker.rs`, `tests/stop.rs`, `tests/behaviors.rs`).

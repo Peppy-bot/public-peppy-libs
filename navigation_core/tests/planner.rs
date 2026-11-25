@@ -377,6 +377,7 @@ fn a_recentered_grid_plans_from_the_starts_own_cell(tc: TestCase) {
         FrameName::parse("odom").expect("a frame name"),
         bounds([-1.0, -1.0], [1.0, 1.0]),
         heights,
+        PositiveFinite::parse(5.0).expect("a range"),
         small_footprint(),
         NonZeroUsize::MIN,
     )

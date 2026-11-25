@@ -119,7 +119,13 @@ fn the_lethal_cells_are_nav2s_for_the_same_points() {
             );
             points_of_the_body +=
                 cells_of_the_body(cloud, &cases.footprint, EDGE_MARGIN_M, heights, geometry).len();
-            let mut live = live_obstacles_over(&cases.grid, resolution, heights, footprint.clone());
+            let mut live = live_obstacles_over(
+                &cases.grid,
+                resolution,
+                heights,
+                source.obstacle_max_range,
+                footprint.clone(),
+            );
             assert_eq!(
                 live.columns(),
                 geometry,
