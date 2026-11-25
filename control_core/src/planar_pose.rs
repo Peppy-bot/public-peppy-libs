@@ -1,7 +1,8 @@
 //! Where one frame sits in another on the floor plane: a position and a heading, the pose of a
-//! mobile base and of the frames it drives in, seen from another planar frame with its heading
-//! read as Nav2's controller reads a plan's pose in its base's frame, through tf2's lookup, KDL's
-//! rotation and tf2's `getYaw`, in [-pi, pi], each in frame_tree's arithmetic.
+//! mobile base and of the frames it drives in, composed with another as tf2 composes their
+//! transforms, and seen from another planar frame with its heading read as Nav2's controller
+//! reads a plan's pose in its base's frame, through tf2's lookup, KDL's rotation and tf2's
+//! `getYaw`, in [-pi, pi], each in frame_tree's arithmetic.
 
 use std::fmt;
 
@@ -124,6 +125,17 @@ impl PlanarPose {
     pub fn seen_from(self, frame: PlanarPose) -> Result<PlanarPose, PlanarPoseError> {
         let [x, y] = frame.apply_inverse([self.x, self.y]);
         PlanarPose::new(x, y, heading_seen_from(self.yaw, frame.yaw))
+    }
+
+    /// `inner`, a pose in the frame this pose places, in the frame this pose is placed in:
+    /// the two transforms composed in tf2's arithmetic ([`Transform::compose`]), read back
+    /// on the floor plane, its heading as tf2's `getYaw` reads it. A composition whose
+    /// position is not finite makes no pose. [`PlanarPose::IDENTITY`] seen from a pose
+    /// ([`PlanarPose::seen_from`]) undoes the pose.
+    pub fn compose(self, inner: PlanarPose) -> Result<PlanarPose, PlanarPoseError> {
+        let composed = self.to_transform().compose(&inner.to_transform());
+        let [x, y, _] = composed.position();
+        PlanarPose::new(x, y, composed.orientation().yaw())
     }
 }
 
@@ -318,6 +330,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    // A pose composed with another and then with the first one undone, the identity seen
+    // from it, is the other again.
+    #[test]
+    fn a_composed_pose_undone_is_the_inner_pose() {
+        let outer = planar(1.0, -2.0, 0.7);
+        let inner = planar(0.3, 0.4, -1.2);
+        let undone = PlanarPose::IDENTITY.seen_from(outer).expect("a pose");
+        let back = undone
+            .compose(outer.compose(inner).expect("a pose"))
+            .expect("a pose");
+        assert!(
+            close(
+                [back.x, back.y, back.yaw],
+                [inner.x, inner.y, inner.yaw],
+                1e-12
+            ),
+            "{back:?}"
+        );
+    }
+
+    // Two poses whose sum leaves the finite numbers compose to none, the refusal naming the
+    // position; a far pose composed with the identity is itself.
+    #[test]
+    fn poses_composed_past_the_finite_numbers_give_none() {
+        let far = planar(f64::MAX, 0.0, 0.0);
+        let refused = far.compose(far).unwrap_err();
+        assert_eq!((refused.x, refused.y), (f64::INFINITY, 0.0));
+        assert_eq!(far.compose(PlanarPose::IDENTITY), Ok(far));
     }
 
     // The distance between two poses is that of their positions, and the
