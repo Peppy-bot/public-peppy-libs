@@ -101,21 +101,25 @@
 //! 516,867.
 //!
 //! [`LiveObstacles::project`] gives the obstacle layer over a grid, the voxel
-//! map placed in the grid's frame. A voxel stands for every point inside it,
-//! and the obstacle layer marks the cell of every point
-//! (obstacle_layer.cpp:525-581), so a column of the voxel map marks every
-//! cell whose square overlaps the column's square, on a grid turned against
-//! the map or finer than it too: a cell is lethal where its square overlaps
-//! the square of a column that holds an occupied voxel whose center lies
-//! between `min_obstacle_height_m` and `max_obstacle_height_m`, both included,
-//! as the observation buffer keeps a point, or of a drop's column; free where
-//! it overlaps the square of any other column the map knows a voxel of; and
-//! unknown otherwise. Two squares overlap when they share more than a line or
-//! a point, which the separating axes of convex polygons decide exactly: the
-//! two axes of the grid and the two of the turned square. Nav2 marks points,
-//! so the overlap of a column's square with a cell is the crate's own. Each
-//! column's square stands a sliver in from the column's sides, so on a grid of
-//! the map's own lattice a column's square overlaps the column's cell alone.
+//! map placed in the grid's frame, and departs there from the obstacle layer,
+//! which marks the cell of each point of an observation in its global frame
+//! (obstacle_layer.cpp:525-581). A voxel stands for every point inside it, so
+//! a column of the voxel map marks every cell of the grid whose square
+//! overlaps the column's square. On a grid of the map's own lattice that cell
+//! is the column's own, the cell of each point the column holds; on a grid
+//! turned against the map or finer than it, a column marks every cell a point
+//! of its square stands in, up to four cells and more, where the obstacle
+//! layer marks the cells of the points it saw alone. A cell is lethal where its
+//! square overlaps the square of a column that holds an occupied voxel whose
+//! center lies between `min_obstacle_height_m` and `max_obstacle_height_m`,
+//! both included, as the observation buffer keeps a point, or of a drop's
+//! column; free where it overlaps the square of any other column the map knows
+//! a voxel of; and unknown otherwise. Two squares overlap when they share more
+//! than a line or a point, which the separating axes of convex polygons decide
+//! exactly: the two axes of the grid and the two of the turned square
+//! ([`crate::grid`]). Each column's square stands a sliver in from the
+//! column's sides, so on a grid of the map's own lattice a column's square
+//! overlaps the column's cell alone.
 //! A placement that puts a corner of a column's square at a point that is not
 //! finite is refused ([`PlacementNotFinite`]); a column whose square's extent
 //! on the grid's lattice, its corners' offsets from the grid's origin over the

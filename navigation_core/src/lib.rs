@@ -10,8 +10,9 @@
 //!   and circumscribed radii.
 //! - [`obstacles`]: what the sensors see, depth frames and laser scans kept in
 //!   an occupancy map whose columns under the padded footprint are cleared
-//!   after each frame, projected to a grid as Nav2's obstacle layer marks
-//!   points, a drop below the floor marked too, and the points each source's
+//!   after each frame, projected to a grid, each column marking every cell its
+//!   square overlaps where Nav2's obstacle layer marks the cell of each point,
+//!   a drop below the floor marked too, and the points each source's
 //!   newest frame saw, which the stop reads.
 //! - [`saved_grid`]: a saved occupancy grid as Nav2's static layer takes a
 //!   trinary map, from its image or from an occupancy grid's cells, its

@@ -9,9 +9,10 @@
 //! readings wrong and far before a box, spread evenly over each frame, and wrong far
 //! readings placed at random mark a cell only where three of one frame cross its floor; a
 //! base that sees its own deck as it drives and turns marks no cell; the footprint's
-//! clearing leaves no occupied cell under it and every cell of a saved grid; and a laser
-//! scan marks each hit where the sensor stood at its ray's time, a ray that met nothing
-//! marking and freeing nothing.
+//! clearing leaves no occupied cell under it and every cell of a saved grid; a laser scan
+//! marks each hit where the sensor stood at its ray's time, a ray that met nothing marking
+//! and freeing nothing; and at a drawn placement on a grid of a drawn side, the projection
+//! marks every cell that the square of a marked column overlaps, and no other.
 
 mod common;
 
@@ -21,6 +22,7 @@ use std::num::NonZeroUsize;
 use camera_core::laser_scan::{LaserScan, Sweep};
 use common::footprints::{inside_by, padded};
 use common::layers::{layer, lethal_cells};
+use common::placements::assert_marks_the_cells_the_occupied_squares_overlap;
 use common::poses::{on_base, planar};
 use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
@@ -491,6 +493,49 @@ fn a_drop_marks_every_cell_under_its_column_on_a_turned_finer_grid() {
         })
         .collect();
     assert!(unmarked.is_empty(), "the drop unmarked at {unmarked:?}");
+}
+
+/// The half side, in meters, of a grid about the origin that holds the box before the drop
+/// wherever a drawn placement puts it.
+const PLACED_HALF_SIDE_M: f64 = 3.5;
+
+// The box before the drop, projected at a drawn offset and turn onto a grid of a drawn
+// side, coarser or finer than the voxels. Nav2's obstacle layer marks the cell of each
+// point; the projection marks every cell that a marked column's square overlaps, so each
+// lethal cell lies on the square of a column marked on the map's own grid, and each cell
+// whose center lies inside such a square, a sliver in from its sides, is lethal.
+#[hegel::test(test_cases = 30)]
+fn a_projection_marks_every_cell_a_marked_column_overlaps_at_a_drawn_placement(tc: TestCase) {
+    let live = a_box_before_a_drop();
+    let marked = lethal_cells(&layer(&live));
+    let offset = || gs::floats().min_value(-0.5).max_value(0.5);
+    let grid_from_map = planar(
+        tc.draw(offset()),
+        tc.draw(offset()),
+        tc.draw(
+            gs::floats()
+                .min_value(-std::f64::consts::PI)
+                .max_value(std::f64::consts::PI),
+        ),
+    );
+    let cell_m = tc.draw(gs::floats().min_value(0.02).max_value(0.2));
+    let cells = (2.0 * PLACED_HALF_SIDE_M / cell_m).ceil() as u32;
+    let geometry = GridGeometry::new(
+        cells,
+        cells,
+        PositiveFinite::parse(cell_m).expect("positive"),
+        [-PLACED_HALF_SIDE_M; 2],
+    )
+    .expect("a grid about the origin");
+    let projected = live
+        .project(grid_from_map, geometry)
+        .expect("a finite placement");
+    assert_marks_the_cells_the_occupied_squares_overlap(
+        &live.columns(),
+        &marked,
+        grid_from_map,
+        projected.grid(),
+    );
 }
 
 // A wall one voxel thick and the floor beside it, seen from above, projected onto a grid

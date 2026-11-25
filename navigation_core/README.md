@@ -22,10 +22,10 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   pose, and whether it holds a point of the base's frame (`holds`).
 - `obstacles` keeps what the sensors see in an occupancy map, `LiveObstacles`: the points
   of depth frames and the hits of laser scans, each placed where the sensor stood at its
-  time, the map's columns under the padded footprint cleared after each frame, and the
-  map projected to a grid as Nav2's obstacle layer marks points, a drop below the floor
-  marked too; and, for each source, the points its newest frame saw, which the stop
-  reads beside the grid.
+  time, the map's columns under the padded footprint cleared after each frame, and the map
+  projected to a grid, each column marking every cell its square overlaps where Nav2's
+  obstacle layer marks the cell of each point, a drop below the floor marked too; and, for
+  each source, the points its newest frame saw, which the stop reads beside the grid.
 - `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map, from
   its image or from an occupancy grid's cells, places its occupied cells on a grid in
   another frame (`placed_on`), and holds a map's extent as room_map:v1 gives it
@@ -227,33 +227,37 @@ frames, a count of two marks 152, a count of one 3,839, and a count of three tha
 outnumber the rays short and standing 516,867.
 
 `project` gives the `ObstacleLayer` over a grid's geometry, the voxel map placed in the
-grid's frame at a `PlanarPose`. A voxel stands for every point inside it, and Nav2's
-obstacle layer marks the cell of every point, so a column of the voxel map marks every
-cell whose square overlaps the column's square, on a grid turned against the map or finer
-than it too: a cell is `LETHAL` where its square overlaps the square of a column that
-holds an occupied voxel whose center lies from `min_obstacle_height_m` to
-`max_obstacle_height_m`, both included, as Nav2's observation buffer keeps a point, or of
-a drop's column; `FREE` where it overlaps the square of any other column the map knows a
-voxel of; `UNKNOWN` otherwise. Two squares overlap when they share more than a line or a
-point, which the separating axes of convex polygons decide exactly, and each column's
-square stands a sliver in from the column's sides, so on a grid of the map's own lattice a
-column marks its own cell alone. A placement that puts a corner of a column's square at a
-point that is not finite fails with `PlacementNotFinite`; a column whose square's extent
-on the grid's lattice is not finite marks no cell, the cells of the grid that its square
-overlaps among them, as the overlap is decided on that extent. `ObstacleHeights::parse`
-takes the heights with the side of the voxels, `ObstacleHeightsParams`, and refuses a
-height of the band that is not a whole number of voxels, at least one, naming the nearest
-whole values, so a voxel's center judges as its points do, but for a point exactly at
-`max_obstacle_height_m`, which lies in the voxel above the band and marks nothing where
-Nav2 keeps it, and the floor's own voxels, either side of the floor, are no obstacle;
-`max_step_down_m` takes any height above the floor. `LiveObstacles::new` makes its voxel
-map in a frame and over bounds, of the voxels the heights judge and of no more columns on
-an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), with the obstacle range, a
-`PositiveFinite` distance in the plane, and `recentered` takes bounds of no more.
-`columns` is the grid of the voxel map's columns, one cell a column: the grid a navigator
-plans on in the voxel map's frame. `recentered` moves the map and the drops over other
-bounds, keeping what it knows of the columns both hold, for a grid that moves with the
-base, and keeps each source's newest points as they are.
+grid's frame at a `PlanarPose`, and departs there from Nav2's obstacle layer, which marks
+the cell of each point of an observation in its global frame. A voxel stands for every
+point inside it, so a column of the voxel map marks every cell of the grid whose square
+overlaps the column's square: on a grid of the map's own lattice, the column's own cell,
+the cell of each point the column holds; on a grid turned against the map or finer than
+it, every cell a point of its square stands in, up to four cells and more, where Nav2's
+obstacle layer marks the cells of the points it saw alone. A cell is `LETHAL` where its
+square overlaps the square of a column that holds an occupied voxel whose center lies from
+`min_obstacle_height_m` to `max_obstacle_height_m`, both included, as Nav2's observation
+buffer keeps a point, or of a drop's column; `FREE` where it overlaps the square of any
+other column the map knows a voxel of; `UNKNOWN` otherwise. Two squares overlap when they
+share more than a line or a point, which the separating axes of convex polygons decide
+exactly, and each column's square stands a sliver in from the column's sides, so on a grid
+of the map's own lattice a column marks its own cell alone. A placement that puts a corner
+of a column's square at a point that is not finite fails with `PlacementNotFinite`; a
+column whose square's extent on the grid's lattice is not finite marks no cell, the cells
+of the grid that its square overlaps among them, as the overlap is decided on that extent.
+`ObstacleHeights::parse` takes the heights with the side of the voxels,
+`ObstacleHeightsParams`, and refuses a height of the band that is not a whole number of
+voxels, at least one, naming the nearest whole values, so a voxel's center judges as its
+points do, but for a point exactly at `max_obstacle_height_m`, which lies in the voxel
+above the band and marks nothing where Nav2 keeps it, and the floor's own voxels, either
+side of the floor, are no obstacle; `max_step_down_m` takes any height above the floor.
+`LiveObstacles::new` makes its voxel map in a frame and over bounds, of the voxels the
+heights judge and of no more columns on an axis than a cost grid's axis holds
+(`MAX_AXIS_CELLS`), with the obstacle range, a `PositiveFinite` distance in the plane, and
+`recentered` takes bounds of no more. `columns` is the grid of the voxel map's columns,
+one cell a column: the grid a navigator plans on in the voxel map's frame. `recentered`
+moves the map and the drops over other bounds, keeping what it knows of the columns both
+hold, for a grid that moves with the base, and keeps each source's newest points as they
+are.
 
 For each source, `LiveObstacles` keeps the points its newest frame saw, in the map's frame
 on the floor's plane, as the frame saw them before the clearing under the footprint: each
