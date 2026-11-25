@@ -498,14 +498,18 @@ impl From<Stand> for StandFields {
 }
 
 /// An object the scene places, as the world has it: removed, or at a pose
-/// with its control values, raised on a riser or not. Written as
-/// `{ removed: true }` or `{ pose, controls, raise_m }`, read by the parser
-/// of the marks of a map entry.
+/// with its control values, raised on a riser or not, at the size that the
+/// scene gives it or at a size of its own. Written as `{ removed: true }` or
+/// `{ pose, scale, controls, raise_m }`, read by the parser of the marks of
+/// a map entry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SceneObject {
     Removed,
     Placed {
         pose: Pose,
+        /// The uniform scale of the object, 1 = as authored: a finite number
+        /// above 0. None for the scale that the scene places the object at.
+        scale: Option<f64>,
         controls: BTreeMap<String, f64>,
         raise: Raise,
     },
@@ -515,14 +519,31 @@ pub enum SceneObject {
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a scene object, { removed: true } or { pose, controls, raise_m }"
+    expecting = "a scene object, { removed: true } or { pose, scale, controls, raise_m }"
 )]
 struct PlacedFields {
     pose: Pose,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scale: Option<f64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     controls: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Raise::is_none")]
     raise_m: Raise,
+}
+
+/// The scale of a placed scene object as its entry writes it: none for an
+/// entry without one, else a finite number above 0.
+fn placed_scale(scale: Option<f64>) -> Result<Option<f64>, Error> {
+    let Some(written) = scale else {
+        return Ok(None);
+    };
+    let finite_above_zero = written.is_finite() && written > 0.0;
+    if !finite_above_zero {
+        return Err(Error::rule(format!(
+            "the scale {written} is not a finite number above 0; write a scale above 0, or leave it out for the scale that the scene places the object at"
+        )));
+    }
+    Ok(Some(written))
 }
 
 impl Serialize for SceneObject {
@@ -531,10 +552,12 @@ impl Serialize for SceneObject {
             SceneObject::Removed => Entry::Removed,
             SceneObject::Placed {
                 pose,
+                scale,
                 controls,
                 raise,
             } => Entry::Value(PlacedFields {
                 pose: pose.clone(),
+                scale: *scale,
                 controls: controls.clone(),
                 raise_m: *raise,
             }),
@@ -552,10 +575,12 @@ impl<'de> Deserialize<'de> for SceneObject {
             )),
             Entry::Value(PlacedFields {
                 pose,
+                scale,
                 controls,
                 raise_m,
             }) => Ok(SceneObject::Placed {
                 pose,
+                scale: placed_scale(scale).map_err(serde::de::Error::custom)?,
                 controls,
                 raise: raise_m,
             }),
@@ -2299,7 +2324,7 @@ pub(crate) mod tests {
                     "{ removed: true }",
                     "{ pose: { at: \"corner_a\" }, typo: 1 }",
                 ),
-                "scene_objects.mantel_clock_01: typo: unknown field `typo`, expected one of `pose`, `controls`, `raise_m`",
+                "scene_objects.mantel_clock_01: typo: unknown field `typo`, expected one of `pose`, `scale`, `controls`, `raise_m`",
             ),
             (
                 example_text().replace(

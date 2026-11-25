@@ -241,9 +241,16 @@ fn scene_objects(tc: &TestCase) -> SceneObject {
     }
     SceneObject::Placed {
         pose: tc.draw(poses()),
+        scale: tc.draw(placed_scales()),
         controls: tc.draw(controls()),
         raise: tc.draw(raises()),
     }
+}
+
+/// The scale of a placed scene object: none, for the scale that its scene
+/// places it at, or a scale of its own.
+fn placed_scales() -> impl PrintableGenerator<Option<f64>> {
+    gs::optional(gs::floats::<f64>().min_value(0.1).max_value(3.0))
 }
 
 /// A light with at least one setting.
@@ -682,6 +689,7 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
     let object = tc.draw(objects());
     let scene_object = SceneObject::Placed {
         pose: tc.draw(poses()),
+        scale: tc.draw(placed_scales()),
         controls: tc.draw(controls()),
         raise: tc.draw(raises()),
     };
