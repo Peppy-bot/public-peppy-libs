@@ -4,7 +4,10 @@
 //! sensor's own name, and a consumer whose tree holds no frame of that name drops the
 //! measurement with `unknown_frame`. A sensor node reads it once at its start through
 //! [`read_sensor`], before it opens anything, with the [`SensorClass`] of the sensors it
-//! streams as: a camera with [`CAMERA`], a 2-D lidar with [`LIDAR_2D`].
+//! streams as: a camera with [`CAMERA`], a 2-D lidar with [`LIDAR_2D`]. A node that reads a
+//! sensor fixed to the base takes the sensor's frame from an answer of `describe_sensors`
+//! through [`DescribedSensors::fixed_to_the_base`], with the class it reads: a depth camera
+//! with [`DEPTH_CAMERA`], a 2-D lidar with [`LIDAR_2D`].
 
 use std::fmt::{self, Display};
 use std::future::Future;
@@ -30,6 +33,13 @@ pub struct SensorClass {
 pub const CAMERA: SensorClass = SensorClass {
     noun: "camera",
     kinds: &["rgb_camera", "rgbd_camera"],
+};
+
+/// The depth cameras: a sensor that streams on rgbd_camera, whose frame is its colour optical
+/// frame.
+pub const DEPTH_CAMERA: SensorClass = SensorClass {
+    noun: "depth camera",
+    kinds: &["rgbd_camera"],
 };
 
 /// The 2-D lidars: a sensor that streams on lidar_2d, whose frame is its sensor frame.
@@ -90,6 +100,25 @@ impl DescribedSensors {
             })
             .collect())
     }
+
+    /// The frame of the sensor `name`, of one of `class`'s kinds, that the answer places fixed
+    /// to the base, its carried_by empty; refused with what to run when the answer names no
+    /// sensor `name`, names it a sensor of another kind, or names a part that carries it.
+    pub fn fixed_to_the_base(
+        &self,
+        class: SensorClass,
+        name: &str,
+    ) -> Result<FrameName, SensorMountsError> {
+        let sensor = sensor_of(class, self, name)?;
+        if !sensor.carried_by.is_empty() {
+            return Err(SensorMountsError::Carried {
+                class,
+                name: name.to_owned(),
+                carrier: sensor.carried_by.to_owned(),
+            });
+        }
+        frame_of(sensor)
+    }
 }
 
 /// A sensor as sensor_mounts places it: the class it was read as, the name it runs under and
@@ -101,7 +130,8 @@ pub struct MountedSensor {
     pub frame: FrameName,
 }
 
-/// Why a sensor of `class` has no frame to name in its measurements.
+/// Why a sensor of `class` has no frame to name in its measurements, or no frame fixed to the
+/// base.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SensorMountsError {
     /// The instance id is not the copy's name, an underscore and a sensor's name.
@@ -131,6 +161,12 @@ pub enum SensorMountsError {
     },
     /// The sensor's entry of `sensor_frames` is empty.
     SensorFrame { name: String, error: FrameNameError },
+    /// The answer names a part of the robot, `carrier`, that carries the sensor.
+    Carried {
+        class: SensorClass,
+        name: String,
+        carrier: String,
+    },
 }
 
 impl Display for SensorMountsError {
@@ -182,6 +218,17 @@ impl Display for SensorMountsError {
             SensorMountsError::SensorFrame { name, error } => write!(
                 f,
                 "sensor_mounts' describe_sensors gives {name:?} a sensor_frames entry: {error}"
+            ),
+            SensorMountsError::Carried {
+                class,
+                name,
+                carrier,
+            } => write!(
+                f,
+                "sensor_mounts' describe_sensors names {name:?} a sensor that {carrier:?} \
+                 carries: run the {noun} under the name of a {noun} fixed to the base, whose \
+                 carried_by is empty",
+                noun = class.noun
             ),
         }
     }
@@ -259,8 +306,10 @@ pub fn check_relayed_frame(simulated: &str, sensor: &MountedSensor) -> Result<()
 /// The name a sensor of `class` runs under: its instance id in its copy, the name sensor_mounts
 /// and a simulation give it. A launch mints a copy's instance ids as `<copy>_<id>`, so camera
 /// `alpha_wrist_left` of copy `alpha` runs under `wrist_left`, and a sensor launched outside a
-/// copy runs under the id the launcher wrote.
-fn sensor_name(
+/// copy runs under the id the launcher wrote. A node that reads a sensor of its own copy names
+/// it from the sensor's instance id and the node's copy. An instance id that names no sensor
+/// in the copy is refused.
+pub fn sensor_name(
     class: SensorClass,
     copy: Option<&str>,
     instance_id: &str,
@@ -287,6 +336,16 @@ fn sensor_frame(
     sensors: &DescribedSensors,
     name: &str,
 ) -> Result<FrameName, SensorMountsError> {
+    frame_of(sensor_of(class, sensors, name)?)
+}
+
+/// The sensor that `sensors`, sensor_mounts' answer, names `name`, when it is of one of
+/// `class`'s kinds.
+fn sensor_of<'s>(
+    class: SensorClass,
+    sensors: &'s DescribedSensors,
+    name: &str,
+) -> Result<DescribedSensor<'s>, SensorMountsError> {
     let sensor = sensors
         .sensors()?
         .into_iter()
@@ -303,8 +362,13 @@ fn sensor_frame(
             kind: sensor.kind.to_owned(),
         });
     }
+    Ok(sensor)
+}
+
+/// The frame of `sensor`'s entry of `sensor_frames`.
+fn frame_of(sensor: DescribedSensor<'_>) -> Result<FrameName, SensorMountsError> {
     FrameName::parse(sensor.frame).map_err(|error| SensorMountsError::SensorFrame {
-        name: name.to_owned(),
+        name: sensor.name.to_owned(),
         error,
     })
 }
@@ -581,6 +645,55 @@ mod tests {
             "sensor_mounts' describe_sensors names \"chest\" a sensor of \"rgbd_camera\": run the \
              lidar under the name of a lidar, a sensor of lidar_2d"
         );
+    }
+
+    // The answer gives the frame of a sensor of the class that it places fixed to the base; a
+    // sensor a part carries is refused naming the part and what to run, as are a name the
+    // answer lacks, a sensor of another kind, the kind judged first, and arrays that do not
+    // line up.
+    #[test]
+    fn a_sensor_fixed_to_the_base_gives_its_frame_and_a_carried_one_is_refused() {
+        let answer = answer();
+        assert_eq!(
+            answer.fixed_to_the_base(LIDAR_2D, "lidar"),
+            Ok(frame("lidar_link"))
+        );
+        assert_eq!(
+            answer.fixed_to_the_base(DEPTH_CAMERA, "chest"),
+            Ok(frame("chest_color_optical_frame"))
+        );
+        let carried = answer.fixed_to_the_base(CAMERA, "wrist_left").unwrap_err();
+        assert_eq!(
+            carried,
+            SensorMountsError::Carried {
+                class: CAMERA,
+                name: "wrist_left".to_owned(),
+                carrier: "left".to_owned(),
+            }
+        );
+        assert_eq!(
+            carried.to_string(),
+            "sensor_mounts' describe_sensors names \"wrist_left\" a sensor that \"left\" carries: \
+             run the camera under the name of a camera fixed to the base, whose carried_by is empty"
+        );
+        assert_eq!(
+            answer
+                .fixed_to_the_base(DEPTH_CAMERA, "wrist_left")
+                .unwrap_err()
+                .to_string(),
+            "sensor_mounts' describe_sensors names \"wrist_left\" a sensor of \"rgb_camera\": run \
+             the depth camera under the name of a depth camera, a sensor of rgbd_camera"
+        );
+        assert!(matches!(
+            answer.fixed_to_the_base(LIDAR_2D, "head"),
+            Err(SensorMountsError::NoSuchSensor { .. })
+        ));
+        let mut short = answer;
+        short.carried_by.pop();
+        assert!(matches!(
+            short.fixed_to_the_base(LIDAR_2D, "lidar"),
+            Err(SensorMountsError::Counts { carriers: 2, .. })
+        ));
     }
 
     #[test]

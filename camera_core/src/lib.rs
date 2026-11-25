@@ -31,12 +31,13 @@
 //! - [`relay`]: the pieces of a simulated camera's relay: why a forwarded
 //!   call has no answer, and the bounds and messages of the relay.
 //! - [`sensor_mounts`]: the sensor a node runs as, of a class that holds the
-//!   kinds it takes, the camera and the 2-D lidar classes among them, read once
-//!   at its start: the name it runs under in its copy and the frame it names in
-//!   each measurement, the one sensor_mounts:v1's `describe_sensors` gives that
-//!   name through the node's poll of its bound link, or a frame of its own name
-//!   with the link vacant, and the check that holds a value a relay forwards to
-//!   that frame.
+//!   kinds it takes, the camera, the depth camera and the 2-D lidar classes
+//!   among them, read once at its start: the name it runs under in its copy and
+//!   the frame it names in each measurement, the one sensor_mounts:v1's
+//!   `describe_sensors` gives that name through the node's poll of its bound
+//!   link, or a frame of its own name with the link vacant; the check that holds
+//!   a value a relay forwards to that frame; and the frame of a sensor of a name
+//!   that `describe_sensors` places fixed to the base, for a node that reads it.
 
 pub mod controls;
 pub mod depth_camera;
