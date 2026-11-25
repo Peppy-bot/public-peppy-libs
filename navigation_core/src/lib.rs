@@ -26,7 +26,9 @@
 //!   ([`planner::search`]) and its path, smoothed by Smac's smoother
 //!   ([`planner::plan`]), with the failures [`planner::PlanError`] names.
 //! - [`path_handler`]: a planner's path pruned to the poses ahead of the
-//!   base, as Nav2's controller server hands it to its controller.
+//!   base, the nearest pose found in the plan's frame and the poses ahead and
+//!   the goal placed in the cost grid's, as Nav2's controller server hands it
+//!   to its controller.
 //! - [`goal_checker`]: whether the base reached the goal of the plan it
 //!   follows, as Nav2's stateful goal checker judges it, each plan with its
 //!   own checker.

@@ -37,7 +37,9 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   path, smoothed by its smoother.
 - `path_handler` prunes a planner's path to the poses ahead of the base, as Nav2's
   controller server hands it to its controller (`GlobalPlan::prune`, the feasible path
-  handler).
+  handler): the plan's frame placed in the cost grid's, the base read in the plan's frame
+  for the pose nearest it, and the poses ahead and the plan's goal placed in the grid's
+  frame, ending at the first placed off the grid.
 - `goal_checker` judges whether the base reached the goal of the plan it follows, as
   Nav2's simple goal checker with `stateful` true judges it: once the position is reached,
   only the heading must still converge. Each `GlobalPlan` holds its own goal checker,
@@ -374,9 +376,9 @@ amd64 build, so it runs with no ROS on the machine.
   off, leaves it unknown; the scenario keeps the saved map's unknown cells out of the
   camera's view, and the test checks that it does. It runs on amd64.
 - `tests/ros_reference_pure_pursuit.rs`: for the same plan, pose, speed and cost grid,
-  the plan pruned by the controller server's path handler, the command equals Nav2's
-  regulated pure pursuit's within 1e-9, and the goal and progress checkers decide as
-  Nav2's.
+  the plan in the cost grid's own frame and pruned by the controller server's path
+  handler, the command equals Nav2's regulated pure pursuit's within 1e-9, and the goal
+  and progress checkers decide as Nav2's.
 - `tests/ros_reference_collision_monitor.rs`: for the same points, read as a source's
   newest points on a free grid that holds every pose of the projection, padded footprint,
   velocity and clock, the source's readings stamped at their arrival, the stop slows and

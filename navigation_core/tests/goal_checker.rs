@@ -45,7 +45,7 @@ fn plan_at(goal: PlanarPose, checker: GoalCheckerParams) -> (GlobalPlan, PrunedP
     };
     let mut plan = GlobalPlan::new(vec![goal], params, checker).expect("one pose");
     let pruned = plan
-        .prune(goal, &geometry())
+        .prune(goal, PlanarPose::IDENTITY, &geometry())
         .expect("the goal lies on the grid");
     (plan, pruned)
 }
@@ -198,7 +198,9 @@ fn plan_of_steps(steps: u32) -> (GlobalPlan, PrunedPlan) {
         prune_distance_m: non_negative(10.0),
     };
     let mut plan = GlobalPlan::new(path, params_handler, params(5.0, 0.0, 0.5)).expect("a path");
-    let pruned = plan.prune(start, &geometry()).expect("on the grid");
+    let pruned = plan
+        .prune(start, PlanarPose::IDENTITY, &geometry())
+        .expect("on the grid");
     (plan, pruned)
 }
 
