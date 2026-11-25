@@ -8,7 +8,10 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   `UNKNOWN` 255), and a point's cell (`worldToMap`), a cell's center (`mapToWorld`) and a
   point's continuous cell coordinates (`worldToMapContinuous`); an origin or a far corner
   that single precision does not hold is refused, as Smac 2D places a grid's cells from
-  the origin in single precision.
+  the origin in single precision. A cell of one grid placed on another lies under each
+  cell whose square its own square, set a sliver in from its sides, overlaps; a placement
+  that puts a corner of that square at a point that is not finite fails with
+  `PlacementNotFinite`.
 - `PaddedFootprint::new` pads a base's outline, `control_core::footprint::Footprint`, the
   outline base_state:v1's describe_base gives, as Nav2's `padFootprint` pads it, and gives
   the one footprint the cost grid, the planner, the controller, the stop and the collision
@@ -24,8 +27,9 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   marked too; and, for each source, the points its newest frame saw, which the stop
   reads beside the grid.
 - `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map, from
-  its image or from an occupancy grid's cells, and holds a map's extent as room_map:v1 gives
-  it (`MapExtent`).
+  its image or from an occupancy grid's cells, places its occupied cells on a grid in
+  another frame (`placed_on`), and holds a map's extent as room_map:v1 gives it
+  (`MapExtent`).
 - `inflation` inflates a grid around its lethal cells, as Nav2's inflation layer does.
 - `costmap` composes an obstacle layer, over a saved grid when one is loaded, and inflates
   them, as Nav2's layered cost map composes its layers.
@@ -306,6 +310,14 @@ extent, `[x_min, x_max, y_min, y_max]`, each edge finite and the least of each a
 below its greatest, and `contains` holds a point on its closed rectangle, the edges among
 it.
 
+`SavedGrid::placed_on` places a saved grid's occupied cells on a grid of another frame,
+the saved grid at a `PlanarPose` there: `LETHAL` each cell whose square overlaps the
+square of a lethal cell, set a sliver in from the cell's sides as a column of the voxel
+map is, and `UNKNOWN` every other, so the placed grid, composed as the static layer,
+changes the cells under the saved grid's occupied cells alone. It reads only the saved
+cells whose squares overlap the target grid, for a grid that rolls with the base under a
+large map.
+
 `Inflation::inflate` inflates a grid as Nav2's inflation layer does, over the whole grid:
 the distance from each cell to the nearest lethal cell by the single precision
 Felzenszwalb-Huttenlocher transform, and the cost of each cell within
@@ -373,5 +385,5 @@ amd64 build, so it runs with no ROS on the machine.
 
 `cargo test` runs the parity tests above and the properties and cases of each module on
 drawn grids, maps, scenes and plans (`tests/planner.rs`, `tests/inflation.rs`,
-`tests/obstacles.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
+`tests/obstacles.rs`, `tests/saved_grid.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
 `tests/progress_checker.rs`, `tests/stop.rs`, `tests/behaviors.rs`).

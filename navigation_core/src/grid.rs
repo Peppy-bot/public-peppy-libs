@@ -5,7 +5,17 @@
 //! `Costmap2D::worldToMap`, [`GridGeometry::center_of`] is `mapToWorld` and
 //! the planner locates its start and goal as `worldToMapContinuous` does,
 //! each in its arithmetic.
+//!
+//! A cell of one grid placed in another grid's frame lies under each cell of
+//! that grid whose square its own square overlaps by more than a line or a
+//! point, its square set a sliver in from the cell's sides; a voxel map's
+//! columns project onto a grid this way, and so do a saved grid's occupied
+//! cells. A placement that puts a corner of such a square at a point that is
+//! not finite is refused ([`PlacementNotFinite`]).
 
+use std::ops::RangeInclusive;
+
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 
 /// A cell nothing occupies.
@@ -26,6 +36,17 @@ pub const UNKNOWN: u8 = 255;
 /// (`DistanceTransform::distanceTransform1D`), and the last index of an axis
 /// of 46,341 cells squares to 46,340² = 2,147,395,600, at most 2³¹ − 1.
 pub const MAX_AXIS_CELLS: u32 = 46_341;
+
+/// How far in from its cell's sides the square of a cell placed on another
+/// grid sets its corners, as a share of the cell's side: single precision's
+/// epsilon times the most cells a grid's axis holds. A saved grid read from a
+/// map's image holds its resolution in single precision, as an `OccupancyGrid`
+/// does, so its cells and the voxels of the same side part by at most half
+/// that epsilon a cell, and its lattice lies within half this share of the
+/// voxel lattice over any axis a grid holds: the square of each column
+/// overlaps the column's own cell alone there, as on a grid of the map's own
+/// lattice.
+pub(crate) const CELL_SQUARE_INSET: f64 = f32::EPSILON as f64 * MAX_AXIS_CELLS as f64;
 
 /// Where a grid lies: its size in cells on each axis, the side of a cell, and
 /// the corner of its first cell, in meters in the grid's frame. The corner of
@@ -302,8 +323,117 @@ impl CostGrid {
     }
 }
 
+/// A placement of a map's grid in another grid's frame that puts a corner of
+/// a cell's square at a point that is not finite.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error(
+    "the map placed in the grid's frame at x {} m, y {} m, yaw {} rad puts a cell's corner at \
+     a point that is not finite: give an x and a y that, moved by the map's extent, stay finite",
+    .grid_from_map.x(),
+    .grid_from_map.y(),
+    .grid_from_map.yaw()
+)]
+pub struct PlacementNotFinite {
+    pub grid_from_map: PlanarPose,
+}
+
+/// The cells of `target` whose squares overlap the square of `cell` of
+/// `source`, the source grid placed in the target's frame at
+/// `target_from_source`, the square's corners [`CELL_SQUARE_INSET`] of a cell
+/// in from the cell's sides. A placement that puts a corner of the square at a
+/// point that is not finite is refused.
+pub(crate) fn cells_under(
+    source: &GridGeometry,
+    cell: Cell,
+    target_from_source: PlanarPose,
+    target: &GridGeometry,
+) -> Result<Vec<Cell>, PlacementNotFinite> {
+    let [x, y] = source.center_of(cell);
+    let half = source.resolution_m() * (0.5 - CELL_SQUARE_INSET);
+    let square = [[-half, -half], [half, -half], [half, half], [-half, half]]
+        .map(|[dx, dy]| target_from_source.apply([x + dx, y + dy]));
+    cells_overlapping(target, square).ok_or(PlacementNotFinite {
+        grid_from_map: target_from_source,
+    })
+}
+
+/// The cells of `geometry` whose squares overlap the parallelogram of
+/// `corners`, in order, in meters in the grid's frame, by more than a line or
+/// a point: the cells within the corners' extent along each of the grid's
+/// axes that no normal of the parallelogram's sides parts from it, as the
+/// separating axes of two convex polygons find their overlap. None when a
+/// corner is not finite. No cell when the parallelogram's extent on the
+/// grid's lattice, its corners' offsets from the origin over the resolution,
+/// is not finite, the cells of the grid that it overlaps among them, as the
+/// separating axes decide the overlap on that extent.
+pub(crate) fn cells_overlapping(
+    geometry: &GridGeometry,
+    corners: [[f64; 2]; 4],
+) -> Option<Vec<Cell>> {
+    if !all_finite(&corners) {
+        return None;
+    }
+    let origin = geometry.origin();
+    let resolution = geometry.resolution_m();
+    let lattice = corners.map(|corner| [0, 1].map(|i| (corner[i] - origin[i]) / resolution));
+    if !all_finite(&lattice) {
+        return Some(Vec::new());
+    }
+    let cells_along = |axis: [f64; 2], size: u32| -> Option<RangeInclusive<u32>> {
+        let [low, high] = extent_along(axis, &lattice);
+        let first = low.floor().max(0.0);
+        let last = (high.ceil() - 1.0).min(f64::from(size) - 1.0);
+        (first <= last).then_some(first as u32..=last as u32)
+    };
+    let (Some(xs), Some(ys)) = (
+        cells_along([1.0, 0.0], geometry.size_x()),
+        cells_along([0.0, 1.0], geometry.size_y()),
+    ) else {
+        return Some(Vec::new());
+    };
+    let normals = [[0, 1], [1, 2]].map(|[from, to]| {
+        let [dx, dy] = [0, 1].map(|i| lattice[to][i] - lattice[from][i]);
+        [-dy, dx]
+    });
+    let overlaps = |x: u32, y: u32| {
+        let (x, y) = (f64::from(x), f64::from(y));
+        let cell = [[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]];
+        normals.iter().all(|&normal| {
+            let [cell_low, cell_high] = extent_along(normal, &cell);
+            let [low, high] = extent_along(normal, &lattice);
+            cell_low < high && low < cell_high
+        })
+    };
+    Some(
+        xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+            .filter(|&(x, y)| overlaps(x, y))
+            .map(|(x, y)| geometry.cell(x, y).expect("an extent clamped to the grid"))
+            .collect(),
+    )
+}
+
+/// Whether every coordinate of `points` is finite.
+fn all_finite(points: &[[f64; 2]]) -> bool {
+    points
+        .iter()
+        .flatten()
+        .all(|coordinate| coordinate.is_finite())
+}
+
+/// The least and the greatest of `points` along `axis`.
+fn extent_along(axis: [f64; 2], points: &[[f64; 2]]) -> [f64; 2] {
+    points
+        .iter()
+        .map(|point| point[0] * axis[0] + point[1] * axis[1])
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[low, high], along| {
+            [low.min(along), high.max(along)]
+        })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn geometry() -> GridGeometry {
@@ -391,5 +521,84 @@ mod tests {
         assert_eq!(point.cell(), cell);
         assert_eq!(grid.cell_at(grid.index(cell)), cell);
         assert_eq!(grid.cells().count(), 12);
+    }
+
+    // A cell that meets a square at a line or a point alone is not under it:
+    // on a grid of 1 m cells, a square whose sides lie on cell boundaries
+    // covers its own cells and not the cells beside it; a square turned an
+    // eighth of a turn, its corners at the middles of cells' sides, covers the
+    // five cells it shares area with and not the four whose corners touch it;
+    // and one whose corner lies on a boundary between two cells' sides covers
+    // the six cells it shares area with and not the cell its corner touches,
+    // which only the grid's own axis parts from it.
+    #[test]
+    fn a_cell_that_meets_a_square_at_a_line_or_a_point_alone_is_not_under_it() {
+        let geometry =
+            GridGeometry::new(5, 5, PositiveFinite::parse(1.0).unwrap(), [0.0; 2]).unwrap();
+        let cells = |corners| -> BTreeSet<(u32, u32)> {
+            cells_overlapping(&geometry, corners)
+                .unwrap()
+                .into_iter()
+                .map(|cell| (cell.x(), cell.y()))
+                .collect()
+        };
+        let on_boundaries = [[1.0, 1.0], [3.0, 1.0], [3.0, 2.0], [1.0, 2.0]];
+        assert_eq!(cells(on_boundaries), BTreeSet::from([(1, 1), (2, 1)]));
+        let turned = [[1.5, 0.5], [2.5, 1.5], [1.5, 2.5], [0.5, 1.5]];
+        assert_eq!(
+            cells(turned),
+            BTreeSet::from([(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)])
+        );
+        let pointed = [[2.0, 0.5], [3.0, 1.5], [2.0, 2.5], [1.0, 1.5]];
+        assert_eq!(
+            cells(pointed),
+            BTreeSet::from([(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)])
+        );
+    }
+
+    // A square with a corner that is not finite overlaps no cell and is
+    // refused; a square standing on a corner at the origin of a grid of cells
+    // the least normal double wide, which overlaps three of the grid's cells,
+    // and whose top corner alone lies past the largest double cells up the
+    // grid's lattice, the corner neither side's normal is drawn from, overlaps
+    // none.
+    #[test]
+    fn a_square_is_refused_only_where_a_corner_is_not_finite() {
+        let geometry =
+            GridGeometry::new(40, 40, PositiveFinite::parse(0.05).unwrap(), [-1.0, -1.0]).unwrap();
+        for corner in [[f64::NAN, 0.0], [0.0, f64::INFINITY]] {
+            let square = [corner, [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+            assert_eq!(cells_overlapping(&geometry, square), None, "{corner:?}");
+        }
+        let finest = GridGeometry::new(
+            2,
+            2,
+            PositiveFinite::parse(f64::MIN_POSITIVE).unwrap(),
+            [0.0; 2],
+        )
+        .unwrap();
+        let standing = [[-2.0, 2.0], [0.0, 0.0], [2.0, 2.0], [0.0, 4.0]];
+        assert_eq!(cells_overlapping(&finest, standing), Some(Vec::new()));
+    }
+
+    // A cell placed half a cell along each axis lies under the four cells its
+    // square overlaps, and one placed on a cell of the target's lattice under
+    // that cell alone.
+    #[test]
+    fn a_placed_cell_lies_under_the_cells_its_square_overlaps() {
+        let meter = PositiveFinite::parse(1.0).unwrap();
+        let source = GridGeometry::new(1, 1, meter, [0.0; 2]).unwrap();
+        let target = GridGeometry::new(3, 3, meter, [-1.0, -1.0]).unwrap();
+        let cell = source.cell(0, 0).unwrap();
+        let half_along = PlanarPose::new(0.5, 0.5, 0.0).unwrap();
+        let under: BTreeSet<(u32, u32)> = cells_under(&source, cell, half_along, &target)
+            .unwrap()
+            .into_iter()
+            .map(|cell| (cell.x(), cell.y()))
+            .collect();
+        assert_eq!(under, BTreeSet::from([(1, 1), (2, 1), (1, 2), (2, 2)]));
+        let one_along = PlanarPose::new(1.0, 0.0, 0.0).unwrap();
+        let on_lattice = cells_under(&source, cell, one_along, &target).unwrap();
+        assert_eq!(on_lattice, vec![target.cell(2, 1).unwrap()]);
     }
 }

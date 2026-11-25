@@ -15,12 +15,20 @@
 //! `trinary_costmap` true and a lethal threshold of 100: lethal, free or
 //! unknown.
 //!
+//! [`SavedGrid::placed_on`] places a saved grid's occupied cells on a grid in
+//! another frame, as a voxel map's columns project onto a grid
+//! ([`crate::grid`]), for a grid that rolls with the base under a saved map.
+//!
 //! [`MapExtent`] is the rectangle of the map frame that room_map:v1 gives a
 //! map's grid, and tells whether a point lies on it.
 
+use control_core::planar_pose::PlanarPose;
 use control_core::positive_finite::PositiveFinite;
 
-use crate::grid::{CostGrid, FREE, GridError, GridGeometry, LETHAL, UNKNOWN};
+use crate::grid::{
+    CostGrid, FREE, GridError, GridGeometry, LETHAL, PlacementNotFinite, UNKNOWN,
+    cells_overlapping, cells_under,
+};
 
 /// The thresholds of a trinary map, as its YAML file gives them: the
 /// occupancy at or above which a pixel is occupied (`occupied_thresh`) and
@@ -182,6 +190,44 @@ impl SavedGrid {
         Ok(Self {
             grid: CostGrid::from_costs(geometry, costs)?,
         })
+    }
+
+    /// The occupied cells of this grid on a grid of `geometry` in another frame, this grid
+    /// placed in that frame at `grid_from_saved`: [`LETHAL`] each cell whose square overlaps
+    /// the square of a lethal cell of this grid, set a sliver in from the cell's sides as a
+    /// voxel map's column is, and [`UNKNOWN`] every other cell, so the placed grid, composed
+    /// as the static layer, changes the cells under this grid's occupied cells alone. Only
+    /// the cells of this grid whose squares overlap the target grid are read. A placement
+    /// that puts a corner of a square at a point that is not finite is refused.
+    pub fn placed_on(
+        &self,
+        grid_from_saved: PlanarPose,
+        geometry: GridGeometry,
+    ) -> Result<SavedGrid, PlacementNotFinite> {
+        let saved = self.grid.geometry();
+        let [x, y] = geometry.origin();
+        let [width, height] = [geometry.size_x(), geometry.size_y()]
+            .map(|cells| f64::from(cells) * geometry.resolution_m());
+        let bounds = [
+            [x, y],
+            [x + width, y],
+            [x + width, y + height],
+            [x, y + height],
+        ]
+        .map(|corner| grid_from_saved.apply_inverse(corner));
+        let under_the_target = cells_overlapping(&saved, bounds).ok_or(PlacementNotFinite {
+            grid_from_map: grid_from_saved,
+        })?;
+        let mut grid = CostGrid::filled(geometry, UNKNOWN);
+        for cell in under_the_target
+            .into_iter()
+            .filter(|&cell| self.grid.cost(cell) == LETHAL)
+        {
+            for marked in cells_under(&saved, cell, grid_from_saved, &geometry)? {
+                grid.costs_mut()[geometry.index(marked)] = LETHAL;
+            }
+        }
+        Ok(Self { grid })
     }
 
     pub fn grid(&self) -> &CostGrid {
@@ -413,6 +459,64 @@ mod tests {
             SavedGrid::from_cells(0, 2, tenth(), [0.0; 2], &[]),
             Err(SavedGridError::Grid(GridError::Empty { .. }))
         ));
+    }
+
+    /// The grid of `cells`, `columns` by `rows` of 1 m from the origin.
+    fn meters(columns: u32, rows: u32, cells: &[u8]) -> SavedGrid {
+        let meter = PositiveFinite::parse(1.0).unwrap();
+        SavedGrid::from_cells(columns, rows, meter, [0.0; 2], cells).unwrap()
+    }
+
+    // On its own lattice each occupied cell marks its own cell alone, and a free or unknown
+    // cell marks nothing; a quarter turn about the origin carries the cells of a row to a
+    // column; and a cell placed half a cell along each axis marks the four cells its square
+    // overlaps.
+    #[test]
+    fn a_placed_grid_marks_the_cells_its_occupied_squares_overlap() {
+        let row = meters(4, 1, &[100, 0, 255, 100]);
+        let own = row
+            .placed_on(PlanarPose::IDENTITY, row.grid().geometry())
+            .unwrap();
+        assert_eq!(own.grid().costs(), [LETHAL, UNKNOWN, UNKNOWN, LETHAL]);
+        let column =
+            GridGeometry::new(1, 4, PositiveFinite::parse(1.0).unwrap(), [-1.0, 0.0]).unwrap();
+        let quarter = PlanarPose::new(0.0, 0.0, std::f64::consts::FRAC_PI_2).unwrap();
+        let turned = row.placed_on(quarter, column).unwrap();
+        assert_eq!(turned.grid().costs(), [LETHAL, UNKNOWN, UNKNOWN, LETHAL]);
+        let three =
+            GridGeometry::new(3, 3, PositiveFinite::parse(1.0).unwrap(), [-1.0, -1.0]).unwrap();
+        let half_along = PlanarPose::new(0.5, 0.5, 0.0).unwrap();
+        let moved = meters(1, 1, &[100]).placed_on(half_along, three).unwrap();
+        let lethal: Vec<usize> = moved
+            .grid()
+            .costs()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &cost)| cost == LETHAL)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(lethal, [4, 5, 7, 8]);
+    }
+
+    // A grid placed away from the target marks nothing, and a placement that carries the
+    // target's corners past the finite numbers in the saved grid's frame is refused, naming
+    // the placement.
+    #[test]
+    fn a_grid_placed_away_marks_nothing_and_past_the_finite_numbers_is_refused() {
+        let row = meters(4, 1, &[100, 100, 100, 100]);
+        let target = row.grid().geometry();
+        let away = PlanarPose::new(10.0, 0.0, 0.0).unwrap();
+        let placed = row.placed_on(away, target).unwrap();
+        assert!(placed.grid().costs().iter().all(|&cost| cost == UNKNOWN));
+        let far = PlanarPose::new(-f64::MAX, -f64::MAX, std::f64::consts::FRAC_PI_4).unwrap();
+        let refused = row.placed_on(far, target).unwrap_err();
+        assert_eq!(refused, PlacementNotFinite { grid_from_map: far });
+        assert!(
+            refused
+                .to_string()
+                .starts_with("the map placed in the grid's frame at x "),
+            "{refused}"
+        );
     }
 
     // An extent takes finite edges, the least of each axis at or below its greatest, and

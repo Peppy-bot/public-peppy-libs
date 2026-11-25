@@ -1,7 +1,9 @@
 //! What a mobile base needs to plan a path around what it sees and to drive
 //! it, ported from Nav2 1.5.2, with no ROS and no base:
 //!
-//! - [`grid`]: the cost grid, Nav2's `Costmap2D`, with Nav2's cost values.
+//! - [`grid`]: the cost grid, Nav2's `Costmap2D`, with Nav2's cost values, and
+//!   the refusal of a placement of one grid's cells on another that is not
+//!   finite.
 //! - [`PaddedFootprint`]: a base's outline (`control_core::footprint::Footprint`)
 //!   padded as Nav2 pads it, the footprint the cost grid, the planner, the
 //!   controller, the stop and the collision checks take, with its inscribed
@@ -12,8 +14,9 @@
 //!   points, a drop below the floor marked too, and the points each source's
 //!   newest frame saw, which the stop reads.
 //! - [`saved_grid`]: a saved occupancy grid as Nav2's static layer takes a
-//!   trinary map, from its image or from an occupancy grid's cells, and a
-//!   map's extent as room_map:v1 gives it.
+//!   trinary map, from its image or from an occupancy grid's cells, its
+//!   occupied cells placed on a grid in another frame, and a map's extent as
+//!   room_map:v1 gives it.
 //! - [`inflation`]: a grid inflated around its lethal cells, as Nav2's
 //!   inflation layer inflates one.
 //! - [`costmap`]: an obstacle layer, over a saved grid when one is loaded,
