@@ -23,7 +23,9 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   map projected to a grid as Nav2's obstacle layer marks points, a drop below the floor
   marked too; and, for each source, the points its newest frame saw, which the stop
   reads beside the grid.
-- `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map.
+- `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map, from
+  its image or from an occupancy grid's cells, and holds a map's extent as room_map:v1 gives
+  it (`MapExtent`).
 - `inflation` inflates a grid around its lethal cells, as Nav2's inflation layer does.
 - `costmap` composes an obstacle layer, over a saved grid when one is loaded, and inflates
   them, as Nav2's layered cost map composes its layers.
@@ -295,6 +297,15 @@ last; and each cell's cost as Nav2's static layer takes a trinary map with unkno
 tracked: `LETHAL`, `FREE` or `UNKNOWN`. A map as map_saver writes it in trinary mode,
 pixels 0, 254 and 205 with thresholds 0.65 and 0.196, reads back lethal, free and unknown.
 
+`SavedGrid::from_cells` reads an occupancy grid's cells of a trinary map, as room_map:v1's
+map_grids carries them, row by row from the first cell at the resolution given: 0 `FREE`,
+100 `LETHAL` and 255, the grid's -1 read unsigned, `UNKNOWN`, as Nav2's static layer takes
+them with unknown cells tracked; another value is refused, naming its cell, and so is a
+count of cells other than the columns times the rows. `MapExtent::parse` takes room_map's
+extent, `[x_min, x_max, y_min, y_max]`, each edge finite and the least of each axis at or
+below its greatest, and `contains` holds a point on its closed rectangle, the edges among
+it.
+
 `Inflation::inflate` inflates a grid as Nav2's inflation layer does, over the whole grid:
 the distance from each cell to the nearest lethal cell by the single precision
 Felzenszwalb-Huttenlocher transform, and the cost of each cell within
@@ -338,8 +349,10 @@ amd64 build, so it runs with no ROS on the machine.
   or 0.1 mm or less past it, at its frame's base pose, the robot's own body, which marks
   nothing here, in a cell Nav2 holds not lethal.
 - `tests/ros_reference_global_costmap.rs`: for the same saved map, points, footprint,
-  padding, base pose and parameters, the cost grid is that of a Nav2 global cost map of a
-  static, an obstacle and an inflation layer, bit for bit, the cells under the footprint
+  padding, base pose and parameters, the saved map read from its image and from the
+  occupancy grid's values that map_io gives, and the voxel map in the cost map's own frame,
+  the cost grid is that of a Nav2 global cost map of a static, an obstacle and an inflation
+  layer, bit for bit, the cells under the footprint
   cleared over the saved map's unknown cells and its walls kept. The obstacle layer under
   test frees a cell over a voxel its rays cleared, where Nav2's, with its rays' clearing
   off, leaves it unknown; the scenario keeps the saved map's unknown cells out of the

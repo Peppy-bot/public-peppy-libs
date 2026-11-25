@@ -1,17 +1,18 @@
 //! The composed cost grid against a Nav2 global cost map of a static, an obstacle and an
 //! inflation layer (nav2_costmap_2d 1.5.2): `SavedGrid::from_image` reads a saved map as
-//! map_io and the static layer read it, `LiveObstacles` marks the cloud's occupied voxels
-//! in the band as the obstacle layer marks its points and clears the columns under the
-//! padded footprint as the obstacle layer clears its cells there, and `compose` merges
-//! them and inflates as the layered cost map does, so for the same saved map, points,
-//! footprint, base pose and parameters the cost grid is Nav2's, bit for bit. The cells
-//! under the footprint read free over the saved map's unknown cells in both, and the saved
-//! map's lethal cells stay. The obstacle layer under test also frees each cell over a
-//! voxel its rays cleared, where Nav2's, with clearing off, leaves a cell unknown; the
-//! scenario keeps the saved map's unknown cells out of the camera's view, and the test
-//! checks that none lies under such a cell outside the footprint. The evidence: every
-//! global costmap scenario of the ROS reference harness, whose committed outputs hold the
-//! bits of Nav2's amd64 build.
+//! map_io and the static layer read it, `SavedGrid::from_cells` reads the occupancy grid's
+//! values that map_io gives as the static layer takes them, `LiveObstacles` marks the
+//! cloud's occupied voxels in the band as the obstacle layer marks its points and clears
+//! the columns under the padded footprint as the obstacle layer clears its cells there,
+//! the voxel map in the cost map's own frame, and `compose` merges them and inflates as
+//! the layered cost map does, so for the same saved map, points, footprint, base pose and
+//! parameters the cost grid is Nav2's, bit for bit. The cells under the footprint read
+//! free over the saved map's unknown cells in both, and the saved map's lethal cells stay.
+//! The obstacle layer under test also frees each cell over a voxel its rays cleared, where
+//! Nav2's, with clearing off, leaves a cell unknown; the scenario keeps the saved map's
+//! unknown cells out of the camera's view, and the test checks that none lies under such a
+//! cell outside the footprint. The evidence: every global costmap scenario of the ROS
+//! reference harness, whose committed outputs hold the bits of Nav2's amd64 build.
 #![cfg(target_arch = "x86_64")]
 
 mod common;
@@ -27,7 +28,7 @@ use common::poses::planar;
 use control_core::non_negative_finite::NonNegativeFinite;
 use control_core::positive_finite::PositiveFinite;
 use navigation_core::costmap::compose;
-use navigation_core::grid::{FREE, LETHAL, UNKNOWN};
+use navigation_core::grid::{FREE, UNKNOWN};
 use navigation_core::inflation::{Inflation, InflationParams};
 use navigation_core::saved_grid::{MapThresholds, SavedGrid};
 use ros_reference::global_costmap::Cases;
@@ -36,19 +37,8 @@ use ros_reference::global_costmap::Cases;
 /// cell's diagonal.
 const REACH_M: f64 = 0.08;
 
-/// The cost the static layer gives an occupancy grid's value, for a trinary map with
-/// unknown cells tracked.
-fn static_cost(value: i8) -> u8 {
-    match value {
-        -1 => UNKNOWN,
-        100 => LETHAL,
-        0 => FREE,
-        other => panic!("map_io gives a trinary map no value {other}"),
-    }
-}
-
-// The saved grid's costs are the static layer's, and the composed and inflated grid is
-// Nav2's global cost map.
+// The saved grid of the image and the one of the occupancy grid's values are the static
+// layer's, and the composed and inflated grid is Nav2's global cost map.
 #[test]
 fn the_cost_grid_is_nav2s_global_cost_map() {
     let scenarios = Cases::load_all();
@@ -109,12 +99,17 @@ fn the_cost_grid_is_nav2s_global_cost_map() {
             geometry,
             "{name}: the saved grid's geometry"
         );
-        let static_costs: Vec<u8> = cases.map_values.iter().map(|&v| static_cost(v)).collect();
-        assert_eq!(
-            saved.grid().costs(),
-            static_costs,
-            "{name}: the static layer's costs"
-        );
+        // The occupancy grid's -1 read unsigned is 255, as room_map's map_grids carries it.
+        let map_values: Vec<u8> = cases.map_values.iter().map(|&value| value as u8).collect();
+        let of_values = SavedGrid::from_cells(
+            geometry.size_x(),
+            geometry.size_y(),
+            PositiveFinite::parse(geometry.resolution_m()).expect("a positive resolution"),
+            geometry.origin(),
+            &map_values,
+        )
+        .expect("map_io's values of a trinary map: 0, 100 and -1");
+        assert_eq!(saved, of_values, "{name}: the static layer's costs");
 
         // The voxels take the map's resolution as its YAML file gives it, a whole divisor
         // of the band; the grid holds it in single precision.
