@@ -230,13 +230,81 @@ mod tests {
             ),
             (
                 "{ pose: { at: \"corner_a\" }, typo: 1 }",
-                "scene_objects.clock: typo: unknown field `typo`, expected one of `pose`, `controls`, `raise_m`",
+                "scene_objects.clock: typo: unknown field `typo`, expected one of `pose`, `scale`, `controls`, `raise_m`",
             ),
         ] {
             assert_eq!(
                 SetupRecord::parse(&text(bad)).unwrap_err().to_string(),
                 refusal,
                 "{bad}"
+            );
+        }
+    }
+
+    /// A placed scene object writes the scale it has of its own, and none
+    /// for the scale that its scene places it at: a record without a scale
+    /// reads as it did, and writes no scale back.
+    #[test]
+    fn a_placed_scene_object_writes_its_scale_only_when_it_has_one() {
+        let text = |scale: &str| {
+            format!(
+                r#"{{ scene: {{ asset: "scene/default" }}, scene_objects: {{ clock: {{ pose: {{ position: [1, 2, 0.5], yaw: 0 }}{scale} }} }} }}"#
+            )
+        };
+        let clock = Name::parse("clock").unwrap();
+        let scale_of = |record: &SetupRecord| match &record.scene_objects[&clock] {
+            SceneObject::Placed { scale, .. } => *scale,
+            SceneObject::Removed => panic!("the clock is placed"),
+        };
+
+        let as_placed = SetupRecord::parse(&text("")).unwrap();
+        assert_eq!(scale_of(&as_placed), None);
+        let written = as_placed.to_json5().unwrap();
+        assert!(!written.contains("scale"), "{written}");
+        assert_eq!(SetupRecord::parse(&written).unwrap(), as_placed);
+
+        let resized = SetupRecord::parse(&text(", scale: 1.5")).unwrap();
+        assert_eq!(scale_of(&resized), Some(1.5));
+        let written = resized.to_json5().unwrap();
+        assert!(written.contains("scale: 1.5"), "{written}");
+        assert_eq!(SetupRecord::parse(&written).unwrap(), resized);
+
+        // A scale of 1 is a scale of its own too: the scene can place the
+        // object at another one.
+        let authored = SetupRecord::parse(&text(", scale: 1")).unwrap();
+        assert_eq!(scale_of(&authored), Some(1.0));
+        assert!(authored.to_json5().unwrap().contains("scale: 1"));
+    }
+
+    /// A scale of a placed scene object that is not above 0 is refused at
+    /// its entry. A document holds finite numbers only, so a scale that is
+    /// not finite is refused as each such number of a record is.
+    #[test]
+    fn a_scale_of_a_placed_scene_object_is_a_finite_number_above_zero() {
+        const NOT_A_SCALE: &str = " is not above 0; write a scale above 0, or leave it out for the scale that the scene places the object at";
+        let record = |scale: &str| {
+            format!(
+                r#"{{ scene: {{ asset: "scene/default" }}, scene_objects: {{ clock: {{ pose: {{ at: "corner_a" }}, scale: {scale} }} }} }}"#
+            )
+        };
+        for scale in ["0", "-1"] {
+            assert_eq!(
+                SetupRecord::parse(&record(scale)).unwrap_err().to_string(),
+                format!("scene_objects.clock: the scale {scale}{NOT_A_SCALE}"),
+            );
+        }
+        for (scale, not_finite) in [
+            ("NaN", "the number NaN is not finite"),
+            (
+                "Infinity",
+                "the number is an infinity or beyond the range of a double",
+            ),
+        ] {
+            assert_eq!(
+                SetupRecord::parse(&record(scale)).unwrap_err().to_string(),
+                format!(
+                    "scene_objects.clock.scale: {not_finite}; a document holds finite numbers only"
+                ),
             );
         }
     }
