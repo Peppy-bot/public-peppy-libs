@@ -281,7 +281,7 @@ mod tests {
     /// not finite is refused as each such number of a record is.
     #[test]
     fn a_scale_of_a_placed_scene_object_is_a_finite_number_above_zero() {
-        const NOT_A_SCALE: &str = " is not a finite number above 0; write a scale above 0, or leave it out for the scale that the scene places the object at";
+        const NOT_A_SCALE: &str = " is not above 0; write a scale above 0, or leave it out for the scale that the scene places the object at";
         let record = |scale: &str| {
             format!(
                 r#"{{ scene: {{ asset: "scene/default" }}, scene_objects: {{ clock: {{ pose: {{ at: "corner_a" }}, scale: {scale} }} }} }}"#

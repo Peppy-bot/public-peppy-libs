@@ -116,11 +116,17 @@ impl From<Scene> for SceneFields {
 
 /// An omitted scale is 1; a written one is positive.
 pub(crate) fn positive_scale(scale: Option<f64>) -> Result<f64, Error> {
-    let scale = scale.unwrap_or(1.0);
+    scale_above_zero(scale.unwrap_or(1.0), "1")
+}
+
+/// `scale` when it is above 0, as each scale of a document is. The refusal
+/// of another one ends with `omitted`, what its entry reads when it writes
+/// no scale.
+fn scale_above_zero(scale: f64, omitted: &str) -> Result<f64, Error> {
     let above_zero = scale > 0.0;
     if !above_zero {
         return Err(Error::rule(format!(
-            "the scale {scale} is not above 0; write a scale above 0, or leave it out for 1"
+            "the scale {scale} is not above 0; write a scale above 0, or leave it out for {omitted}"
         )));
     }
     Ok(scale)
@@ -507,8 +513,8 @@ pub enum SceneObject {
     Removed,
     Placed {
         pose: Pose,
-        /// The uniform scale of the object, 1 = as authored: a finite number
-        /// above 0. None for the scale that the scene places the object at.
+        /// The uniform scale of the object, 1 = as authored: a number above
+        /// 0. None for the scale that the scene places the object at.
         scale: Option<f64>,
         controls: BTreeMap<String, f64>,
         raise: Raise,
@@ -532,18 +538,11 @@ struct PlacedFields {
 }
 
 /// The scale of a placed scene object as its entry writes it: none for an
-/// entry without one, else a finite number above 0.
+/// entry without one, else a number above 0.
 fn placed_scale(scale: Option<f64>) -> Result<Option<f64>, Error> {
-    let Some(written) = scale else {
-        return Ok(None);
-    };
-    let finite_above_zero = written.is_finite() && written > 0.0;
-    if !finite_above_zero {
-        return Err(Error::rule(format!(
-            "the scale {written} is not a finite number above 0; write a scale above 0, or leave it out for the scale that the scene places the object at"
-        )));
-    }
-    Ok(Some(written))
+    scale
+        .map(|written| scale_above_zero(written, "the scale that the scene places the object at"))
+        .transpose()
 }
 
 impl Serialize for SceneObject {
