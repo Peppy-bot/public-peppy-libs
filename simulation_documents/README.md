@@ -150,10 +150,15 @@ solver. The rule is an object with one key:
 - `{ beside: { object, gap_m } }`: against the same wall as `object`, side
   by side with it at a gap of `gap_m` metres, at least 0;
 - `{ facing: { object, distance_m } }`: front to front with `object`,
-  `distance_m` metres between the two fronts, above 0.
+  `distance_m` metres between the two fronts, above 0;
+- `{ at_side: { object, sides, gap_m } }`: at one of the `sides` of
+  `object`, its front toward `object` and its box `gap_m` metres out of the
+  box of `object` on that side, at least 0, such as a chair at a table.
+  `sides` lists one or more sides of the frame of `object`, `+x`, `-x`, `+y`
+  and `-y`, none twice.
 
-The `object` of `beside` and `facing` is another object of the pattern
-whose pose is `furnish`, `beside` names a piece whose rule is
+The `object` of `beside`, `facing` and `at_side` is another object of the
+pattern whose pose is `furnish`, `beside` names a piece whose rule is
 `against_wall` or `in_corner`, and the rules name each other in no cycle. A
 station is the room that a robot needs to work a work surface of the piece
 from one of its sides: `{ landmark, side, robot }` for a robot of the
