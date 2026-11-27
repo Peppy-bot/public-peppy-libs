@@ -4,8 +4,8 @@ The Python bindings of [`robot_description`](../robot_description), for the
 Python nodes and the simulation engines. They give each bundled robot model by
 its model id, and a robot's description read from its URDF and SRDF with the
 same reader as the Rust nodes: its arms with their grippers, its named states,
-its cameras and its joint limits. A file the reader refuses raises the same
-refusal the Rust nodes give.
+its cameras, its lidars and its joint limits. A file the reader refuses raises
+the same refusal the Rust nodes give.
 
 ## Build and install
 

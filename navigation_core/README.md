@@ -8,22 +8,28 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   `UNKNOWN` 255), and a point's cell (`worldToMap`), a cell's center (`mapToWorld`) and a
   point's continuous cell coordinates (`worldToMapContinuous`); an origin or a far corner
   that single precision does not hold is refused, as Smac 2D places a grid's cells from
-  the origin in single precision.
+  the origin in single precision. A cell of one grid placed on another lies under each
+  cell whose square its own square, set a sliver in from its sides, overlaps; a placement
+  that puts a corner of that square at a point that is not finite fails with
+  `PlacementNotFinite`.
 - `PaddedFootprint::new` pads a base's outline, `control_core::footprint::Footprint`, the
   outline base_state:v1's describe_base gives, as Nav2's `padFootprint` pads it, and gives
   the one footprint the cost grid, the planner, the controller, the stop and the collision
   checks take, as Nav2 hands them only its padded footprint; a padding that makes the
   outline cross itself is refused, naming the padding. A `PaddedFootprint` gives its
   inscribed and circumscribed radii as Nav2's `calculateMinAndMaxDistances` takes them,
-  its vertices placed at a pose (`transformFootprint`), and whether the base collides at a
-  pose.
+  its vertices placed at a pose (`transformFootprint`), whether the base collides at a
+  pose, and whether it holds a point of the base's frame (`holds`).
 - `obstacles` keeps what the sensors see in an occupancy map, `LiveObstacles`: the points
   of depth frames and the hits of laser scans, each placed where the sensor stood at its
-  time, the map's columns under the padded footprint cleared after each frame, and the
-  map projected to a grid as Nav2's obstacle layer marks points, a drop below the floor
-  marked too; and, for each source, the points its newest frame saw, which the stop
-  reads beside the grid.
-- `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map.
+  time, the map's columns under the padded footprint cleared after each frame, and the map
+  projected to a grid, each column marking every cell its square overlaps where Nav2's
+  obstacle layer marks the cell of each point, a drop below the floor marked too; and, for
+  each source, the points its newest frame saw, which the stop reads beside the grid.
+- `saved_grid` reads a saved occupancy grid as Nav2's static layer takes a trinary map, from
+  its image or from an occupancy grid's cells, places its occupied cells on a grid in
+  another frame (`placed_on`), and holds a map's extent as room_map:v1 gives it
+  (`MapExtent`).
 - `inflation` inflates a grid around its lethal cells, as Nav2's inflation layer does.
 - `costmap` composes an obstacle layer, over a saved grid when one is loaded, and inflates
   them, as Nav2's layered cost map composes its layers.
@@ -31,7 +37,9 @@ Nav2 1.5.2. No ROS, hardware or messaging dependencies.
   path, smoothed by its smoother.
 - `path_handler` prunes a planner's path to the poses ahead of the base, as Nav2's
   controller server hands it to its controller (`GlobalPlan::prune`, the feasible path
-  handler).
+  handler): the plan's frame placed in the cost grid's, the base read in the plan's frame
+  for the pose nearest it, and the poses ahead and the plan's goal placed in the grid's
+  frame, ending at the first placed off the grid.
 - `goal_checker` judges whether the base reached the goal of the plan it follows, as
   Nav2's simple goal checker with `stateful` true judges it: once the position is reached,
   only the heading must still converge. Each `GlobalPlan` holds its own goal checker,
@@ -221,33 +229,37 @@ frames, a count of two marks 152, a count of one 3,839, and a count of three tha
 outnumber the rays short and standing 516,867.
 
 `project` gives the `ObstacleLayer` over a grid's geometry, the voxel map placed in the
-grid's frame at a `PlanarPose`. A voxel stands for every point inside it, and Nav2's
-obstacle layer marks the cell of every point, so a column of the voxel map marks every
-cell whose square overlaps the column's square, on a grid turned against the map or finer
-than it too: a cell is `LETHAL` where its square overlaps the square of a column that
-holds an occupied voxel whose center lies from `min_obstacle_height_m` to
-`max_obstacle_height_m`, both included, as Nav2's observation buffer keeps a point, or of
-a drop's column; `FREE` where it overlaps the square of any other column the map knows a
-voxel of; `UNKNOWN` otherwise. Two squares overlap when they share more than a line or a
-point, which the separating axes of convex polygons decide exactly, and each column's
-square stands a sliver in from the column's sides, so on a grid of the map's own lattice a
-column marks its own cell alone. A placement that puts a corner of a column's square at a
-point that is not finite fails with `PlacementNotFinite`; a column whose square's extent
-on the grid's lattice is not finite marks no cell, the cells of the grid that its square
-overlaps among them, as the overlap is decided on that extent. `ObstacleHeights::parse`
-takes the heights with the side of the voxels, `ObstacleHeightsParams`, and refuses a
-height of the band that is not a whole number of voxels, at least one, naming the nearest
-whole values, so a voxel's center judges as its points do, but for a point exactly at
-`max_obstacle_height_m`, which lies in the voxel above the band and marks nothing where
-Nav2 keeps it, and the floor's own voxels, either side of the floor, are no obstacle;
-`max_step_down_m` takes any height above the floor. `LiveObstacles::new` makes its voxel
-map in a frame and over bounds, of the voxels the heights judge and of no more columns on
-an axis than a cost grid's axis holds (`MAX_AXIS_CELLS`), with the obstacle range, a
-`PositiveFinite` distance in the plane, and `recentered` takes bounds of no more.
-`columns` is the grid of the voxel map's columns, one cell a column: the grid a navigator
-plans on in the voxel map's frame. `recentered` moves the map and the drops over other
-bounds, keeping what it knows of the columns both hold, for a grid that moves with the
-base, and keeps each source's newest points as they are.
+grid's frame at a `PlanarPose`, and departs there from Nav2's obstacle layer, which marks
+the cell of each point of an observation in its global frame. A voxel stands for every
+point inside it, so a column of the voxel map marks every cell of the grid whose square
+overlaps the column's square: on a grid of the map's own lattice, the column's own cell,
+the cell of each point the column holds; on a grid turned against the map or finer than
+it, every cell a point of its square stands in, up to four cells and more, where Nav2's
+obstacle layer marks the cells of the points it saw alone. A cell is `LETHAL` where its
+square overlaps the square of a column that holds an occupied voxel whose center lies from
+`min_obstacle_height_m` to `max_obstacle_height_m`, both included, as Nav2's observation
+buffer keeps a point, or of a drop's column; `FREE` where it overlaps the square of any
+other column the map knows a voxel of; `UNKNOWN` otherwise. Two squares overlap when they
+share more than a line or a point, which the separating axes of convex polygons decide
+exactly, and each column's square stands a sliver in from the column's sides, so on a grid
+of the map's own lattice a column marks its own cell alone. A placement that puts a corner
+of a column's square at a point that is not finite fails with `PlacementNotFinite`; a
+column whose square's extent on the grid's lattice is not finite marks no cell, the cells
+of the grid that its square overlaps among them, as the overlap is decided on that extent.
+`ObstacleHeights::parse` takes the heights with the side of the voxels,
+`ObstacleHeightsParams`, and refuses a height of the band that is not a whole number of
+voxels, at least one, naming the nearest whole values, so a voxel's center judges as its
+points do, but for a point exactly at `max_obstacle_height_m`, which lies in the voxel
+above the band and marks nothing where Nav2 keeps it, and the floor's own voxels, either
+side of the floor, are no obstacle; `max_step_down_m` takes any height above the floor.
+`LiveObstacles::new` makes its voxel map in a frame and over bounds, of the voxels the
+heights judge and of no more columns on an axis than a cost grid's axis holds
+(`MAX_AXIS_CELLS`), with the obstacle range, a `PositiveFinite` distance in the plane, and
+`recentered` takes bounds of no more. `columns` is the grid of the voxel map's columns,
+one cell a column: the grid a navigator plans on in the voxel map's frame. `recentered`
+moves the map and the drops over other bounds, keeping what it knows of the columns both
+hold, for a grid that moves with the base, and keeps each source's newest points as they
+are.
 
 For each source, `LiveObstacles` keeps the points its newest frame saw, in the map's frame
 on the floor's plane, as the frame saw them before the clearing under the footprint: each
@@ -295,6 +307,23 @@ last; and each cell's cost as Nav2's static layer takes a trinary map with unkno
 tracked: `LETHAL`, `FREE` or `UNKNOWN`. A map as map_saver writes it in trinary mode,
 pixels 0, 254 and 205 with thresholds 0.65 and 0.196, reads back lethal, free and unknown.
 
+`SavedGrid::from_cells` reads an occupancy grid's cells of a trinary map, as room_map:v1's
+map_grids carries them, row by row from the first cell at the resolution given: 0 `FREE`,
+100 `LETHAL` and 255, the grid's -1 read unsigned, `UNKNOWN`, as Nav2's static layer takes
+them with unknown cells tracked; another value is refused, naming its cell, and so is a
+count of cells other than the columns times the rows. `MapExtent::parse` takes room_map's
+extent, `[x_min, x_max, y_min, y_max]`, each edge finite and the least of each axis at or
+below its greatest, and `contains` holds a point on its closed rectangle, the edges among
+it.
+
+`SavedGrid::placed_on` places a saved grid's occupied cells on a grid of another frame,
+the saved grid at a `PlanarPose` there: `LETHAL` each cell whose square overlaps the
+square of a lethal cell, set a sliver in from the cell's sides as a column of the voxel
+map is, and `UNKNOWN` every other, so the placed grid, composed as the static layer,
+changes the cells under the saved grid's occupied cells alone. It reads only the saved
+cells whose squares overlap the target grid, for a grid that rolls with the base under a
+large map.
+
 `Inflation::inflate` inflates a grid as Nav2's inflation layer does, over the whole grid:
 the distance from each cell to the nearest lethal cell by the single precision
 Felzenszwalb-Huttenlocher transform, and the cost of each cell within
@@ -338,16 +367,18 @@ amd64 build, so it runs with no ROS on the machine.
   or 0.1 mm or less past it, at its frame's base pose, the robot's own body, which marks
   nothing here, in a cell Nav2 holds not lethal.
 - `tests/ros_reference_global_costmap.rs`: for the same saved map, points, footprint,
-  padding, base pose and parameters, the cost grid is that of a Nav2 global cost map of a
-  static, an obstacle and an inflation layer, bit for bit, the cells under the footprint
+  padding, base pose and parameters, the saved map read from its image and from the
+  occupancy grid's values that map_io gives, and the voxel map in the cost map's own frame,
+  the cost grid is that of a Nav2 global cost map of a static, an obstacle and an inflation
+  layer, bit for bit, the cells under the footprint
   cleared over the saved map's unknown cells and its walls kept. The obstacle layer under
   test frees a cell over a voxel its rays cleared, where Nav2's, with its rays' clearing
   off, leaves it unknown; the scenario keeps the saved map's unknown cells out of the
   camera's view, and the test checks that it does. It runs on amd64.
 - `tests/ros_reference_pure_pursuit.rs`: for the same plan, pose, speed and cost grid,
-  the plan pruned by the controller server's path handler, the command equals Nav2's
-  regulated pure pursuit's within 1e-9, and the goal and progress checkers decide as
-  Nav2's.
+  the plan in the cost grid's own frame and pruned by the controller server's path
+  handler, the command equals Nav2's regulated pure pursuit's within 1e-9, and the goal
+  and progress checkers decide as Nav2's.
 - `tests/ros_reference_collision_monitor.rs`: for the same points, read as a source's
   newest points on a free grid that holds every pose of the projection, padded footprint,
   velocity and clock, the source's readings stamped at their arrival, the stop slows and
@@ -360,5 +391,5 @@ amd64 build, so it runs with no ROS on the machine.
 
 `cargo test` runs the parity tests above and the properties and cases of each module on
 drawn grids, maps, scenes and plans (`tests/planner.rs`, `tests/inflation.rs`,
-`tests/obstacles.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
+`tests/obstacles.rs`, `tests/saved_grid.rs`, `tests/controller.rs`, `tests/goal_checker.rs`,
 `tests/progress_checker.rs`, `tests/stop.rs`, `tests/behaviors.rs`).

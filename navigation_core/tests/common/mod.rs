@@ -8,5 +8,6 @@ pub mod clouds;
 pub mod finite;
 pub mod footprints;
 pub mod layers;
+pub mod placements;
 pub mod poses;
 pub mod properties;

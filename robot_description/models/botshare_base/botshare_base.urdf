@@ -20,7 +20,11 @@
   - the Gemini 336L has one optical frame, base_camera_optical_frame, upstream's
     base_camera_color_optical_frame; upstream's base_camera_depth_optical_frame
     stands at the same place and is left out. Its depth sensor measures from the
-    range_min to the range_max of upstream's config/sensor_profiles.yaml.
+    range_min to the range_max of upstream's config/sensor_profiles.yaml;
+  - the lidar, named lidar, is the link lidar_frame on lidar_link, its scan
+    frame. Its gpu_lidar sensor measures from the range_min to the
+    range_max_white of upstream's config/sensor_profiles.yaml, the farthest
+    range on a white object.
 -->
 <!--
   The licence of openamr-platform-sw, which covers this file:
@@ -503,6 +507,22 @@
           <far>20.0</far>
         </clip>
       </camera>
+    </sensor>
+  </gazebo>
+  <link name="lidar_frame" />
+  <joint name="lidar_frame_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="lidar_link" />
+    <child link="lidar_frame" />
+  </joint>
+  <gazebo reference="lidar_frame">
+    <sensor name="lidar" type="gpu_lidar">
+      <lidar>
+        <range>
+          <min>0.05</min>
+          <max>40.0</max>
+        </range>
+      </lidar>
     </sensor>
   </gazebo>
 </robot>

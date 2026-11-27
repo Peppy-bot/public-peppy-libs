@@ -115,7 +115,9 @@ fn pruned(poses: Vec<PlanarPose>, pose: PlanarPose, grid: &CostGrid) -> (GlobalP
         prune_distance_m: non_negative(2.0),
     };
     let mut plan = GlobalPlan::new(poses, handler, goal_checker()).expect("a path");
-    let ahead = plan.prune(pose, &grid.geometry()).expect("on the grid");
+    let ahead = plan
+        .prune(pose, PlanarPose::IDENTITY, &grid.geometry())
+        .expect("on the grid");
     (plan, ahead)
 }
 

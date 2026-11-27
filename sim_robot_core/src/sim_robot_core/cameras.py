@@ -22,6 +22,7 @@ from control_core_py.geometry import (
     wxyz_of_xyzw,
 )
 
+from sim_robot_core.entry_values import is_number, positive_int, reject_unknown_keys
 from sim_robot_core.errors import ModelEntryError
 
 # Wire constants shared with the real camera nodes: rgb8 color frames and z16
@@ -119,12 +120,6 @@ class CameraConfig:
 _CAMERA_KEYS = frozenset({"fovy_deg", "color", "fps", "depth"})
 _COLOR_KEYS = frozenset({"width", "height"})
 _DEPTH_KEYS = frozenset({"width", "height"})
-
-
-def _reject_unknown_keys(obj: dict, allowed: frozenset, what: str, fail) -> None:
-    unknown = sorted(set(obj) - allowed)
-    if unknown:
-        raise fail(f"{what} has unknown key(s) {unknown}; allowed: {sorted(allowed)}")
 
 
 def parse_renders(source: str, entries) -> dict[str, CameraRender]:
@@ -242,17 +237,17 @@ def _parse_render(source: str, name: str, entry) -> CameraRender:
 
     if not isinstance(entry, dict):
         raise fail(f"its entry must be an object, got {entry!r}")
-    _reject_unknown_keys(entry, _CAMERA_KEYS, "camera entry", fail)
+    reject_unknown_keys(entry, _CAMERA_KEYS, "camera entry", fail)
     fovy_deg = entry.get("fovy_deg")
-    if not _is_number(fovy_deg) or not 0.0 < float(fovy_deg) < 180.0:
+    if not is_number(fovy_deg) or not 0.0 < float(fovy_deg) < 180.0:
         raise fail(f"fovy_deg {fovy_deg!r} must be in (0, 180)")
     color = entry.get("color")
     if not isinstance(color, dict):
         raise fail(f"color must be an object with width/height, got {color!r}")
-    _reject_unknown_keys(color, _COLOR_KEYS, "color", fail)
-    width = _positive_int(color.get("width"), fail, "color.width")
-    height = _positive_int(color.get("height"), fail, "color.height")
-    fps = _positive_int(entry.get("fps"), fail, "fps")
+    reject_unknown_keys(color, _COLOR_KEYS, "color", fail)
+    width = positive_int(color.get("width"), fail, "color.width")
+    height = positive_int(color.get("height"), fail, "color.height")
+    fps = positive_int(entry.get("fps"), fail, "fps")
     if fps > _MAX_FPS:
         raise fail(f"fps {fps} does not fit the u8 wire type")
 
@@ -261,10 +256,10 @@ def _parse_render(source: str, name: str, entry) -> CameraRender:
         d = entry["depth"]
         if not isinstance(d, dict):
             raise fail(f"depth must be an object, got {d!r}")
-        _reject_unknown_keys(d, _DEPTH_KEYS, "depth", fail)
+        reject_unknown_keys(d, _DEPTH_KEYS, "depth", fail)
         depth = DepthStream(
-            width=_positive_int(d.get("width"), fail, "depth.width"),
-            height=_positive_int(d.get("height"), fail, "depth.height"),
+            width=positive_int(d.get("width"), fail, "depth.width"),
+            height=positive_int(d.get("height"), fail, "depth.height"),
         )
         # Color and depth describe one camera, so the depth grid must decimate
         # the color grid by a single integer factor on both axes: the two grids
@@ -281,16 +276,6 @@ def _parse_render(source: str, name: str, entry) -> CameraRender:
             )
 
     return CameraRender(fovy_deg=float(fovy_deg), width=width, height=height, fps=fps, depth=depth)
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _positive_int(value, fail, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise fail(f"{field} must be a positive integer, got {value!r}")
-    return value
 
 
 @dataclass(frozen=True)

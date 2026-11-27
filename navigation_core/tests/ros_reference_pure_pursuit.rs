@@ -23,7 +23,7 @@ use navigation_core::controller::{
 use navigation_core::goal_checker::GoalCheckerParams;
 use navigation_core::grid::{CostGrid, GridGeometry};
 use navigation_core::inflation::{Inflation, InflationParams};
-use navigation_core::path_handler::{GlobalPlan, PathHandlerParams, PlanOffGrid};
+use navigation_core::path_handler::{GlobalPlan, PathHandlerParams, PruneError};
 use navigation_core::progress_checker::{ProgressChecker, ProgressCheckerParams};
 use ros_reference::pure_pursuit::{Cases, ControllerParameters, Outcome};
 
@@ -180,11 +180,14 @@ fn each_step_is_the_controller_servers() {
         for (index, step) in cases.steps.iter().enumerate() {
             let what = format!("{} step {index}", cases.name);
             let base = pose(step.pose);
-            let pruned = match plan.prune(base, &geometry) {
+            let pruned = match plan.prune(base, PlanarPose::IDENTITY, &geometry) {
                 Ok(pruned) => pruned,
-                Err(PlanOffGrid) => {
+                Err(PruneError::OffGrid) => {
                     assert_eq!(step.outcome, Outcome::PlanOffGrid, "{what}: the prune");
                     continue;
+                }
+                Err(refused @ PruneError::NotFinite { .. }) => {
+                    panic!("{what}: the plan in the grid's own frame: {refused}")
                 }
             };
             let first = cases

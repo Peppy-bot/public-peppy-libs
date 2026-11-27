@@ -101,21 +101,25 @@
 //! 516,867.
 //!
 //! [`LiveObstacles::project`] gives the obstacle layer over a grid, the voxel
-//! map placed in the grid's frame. A voxel stands for every point inside it,
-//! and the obstacle layer marks the cell of every point
-//! (obstacle_layer.cpp:525-581), so a column of the voxel map marks every
-//! cell whose square overlaps the column's square, on a grid turned against
-//! the map or finer than it too: a cell is lethal where its square overlaps
-//! the square of a column that holds an occupied voxel whose center lies
-//! between `min_obstacle_height_m` and `max_obstacle_height_m`, both included,
-//! as the observation buffer keeps a point, or of a drop's column; free where
-//! it overlaps the square of any other column the map knows a voxel of; and
-//! unknown otherwise. Two squares overlap when they share more than a line or
-//! a point, which the separating axes of convex polygons decide exactly: the
-//! two axes of the grid and the two of the turned square. Nav2 marks points,
-//! so the overlap of a column's square with a cell is the crate's own. Each
-//! column's square stands a sliver in from the column's sides, so on a grid of
-//! the map's own lattice a column's square overlaps the column's cell alone.
+//! map placed in the grid's frame, and departs there from the obstacle layer,
+//! which marks the cell of each point of an observation in its global frame
+//! (obstacle_layer.cpp:525-581). A voxel stands for every point inside it, so
+//! a column of the voxel map marks every cell of the grid whose square
+//! overlaps the column's square. On a grid of the map's own lattice that cell
+//! is the column's own, the cell of each point the column holds; on a grid
+//! turned against the map or finer than it, a column marks every cell a point
+//! of its square stands in, up to four cells and more, where the obstacle
+//! layer marks the cells of the points it saw alone. A cell is lethal where its
+//! square overlaps the square of a column that holds an occupied voxel whose
+//! center lies between `min_obstacle_height_m` and `max_obstacle_height_m`,
+//! both included, as the observation buffer keeps a point, or of a drop's
+//! column; free where it overlaps the square of any other column the map knows
+//! a voxel of; and unknown otherwise. Two squares overlap when they share more
+//! than a line or a point, which the separating axes of convex polygons decide
+//! exactly: the two axes of the grid and the two of the turned square
+//! ([`crate::grid`]). Each column's square stands a sliver in from the
+//! column's sides, so on a grid of the map's own lattice a column's square
+//! overlaps the column's cell alone.
 //! A placement that puts a corner of a column's square at a point that is not
 //! finite is refused ([`PlacementNotFinite`]); a column whose square's extent
 //! on the grid's lattice, its corners' offsets from the grid's origin over the
@@ -165,7 +169,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroUsize;
-use std::ops::RangeInclusive;
 
 use camera_core::laser_scan::{LaserScan, Sweep};
 use control_core::planar_pose::PlanarPose;
@@ -175,23 +178,16 @@ use frame_tree::Transform;
 use occupancy_map::{Bounds, MapError, Reading, Scan, VoxelMap};
 
 use crate::footprint::PaddedFootprint;
-use crate::grid::{Cell, CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, UNKNOWN};
+use crate::grid::{
+    Cell, CostGrid, FREE, GridError, GridGeometry, LETHAL, MAX_AXIS_CELLS, PlacementNotFinite,
+    UNKNOWN, cells_under,
+};
 use crate::raster::polygon_cells;
 use crate::stop::{Occupied, UnknownSource};
 
 /// How far a height may lie from a whole number of voxels, in voxels: the
 /// rounding of a height of meters over the voxel's side.
 const WHOLE_VOXEL_TOLERANCE: f64 = 1e-9;
-
-/// How far in from its column's sides the square of a column sets its
-/// corners, as a share of the voxel's side: single precision's epsilon times
-/// the most cells a grid's axis holds. A saved grid holds its resolution in
-/// single precision, as an `OccupancyGrid` does, so its cells and the voxels
-/// of the same side part by at most half that epsilon a cell, and its lattice
-/// lies within half this share of the voxel lattice over any axis a grid
-/// holds: the square of each column overlaps the column's own cell alone there,
-/// as on a grid of the map's own lattice.
-const COLUMN_SQUARE_INSET: f64 = f32::EPSILON as f64 * MAX_AXIS_CELLS as f64;
 
 /// The fewest rays of one frame that read past the step's plane through a
 /// column for the column to be a drop: three, so one or two wrong far readings
@@ -402,21 +398,6 @@ pub enum LiveObstaclesError {
     ColumnsPastSinglePrecision([f64; 2]),
     #[error(transparent)]
     Map(#[from] MapError),
-}
-
-/// A placement of the voxel map in a grid's frame that puts a corner of a
-/// column's square at a point that is not finite.
-#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
-#[error(
-    "the voxel map placed in the grid's frame at x {} m, y {} m, yaw {} rad puts a column's \
-     corner at a point that is not finite: give an x and a y that, moved by the map's extent, \
-     stay finite",
-    .grid_from_map.x(),
-    .grid_from_map.y(),
-    .grid_from_map.yaw()
-)]
-pub struct PlacementNotFinite {
-    pub grid_from_map: PlanarPose,
 }
 
 /// The poses in a grid's frame by which the stop's points are read: where the
@@ -663,29 +644,12 @@ impl LiveObstacles {
         let mut grid = CostGrid::filled(geometry, UNKNOWN);
         for (columns, cost) in [(&known_columns, FREE), (&marked_columns, LETHAL)] {
             for &column in columns {
-                for cell in self.cells_under_column(column, grid_from_map, &geometry)? {
+                for cell in cells_under(&self.columns, column, grid_from_map, &geometry)? {
                     grid.costs_mut()[geometry.index(cell)] = cost;
                 }
             }
         }
         Ok(ObstacleLayer { grid })
-    }
-
-    /// The cells of a grid of `geometry` whose squares overlap the square of
-    /// the map's column `column`, placed in the grid's frame at
-    /// `grid_from_map`, its corners [`COLUMN_SQUARE_INSET`] in from the
-    /// column's sides.
-    fn cells_under_column(
-        &self,
-        column: Cell,
-        grid_from_map: PlanarPose,
-        geometry: &GridGeometry,
-    ) -> Result<Vec<Cell>, PlacementNotFinite> {
-        let [x, y] = self.columns.center_of(column);
-        let half = self.columns.resolution_m() * (0.5 - COLUMN_SQUARE_INSET);
-        let square = [[-half, -half], [half, -half], [half, half], [-half, half]]
-            .map(|[dx, dy]| grid_from_map.apply([x + dx, y + dy]));
-        cells_overlapping(geometry, square).ok_or(PlacementNotFinite { grid_from_map })
     }
 
     /// Inserts `points` of `source`'s frame as a scan in the map's own frame,
@@ -919,76 +883,6 @@ impl FloorVotes {
     }
 }
 
-/// The cells of `geometry` whose squares overlap the parallelogram of
-/// `corners`, in order, in meters in the grid's frame, by more than a line or
-/// a point: the cells within the corners' extent along each of the grid's
-/// axes that no normal of the parallelogram's sides parts from it, as the
-/// separating axes of two convex polygons find their overlap. None when a
-/// corner is not finite. No cell when the parallelogram's extent on the
-/// grid's lattice, its corners' offsets from the origin over the resolution,
-/// is not finite, the cells of the grid that it overlaps among them, as the
-/// separating axes decide the overlap on that extent.
-fn cells_overlapping(geometry: &GridGeometry, corners: [[f64; 2]; 4]) -> Option<Vec<Cell>> {
-    if !all_finite(&corners) {
-        return None;
-    }
-    let origin = geometry.origin();
-    let resolution = geometry.resolution_m();
-    let lattice = corners.map(|corner| [0, 1].map(|i| (corner[i] - origin[i]) / resolution));
-    if !all_finite(&lattice) {
-        return Some(Vec::new());
-    }
-    let cells_along = |axis: [f64; 2], size: u32| -> Option<RangeInclusive<u32>> {
-        let [low, high] = extent_along(axis, &lattice);
-        let first = low.floor().max(0.0);
-        let last = (high.ceil() - 1.0).min(f64::from(size) - 1.0);
-        (first <= last).then_some(first as u32..=last as u32)
-    };
-    let (Some(xs), Some(ys)) = (
-        cells_along([1.0, 0.0], geometry.size_x()),
-        cells_along([0.0, 1.0], geometry.size_y()),
-    ) else {
-        return Some(Vec::new());
-    };
-    let normals = [[0, 1], [1, 2]].map(|[from, to]| {
-        let [dx, dy] = [0, 1].map(|i| lattice[to][i] - lattice[from][i]);
-        [-dy, dx]
-    });
-    let overlaps = |x: u32, y: u32| {
-        let (x, y) = (f64::from(x), f64::from(y));
-        let cell = [[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]];
-        normals.iter().all(|&normal| {
-            let [cell_low, cell_high] = extent_along(normal, &cell);
-            let [low, high] = extent_along(normal, &lattice);
-            cell_low < high && low < cell_high
-        })
-    };
-    Some(
-        xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
-            .filter(|&(x, y)| overlaps(x, y))
-            .map(|(x, y)| geometry.cell(x, y).expect("an extent clamped to the grid"))
-            .collect(),
-    )
-}
-
-/// Whether every coordinate of `points` is finite.
-fn all_finite(points: &[[f64; 2]]) -> bool {
-    points
-        .iter()
-        .flatten()
-        .all(|coordinate| coordinate.is_finite())
-}
-
-/// The least and the greatest of `points` along `axis`.
-fn extent_along(axis: [f64; 2], points: &[[f64; 2]]) -> [f64; 2] {
-    points
-        .iter()
-        .map(|point| point[0] * axis[0] + point[1] * axis[1])
-        .fold([f64::INFINITY, f64::NEG_INFINITY], |[low, high], along| {
-            [low.min(along), high.max(along)]
-        })
-}
-
 /// The grid of `map`'s columns, one cell a column, when a grid's axis holds
 /// as many cells as the map holds columns on each axis.
 fn columns_of(map: &VoxelMap) -> Result<GridGeometry, LiveObstaclesError> {
@@ -1152,54 +1046,13 @@ mod tests {
         }
     }
 
-    // A cell that meets a square at a line or a point alone is not under it:
-    // on a grid of 1 m cells, a square whose sides lie on cell boundaries
-    // covers its own cells and not the cells beside it; a square turned an
-    // eighth of a turn, its corners at the middles of cells' sides, covers the
-    // five cells it shares area with and not the four whose corners touch it;
-    // and one whose corner lies on a boundary between two cells' sides covers
-    // the six cells it shares area with and not the cell its corner touches,
-    // which only the grid's own axis parts from it.
+    // A finite placement whose corners lie past the largest double cells from the grid, on
+    // a grid of 0.05 m cells, or past the grid, on a grid of 2 m cells, marks no cell; a map
+    // that knows no voxel places none, and its layer is unknown.
     #[test]
-    fn a_cell_that_meets_a_square_at_a_line_or_a_point_alone_is_not_under_it() {
-        let geometry =
-            GridGeometry::new(5, 5, PositiveFinite::parse(1.0).unwrap(), [0.0; 2]).unwrap();
-        let cells = |corners| -> BTreeSet<(u32, u32)> {
-            cells_overlapping(&geometry, corners)
-                .unwrap()
-                .into_iter()
-                .map(|cell| (cell.x(), cell.y()))
-                .collect()
-        };
-        let on_boundaries = [[1.0, 1.0], [3.0, 1.0], [3.0, 2.0], [1.0, 2.0]];
-        assert_eq!(cells(on_boundaries), BTreeSet::from([(1, 1), (2, 1)]));
-        let turned = [[1.5, 0.5], [2.5, 1.5], [1.5, 2.5], [0.5, 1.5]];
-        assert_eq!(
-            cells(turned),
-            BTreeSet::from([(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)])
-        );
-        let pointed = [[2.0, 0.5], [3.0, 1.5], [2.0, 2.5], [1.0, 1.5]];
-        assert_eq!(
-            cells(pointed),
-            BTreeSet::from([(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)])
-        );
-    }
-
-    // A square with a corner that is not finite overlaps no cell and is refused; a finite
-    // placement whose corners lie past the largest double cells from the grid, on a grid of
-    // 0.05 m cells, or past the grid, on a grid of 2 m cells, marks no cell, as does a
-    // square standing on a corner at the origin of a grid of cells the least normal double
-    // wide, which overlaps three of the grid's cells, and whose top corner alone lies past
-    // the largest double cells up the grid's lattice, the corner neither side's normal is
-    // drawn from; a map that knows no voxel places none, and its layer is unknown.
-    #[test]
-    fn a_placement_is_refused_only_where_a_corner_is_not_finite() {
+    fn a_placement_past_the_grid_marks_no_cell() {
         let live = one_occupied_voxel();
         let geometry = GridGeometry::new(40, 40, twentieth(), [-1.0, -1.0]).unwrap();
-        for corner in [[f64::NAN, 0.0], [0.0, f64::INFINITY]] {
-            let square = [corner, [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-            assert_eq!(cells_overlapping(&geometry, square), None, "{corner:?}");
-        }
         let far = PlanarPose::new(f64::MAX, 0.0, 0.0).unwrap();
         let two_meters =
             GridGeometry::new(40, 40, PositiveFinite::parse(2.0).unwrap(), [-1.0, -1.0]).unwrap();
@@ -1210,15 +1063,6 @@ mod tests {
                 "{geometry:?}"
             );
         }
-        let finest = GridGeometry::new(
-            2,
-            2,
-            PositiveFinite::parse(f64::MIN_POSITIVE).unwrap(),
-            [0.0; 2],
-        )
-        .unwrap();
-        let standing = [[-2.0, 2.0], [0.0, 0.0], [2.0, 2.0], [0.0, 4.0]];
-        assert_eq!(cells_overlapping(&finest, standing), Some(Vec::new()));
         let empty = LiveObstacles::new(
             odom(),
             bounds(),

@@ -18,7 +18,7 @@
 //! map saver writes a trinary map (`map.pgm` and `map.yaml`; nav2_map_server/src/map_io.cpp,
 //! `tryWriteMapToFile`). Loading reads the pose graph, makes its grid anew, and refuses a
 //! directory whose files disagree with it or with each other, naming the file and the
-//! field.
+//! field. The description alone gives the map's summary ([`RoomMap::load_summary`]).
 
 use crate::geometry::{Matrix3, Pose2, Vector2};
 use crate::localized_scan::{Laser, LocalizedScan, ScanId};
@@ -43,17 +43,19 @@ pub struct RoomMap {
     pub(crate) state: MapperState,
     grid_parameters: GridParameters,
     grid: OccupancyGrid,
-    created_at_unix_ns: i64,
+    /// The scans its mapping read, as [`crate::Mapping::scans`] counts them.
+    scans: u32,
+    mapping_start_unix_ns: i64,
 }
 
 /// A map as `room_map`'s map object describes it: where its grid lies, the number of
-/// scans its mapping added to its graph, and when its mapping started (ns since the Unix
-/// epoch, on the wall clock).
+/// scans its mapping read, and when its mapping started (ns since the Unix epoch, on the
+/// wall clock).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapSummary {
     pub extent: GridExtent,
     pub scans: u32,
-    pub created_at_unix_ns: i64,
+    pub mapping_start_unix_ns: i64,
 }
 
 /// Why a map was not saved.
@@ -150,15 +152,16 @@ struct MetaFile {
     origin: [f64; 2],
     width: u32,
     height: u32,
-    scans: usize,
-    created_at_unix_ns: i64,
+    scans: u32,
+    mapping_start_unix_ns: i64,
 }
 
 impl RoomMap {
     pub(crate) fn new(
         state: MapperState,
         grid_parameters: GridParameters,
-        created_at_unix_ns: i64,
+        scans: u32,
+        mapping_start_unix_ns: i64,
     ) -> Result<Option<Self>, GridError> {
         let Some(grid) =
             OccupancyGrid::from_scans(state.scans.values(), &state.laser, grid_parameters)?
@@ -169,7 +172,8 @@ impl RoomMap {
             state,
             grid_parameters,
             grid,
-            created_at_unix_ns,
+            scans,
+            mapping_start_unix_ns,
         }))
     }
 
@@ -182,8 +186,8 @@ impl RoomMap {
     pub fn summary(&self) -> MapSummary {
         MapSummary {
             extent: self.grid.extent(),
-            scans: self.state.scans.len() as u32,
-            created_at_unix_ns: self.created_at_unix_ns,
+            scans: self.scans,
+            mapping_start_unix_ns: self.mapping_start_unix_ns,
         }
     }
 
@@ -288,9 +292,19 @@ impl RoomMap {
             origin: self.grid.origin(),
             width: self.grid.width(),
             height: self.grid.height(),
-            scans: self.state.scans.len(),
-            created_at_unix_ns: self.created_at_unix_ns,
+            scans: self.scans,
+            mapping_start_unix_ns: self.mapping_start_unix_ns,
         }
+    }
+
+    /// The summary of the map that `directory` holds, read from its description alone.
+    pub fn load_summary(directory: &Path) -> Result<MapSummary, LoadError> {
+        let meta: MetaFile = parse_file(directory, META_FILE)?;
+        Ok(MapSummary {
+            extent: GridExtent::of_cells(meta.origin, meta.width, meta.height, meta.resolution()?),
+            scans: meta.scans,
+            mapping_start_unix_ns: meta.mapping_start_unix_ns,
+        })
     }
 
     /// The map that `directory` holds.
@@ -298,37 +312,30 @@ impl RoomMap {
         let pose_graph: PoseGraphFile = parse_file(directory, POSE_GRAPH_FILE)?;
         let meta: MetaFile = parse_file(directory, META_FILE)?;
         let state = state_of(&pose_graph)?;
-        if meta.scans != state.scans.len() {
+        if (meta.scans as usize) < state.scans.len() {
             return Err(LoadError::Disagree {
                 file: META_FILE,
                 field: "scans".into(),
             });
         }
-        let invalid_resolution = |reason: String| LoadError::Invalid {
-            file: META_FILE,
-            field: "resolution".into(),
-            reason,
-        };
-        let resolution = PositiveFinite::parse(meta.resolution)
-            .map_err(|_| {
-                invalid_resolution(format!(
-                    "is {}, and the side of a cell is finite and above 0",
-                    meta.resolution
-                ))
-            })?
-            .get();
+        let resolution = meta.resolution()?;
         let grid_parameters = GridParameters {
             resolution,
             min_pass_through: meta.min_pass_through,
             occupancy_threshold: meta.occupancy_threshold,
         };
-        let map = RoomMap::new(state, grid_parameters, meta.created_at_unix_ns)
-            .map_err(|error| invalid_resolution(format!("is {resolution}: {error}")))?
-            .ok_or_else(|| LoadError::Invalid {
-                file: POSE_GRAPH_FILE,
-                field: "nodes".into(),
-                reason: "is empty, and a map holds a scan".into(),
-            })?;
+        let map = RoomMap::new(
+            state,
+            grid_parameters,
+            meta.scans,
+            meta.mapping_start_unix_ns,
+        )
+        .map_err(|error| invalid_resolution(format!("is {resolution}: {error}")))?
+        .ok_or_else(|| LoadError::Invalid {
+            file: POSE_GRAPH_FILE,
+            field: "nodes".into(),
+            reason: "is empty, and a map holds a scan".into(),
+        })?;
         let fields = [
             ("origin", meta.origin == map.grid.origin()),
             ("width", meta.width == map.grid.width()),
@@ -356,6 +363,29 @@ impl RoomMap {
             });
         }
         Ok(map)
+    }
+}
+
+impl MetaFile {
+    /// The side of a cell (m), finite and above 0.
+    fn resolution(&self) -> Result<f64, LoadError> {
+        PositiveFinite::parse(self.resolution)
+            .map(PositiveFinite::get)
+            .map_err(|_| {
+                invalid_resolution(format!(
+                    "is {}, and the side of a cell is finite and above 0",
+                    self.resolution
+                ))
+            })
+    }
+}
+
+/// The refusal of meta.json's resolution, for `reason`.
+fn invalid_resolution(reason: String) -> LoadError {
+    LoadError::Invalid {
+        file: META_FILE,
+        field: "resolution".into(),
+        reason,
     }
 }
 

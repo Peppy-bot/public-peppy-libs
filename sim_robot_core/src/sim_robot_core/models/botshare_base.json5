@@ -1,7 +1,9 @@
-// How the engines render the camera of the botshare base, by the name it has
-// in the description, whose optical frame places it: the Orbbec Gemini 336L
-// at the base's front, measuring the depths the description's depth sensor
-// gives it, the colour aligned to its depth.
+// How the engines render the camera and sweep the lidar of the botshare base,
+// each by the name it has in the description, whose frames place them.
+//
+// The camera is the Orbbec Gemini 336L at the base's front, measuring the
+// depths the description's depth sensor gives it, the colour aligned to its
+// depth.
 //
 // - fovy_deg: the depth field's 65 degrees high, of its 90 x 65
 //   (openAMRobot/openamr-platform-sw at 69847ab7, the commit the description
@@ -12,6 +14,22 @@
 //   file's width_max, height_max and frame_rate_max). botshare's software
 //   sets no mode of the camera: the file says the rate on the robot is set in
 //   the driver launch, and the repository holds none for it.
+//
+// The lidar is the RPLIDAR S3, measuring the ranges the description's
+// gpu_lidar sensor gives it, swept as the scan of the sllidar_ros2 driver
+// that botshare runs it under: scan_mode DenseBoost, angle_compensate true
+// and the scan frequency at its default, 10 Hz (openAMRobot/openamr-platform-sw
+// at 69847ab7, ros2/src/openamrobot_drivers/launch/drivers.launch.py).
+//
+// - rays: sllidar_node (Slamtec/sllidar_ros2 at 34300099, src/sllidar_node.cpp)
+//   compensates a turn of points_per_circle, 3200 at the S3's 32 kHz sample
+//   rate and 10 Hz (sensor_profiles.yaml, lidar_link scan sample_rate and
+//   scan_rate), into 360 x angle_compensate_multiple rays, the multiple the
+//   integer part of 3200 / 360 + 1, 9: 3240.
+// - min_angle_rad and angle_increment_rad: the driver gives its scan from pi
+//   less a whole turn, -pi, at the turn over its rays less one, 2 pi / 3239,
+//   so its last ray points where its first does.
+// - scan_rate_hz: the scan frequency, 10.
 {
   cameras: {
     base_camera: {
@@ -19,6 +37,14 @@
       color: { width: 640, height: 400 },
       depth: { width: 640, height: 400 },
       fps: 15,
+    },
+  },
+  lidars: {
+    lidar: {
+      min_angle_rad: -3.141592653589793,
+      angle_increment_rad: 0.001939853444637106,
+      rays: 3240,
+      scan_rate_hz: 10,
     },
   },
 }

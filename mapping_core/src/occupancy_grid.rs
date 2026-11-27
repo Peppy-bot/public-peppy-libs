@@ -238,6 +238,18 @@ fn dimensions<'a>(
 }
 
 impl GridExtent {
+    /// The extent of a grid of `width` by `height` cells of side `resolution` (m), whose
+    /// first cell's corner lies at `origin` (m).
+    pub(crate) fn of_cells(origin: [f64; 2], width: u32, height: u32, resolution: f64) -> Self {
+        Self {
+            resolution_m: resolution,
+            min_x_m: origin[0],
+            min_y_m: origin[1],
+            width_m: f64::from(width) * resolution,
+            height_m: f64::from(height) * resolution,
+        }
+    }
+
     /// The extent of the grid that karto makes of `scans` at `resolution` (m).
     pub(crate) fn of_scans<'a>(
         scans: impl Iterator<Item = &'a LocalizedScan>,
@@ -246,13 +258,12 @@ impl GridExtent {
         let Some((offset, width, height)) = dimensions(scans, resolution)? else {
             return Ok(None);
         };
-        Ok(Some(Self {
-            resolution_m: resolution,
-            min_x_m: offset.x,
-            min_y_m: offset.y,
-            width_m: f64::from(width.max(0)) * resolution,
-            height_m: f64::from(height.max(0)) * resolution,
-        }))
+        Ok(Some(Self::of_cells(
+            [offset.x, offset.y],
+            width.max(0) as u32,
+            height.max(0) as u32,
+            resolution,
+        )))
     }
 }
 
@@ -343,13 +354,7 @@ impl OccupancyGrid {
 
     /// Where the grid lies in its map frame.
     pub fn extent(&self) -> GridExtent {
-        GridExtent {
-            resolution_m: self.resolution,
-            min_x_m: self.origin[0],
-            min_y_m: self.origin[1],
-            width_m: f64::from(self.width) * self.resolution,
-            height_m: f64::from(self.height) * self.resolution,
-        }
+        GridExtent::of_cells(self.origin, self.width, self.height, self.resolution)
     }
 
     /// The state of the cell at column `x` and row `y`, counted from the origin.

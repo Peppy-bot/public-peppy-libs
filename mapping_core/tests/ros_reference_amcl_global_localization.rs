@@ -17,12 +17,12 @@ mod common;
 use camera_core::laser_scan::LaserScan;
 use common::properties::planar;
 use common::{
-    CREATED_AT_UNIX_NS, amcl_parameters, localization_parameters, placed, scratch_directory,
+    MAPPING_START_UNIX_NS, amcl_parameters, localization_parameters, placed, scratch_directory,
 };
 use control_core::positive_finite::PositiveFinite;
 use mapping_core::{
-    CellState, GlobalLocalization, GlobalLocalizationParameters, LocalizationLimits, MapPose,
-    OccupancyGrid, RoomMap, SearchStep,
+    AmclSettings, CellState, Drand48, GlobalLocalization, GlobalLocalizationParameters,
+    LocalizationLimits, MapPose, OccupancyGrid, RoomMap, SearchStep,
 };
 use ros_reference::amcl_global_localization::{
     Cases, Estimate, Grid, GridParameters, Laser, MapScan,
@@ -113,7 +113,7 @@ fn save_map_of_scans(
         "width": grid.width,
         "height": grid.height,
         "scans": map_scans.len(),
-        "created_at_unix_ns": CREATED_AT_UNIX_NS,
+        "mapping_start_unix_ns": MAPPING_START_UNIX_NS,
     });
     let cell = |character: char| match character {
         '#' => CellState::Occupied,
@@ -193,22 +193,29 @@ fn each_search_answers_as_amcl_publishes() {
             for (search, estimates) in &room.searches {
                 let label = format!("{label} {}", search.name);
                 let parameters = GlobalLocalizationParameters {
-                    amcl: amcl_parameters(&label, &search.amcl),
+                    amcl: AmclSettings::parse(amcl_parameters(&label, &search.amcl))
+                        .unwrap_or_else(|e| panic!("{label}: {e}")),
                     search_limits: LocalizationLimits {
                         position_std_m: limit(NEVER_ENDS),
                         yaw_std_rad: limit(NEVER_ENDS),
                     },
                     localization: localization_parameters(),
                 };
+                // The harness seeds AMCL's stream right before it asks for each search.
+                let mut stream = Drand48::seeded(search.seed);
                 let mut search_state = Some(
-                    GlobalLocalization::start(&map, parameters, search.seed)
+                    GlobalLocalization::start(&map, parameters, &mut stream)
                         .unwrap_or_else(|e| panic!("{label}: {e}")),
                 );
                 let mut answers: Vec<(usize, MapPose)> = Vec::new();
                 for (index, (scan, drive)) in scans.iter().zip(&room.scans).enumerate() {
                     let [x, y, yaw] = drive.odometry;
                     let placed_scan = placed(drive.stamp_ns, planar(x, y, yaw), scan);
-                    match search_state.take().expect("a search").add(&placed_scan) {
+                    match search_state
+                        .take()
+                        .expect("a search")
+                        .add(&placed_scan, &mut stream)
+                    {
                         SearchStep::Searching(going_on, answer) => {
                             search_state = Some(going_on);
                             answers.extend(answer.map(|answer| (index, answer)));

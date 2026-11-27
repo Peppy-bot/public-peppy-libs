@@ -1,5 +1,6 @@
 """A description from Python: read from its two files, its arms with their
-grippers, its named states, its cameras, its joint limits and its transforms."""
+grippers, its named states, its cameras, its lidars, its joint limits and its
+transforms."""
 
 import xml.etree.ElementTree as ET
 
@@ -134,6 +135,13 @@ def test_each_camera_gives_its_optical_frame():
     }
     for camera in cameras.values():
         assert len(camera.xyz) == 3
+
+
+def test_the_botshare_base_gives_its_lidar_on_its_scan_frame():
+    (lidar,) = model("botshare_base").description().lidars
+    assert (lidar.name, lidar.frame) == ("lidar", "lidar_frame")
+    assert (lidar.range.min, lidar.range.max) == (0.05, 40.0)
+    assert model("openarm_v2").description().lidars == ()
 
 
 @pytest.mark.parametrize(

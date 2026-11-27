@@ -1,22 +1,26 @@
 //! Properties of rooms mapped from drawn scans: the matcher recovers a scan's pose from
 //! odometry off by a drawn offset; a drive around a drawn room closes its loop, so the
 //! walls of its last scan lie where its first scan put them, within the map's resolution;
-//! each scan added to the graph answers once and counts once; the map frame is the robot
-//! frame where mapping started; parameters that keep no localization leave the map in the
-//! error; and a start pose that is not finite is refused.
+//! each scan the mapping reads counts once and each scan added to the graph answers once, and
+//! a scan of another number of rays is refused and not counted; the map frame is the odometry
+//! frame where mapping started; the grid of a mapping is the grid of the map it finishes
+//! with; and parameters that keep no localization leave the map in the error.
 
+use camera_core::laser_scan::LaserScan;
 use control_core::planar_pose::PlanarPose;
 use hegel::TestCase;
 use hegel::generators as gs;
-use mapping_core::{CellState, FinishError, GridError, LocalizationError, Mapping, ParameterError};
+use mapping_core::{
+    CellState, FinishError, GridError, LocalizationError, Mapping, MappingError, ParameterError,
+};
 
 mod common;
 use common::properties::{
     Room, circle_drive, compose, drifting_odometry, heading_error, largest_point_displacement,
-    loop_drive, planar, position_error, relative, room,
+    loop_drive, planar, position_error, room,
 };
 use common::{
-    CREATED_AT_UNIX_NS, SCAN_PERIOD_NS, localization_parameters, map_of, placed, room_map_of,
+    MAPPING_START_UNIX_NS, SCAN_PERIOD_NS, localization_parameters, map_of, placed, room_map_of,
     sync_parameters,
 };
 
@@ -40,8 +44,7 @@ fn the_matcher_recovers_the_pose_of_a_scan_from_odometry_off_by_a_drawn_offset(t
         tc.draw(gs::floats().min_value(-0.2).max_value(0.2)),
     );
     let odometry = compose(truth, offset);
-    let mut mapping =
-        Mapping::start(sync_parameters(), PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     // slam_toolbox's gate passes the first scan and holds the second to the fourth.
     for index in 0..4 {
         mapping
@@ -66,7 +69,7 @@ fn a_drive_around_a_drawn_room_closes_its_loop(tc: TestCase) {
     let drive = loop_drive(&tc, &room);
     let odometry = drifting_odometry(&tc, &drive);
     let parameters = sync_parameters();
-    let mut mapping = Mapping::start(parameters, PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(parameters).expect("valid parameters");
     let added: Vec<usize> = drive
         .iter()
         .zip(&odometry)
@@ -138,15 +141,13 @@ fn the_grid_of_a_drawn_room_holds_the_walls_along_its_origin_occupied_and_the_dr
 }
 
 #[hegel::test(test_cases = 5)]
-fn each_scan_added_to_the_graph_answers_once_and_counts_once(tc: TestCase) {
+fn each_scan_read_counts_once_and_each_scan_the_graph_adds_answers_once(tc: TestCase) {
     let room = room(&tc);
     let drive = loop_drive(&tc, &room);
     let odometry = drifting_odometry(&tc, &drive);
-    let mut mapping =
-        Mapping::start(sync_parameters(), PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     let mut answered = 0;
     for (index, (truth, odometry)) in drive.iter().zip(&odometry).enumerate() {
-        let before = mapping.scans();
         let added = mapping
             .add(&placed(
                 index as i64 * SCAN_PERIOD_NS,
@@ -158,31 +159,55 @@ fn each_scan_added_to_the_graph_answers_once_and_counts_once(tc: TestCase) {
             assert!(pose.localized, "the base is localized while mapping runs");
             answered += 1;
         }
-        assert_eq!(
-            mapping.scans(),
-            before + u32::from(added.is_some()),
-            "scan {index}"
-        );
+        assert_eq!(mapping.scans(), index as u32 + 1, "scan {index}");
+        assert_eq!(mapping.graph_scans(), answered, "scan {index}");
     }
-    assert_eq!(mapping.scans(), answered);
-    assert_eq!(mapping.poses().len(), answered as usize);
+    assert_eq!(mapping.poses().len(), answered);
     let map = room_map_of(&room, &drive, &odometry, sync_parameters());
-    assert_eq!(map.summary().scans, answered);
+    assert_eq!(map.summary().scans, drive.len() as u32);
+}
+
+#[test]
+fn a_scan_of_another_number_of_rays_is_refused_and_not_counted() {
+    let room = Room::new(3.0, 2.0, 0.25, 1);
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
+    mapping
+        .add(&placed(
+            0,
+            PlanarPose::IDENTITY,
+            &room.scan(PlanarPose::IDENTITY),
+        ))
+        .expect("a scan");
+    let first = room.scan(PlanarPose::IDENTITY);
+    let fewer_rays = LaserScan::parse(
+        first.min_angle_rad(),
+        first.angle_increment_rad(),
+        0.0,
+        first.min_range_m(),
+        first.max_range_m(),
+        &vec![1.0; first.ray_count() - 1],
+    )
+    .expect("a scan");
+    assert!(matches!(
+        mapping.add(&placed(SCAN_PERIOD_NS, PlanarPose::IDENTITY, &fewer_rays)),
+        Err(MappingError::Scan(_))
+    ));
+    assert_eq!(mapping.scans(), 1);
 }
 
 #[hegel::test(test_cases = 5)]
-fn the_map_frame_is_the_robot_frame_where_mapping_started(tc: TestCase) {
+fn the_map_frame_is_the_odometry_frame_where_mapping_started(tc: TestCase) {
     let room = room(&tc);
     let drive = loop_drive(&tc, &room);
-    // The odometry frame lies anywhere; the base's odometry where mapping starts is that
-    // frame's pose of the first scan.
+    // The odometry frame lies anywhere in the room, so the first scan's odometry is any
+    // pose.
     let frame = planar(
         tc.draw(gs::floats().min_value(-5.0).max_value(5.0)),
         tc.draw(gs::floats().min_value(-5.0).max_value(5.0)),
         tc.draw(gs::floats().min_value(-3.0).max_value(3.0)),
     );
     let odometry: Vec<PlanarPose> = drive.iter().map(|pose| compose(frame, *pose)).collect();
-    let mut mapping = Mapping::start(sync_parameters(), odometry[0]).expect("valid parameters");
+    let mut mapping = Mapping::start(sync_parameters()).expect("valid parameters");
     for (index, (truth, odometry)) in drive.iter().zip(&odometry).enumerate() {
         let Some(added) = mapping
             .add(&placed(
@@ -194,15 +219,37 @@ fn the_map_frame_is_the_robot_frame_where_mapping_started(tc: TestCase) {
         else {
             continue;
         };
-        let expected = relative(drive[0], *truth);
+        let expected = compose(frame, *truth);
         assert!(
             position_error(added.pose, expected) <= MATCHED_POSITION
                 && heading_error(added.pose, expected) <= MATCHED_HEADING,
-            "scan {index} at {:?} in the map, where the robot frame at the start puts it at \
-             {expected:?}",
+            "scan {index} at {:?} in the map, where the odometry frame puts it at {expected:?}",
             added.pose
         );
     }
+}
+
+#[test]
+fn the_grid_of_a_mapping_is_the_grid_of_the_map_it_finishes_with() {
+    assert_eq!(
+        Mapping::start(sync_parameters())
+            .expect("valid parameters")
+            .grid(),
+        Ok(None),
+        "no grid before the first scan"
+    );
+    let room = Room::new(3.0, 2.0, 0.25, 1);
+    let drive = circle_drive(0.6);
+    let mapping = map_of(&room, &drive, &drive, sync_parameters());
+    let grid = mapping
+        .grid()
+        .expect("a grid karto can count")
+        .expect("the drive maps the room");
+    let (map, _) = mapping
+        .finish(MAPPING_START_UNIX_NS, localization_parameters())
+        .expect("valid parameters")
+        .expect("the drive maps the room");
+    assert_eq!(&grid, map.grid());
 }
 
 #[test]
@@ -210,14 +257,14 @@ fn localization_parameters_that_keep_no_pose_leave_the_map_in_the_error() {
     let room = Room::new(3.0, 2.0, 0.25, 1);
     let drive = circle_drive(0.6);
     let finished = map_of(&room, &drive, &drive, sync_parameters())
-        .finish(CREATED_AT_UNIX_NS, localization_parameters())
+        .finish(MAPPING_START_UNIX_NS, localization_parameters())
         .expect("valid parameters")
         .expect("the drive maps the room")
         .0;
     let mut no_buffer = localization_parameters();
     no_buffer.slam_toolbox.scan_buffer_size = 0;
     let Err(FinishError::Localization { map, error }) =
-        map_of(&room, &drive, &drive, sync_parameters()).finish(CREATED_AT_UNIX_NS, no_buffer)
+        map_of(&room, &drive, &drive, sync_parameters()).finish(MAPPING_START_UNIX_NS, no_buffer)
     else {
         panic!("a scan buffer of 0 keeps no pose");
     };
@@ -237,7 +284,7 @@ fn a_resolution_so_small_that_karto_cannot_count_the_cells_is_refused_at_the_end
     let mut parameters = sync_parameters();
     parameters.resolution = 1e-9;
     let finished = map_of(&room, &drive, &drive, parameters)
-        .finish(CREATED_AT_UNIX_NS, localization_parameters());
+        .finish(MAPPING_START_UNIX_NS, localization_parameters());
     assert!(
         matches!(
             finished,

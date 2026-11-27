@@ -267,9 +267,9 @@ class TestTheMatch:
         one_arm = Held(arms=frozenset({"left_arm"}), grippers=OPENARM_LIMBS.grippers)
         assert bundled("openarm_v2").mismatch(one_arm) == (
             "its pairs name arms ['left_arm'], grippers ['left_gripper', 'right_gripper'], "
-            "bases [], rgb_cameras [], rgbd_cameras [], and the model openarm_v2 has arms "
-            "['left_arm', 'right_arm'], grippers ['left_gripper', 'right_gripper'], bases [], "
-            "rgb_cameras ['wrist_left', 'wrist_right'], rgbd_cameras ['chest']"
+            "bases [], rgb_cameras [], rgbd_cameras [], lidars [], and the model openarm_v2 has "
+            "arms ['left_arm', 'right_arm'], grippers ['left_gripper', 'right_gripper'], bases [], "
+            "rgb_cameras ['wrist_left', 'wrist_right'], rgbd_cameras ['chest'], lidars []"
         )
 
     def test_an_so101_paired_as_an_openarm_matches_nothing(self):
@@ -288,14 +288,21 @@ class TestTheMatch:
     def test_a_base_is_a_match_once_its_base_is_paired(self):
         base = bundled("botshare_base")
         assert base.holds_every_driven_part(BASE)
-        assert base.mismatch(BASE) is None, "its camera may go unpaired"
-        viewed = Held(rgbd_cameras=frozenset({"base_camera"}))
+        assert base.mismatch(BASE) is None, "its camera and its lidar may go unpaired"
+        viewed = Held(rgbd_cameras=frozenset({"base_camera"}), lidars=frozenset({"lidar"}))
         assert not base.holds_every_driven_part(viewed)
         assert base.mismatch(viewed) == (
             "its pairs name arms [], grippers [], bases [], rgb_cameras [], rgbd_cameras "
-            "['base_camera'], and the model botshare_base has arms [], grippers [], bases "
-            "['base'], rgb_cameras [], rgbd_cameras ['base_camera']"
+            "['base_camera'], lidars ['lidar'], and the model botshare_base has arms [], "
+            "grippers [], bases ['base'], rgb_cameras [], rgbd_cameras ['base_camera'], "
+            "lidars ['lidar']"
         )
+
+    def test_a_lidar_the_model_lacks_is_foreign(self):
+        base = bundled("botshare_base")
+        stray = Held(bases=BASE.bases, lidars=frozenset({"lidar", "rear_lidar"}))
+        assert base.foreign(stray) == Held(lidars=frozenset({"rear_lidar"}))
+        assert base.mismatch(stray) is not None
 
     def test_a_base_the_model_lacks_is_foreign(self):
         assert bundled("botshare_base").foreign(Held(bases=frozenset({"wheels"}))) == Held(
@@ -391,11 +398,19 @@ class TestTheShippedEntryReadsAtTheEnginesStart:
         with pytest.raises(ModelEntryError, match=r"unknown key\(s\) \['arm_gains'\]"):
             Models.read(engine)
 
-    def test_an_entry_without_cameras_is_refused(self, shipped, engine):
+    def test_an_entry_with_no_camera_and_no_lidar_is_refused(self, shipped, engine):
         (shipped / "so101.json5").write_text("{}")
         (engine / "so101.json5").write_text("{}")
-        with pytest.raises(ModelEntryError, match=r"so101\.json5: model entry has no `cameras`"):
+        with pytest.raises(
+            ModelEntryError, match=r"so101\.json5: model entry renders no camera and sweeps no lidar"
+        ):
             Models.read(engine)
+
+    def test_an_entry_of_lidars_alone_renders_no_camera(self, shipped, engine):
+        (shipped / "so101.json5").write_text("{ lidars: {} }")
+        (engine / "so101.json5").write_text("{}")
+        with pytest.raises(ModelEntryError, match=r"the cameras of the description are \['wrist'\], and the entry renders \[\]"):
+            Models.read(engine).of("so101").entry(model("so101").description())
 
     def test_an_entry_that_does_not_read_names_its_file(self, shipped, engine):
         (shipped / "so101.json5").write_text("{ cameras: ")

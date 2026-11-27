@@ -13,14 +13,14 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   interpolates them (`camera_core::laser_scan::LaserScan::placed_rays`), in the base's frame
   at the scan's timestamp, with the base's odometry there.
 - `Mapping` maps a room from scans and odometry as slam_toolbox 2.10.0 does in its
-  synchronous mode, its map frame the robot frame where mapping started: each scan that
+  synchronous mode, its map frame the odometry frame where mapping started: each scan that
   passes slam_toolbox's gate is matched against a running buffer of recent scans by karto's
   correlative scan matcher, linked to the scan before it, to the buffer and to the near
   chains of scans it matches, and the loops it closes against chains of scans nearby close,
   with the pose graph optimized by Ceres 2.2.0's Levenberg-Marquardt schedule as
   slam_toolbox configures it, each step's normal equations solved by faer's sparse Cholesky
   factorization. Each scan it adds to the graph is a scan of the map, and answers the
-  base's `MapPose`.
+  base's `MapPose`. `Mapping::grid` is the grid of the map as it stands.
 - `RoomMap` is a map: its pose graph with its scans, the `OccupancyGrid` that karto makes of
   them, and its `MapSummary`. `RoomMap::save` writes it as a directory: `pose_graph.json`,
   `meta.json`, and `map.pgm` with `map.yaml` as Nav2's map saver writes a trinary map.
@@ -29,7 +29,16 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   whose distance from that corner rounds to that count keys no cell: a map leaves out the
   hits on the box's far x and far y edges, and with them a wall that lies along either
   edge. `RoomMap::load` reads it back, and refuses a directory whose files disagree, or
-  whose resolution makes no grid karto can count, naming the file and the field.
+  whose resolution makes no grid karto can count, naming the file and the field;
+  `RoomMap::load_summary` reads its summary from `meta.json` alone.
+- `MapStore` keeps maps by `MapName` in one directory, as room_map:v1 keeps them: a name is
+  a lowercase letter, then lowercase letters, digits and `_`, at most 64 characters. It
+  lists the maps whose description reads, sorted by name, each with its summary; it saves a
+  map under a name no saved map has, claiming the name's directory, writing the map into a
+  temporary directory, flushing it and renaming it over the claim; it loads a map; and it
+  removes one by renaming its directory before deleting it. A listing gives a whole map of a
+  name or none; a save that stops before its rename leaves a claimed directory, which lists
+  no map, refuses a load and holds the name until a removal frees it.
 - `Localization` keeps the base's pose in a map as slam_toolbox does in its localization
   mode: each scan added to the graph, linked and its loops closed, and the oldest added
   scan beyond the buffer dropped. It starts from an `InitialPose` with a search radius and a
@@ -44,7 +53,9 @@ or messaging dependencies; the library takes 2-D scans and names no sensor.
   `max_particles` particles spread over the free cells of the map's grid, weighed by AMCL's
   likelihood field model, moved by its differential or omnidirectional motion model
   (`robot_model_type`) and resampled by KLD sampling between `min_particles` and
-  `max_particles`, every random draw on glibc's `drand48` stream of a seed. Each scan that
+  `max_particles`, every random draw on the caller's `Drand48` stream, glibc's `drand48`,
+  which a caller seeds once and hands to each search, as Nav2's AMCL node seeds its stream
+  once when it initializes its filter and its global localization seeds nothing. Each scan that
   AMCL publishes a pose after answers the mean of the heaviest cluster of particles, its
   `MapPose` carrying the deviations of the whole filter's covariance as `amcl_pose` carries
   it; once they lie within the search limits, the search ends in the `Localization` that
@@ -76,9 +87,9 @@ let projection = LaserProjection::new(LaserProjectionParameters {
     range_max: 8.0,
 })?;
 
-// slam_toolbox's parameters, each by its name in mapper_params_online_sync.yaml, and the
-// base's odometry where mapping starts.
-let mut mapping = Mapping::start(parameters, start_odometry)?;
+// slam_toolbox's parameters, each by its name in mapper_params_online_sync.yaml; the map
+// frame is the odometry frame.
+let mut mapping = Mapping::start(parameters)?;
 for frame in frames {
     // The points of a depth frame in the base frame, and the base's odometric pose at the
     // frame's timestamp. The projected scan lies in the base frame, so its sensor stands at
@@ -89,7 +100,7 @@ for frame in frames {
 }
 let localization_parameters = LocalizationParameters { slam_toolbox, matching_limits };
 let (map, mut localization) = mapping
-    .finish(created_at_unix_ns, localization_parameters)?
+    .finish(mapping_start_unix_ns, localization_parameters)?
     .expect("a map of the scans");
 map.save(directory)?;
 
@@ -110,15 +121,16 @@ if let Some(map_pose) = localization.add(&next_scan)? {
 
 // From no known pose: AMCL's parameters, each by its name in Nav2's amcl parameters, the
 // search limits, the parameters of the localization that keeps the pose once the search
-// ends, and the seed of the random draws.
+// ends; and the node's one stream of random draws, seeded once, as AMCL's node seeds it.
 let parameters = GlobalLocalizationParameters {
-    amcl,
+    amcl: AmclSettings::parse(amcl)?,
     search_limits,
     localization: localization_parameters,
 };
-let mut search = GlobalLocalization::start(&map, parameters, seed)?;
+let mut stream = Drand48::seeded(random_seed);
+let mut search = GlobalLocalization::start(&map, parameters, &mut stream)?;
 let localization = loop {
-    match search.add(&next_scan) {
+    match search.add(&next_scan, &mut stream) {
         // AMCL's pose after the scan, when it publishes one, outside the search limits.
         SearchStep::Searching(going_on, _map_pose) => search = going_on,
         // The search ended at map_pose: the localization keeps the pose from the next scan.

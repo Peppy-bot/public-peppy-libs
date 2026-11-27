@@ -58,7 +58,7 @@ pub fn localization_parameters() -> LocalizationParameters {
 }
 
 /// When the maps of the tests started (ns since the Unix epoch).
-pub const CREATED_AT_UNIX_NS: i64 = 1_793_404_800_000_000_000;
+pub const MAPPING_START_UNIX_NS: i64 = 1_793_404_800_000_000_000;
 
 /// The time between two scans of a drawn drive (ns).
 pub const SCAN_PERIOD_NS: i64 = 1_000_000_000;
@@ -71,7 +71,7 @@ pub fn map_of(
     odometry: &[PlanarPose],
     parameters: MappingParameters,
 ) -> Mapping {
-    let mut mapping = Mapping::start(parameters, PlanarPose::IDENTITY).expect("valid parameters");
+    let mut mapping = Mapping::start(parameters).expect("valid parameters");
     for (index, (truth, odometry)) in drive.iter().zip(odometry).enumerate() {
         mapping
             .add(&placed(
@@ -92,7 +92,7 @@ pub fn room_map_of(
     parameters: MappingParameters,
 ) -> RoomMap {
     map_of(room, drive, odometry, parameters)
-        .finish(CREATED_AT_UNIX_NS, localization_parameters())
+        .finish(MAPPING_START_UNIX_NS, localization_parameters())
         .expect("valid parameters")
         .expect("the drive maps the room")
         .0

@@ -1,18 +1,23 @@
 //! What a mobile base needs to plan a path around what it sees and to drive
 //! it, ported from Nav2 1.5.2, with no ROS and no base:
 //!
-//! - [`grid`]: the cost grid, Nav2's `Costmap2D`, with Nav2's cost values.
+//! - [`grid`]: the cost grid, Nav2's `Costmap2D`, with Nav2's cost values, and
+//!   the refusal of a placement of one grid's cells on another that is not
+//!   finite.
 //! - [`PaddedFootprint`]: a base's outline (`control_core::footprint::Footprint`)
 //!   padded as Nav2 pads it, the footprint the cost grid, the planner, the
 //!   controller, the stop and the collision checks take, with its inscribed
 //!   and circumscribed radii.
 //! - [`obstacles`]: what the sensors see, depth frames and laser scans kept in
 //!   an occupancy map whose columns under the padded footprint are cleared
-//!   after each frame, projected to a grid as Nav2's obstacle layer marks
-//!   points, a drop below the floor marked too, and the points each source's
+//!   after each frame, projected to a grid, each column marking every cell its
+//!   square overlaps where Nav2's obstacle layer marks the cell of each point,
+//!   a drop below the floor marked too, and the points each source's
 //!   newest frame saw, which the stop reads.
 //! - [`saved_grid`]: a saved occupancy grid as Nav2's static layer takes a
-//!   trinary map.
+//!   trinary map, from its image or from an occupancy grid's cells, its
+//!   occupied cells placed on a grid in another frame, and a map's extent as
+//!   room_map:v1 gives it.
 //! - [`inflation`]: a grid inflated around its lethal cells, as Nav2's
 //!   inflation layer inflates one.
 //! - [`costmap`]: an obstacle layer, over a saved grid when one is loaded,
@@ -21,7 +26,9 @@
 //!   ([`planner::search`]) and its path, smoothed by Smac's smoother
 //!   ([`planner::plan`]), with the failures [`planner::PlanError`] names.
 //! - [`path_handler`]: a planner's path pruned to the poses ahead of the
-//!   base, as Nav2's controller server hands it to its controller.
+//!   base, the nearest pose found in the plan's frame and the poses ahead and
+//!   the goal placed in the cost grid's, as Nav2's controller server hands it
+//!   to its controller.
 //! - [`goal_checker`]: whether the base reached the goal of the plan it
 //!   follows, as Nav2's stateful goal checker judges it, each plan with its
 //!   own checker.

@@ -64,6 +64,20 @@ the farthest depths it measures, meters along its view ([`DepthRange`]):
 </gazebo>
 ```
 
+A 2-D lidar the robot carries is a `gpu_lidar` sensor in the form of Gazebo's URDF
+extension, named for the lidar, on the link that is its frame, which hangs on a fixed
+joint ([`LidarFrame`]): the `<min>` and `<max>` of its `<range>` are the nearest and the
+farthest ranges it measures, meters along its rays ([`LidarRange`]). No two sensors share
+a name.
+
+```xml
+<gazebo reference="lidar_frame">
+  <sensor name="lidar" type="gpu_lidar">
+    <lidar><range><min>0.05</min><max>40</max></range></lidar>
+  </sensor>
+</gazebo>
+```
+
 A differential base's wheels, as `RobotDescription::differential_base` reads them, are
 the URDF's two continuous joints that no group of the SRDF holds, on a link that fixed
 joints alone join to the root link, so a continuous joint below a joint that moves, and
@@ -200,8 +214,9 @@ own arms, and a node's table of the models it drives gives each listed model. Th
 run each shape [`on_shape`] names at its counts, read each disabled pair's
 reason back from its name, read each camera's depth range from its depth
 sensor, and refuse, by name, every element and attribute the reader does not
-read, a `<gazebo>` element that is not one camera's depth sensor, a clip that is
-not a range of depths, every name the URDF lacks, a link or a joint given twice,
+read, a `<gazebo>` element that is neither one camera's depth sensor nor one 2-D
+lidar, a clip that is not a range of depths, a lidar's range that is not a range of
+meters, two sensors of one name, every name the URDF lacks, a link or a joint given twice,
 a joint naming a link the URDF lacks, a joint of more than one position, a link
 on two joints, joints in a loop, links on no joint beside the root, two meshes
 of one file name, a model of other arms than a node's and a model a node's

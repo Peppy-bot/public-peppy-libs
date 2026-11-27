@@ -31,6 +31,7 @@ import os
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -61,6 +62,9 @@ CAMERA_PROFILE = "base_camera_link"
 COLOR_FRAME = ("base_camera_color_optical_frame", "base_camera_color_optical_joint")
 DEPTH_FRAME = ("base_camera_depth_optical_frame", "base_camera_depth_optical_joint")
 OPTICAL_FRAME = (f"{CAMERA}_optical_frame", f"{CAMERA}_optical_joint")
+# The RPLIDAR S3: upstream's lidar driver gives its scans in lidar_link's frame.
+LIDAR = "lidar"
+LIDAR_LINK = "lidar_link"
 
 URDF_HEADER = f"""<!--
   botshare.ai's OpenAMRobot 2.0 base: a chassis on two driven hub-motor wheels
@@ -83,7 +87,11 @@ URDF_HEADER = f"""<!--
   - the Gemini 336L has one optical frame, {OPTICAL_FRAME[0]}, upstream's
     {COLOR_FRAME[0]}; upstream's {DEPTH_FRAME[0]}
     stands at the same place and is left out. Its depth sensor measures from the
-    range_min to the range_max of upstream's config/sensor_profiles.yaml.
+    range_min to the range_max of upstream's config/sensor_profiles.yaml;
+  - the lidar, named {LIDAR}, is the link {LIDAR}_frame on {LIDAR_LINK}, its scan
+    frame. Its gpu_lidar sensor measures from the range_min to the
+    range_max_white of upstream's config/sensor_profiles.yaml, the farthest
+    range on a white object.
 -->"""
 
 SRDF_HEADER = """<!--
@@ -145,20 +153,40 @@ def placement(joint: ET.Element) -> tuple:
     return (joint.find("parent").get("link"), origin.get("xyz"), origin.get("rpy"))
 
 
-def depth_range(package: Path) -> tuple[float, float]:
-    """The Gemini 336L's depth range (m) in upstream's sensor profiles."""
+@dataclass(frozen=True)
+class Range:
+    """The nearest and the farthest distance a sensor measures (m)."""
+
+    nearest: float
+    farthest: float
+
+
+def datasheet_metres(profiles: dict, frame: str, channel: str, key: str) -> float:
+    """The value `key` of the channel `channel` of the frame `frame` in upstream's sensor
+    profiles, refused unless it is a datasheet value in m."""
+    entry = profiles["frames"][frame]["channels"][channel][key]
+    if entry["unit"] != "m" or entry["status"] != "datasheet":
+        sys.exit(f"upstream's {frame} {channel} {key} is {entry}, not a datasheet value in m")
+    return float(entry["value"])
+
+
+def sensor_ranges(package: Path) -> tuple[Range, Range]:
+    """The Gemini 336L's depth range and the RPLIDAR S3's scan range in upstream's sensor
+    profiles, the lidar's farthest on a white object. Upstream keys the lidar's profile
+    by its link."""
     profiles = yaml.safe_load((package / "config/sensor_profiles.yaml").read_text())
-    depth = profiles["frames"][CAMERA_PROFILE]["channels"]["depth"]
-    values = []
-    for key in ["range_min", "range_max"]:
-        entry = depth[key]
-        if entry["unit"] != "m" or entry["status"] != "datasheet":
-            sys.exit(f"upstream's {CAMERA_PROFILE} depth {key} is {entry}, not a datasheet value in m")
-        values.append(float(entry["value"]))
-    return values[0], values[1]
+    depth = Range(
+        datasheet_metres(profiles, CAMERA_PROFILE, "depth", "range_min"),
+        datasheet_metres(profiles, CAMERA_PROFILE, "depth", "range_max"),
+    )
+    scan = Range(
+        datasheet_metres(profiles, LIDAR_LINK, "scan", "range_min"),
+        datasheet_metres(profiles, LIDAR_LINK, "scan", "range_max_white"),
+    )
+    return depth, scan
 
 
-def adapted(root: ET.Element, near: float, far: float) -> ET.Element:
+def adapted(root: ET.Element, depth: Range, scan: Range) -> ET.Element:
     """Upstream's URDF with the changes URDF_HEADER lists."""
     root.set("name", MODEL)
     for gazebo in root.findall("gazebo"):
@@ -179,8 +207,20 @@ def adapted(root: ET.Element, near: float, far: float) -> ET.Element:
     gazebo = ET.SubElement(root, "gazebo", reference=OPTICAL_FRAME[0])
     sensor = ET.SubElement(gazebo, "sensor", name=CAMERA, type="depth")
     clip = ET.SubElement(ET.SubElement(sensor, "camera"), "clip")
-    ET.SubElement(clip, "near").text = repr(near)
-    ET.SubElement(clip, "far").text = repr(far)
+    ET.SubElement(clip, "near").text = repr(depth.nearest)
+    ET.SubElement(clip, "far").text = repr(depth.farthest)
+
+    one(root, "link", LIDAR_LINK)
+    ET.SubElement(root, "link", name=f"{LIDAR}_frame")
+    joint = ET.SubElement(root, "joint", name=f"{LIDAR}_frame_joint", type="fixed")
+    ET.SubElement(joint, "origin", rpy="0 0 0", xyz="0 0 0")
+    ET.SubElement(joint, "parent", link=LIDAR_LINK)
+    ET.SubElement(joint, "child", link=f"{LIDAR}_frame")
+    gazebo = ET.SubElement(root, "gazebo", reference=f"{LIDAR}_frame")
+    sensor = ET.SubElement(gazebo, "sensor", name=LIDAR, type="gpu_lidar")
+    reach = ET.SubElement(ET.SubElement(sensor, "lidar"), "range")
+    ET.SubElement(reach, "min").text = repr(scan.nearest)
+    ET.SubElement(reach, "max").text = repr(scan.farthest)
     return root
 
 
@@ -245,8 +285,8 @@ def model_files() -> dict[str, str]:
     with tempfile.TemporaryDirectory() as scratch:
         package = Path(scratch)
         fetch_package(package)
-        near, far = depth_range(package)
-        root = adapted(expanded(package), near, far)
+        depth, scan = sensor_ranges(package)
+        root = adapted(expanded(package), depth, scan)
         pairs = disabled_pairs(root)
         return {f"{MODEL}.urdf": urdf_text(root, upstream_license()), f"{MODEL}.srdf": srdf_text(pairs)}
 

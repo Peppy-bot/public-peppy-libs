@@ -12,8 +12,8 @@ use pyo3::types::{PyBytes, PyTuple};
 use robot_description::chain_kinematics::Mimic;
 use robot_description::chain_kinematics::nalgebra::Isometry3;
 use robot_description::{
-    Arm, CameraFrame, DepthRange, DifferentialBase, Finger, FingerSpan, Gripper, LinkTransform,
-    Model, RobotDescription, Wheel, states,
+    Arm, CameraFrame, DepthRange, DifferentialBase, Finger, FingerSpan, Gripper, LidarFrame,
+    LidarRange, LinkTransform, Model, RobotDescription, Wheel, states,
 };
 
 /// A point or a set of angles, `(x, y, z)` or `(roll, pitch, yaw)`.
@@ -99,6 +99,8 @@ fn robot_description_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyLinkTransform>()?;
     module.add_class::<PyCameraFrame>()?;
     module.add_class::<PyDepthRange>()?;
+    module.add_class::<PyLidarFrame>()?;
+    module.add_class::<PyLidarRange>()?;
     module.add_class::<PyJointLimits>()?;
     module.add_class::<PyDifferentialBase>()?;
     module.add_class::<PyWheel>()?;
@@ -251,6 +253,13 @@ impl PyRobotDescription {
     #[getter]
     fn cameras<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.cameras().iter().cloned().map(PyCameraFrame))
+    }
+
+    /// Each 2-D lidar the robot carries, its frame the link its sensor
+    /// references, with the ranges it measures.
+    #[getter]
+    fn lidars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.0.lidars().iter().cloned().map(PyLidarFrame))
     }
 
     /// The URDF's root link, the robot frame.
@@ -687,6 +696,61 @@ impl PyDepthRange {
 
     fn __repr__(&self) -> String {
         format!("<DepthRange {} to {} m>", self.0.near(), self.0.far())
+    }
+}
+
+/// A 2-D lidar: its frame is the link its `gpu_lidar` sensor references, on
+/// a fixed joint, and its rays sweep that frame's x-y plane.
+#[pyclass(name = "LidarFrame", module = "robot_description_py", frozen)]
+struct PyLidarFrame(LidarFrame);
+
+#[pymethods]
+impl PyLidarFrame {
+    /// The lidar's name on the robot, its sensor's name.
+    #[getter]
+    fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    /// The link that is the lidar's frame.
+    #[getter]
+    fn frame(&self) -> &str {
+        &self.0.frame
+    }
+
+    /// The ranges the lidar measures, as its sensor's `<range>` gives them.
+    #[getter]
+    fn range(&self) -> PyLidarRange {
+        PyLidarRange(self.0.range)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<LidarFrame {}>", self.0.name)
+    }
+}
+
+/// The ranges a lidar measures, meters along its rays: the `<min>` and
+/// `<max>` of its sensor's `<range>`, the nearest 0 or above and below the
+/// farthest.
+#[pyclass(name = "LidarRange", module = "robot_description_py", frozen)]
+struct PyLidarRange(LidarRange);
+
+#[pymethods]
+impl PyLidarRange {
+    /// The nearest range the lidar measures, meters.
+    #[getter]
+    fn min(&self) -> f64 {
+        self.0.min()
+    }
+
+    /// The farthest range the lidar measures, meters.
+    #[getter]
+    fn max(&self) -> f64 {
+        self.0.max()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<LidarRange {} to {} m>", self.0.min(), self.0.max())
     }
 }
 

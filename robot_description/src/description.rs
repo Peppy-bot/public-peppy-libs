@@ -10,7 +10,7 @@ use urdf_rs::{Joint, JointType, Robot};
 use crate::error::{
     DescriptionError, FingerSpanError, UnknownGroup, UnknownJoint, UnknownLink, UnknownState,
 };
-use crate::gazebo::{self, DepthSensor};
+use crate::gazebo::{self, DepthSensor, LidarSensor};
 use crate::srdf::{self, Srdf};
 use crate::states;
 
@@ -229,6 +229,43 @@ impl DepthRange {
     }
 }
 
+/// A 2-D lidar the robot carries, as the URDF's Gazebo extension gives it: a `gpu_lidar`
+/// sensor on the link of its frame, which hangs on a fixed joint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LidarFrame {
+    /// The lidar's name on the robot, its sensor's name.
+    pub name: String,
+    /// The link that is the lidar's frame, the link its sensor references.
+    pub frame: String,
+    /// The ranges the lidar measures, as its sensor's `<range>` gives them.
+    pub range: LidarRange,
+}
+
+/// The ranges a lidar measures, meters along its rays: the `<min>` and `<max>` of its
+/// sensor's `<range>`, finite, the nearest 0 or above and below the farthest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LidarRange {
+    min: f64,
+    max: f64,
+}
+
+impl LidarRange {
+    /// The range from `min` to `max`, or none unless `0 <= min < max`, both finite.
+    pub(crate) fn new(min: f64, max: f64) -> Option<Self> {
+        (min >= 0.0 && min < max && max.is_finite()).then_some(Self { min, max })
+    }
+
+    /// The nearest range the lidar measures, meters.
+    pub fn min(self) -> f64 {
+        self.min
+    }
+
+    /// The farthest range the lidar measures, meters.
+    pub fn max(self) -> f64 {
+        self.max
+    }
+}
+
 /// The suffix of the link that is a camera's optical frame.
 const OPTICAL_FRAME_SUFFIX: &str = "_optical_frame";
 
@@ -248,6 +285,7 @@ pub struct RobotDescription {
     states: Vec<State>,
     disabled_pairs: Vec<DisabledPair>,
     cameras: Vec<CameraFrame>,
+    lidars: Vec<LidarFrame>,
 }
 
 /// A group's state: a value for each joint of the group that moves of its own, in the
@@ -262,7 +300,8 @@ struct State {
 impl RobotDescription {
     /// The description `urdf` and `srdf` make. A URDF whose links and joints are not one
     /// tree of joints that each take one position (chain_kinematics' [`TreeError`]), a
-    /// `<gazebo>` element of the URDF that is not one camera's depth sensor, and an SRDF
+    /// `<gazebo>` element of the URDF that is neither one camera's depth sensor nor one 2-D
+    /// lidar, two sensors of one name, and an SRDF
     /// that names a link, a joint or a group that does not exist, that this reader reads
     /// in part, or that describes an arm, a gripper, a state or a disabled pair the URDF
     /// contradicts, are refused.
@@ -271,7 +310,7 @@ impl RobotDescription {
     pub fn parse(urdf: &str, srdf: &str) -> Result<Self, DescriptionError> {
         let robot = urdf_rs::read_from_string(urdf)
             .map_err(|error| DescriptionError::Urdf(error.to_string()))?;
-        let depth_sensors = gazebo::depth_sensors(urdf)?;
+        let sensors = gazebo::sensors(urdf)?;
         let semantics = Srdf::parse(srdf)?;
         if semantics.robot_name != robot.name {
             return Err(DescriptionError::RobotName {
@@ -308,7 +347,11 @@ impl RobotDescription {
             .map(|group| (group.name.clone(), group.subgroups.clone()))
             .collect();
         let disabled_pairs = disabled_pairs(semantics.disabled_pairs, &model)?;
-        let cameras = cameras(&robot, &model, &depth_sensors)?;
+        let cameras = cameras(&robot, &model, &sensors.depth)?;
+        let lidars = lidars(&model, sensors.lidars)?;
+        if let Some(name) = first_shared_name(&cameras, &lidars) {
+            return Err(DescriptionError::SensorNameTwice { name });
+        }
         Ok(Self {
             urdf: urdf.to_string(),
             srdf: srdf.to_string(),
@@ -320,6 +363,7 @@ impl RobotDescription {
             states,
             disabled_pairs,
             cameras,
+            lidars,
         })
     }
 
@@ -401,6 +445,11 @@ impl RobotDescription {
     /// the depths it measures where the URDF gives it a depth sensor.
     pub fn cameras(&self) -> &[CameraFrame] {
         &self.cameras
+    }
+
+    /// The 2-D lidars the robot carries, in the URDF's order of their sensors.
+    pub fn lidars(&self) -> &[LidarFrame] {
+        &self.lidars
     }
 
     /// The URDF's root link, the one link that hangs on no joint: the robot frame.
@@ -955,17 +1004,7 @@ fn cameras(
     optical_frames
         .into_iter()
         .map(|(name, frame)| {
-            let joint =
-                urdf.parent_joint(frame)
-                    .ok_or_else(|| DescriptionError::CameraFrameUnmounted {
-                        frame: frame.to_string(),
-                    })?;
-            if moves(joint) {
-                return Err(DescriptionError::CameraFrameMoves {
-                    frame: frame.to_string(),
-                    joint: joint.name.clone(),
-                });
-            }
+            let joint = fixed_joint_of(urdf, frame)?;
             Ok(CameraFrame {
                 name: name.to_string(),
                 parent_link: joint.parent.link.clone(),
@@ -975,6 +1014,52 @@ fn cameras(
             })
         })
         .collect()
+}
+
+/// The 2-D lidar of each of `sensors`, each sensor's reference a link of `urdf` that hangs
+/// on a fixed joint, no two of one name.
+fn lidars(urdf: &Urdf, sensors: Vec<LidarSensor>) -> Result<Vec<LidarFrame>, DescriptionError> {
+    let mut names = HashSet::new();
+    sensors
+        .into_iter()
+        .map(|sensor| {
+            urdf.link("gazebo", &sensor.reference)?;
+            fixed_joint_of(urdf, &sensor.reference)?;
+            if !names.insert(sensor.name.clone()) {
+                return Err(DescriptionError::SensorNameTwice { name: sensor.name });
+            }
+            Ok(LidarFrame {
+                name: sensor.name,
+                frame: sensor.reference,
+                range: sensor.range,
+            })
+        })
+        .collect()
+}
+
+/// The name of a camera that a lidar also has, the first in the cameras' order.
+fn first_shared_name(cameras: &[CameraFrame], lidars: &[LidarFrame]) -> Option<String> {
+    cameras
+        .iter()
+        .find(|camera| lidars.iter().any(|lidar| lidar.name == camera.name))
+        .map(|camera| camera.name.clone())
+}
+
+/// The joint `frame` hangs on, a sensor's frame: refused when it hangs on none or on one
+/// that moves.
+fn fixed_joint_of<'a>(urdf: &Urdf<'a>, frame: &str) -> Result<&'a Joint, DescriptionError> {
+    let joint = urdf
+        .parent_joint(frame)
+        .ok_or_else(|| DescriptionError::SensorFrameUnmounted {
+            frame: frame.to_string(),
+        })?;
+    if moves(joint) {
+        return Err(DescriptionError::SensorFrameMoves {
+            frame: frame.to_string(),
+            joint: joint.name.clone(),
+        });
+    }
+    Ok(joint)
 }
 
 #[cfg(test)]
@@ -1248,11 +1333,14 @@ mod tests {
         let form = "a camera's depth range is <gazebo reference=\"<camera>_optical_frame\"><sensor \
              name=\"<camera>\" type=\"depth\"><camera><clip><near>NEAR</near><far>FAR</far></clip>\
              </camera></sensor></gazebo>, in meters";
+        let lidar_form = "a 2-D lidar is <gazebo reference=\"<frame>\"><sensor name=\"<lidar>\" \
+             type=\"gpu_lidar\"><lidar><range><min>MIN</min><max>MAX</max></range></lidar>\
+             </sensor></gazebo>, in meters";
         assert_eq!(
             urdf_refusal(r#"type="depth""#, r#"type="camera""#),
             format!(
                 "the sensor on \"eye_optical_frame\" is of the type \"camera\", and this reader \
-                 reads a sensor of the type \"depth\"; {form}"
+                 reads a sensor of the type \"depth\" or \"gpu_lidar\"; {form}; {lidar_form}"
             )
         );
         assert_eq!(
@@ -1341,6 +1429,144 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A lidar on the link `laser_frame`, fixed to the fixture's base: the link, its joint
+    /// and its `<gazebo>` element, which a test adds to the fixture's URDF.
+    const LIDAR: &str = r#"  <link name="laser_frame"/>
+  <joint name="laser" type="fixed"><parent link="base"/><child link="laser_frame"/></joint>
+  <gazebo reference="laser_frame">
+    <sensor name="laser" type="gpu_lidar"><lidar><range><min>0.05</min><max>40</max></range></lidar></sensor>
+  </gazebo>
+"#;
+
+    /// The fixture's URDF with `lidar` added.
+    fn with_lidar(lidar: &str) -> String {
+        URDF.replacen("</robot>", &format!("{lidar}</robot>"), 1)
+    }
+
+    /// The refusal of the description whose URDF holds [`LIDAR`] with `from` replaced by
+    /// `to`.
+    fn lidar_refusal(from: &str, to: &str) -> String {
+        assert!(LIDAR.contains(from), "the lidar holds {from:?}");
+        RobotDescription::parse(&with_lidar(&LIDAR.replacen(from, to, 1)), SRDF)
+            .expect_err("a refusal")
+            .to_string()
+    }
+
+    #[test]
+    fn a_gpu_lidar_sensor_is_a_lidar_on_the_link_it_references() {
+        let description =
+            RobotDescription::parse(&with_lidar(LIDAR), SRDF).expect("a URDF with a lidar");
+        assert_eq!(
+            description.lidars(),
+            [LidarFrame {
+                name: "laser".to_string(),
+                frame: "laser_frame".to_string(),
+                range: LidarRange::new(0.05, 40.0).expect("a range"),
+            }]
+        );
+        let range = description.lidars()[0].range;
+        assert_eq!((range.min(), range.max()), (0.05, 40.0));
+        assert_eq!(description.cameras().len(), 1, "the eye stays a camera");
+        assert_eq!(
+            RobotDescription::parse(URDF, SRDF)
+                .expect("the fixture")
+                .lidars(),
+            [],
+            "a URDF with no gpu_lidar sensor carries no lidar"
+        );
+    }
+
+    #[test]
+    fn a_lidar_whose_range_is_no_range_of_meters_is_refused() {
+        for value in ["near", "inf", "NaN", "", "0.05 0.1"] {
+            assert_eq!(
+                lidar_refusal("<min>0.05</min>", &format!("<min>{value}</min>")),
+                format!(
+                    "the <min> of the lidar on \"laser_frame\" is {value:?}, not one finite \
+                     number of meters"
+                )
+            );
+        }
+        for (min, max) in [("40", "0.05"), ("-0.1", "40"), ("1", "1")] {
+            assert_eq!(
+                lidar_refusal(
+                    "<min>0.05</min><max>40</max>",
+                    &format!("<min>{min}</min><max>{max}</max>")
+                ),
+                format!(
+                    "the lidar on \"laser_frame\" measures from {min} to {max} meters; its <min> \
+                     is 0 or above and below its <max>"
+                )
+            );
+        }
+        RobotDescription::parse(
+            &with_lidar(&LIDAR.replacen("<min>0.05</min>", "<min>0</min>", 1)),
+            SRDF,
+        )
+        .expect("a lidar that measures from 0 m");
+    }
+
+    #[test]
+    fn what_a_lidar_does_not_hold_or_holds_unread_is_refused() {
+        assert_eq!(
+            lidar_refusal("<range>", "<scan/><range>"),
+            "<lidar> holds the element <scan>, which this reader does not read; in <lidar> it \
+             reads range"
+        );
+        assert_eq!(lidar_refusal("<max>40</max>", ""), "<range> holds no <max>");
+        assert_eq!(
+            lidar_refusal(
+                "<lidar><range><min>0.05</min><max>40</max></range></lidar>",
+                ""
+            ),
+            "<sensor> holds no <lidar>"
+        );
+        assert_eq!(
+            lidar_refusal(r#"reference="laser_frame""#, r#"reference="laser_link""#),
+            "<gazebo> names the link \"laser_link\", and the URDF has no such link"
+        );
+    }
+
+    #[test]
+    fn a_lidar_on_a_moving_joint_or_of_a_sensor_name_taken_is_refused() {
+        assert_eq!(
+            lidar_refusal(
+                r#"<joint name="laser" type="fixed">"#,
+                r#"<joint name="laser" type="continuous"><axis xyz="0 0 1"/>"#
+            ),
+            "the sensor frame \"laser_frame\" hangs on the joint \"laser\", which moves; a \
+             sensor's frame is fixed to its link"
+        );
+        assert_eq!(
+            lidar_refusal(
+                r#"name="laser" type="gpu_lidar""#,
+                r#"name="eye" type="gpu_lidar""#
+            ),
+            "two sensors are named \"eye\"; name each camera and each lidar of the robot apart, \
+             a camera by its optical frame <camera>_optical_frame and a lidar by its <sensor \
+             name>"
+        );
+        let second = LIDAR
+            .replace(
+                r#"<link name="laser_frame"/>"#,
+                r#"<link name="rear_frame"/>"#,
+            )
+            .replace(r#"joint name="laser""#, r#"joint name="rear""#)
+            .replace(
+                r#"<child link="laser_frame"/>"#,
+                r#"<child link="rear_frame"/>"#,
+            )
+            .replace(r#"reference="laser_frame""#, r#"reference="rear_frame""#);
+        assert_eq!(
+            RobotDescription::parse(&with_lidar(&format!("{LIDAR}{second}")), SRDF)
+                .expect_err("a refusal")
+                .to_string(),
+            "two sensors are named \"laser\"; name each camera and each lidar of the robot \
+             apart, a camera by its optical frame <camera>_optical_frame and a lidar by its \
+             <sensor name>"
+        );
     }
 
     /// The refusal of the description whose SRDF has `from` replaced by `to`.
@@ -1694,15 +1920,15 @@ mod tests {
                 r#"<joint name="eye" type="fixed">"#,
                 r#"<joint name="eye" type="continuous">"#
             ),
-            "the camera frame \"eye_optical_frame\" hangs on the joint \"eye\", which moves; an \
-             optical frame is fixed to its link"
+            "the sensor frame \"eye_optical_frame\" hangs on the joint \"eye\", which moves; a \
+             sensor's frame is fixed to its link"
         );
         assert_eq!(
             urdf_refusal(
                 r#"<parent link="hand"/><child link="eye_optical_frame"/>"#,
                 r#"<parent link="eye_optical_frame"/><child link="base"/>"#
             ),
-            "the camera frame \"eye_optical_frame\" hangs on no joint"
+            "the sensor frame \"eye_optical_frame\" hangs on no joint"
         );
     }
 

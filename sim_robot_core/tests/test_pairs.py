@@ -1,5 +1,5 @@
-"""The five slots, and what each pair names: its robot, its limb, its base or
-its camera."""
+"""The six slots, and what each pair names: its robot, its limb, its base, its
+camera or its lidar."""
 
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ from sim_robot_core.pairs import (
     BASE_NAME,
     BASES,
     GRIPPERS,
+    LIDARS,
     RGB_CAMERAS,
     RGBD_CAMERAS,
     SLOTS,
     Held,
     PairTable,
-    camera_of,
     limb_of,
+    relay_of,
 )
 
 
@@ -31,15 +32,15 @@ class TestWhatAPairNames:
         assert pairs.pair_of(BASES, member("alpha_base_inst", "base").info) == ("alpha", "base")
 
     def test_a_camera_is_its_relays_name_in_the_copy(self):
-        assert camera_of(member("alpha_wrist_left", "simulation")) == "wrist_left"
+        assert relay_of(member("alpha_wrist_left", "simulation")) == "wrist_left"
 
     def test_a_relay_outside_a_copy_runs_under_the_name_the_launcher_wrote(self):
-        assert camera_of(member("wrist", "simulation", copy=None)) == "wrist"
+        assert relay_of(member("wrist", "simulation", copy=None)) == "wrist"
 
     def test_a_relay_that_does_not_carry_its_copys_prefix_keeps_its_whole_id(self):
         """Such an id names no camera of any model, so the match refuses it."""
-        assert camera_of(member("bravo_wrist", "simulation", copy="alpha")) == "bravo_wrist"
-        assert camera_of(member("alpha_", "simulation", copy="alpha")) == "alpha_"
+        assert relay_of(member("bravo_wrist", "simulation", copy="alpha")) == "bravo_wrist"
+        assert relay_of(member("alpha_", "simulation", copy="alpha")) == "alpha_"
 
     def test_one_misnamed_relay_does_not_stop_the_reading_of_the_other_pairs(self):
         pairs = table(
@@ -108,6 +109,13 @@ class TestPairTable:
         assert pairs.peer_of(RGB_CAMERAS, "charlo", "wrist") == wrist.info
         assert pairs.peer_of(RGBD_CAMERAS, "charlo", "wrist") is None
 
+    def test_a_scan_goes_to_the_relay_of_its_own_lidar(self):
+        lidar = member("alpha_lidar", "simulation")
+        pairs = table(lidars=[lidar])
+        assert pairs.held_by("alpha") == Held(lidars=frozenset({"lidar"}))
+        assert pairs.peer_of(LIDARS, "alpha", "lidar") == lidar.info
+        assert pairs.peer_of(RGBD_CAMERAS, "alpha", "lidar") is None
+
     def test_a_robot_with_no_pair_holds_nothing(self):
         assert table().held_by("alpha") == Held()
         assert Held().is_empty() and not Held().holds_a_driven_part()
@@ -123,8 +131,9 @@ class TestPairTable:
     def test_an_arm_a_gripper_and_a_base_each_drive(self, held):
         assert held.holds_a_driven_part()
 
-    def test_a_camera_drives_nothing(self):
+    def test_a_camera_and_a_lidar_drive_nothing(self):
         assert not Held(rgbd_cameras=frozenset({"base_camera"})).holds_a_driven_part()
+        assert not Held(lidars=frozenset({"lidar"})).holds_a_driven_part()
 
     def test_a_table_missing_a_slot_is_refused(self):
         with pytest.raises(ValueError, match="lacks \\['rgbd_cameras'\\]"):

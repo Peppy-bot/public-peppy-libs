@@ -27,8 +27,9 @@
 use camera_core::laser_scan::{LaserScan, Sweep};
 use control_core::planar_pose::PlanarPose;
 use mapping_core::{
-    GlobalLocalization, GlobalLocalizationParameters, Localization, LocalizationLimits,
-    LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan, RoomMap, SearchStep,
+    AmclSettings, Drand48, GlobalLocalization, GlobalLocalizationParameters, Localization,
+    LocalizationLimits, LocalizationParameters, MapPose, Mapping, MappingParameters, PlacedScan,
+    RoomMap, SearchStep,
 };
 use ros_reference::metrics::PlanarPose as HarnessPose;
 use ros_reference::metrics::{self, Mean, PlanarMotion};
@@ -192,8 +193,8 @@ fn map_seed(
     rays: RayTimes,
 ) -> (Mapping, Vec<ScanPose>) {
     let name = &scenario.name;
-    let mut mapping = Mapping::start(slam_toolbox_parameters(scenario), PlanarPose::IDENTITY)
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut mapping =
+        Mapping::start(slam_toolbox_parameters(scenario)).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut kept = Vec::new();
     for (index, scan) in placed_scans(prepared, odometry, rays).iter().enumerate() {
         if mapping
@@ -836,7 +837,8 @@ fn searched_starts<'a>(
                 prepared: read_prepared(results, &scenario.name),
                 rays: rays_of(scenario),
                 parameters: GlobalLocalizationParameters {
-                    amcl: amcl_parameters(&scenario.name, amcl),
+                    amcl: AmclSettings::parse(amcl_parameters(&scenario.name, amcl))
+                        .unwrap_or_else(|e| panic!("{}: {e}", scenario.name)),
                     search_limits: limits_of(*search_limits),
                     localization: localization_parameters_of(scenario),
                 },
@@ -874,8 +876,10 @@ fn search_run(
     let name = &searched.scenario.name;
     let (map, _) = searched.map_of(seed);
     let draw_seed = u32::try_from(seed).expect("a seed of the drive fits the search's seed");
+    // The harness seeds AMCL's stream right before it asks for each search.
+    let mut stream = Drand48::seeded(draw_seed);
     let mut search = Some(
-        GlobalLocalization::start(map, searched.parameters, draw_seed)
+        GlobalLocalization::start(map, searched.parameters, &mut stream)
             .unwrap_or_else(|e| panic!("{name}: {e}")),
     );
     let mut localization: Option<Localization> = None;
@@ -892,7 +896,7 @@ fn search_run(
             }
             continue;
         }
-        match search.take().expect("a search").add(scan) {
+        match search.take().expect("a search").add(scan, &mut stream) {
             SearchStep::Searching(going_on, pose) => {
                 search = Some(going_on);
                 answers.extend(pose.map(|pose| (index, pose)));

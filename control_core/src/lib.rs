@@ -47,8 +47,9 @@
 //!   against its ratings.
 //! - [`move_slot`]: the single-flight move slot a goal claims on its admission and
 //!   releases on its end, which a stop marks for a goal its loop has not taken.
-//! - [`planar_pose`]: where one frame sits in another on the floor plane, with its heading read
-//!   as Nav2's controller reads it, in frame_tree's arithmetic.
+//! - [`planar_pose`]: where one frame sits in another on the floor plane, composed with another
+//!   as tf2 composes two transforms, and seen from another with its heading read as Nav2's
+//!   controller reads it, each in frame_tree's arithmetic.
 //! - [`twist`]: a body velocity on the floor plane in the robot frame, finite by construction.
 //! - [`geometry`]: the geometry types of the contracts, each parsed from a generated record's
 //!   fields, their planar forms, and behind the `nalgebra` feature their nalgebra forms.

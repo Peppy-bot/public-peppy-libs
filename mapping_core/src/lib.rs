@@ -24,15 +24,18 @@
 //! - [`PlacedScan`]: a scan of `camera_core::laser_scan` with each ray placed where the
 //!   sensor stood at the ray's time, in the base's frame at the scan's timestamp.
 //! - [`Mapping`]: a room mapped from scans and odometry as slam_toolbox 2.10.0 maps in its
-//!   synchronous mode, its map frame the robot frame where mapping started: each scan that
+//!   synchronous mode, its map frame the odometry frame where mapping started: each scan that
 //!   passes slam_toolbox's gate is matched against a running buffer of recent scans with
 //!   karto's correlative matcher, linked to the scan before it, to the buffer and to the
 //!   near chains of scans it matches, and each loop it closes against a chain of scans
 //!   nearby closes, by optimizing the pose graph with Ceres's Levenberg-Marquardt
 //!   schedule as slam_toolbox configures it. Its [`RoomMap`] is the pose graph with its
-//!   scans and an [`OccupancyGrid`] made of them as karto makes it.
+//!   scans and an [`OccupancyGrid`] made of them as karto makes it, and
+//!   [`Mapping::grid`] is that grid while the map is built.
 //! - [`RoomMap::save`] and [`RoomMap::load`]: a map as a directory of the pose graph, a
 //!   description, and the grid as Nav2's map saver writes a trinary map.
+//! - [`MapStore`]: maps saved by [`MapName`] in one directory, as room_map:v1 keeps them,
+//!   listed by name with each one's summary, each save and removal whole or not at all.
 //! - [`Localization`]: the base's pose in a map, kept as slam_toolbox keeps it in its
 //!   localization mode, from an [`InitialPose`] and its search, from an estimate, or from
 //!   a mapping's estimate. Each [`MapPose`] carries the standard deviations of its match,
@@ -42,7 +45,8 @@
 //!   AMCL localizes globally once `reinitialize_global_localization` starts it:
 //!   `max_particles` particles spread over the free cells of the map, weighed by AMCL's
 //!   likelihood field model, moved by its differential or omnidirectional motion model and
-//!   resampled by KLD sampling, every random draw on glibc's `drand48` stream of a seed. Each
+//!   resampled by KLD sampling, every random draw on the caller's [`Drand48`] stream, glibc's
+//!   `drand48`, which a caller seeds once for its searches as AMCL's node does. Each
 //!   [`MapPose`] is the mean of the heaviest cluster of particles with the deviations of the
 //!   whole filter's covariance, as `amcl_pose` carries them; once they lie within the search
 //!   limits, [`Localization::from_estimate`] keeps the pose within its matching limits.
@@ -65,6 +69,7 @@ mod laser_projection;
 mod localization;
 mod localized_scan;
 mod map_pose;
+mod map_store;
 mod mapper;
 mod mapping;
 mod occupancy_grid;
@@ -77,8 +82,8 @@ mod scan_matcher;
 mod slam_toolbox_parameters;
 
 pub use global_localization::{
-    AmclParameterError, AmclParameters, GlobalLocalization, GlobalLocalizationError,
-    GlobalLocalizationParameters, RobotModelType, SearchStep,
+    AmclParameterError, AmclParameters, AmclSettings, Drand48, GlobalLocalization,
+    GlobalLocalizationError, GlobalLocalizationParameters, RobotModelType, SearchStep,
 };
 pub use laser_projection::{
     LaserProjection, LaserProjectionError, LaserProjectionParameters, ProjectedScan,
@@ -89,6 +94,7 @@ pub use localization::{
 };
 pub use localized_scan::{ScanError, ScanId};
 pub use map_pose::{Deviations, LocalizationLimits, MapPose};
+pub use map_store::{MapName, MapNameError, MapStore, SavedMap, StoreError};
 pub use mapping::{FinishError, Mapping, MappingError, MappingParameters, ParameterError};
 pub use occupancy_grid::{CellState, GridError, GridExtent, MapSaverFiles, OccupancyGrid};
 pub use placed_scan::PlacedScan;
