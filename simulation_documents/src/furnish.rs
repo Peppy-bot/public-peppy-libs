@@ -40,7 +40,8 @@ pub(crate) fn furnish_path() -> SitePath {
 /// Where the solver puts a piece in the room. Written as an object with one
 /// key that names the rule: `{ against_wall: { on_wall } }` (`on_wall`
 /// optional), `{ in_corner: {} }`, `{ free: { near } }` (`near` optional),
-/// `{ beside: { object, gap_m } }` or `{ facing: { object, distance_m } }`.
+/// `{ beside: { object, gap_m } }`, `{ facing: { object, distance_m } }` or
+/// `{ at_side: { object, sides, gap_m } }`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FurnishRule {
     /// The back of the piece, the side opposite its front, against a wall:
@@ -59,11 +60,59 @@ pub enum FurnishRule {
     /// Front to front with `object`, `distance_m` metres between the two
     /// fronts, above 0.
     Facing { object: Name, distance_m: f64 },
+    /// At one of the `sides` of `object`, each a side of the frame of
+    /// `object`, its front toward `object` and its box `gap_m` metres out
+    /// of the box of `object` on that side, at least 0: a chair at a table,
+    /// a stool at a workbench.
+    AtSide {
+        object: Name,
+        sides: Sides,
+        gap_m: f64,
+    },
+}
+
+/// The sides of an `at_side`: one or more, none twice, in the order
+/// written. Only [`Sides::new`] makes them, so a list that holds them
+/// holds such a list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sides(Vec<Side>);
+
+impl Sides {
+    /// `sides` when it lists one or more and none twice.
+    pub fn new(sides: Vec<Side>) -> Result<Self, Error> {
+        if sides.is_empty() {
+            return Err(Error::rule(
+                "the sides of an at_side list no side; list one or more of `+x`, `-x`, `+y` and `-y`",
+            ));
+        }
+        if let Some(twice) = sides
+            .iter()
+            .enumerate()
+            .find_map(|(index, side)| sides[..index].contains(side).then_some(side))
+        {
+            return Err(Error::rule(format!(
+                "the sides of an at_side list `{twice}` twice; list each side once"
+            )));
+        }
+        Ok(Self(sides))
+    }
+
+    /// The sides in the order written.
+    pub fn as_slice(&self) -> &[Side] {
+        &self.0
+    }
 }
 
 /// The keys that name a furnish rule, each the key of one variant of
 /// [`FurnishRule`].
-const RULES: [&str; 5] = ["against_wall", "in_corner", "free", "beside", "facing"];
+const RULES: [&str; 6] = [
+    "against_wall",
+    "in_corner",
+    "free",
+    "beside",
+    "facing",
+    "at_side",
+];
 
 impl FurnishRule {
     /// The key that writes the rule.
@@ -74,14 +123,17 @@ impl FurnishRule {
             FurnishRule::Free { .. } => "free",
             FurnishRule::Beside { .. } => "beside",
             FurnishRule::Facing { .. } => "facing",
+            FurnishRule::AtSide { .. } => "at_side",
         }
     }
 
-    /// The piece that the rule places this piece by: the object of `beside`
-    /// and of `facing`.
+    /// The piece that the rule places this piece by: the object of
+    /// `beside`, of `facing` and of `at_side`.
     pub fn object(&self) -> Option<&Name> {
         match self {
-            FurnishRule::Beside { object, .. } | FurnishRule::Facing { object, .. } => Some(object),
+            FurnishRule::Beside { object, .. }
+            | FurnishRule::Facing { object, .. }
+            | FurnishRule::AtSide { object, .. } => Some(object),
             FurnishRule::AgainstWall { .. } | FurnishRule::InCorner | FurnishRule::Free { .. } => {
                 None
             }
@@ -125,6 +177,7 @@ enum RuleFields {
     Free(FreeFields),
     Beside(BesideFields),
     Facing(FacingFields),
+    AtSide(AtSideFields),
 }
 
 #[derive(Deserialize)]
@@ -157,6 +210,17 @@ struct FacingFields {
     distance_m: f64,
 }
 
+#[derive(Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    expecting = "an at_side, { object, sides, gap_m }"
+)]
+struct AtSideFields {
+    object: Name,
+    sides: Vec<Side>,
+    gap_m: f64,
+}
+
 impl TryFrom<RuleFields> for FurnishRule {
     type Error = Error;
 
@@ -174,6 +238,15 @@ impl TryFrom<RuleFields> for FurnishRule {
             RuleFields::Facing(FacingFields { object, distance_m }) => FurnishRule::Facing {
                 object,
                 distance_m: above_zero("distance_m", "a distance", distance_m)?,
+            },
+            RuleFields::AtSide(AtSideFields {
+                object,
+                sides,
+                gap_m,
+            }) => FurnishRule::AtSide {
+                object,
+                sides: Sides::new(sides)?,
+                gap_m: at_least_zero("gap_m", "a gap", gap_m)?,
             },
         };
         Ok(rule)
@@ -676,7 +749,7 @@ pub struct FurnishPiece {
 /// break a rule across its entries, with the robots of the pattern: a rule
 /// that names the piece itself or an object whose pose is not `furnish`;
 /// `beside` a piece whose rule is not `against_wall` or `in_corner`; a cycle
-/// of `beside` and `facing`; a station of a robot that the pattern does not
+/// of `beside`, `facing` and `at_side`; a station of a robot that the pattern does not
 /// hold, or that another station names too; a robot of a station whose
 /// stand is not at its station; and a robot that stands at a piece and that
 /// no station of the piece names.
@@ -730,7 +803,7 @@ fn check_named_pieces(pieces: &BTreeMap<&Name, &FurnishEntry>) -> Result<(), Err
     Ok(())
 }
 
-/// Refuses pieces whose `beside` and `facing` name each other in a cycle,
+/// Refuses pieces whose `beside`, `facing` and `at_side` name each other in a cycle,
 /// naming the pieces of the cycle. Each rule names one piece at most, so the
 /// pieces that a piece leads to form one chain.
 fn refuse_a_cycle(pieces: &BTreeMap<&Name, &FurnishEntry>) -> Result<(), Error> {
@@ -741,7 +814,7 @@ fn refuse_a_cycle(pieces: &BTreeMap<&Name, &FurnishEntry>) -> Result<(), Error> 
             if named == *start {
                 let cycle: Vec<String> = chain.iter().map(|piece| format!("`{piece}`")).collect();
                 return Err(Error::rule(format!(
-                    "the furnish poses of {} place each other in a cycle of `beside` and `facing`; give one of them `against_wall`, `in_corner` or `free`",
+                    "the furnish poses of {} place each other in a cycle of `beside`, `facing` and `at_side`; give one of them `against_wall`, `in_corner` or `free`",
                     cycle.join(", ")
                 )));
             }
@@ -1079,6 +1152,37 @@ mod tests {
             .map(|piece| piece.rule.object().map(Name::as_str))
             .collect();
         assert_eq!(named, [Some("desk"), None, None, None, Some("counter")]);
+    }
+
+    /// An `at_side` reads its object, its sides in the order written, and
+    /// its gap; a piece may stand at a piece of any rule, a free one here.
+    #[test]
+    fn an_at_side_reads_into_its_piece() {
+        let text = room_with(
+            ARMCHAIR_RULE,
+            r#"{ at_side: { object: "rug", sides: ["+x", "-y"], gap_m: 0.05 } }"#,
+        );
+        let placements = placements_of(&WorldPattern::parse(&text).unwrap(), 3);
+        let armchair = piece(pieces_of(&placements), "armchair");
+        assert_eq!(
+            armchair.rule,
+            FurnishRule::AtSide {
+                object: name("rug"),
+                sides: Sides::new(vec![Side::PosX, Side::NegY]).unwrap(),
+                gap_m: 0.05,
+            }
+        );
+        let FurnishRule::AtSide { sides, .. } = &armchair.rule else {
+            unreachable!("the rule is an at_side");
+        };
+        assert_eq!(sides.as_slice(), [Side::PosX, Side::NegY]);
+        assert_eq!(armchair.rule.key(), "at_side");
+        assert_eq!(armchair.rule.object(), Some(&name("rug")));
+        let at_zero = room_with(
+            ARMCHAIR_RULE,
+            r#"{ at_side: { object: "counter", sides: ["-x"], gap_m: 0 } }"#,
+        );
+        WorldPattern::parse(&at_zero).unwrap();
     }
 
     #[test]
@@ -1453,14 +1557,15 @@ mod tests {
     }
 
     const DESK_RULE: &str = r#"{ against_wall: { on_wall: "north" } }"#;
+    const ARMCHAIR_RULE: &str = r#"{ facing: { object: "desk", distance_m: 1.5 } }"#;
     const ALPHA_STAND: &str = r#"stand: { object: "desk", landmark: "top", side: "-y" }"#;
     const ALPHA_STATION: &str = r#"{ landmark: "top", side: "-y", robot: "alpha" }"#;
     const RUG_STATION: &str = r#"{ landmark: "top", side: "+y", depth_m: 0.6, width_m: 0.8 }"#;
 
     #[test]
     fn a_rule_or_a_station_of_another_form_is_refused_by_its_object() {
-        let rules = "a furnish rule is an object with one key naming a rule: `against_wall`, `in_corner`, `free`, `beside`, `facing`";
-        let cases: [(&[(&str, &str)], String); 21] = [
+        let rules = "a furnish rule is an object with one key naming a rule: `against_wall`, `in_corner`, `free`, `beside`, `facing`, `at_side`";
+        let cases: [(&[(&str, &str)], String); 27] = [
             (
                 &[(DESK_RULE, "{ against_the_wall: {} }")],
                 format!("objects.desk: pose: furnish: {rules}"),
@@ -1500,6 +1605,30 @@ mod tests {
             (
                 &[("distance_m: 1.5", "distance_m: 0")],
                 "objects.armchair: pose: furnish: the distance_m 0 is not above 0; write a distance above 0 metres".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", sides: [], gap_m: 0.05 } }"#)],
+                "objects.armchair: pose: furnish: the sides of an at_side list no side; list one or more of `+x`, `-x`, `+y` and `-y`".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", sides: ["+x", "-y", "+x"], gap_m: 0.05 } }"#)],
+                "objects.armchair: pose: furnish: the sides of an at_side list `+x` twice; list each side once".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", sides: ["+z"], gap_m: 0.05 } }"#)],
+                "objects.armchair: pose: furnish: at_side.sides[0]: unknown variant `+z`, expected one of `+x`, `-x`, `+y`, `-y`".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", sides: ["+x"], gap_m: -0.05 } }"#)],
+                "objects.armchair: pose: furnish: the gap_m -0.05 is not at least 0; write a gap of 0 m or more".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", gap_m: 0.05 } }"#)],
+                "objects.armchair: pose: furnish: at_side: missing field `sides`".into(),
+            ),
+            (
+                &[(ARMCHAIR_RULE, r#"{ at_side: { object: "rug", sides: ["+x"], gap_m: 0.05, distance_m: 1 } }"#)],
+                "objects.armchair: pose: furnish: at_side.distance_m: unknown field `distance_m`, expected one of `object`, `sides`, `gap_m`".into(),
             ),
             (
                 &[(RUG_STATION, r#"{ landmark: "top", side: "+y", depth_m: 0, width_m: 0.8 }"#)],
@@ -1669,7 +1798,34 @@ mod tests {
 
     #[test]
     fn the_rules_across_furnish_poses_are_refused_naming_the_object_or_the_robot() {
-        let cases: [(&[(&str, &str)], &str); 13] = [
+        let cases: [(&[(&str, &str)], &str); 16] = [
+            (
+                &[(
+                    ARMCHAIR_RULE,
+                    r#"{ at_side: { object: "mug", sides: ["+x"], gap_m: 0.05 } }"#,
+                )],
+                "objects.armchair.pose: `at_side` names `mug`, which is no object of the pattern whose pose is `furnish`; name such an object",
+            ),
+            (
+                &[(
+                    ARMCHAIR_RULE,
+                    r#"{ at_side: { object: "armchair", sides: ["+x"], gap_m: 0.05 } }"#,
+                )],
+                "objects.armchair.pose: `at_side` names `armchair` itself; name another object whose pose is `furnish`",
+            ),
+            (
+                &[
+                    (
+                        "{ free: { near: [1, 2] } }",
+                        r#"{ at_side: { object: "armchair", sides: ["+x"], gap_m: 0.05 } }"#,
+                    ),
+                    (
+                        ARMCHAIR_RULE,
+                        r#"{ at_side: { object: "rug", sides: ["-y"], gap_m: 0.05 } }"#,
+                    ),
+                ],
+                "the furnish poses of `armchair`, `rug` place each other in a cycle of `beside`, `facing` and `at_side`; give one of them `against_wall`, `in_corner` or `free`",
+            ),
             (
                 &[("{ object: \"counter\", gap_m", "{ object: \"lamp\", gap_m")],
                 "objects.shelf.pose: `beside` names `lamp`, which is no object of the pattern whose pose is `furnish`; name such an object",
@@ -1704,7 +1860,7 @@ mod tests {
                     DESK_RULE,
                     "{ facing: { object: \"armchair\", distance_m: 1.5 } }",
                 )],
-                "the furnish poses of `armchair`, `desk` place each other in a cycle of `beside` and `facing`; give one of them `against_wall`, `in_corner` or `free`",
+                "the furnish poses of `armchair`, `desk` place each other in a cycle of `beside`, `facing` and `at_side`; give one of them `against_wall`, `in_corner` or `free`",
             ),
             (
                 &[(

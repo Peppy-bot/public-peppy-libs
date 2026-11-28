@@ -48,7 +48,7 @@ pub use daylight::{Date, Daylight, TimeOfDay, Weather};
 pub use documents_core::{Digest, Manifest, Revision};
 pub use error::Error;
 pub use furnish::{
-    FixedStation, FurnishPiece, FurnishRule, FurnishStation, ScaleRange, StationRoom,
+    FixedStation, FurnishPiece, FurnishRule, FurnishStation, ScaleRange, Sides, StationRoom,
 };
 pub use geometry::{Offset, Placement, Point, Pose, Raise, Region};
 pub use judge::{
