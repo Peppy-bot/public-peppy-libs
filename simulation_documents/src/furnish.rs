@@ -61,14 +61,46 @@ pub enum FurnishRule {
     /// fronts, above 0.
     Facing { object: Name, distance_m: f64 },
     /// At one of the `sides` of `object`, each a side of the frame of
-    /// `object` (one or more, none twice), its front toward `object` and
-    /// its box `gap_m` metres out of the box of `object` on that side, at
-    /// least 0: a chair at a table, a stool at a workbench.
+    /// `object`, its front toward `object` and its box `gap_m` metres out
+    /// of the box of `object` on that side, at least 0: a chair at a table,
+    /// a stool at a workbench.
     AtSide {
         object: Name,
-        sides: Vec<Side>,
+        sides: Sides,
         gap_m: f64,
     },
+}
+
+/// The sides of an `at_side`: one or more, none twice, in the order
+/// written. Only [`Sides::new`] makes them, so a list that holds them
+/// holds such a list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sides(Vec<Side>);
+
+impl Sides {
+    /// `sides` when it lists one or more and none twice.
+    pub fn new(sides: Vec<Side>) -> Result<Self, Error> {
+        if sides.is_empty() {
+            return Err(Error::rule(
+                "the sides of an at_side list no side; list one or more of `+x`, `-x`, `+y` and `-y`",
+            ));
+        }
+        if let Some(twice) = sides
+            .iter()
+            .enumerate()
+            .find_map(|(index, side)| sides[..index].contains(side).then_some(side))
+        {
+            return Err(Error::rule(format!(
+                "the sides of an at_side list `{twice}` twice; list each side once"
+            )));
+        }
+        Ok(Self(sides))
+    }
+
+    /// The sides in the order written.
+    pub fn as_slice(&self) -> &[Side] {
+        &self.0
+    }
 }
 
 /// The keys that name a furnish rule, each the key of one variant of
@@ -213,31 +245,12 @@ impl TryFrom<RuleFields> for FurnishRule {
                 gap_m,
             }) => FurnishRule::AtSide {
                 object,
-                sides: listed_once(sides)?,
+                sides: Sides::new(sides)?,
                 gap_m: at_least_zero("gap_m", "a gap", gap_m)?,
             },
         };
         Ok(rule)
     }
-}
-
-/// The sides of an `at_side`, when it lists one or more and none twice.
-fn listed_once(sides: Vec<Side>) -> Result<Vec<Side>, Error> {
-    if sides.is_empty() {
-        return Err(Error::rule(
-            "the sides of an at_side list no side; list one or more of `+x`, `-x`, `+y` and `-y`",
-        ));
-    }
-    if let Some(twice) = sides
-        .iter()
-        .enumerate()
-        .find_map(|(index, side)| sides[..index].contains(side).then_some(side))
-    {
-        return Err(Error::rule(format!(
-            "the sides of an at_side list `{twice}` twice; list each side once"
-        )));
-    }
-    Ok(sides)
 }
 
 /// `metres`, the value of `field`, when it is above 0; `what` names the
@@ -1155,10 +1168,14 @@ mod tests {
             armchair.rule,
             FurnishRule::AtSide {
                 object: name("rug"),
-                sides: vec![Side::PosX, Side::NegY],
+                sides: Sides::new(vec![Side::PosX, Side::NegY]).unwrap(),
                 gap_m: 0.05,
             }
         );
+        let FurnishRule::AtSide { sides, .. } = &armchair.rule else {
+            unreachable!("the rule is an at_side");
+        };
+        assert_eq!(sides.as_slice(), [Side::PosX, Side::NegY]);
         assert_eq!(armchair.rule.key(), "at_side");
         assert_eq!(armchair.rule.object(), Some(&name("rug")));
         let at_zero = room_with(
